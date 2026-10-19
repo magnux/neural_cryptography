@@ -1,0 +1,15 @@
+{
+  "name": "neural-key-optical-bench",
+  "version": "0.9.0",
+  "private": true,
+  "type": "module",
+  "description": "Optical transport bench and browser NeuralPicnic Crypto Lab",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:link": "node --test tests/link-*.test.mjs",
+    "test:crypto": "node --test tests/crypto-*.test.mjs",
+    "test:parity": "node scripts/zk-cross-check.mjs",
+    "benchmark:crypto": "node scripts/crypto-size-benchmark.mjs",
+    "fixtures:zk": "python3 scripts/zk-fixtures.py generate"
+  }
+}

@@ -1,0 +1,2040 @@
+{
+  "schema": "qr-simulation-validation-v1",
+  "generatedAt": "2026-10-16T17:14:59.536Z",
+  "runtime": "v24.19.0",
+  "note": "Real standard QR encode/render/decode on synthetic images. Packet-fault model only; these timings do not predict camera throughput or moire tolerance.",
+  "reports": [
+    {
+      "name": "default-1024",
+      "schema": "qr-link-report-v1",
+      "mode": "simulation",
+      "model": "Rendered standard QR images; deterministic packet loss, duplicate observations and pre-encoding CRC damage. No lens, motion, moire or camera model.",
+      "status": "delivered",
+      "exact": true,
+      "confirmationReceived": true,
+      "payloadBytes": 1024,
+      "elapsedMs": 755.07,
+      "simulatedMs": 9800,
+      "stats": {
+        "transmissions": 22,
+        "dataTransmissions": 9,
+        "controlTransmissions": 13,
+        "dropped": 1,
+        "duplicated": 4,
+        "corrupted": 0,
+        "qrDecoded": 25,
+        "qrRejected": 0,
+        "protocolRejected": 4,
+        "deliveries": 1
+      },
+      "sender": {
+        "transferId": "12b4e7f80a1e29cd",
+        "totalBytes": 1024,
+        "chunkBytes": 128,
+        "windowSize": 1,
+        "chunkCount": 8,
+        "digest": "114d8ebe680728cadf08c6b27b1cf2524f7191006a14b1c5adff01453c4bc343",
+        "state": "delivered",
+        "ackedChunks": 8,
+        "ackedBytes": 1024,
+        "progress": 1,
+        "windowBase": 7,
+        "missingChunks": [],
+        "sentPackets": 10,
+        "retries": 1,
+        "error": null
+      },
+      "receiver": {
+        "kind": "start",
+        "transferId": "12b4e7f80a1e29cd",
+        "totalBytes": 1024,
+        "chunkBytes": 128,
+        "chunkCount": 8,
+        "windowSize": 1,
+        "digest": "114d8ebe680728cadf08c6b27b1cf2524f7191006a14b1c5adff01453c4bc343",
+        "state": "delivered",
+        "receivedBytes": 1024,
+        "receivedChunks": 8,
+        "error": null,
+        "progress": 1,
+        "bufferedBytes": 0,
+        "terminalCount": 1,
+        "completedMessages": 1,
+        "duplicatePackets": 3,
+        "malformedPackets": 0,
+        "foreignPackets": 0
+      },
+      "expectedDigest": "114d8ebe680728cadf08c6b27b1cf2524f7191006a14b1c5adff01453c4bc343",
+      "receivedDigest": "114d8ebe680728cadf08c6b27b1cf2524f7191006a14b1c5adff01453c4bc343",
+      "options": {
+        "bytes": 1024,
+        "chunkBytes": 128,
+        "windowSize": 1,
+        "seed": 1234,
+        "dropRate": 0.15,
+        "duplicateRate": 0.15,
+        "corruptRate": 0.05,
+        "dwellMs": 350,
+        "retryMs": 2500,
+        "timeoutMs": 3600000,
+        "maxRetries": 20,
+        "ecc": "Q"
+      },
+      "qr": {
+        "ecc": "Q",
+        "scale": 3,
+        "quiet": 4,
+        "data": {
+          "version": 10,
+          "modules": 57,
+          "imagePixels": 195,
+          "packetBytes": 146
+        },
+        "control": {
+          "version": 5,
+          "modules": 37,
+          "imagePixels": 135,
+          "packetBytes": 60
+        }
+      },
+      "events": [
+        {
+          "simulatedMs": 350,
+          "direction": "sender-to-receiver",
+          "kind": "start",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 700,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 1050,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 1400,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 3850,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 4200,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 4550,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 4900,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 5250,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 5600,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 5950,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 6300,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 6300,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 6650,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 6650,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 7000,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 7350,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 7350,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 7700,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 8050,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 8400,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 8400,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 8750,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 9100,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 9450,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 9800,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        }
+      ]
+    },
+    {
+      "name": "window4-4096",
+      "schema": "qr-link-report-v1",
+      "mode": "simulation",
+      "model": "Rendered standard QR images; deterministic packet loss, duplicate observations and pre-encoding CRC damage. No lens, motion, moire or camera model.",
+      "status": "delivered",
+      "exact": true,
+      "confirmationReceived": true,
+      "payloadBytes": 4096,
+      "elapsedMs": 4900.87,
+      "simulatedMs": 62650,
+      "stats": {
+        "transmissions": 100,
+        "dataTransmissions": 41,
+        "controlTransmissions": 59,
+        "dropped": 20,
+        "duplicated": 12,
+        "corrupted": 2,
+        "qrDecoded": 92,
+        "qrRejected": 0,
+        "protocolRejected": 31,
+        "deliveries": 1
+      },
+      "sender": {
+        "transferId": "491394f02703b2a3",
+        "totalBytes": 4096,
+        "chunkBytes": 128,
+        "windowSize": 4,
+        "chunkCount": 32,
+        "digest": "b2734f660ae6d5a6a89bc00f69674d6c93d4980156a899be01d5a5c7c76af131",
+        "state": "delivered",
+        "ackedChunks": 32,
+        "ackedBytes": 4096,
+        "progress": 1,
+        "windowBase": 28,
+        "missingChunks": [],
+        "sentPackets": 54,
+        "retries": 14,
+        "error": null
+      },
+      "receiver": {
+        "kind": "start",
+        "transferId": "491394f02703b2a3",
+        "totalBytes": 4096,
+        "chunkBytes": 128,
+        "chunkCount": 32,
+        "windowSize": 4,
+        "digest": "b2734f660ae6d5a6a89bc00f69674d6c93d4980156a899be01d5a5c7c76af131",
+        "state": "delivered",
+        "receivedBytes": 4096,
+        "receivedChunks": 32,
+        "error": null,
+        "progress": 1,
+        "bufferedBytes": 0,
+        "terminalCount": 1,
+        "completedMessages": 1,
+        "duplicatePackets": 3,
+        "malformedPackets": 3,
+        "foreignPackets": 0
+      },
+      "expectedDigest": "b2734f660ae6d5a6a89bc00f69674d6c93d4980156a899be01d5a5c7c76af131",
+      "receivedDigest": "b2734f660ae6d5a6a89bc00f69674d6c93d4980156a899be01d5a5c7c76af131",
+      "options": {
+        "bytes": 4096,
+        "chunkBytes": 128,
+        "windowSize": 4,
+        "seed": 12,
+        "dropRate": 0.15,
+        "duplicateRate": 0.15,
+        "corruptRate": 0.05,
+        "dwellMs": 350,
+        "retryMs": 2500,
+        "timeoutMs": 3600000,
+        "maxRetries": 20,
+        "ecc": "Q"
+      },
+      "qr": {
+        "ecc": "Q",
+        "scale": 3,
+        "quiet": 4,
+        "data": {
+          "version": 10,
+          "modules": 57,
+          "imagePixels": 195,
+          "packetBytes": 146
+        },
+        "control": {
+          "version": 5,
+          "modules": 37,
+          "imagePixels": 135,
+          "packetBytes": 60
+        }
+      },
+      "events": [
+        {
+          "simulatedMs": 3850,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 4200,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 6650,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 7000,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 7000,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 7350,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 7350,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 7700,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 8050,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 8400,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 8750,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 9100,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 9450,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 12250,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 12600,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 12600,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 12950,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 13300,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 13650,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 14000,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 14000,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 14350,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 14700,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 15050,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 15400,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 15750,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 16100,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 16450,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 16800,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 16800,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 17150,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 17500,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 17850,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 18200,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 18550,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 18900,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 19250,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 19600,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 22400,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 22750,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 23100,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 23450,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 23800,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "malformed",
+          "corrupted": true,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 23800,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "malformed",
+          "corrupted": true,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 24150,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 24500,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 24850,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 25200,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 28000,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 28350,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 28350,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 28700,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 29050,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 29400,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 29750,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 30100,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 30450,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 30800,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 31150,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 31500,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 31850,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 32200,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 32550,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 32900,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 32900,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 33250,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 33600,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 36050,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 36400,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 36750,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 37100,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 37450,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 37800,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 37800,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 38150,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 38150,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 38500,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 38850,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 39200,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 42000,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 42350,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 42700,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 43050,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 45500,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 48300,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 51100,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "malformed",
+          "corrupted": true,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 53900,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 54250,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 56700,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 57050,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 59500,
+          "direction": "sender-to-receiver",
+          "kind": "poll",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 59850,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 60200,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 60550,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 60900,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 61250,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 61600,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 61950,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 62300,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 62650,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        }
+      ]
+    },
+    {
+      "name": "proof-sized-165000",
+      "schema": "qr-link-report-v1",
+      "mode": "simulation",
+      "model": "Rendered standard QR images; deterministic packet loss, duplicate observations and pre-encoding CRC damage. No lens, motion, moire or camera model.",
+      "status": "delivered",
+      "exact": true,
+      "confirmationReceived": true,
+      "payloadBytes": 165000,
+      "elapsedMs": 27296.1,
+      "simulatedMs": 2716350,
+      "stats": {
+        "transmissions": 3694,
+        "dataTransmissions": 1909,
+        "controlTransmissions": 1785,
+        "dropped": 553,
+        "duplicated": 500,
+        "corrupted": 145,
+        "qrDecoded": 3641,
+        "qrRejected": 0,
+        "protocolRejected": 566,
+        "deliveries": 1
+      },
+      "sender": {
+        "transferId": "12b4e7f80a1e29cd",
+        "totalBytes": 165000,
+        "chunkBytes": 128,
+        "windowSize": 1,
+        "chunkCount": 1290,
+        "digest": "296bd0df94736da4d112f0cc591839b1b27122274afa1e966c37b1e3f1a281db",
+        "state": "delivered",
+        "ackedChunks": 1290,
+        "ackedBytes": 165000,
+        "progress": 1,
+        "windowBase": 1289,
+        "missingChunks": [],
+        "sentPackets": 1910,
+        "retries": 619,
+        "error": null
+      },
+      "receiver": {
+        "kind": "start",
+        "transferId": "12b4e7f80a1e29cd",
+        "totalBytes": 165000,
+        "chunkBytes": 128,
+        "chunkCount": 1290,
+        "windowSize": 1,
+        "digest": "296bd0df94736da4d112f0cc591839b1b27122274afa1e966c37b1e3f1a281db",
+        "state": "delivered",
+        "receivedBytes": 165000,
+        "receivedChunks": 1290,
+        "error": null,
+        "progress": 1,
+        "bufferedBytes": 0,
+        "terminalCount": 1,
+        "completedMessages": 1,
+        "duplicatePackets": 493,
+        "malformedPackets": 90,
+        "foreignPackets": 0
+      },
+      "expectedDigest": "296bd0df94736da4d112f0cc591839b1b27122274afa1e966c37b1e3f1a281db",
+      "receivedDigest": "296bd0df94736da4d112f0cc591839b1b27122274afa1e966c37b1e3f1a281db",
+      "options": {
+        "bytes": 165000,
+        "chunkBytes": 128,
+        "windowSize": 1,
+        "seed": 1234,
+        "dropRate": 0.15,
+        "duplicateRate": 0.15,
+        "corruptRate": 0.05,
+        "dwellMs": 350,
+        "retryMs": 2500,
+        "timeoutMs": 3600000,
+        "maxRetries": 20,
+        "ecc": "Q"
+      },
+      "qr": {
+        "ecc": "Q",
+        "scale": 3,
+        "quiet": 4,
+        "data": {
+          "version": 10,
+          "modules": 57,
+          "imagePixels": 195,
+          "packetBytes": 146
+        },
+        "control": {
+          "version": 5,
+          "modules": 37,
+          "imagePixels": 135,
+          "packetBytes": 60
+        }
+      },
+      "events": [
+        {
+          "simulatedMs": 2649850,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 2650200,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2650550,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2650900,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2650900,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 2651250,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "malformed",
+          "corrupted": true,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2654050,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 2656850,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2657200,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2657550,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2657900,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "malformed",
+          "corrupted": true,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2657900,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "malformed",
+          "corrupted": true,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 2660350,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2660700,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 2663150,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2663500,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2663850,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2664200,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2664200,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 2664550,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 2664900,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2665250,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2665600,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 2668400,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2668750,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2669100,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2669450,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2669800,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 2672600,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2672950,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2672950,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 2673300,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2673650,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 2676450,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 2679250,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2679600,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2679950,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2680300,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2680650,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 2683450,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 2686250,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2686600,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "malformed",
+          "corrupted": true,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2689050,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2689400,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2689750,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "malformed",
+          "corrupted": true,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2692550,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2692900,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2693250,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 2696050,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2696400,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2696750,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2697100,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2697450,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2697800,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2697800,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 2697800,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 2698150,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2698500,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2698850,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2699200,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2699550,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2699900,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2700250,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2700600,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2700950,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2700950,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 2701300,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2701650,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2701650,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 2702000,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "malformed",
+          "corrupted": true,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2704800,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2705150,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2705500,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2705850,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2706200,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2706550,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2706900,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2707250,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2707600,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2707950,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2708300,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2708650,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2708650,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "stale-ack",
+          "corrupted": false,
+          "duplicate": true
+        },
+        {
+          "simulatedMs": 2709000,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2709350,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "dropped"
+        },
+        {
+          "simulatedMs": 2711800,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2712150,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2712500,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2712850,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2713200,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2713550,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2713900,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2714250,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2714600,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2714950,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2715300,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2715650,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2716000,
+          "direction": "sender-to-receiver",
+          "kind": "data",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2716350,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "accepted",
+          "corrupted": false,
+          "duplicate": false
+        },
+        {
+          "simulatedMs": 2716350,
+          "direction": "receiver-to-sender",
+          "kind": "ack",
+          "outcome": "terminal",
+          "corrupted": false,
+          "duplicate": true
+        }
+      ]
+    }
+  ]
+}

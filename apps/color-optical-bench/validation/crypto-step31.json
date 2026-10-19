@@ -1,0 +1,41 @@
+{
+  "milestone": "3.1: Python / JavaScript cryptography parity",
+  "date": "2026-10-16",
+  "protocol": "NeuralPicnic-POC-MPC3-v1",
+  "environment": {
+    "javascript": "Node v24.19.0 with native Web Crypto",
+    "python_numpy": "2.3.5",
+    "browser_device_tested": false,
+    "timing_scope": "Single development-host run; not a mobile benchmark or performance guarantee"
+  },
+  "test_suite": {
+    "command": "npm test",
+    "passed": 116,
+    "failed": 0,
+    "skipped": 0,
+    "optical_tests": 88,
+    "crypto_tests": 28,
+    "duration_ms": 7146.872327
+  },
+  "cross_language": {
+    "command": "TMPDIR=/workspace/scratch/d80e6e6edab1 node scripts/zk-cross-check.mjs",
+    "fixture_files_reproduced_byte_for_byte": 5,
+    "deterministic_complete_proof_matches": 4,
+    "python_proofs_accepted_by_javascript": 4,
+    "fresh_javascript_proofs_accepted_by_python": 4,
+    "changed_nonce_action_or_trace_rejected_by_each_verifier": 12
+  },
+  "profiles": [
+    {"side": 4, "rounds": 2, "repetitions": 3, "proof_bytes": 1150, "js_prove_ms": 28.94, "js_verify_ms": 19.65},
+    {"side": 8, "rounds": 4, "repetitions": 5, "proof_bytes": 2378, "js_prove_ms": 30.51, "js_verify_ms": 17.79},
+    {"side": 16, "rounds": 3, "repetitions": 4, "proof_bytes": 3306, "js_prove_ms": 30.25, "js_verify_ms": 24.92},
+    {"side": 8, "rounds": 16, "repetitions": 219, "proof_bytes": 164746, "js_prove_ms": 304.49, "js_verify_ms": 278.2}
+  ],
+  "remaining_integration": [
+    "Crypto Lab UI and dedicated browser worker",
+    "Actual desktop/mobile browser interoperability, responsiveness, and timings",
+    "Trusted provisioning and session-level nonce lifetime / replay policy",
+    "Multipart optical transfer for full-sized proofs"
+  ],
+  "security_scope": "Faithful port and functional tests only. The custom circuit and protocol are unaudited; no security level or post-quantum claim is established."
+}

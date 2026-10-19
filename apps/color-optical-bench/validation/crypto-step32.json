@@ -1,0 +1,57 @@
+{
+  "milestone": "3.2: independent browser Crypto Lab and worker execution",
+  "appVersion": "0.7.0",
+  "date": "2026-10-16",
+  "protocol": "NeuralPicnic-POC-MPC3-v1",
+  "environment": "Node v24.19.0, native Web Crypto, actual module workers via a Node browser-Worker event bridge",
+  "tests": {
+    "command": "npm test",
+    "passed": 138,
+    "failed": 0,
+    "skipped": 0,
+    "durationMs": 7046.466818,
+    "opticalRegressionTests": 88,
+    "foundationCryptoTests": 28,
+    "workerTests": 11,
+    "reportTests": 9,
+    "labStructureTests": 2
+  },
+  "crossLanguage": {
+    "command": "npm run test:parity (with a writable TMPDIR)",
+    "fixtureFilesReproduced": 5,
+    "deterministicProofMatches": 4,
+    "pythonProofsAcceptedByJavaScript": 4,
+    "freshJavaScriptProofsAcceptedByPython": 4,
+    "changedNonceActionOrTraceRejectedByEachVerifier": 12
+  },
+  "workerCoverage": {
+    "defaultProfile": {"side": 8, "rounds": 16, "repetitions": 219, "proofBytes": 164746},
+    "parentEventLoopContinuesDuringDefaultProof": true,
+    "publicOnlyVerification": true,
+    "publicPythonUnicodeFixture": true,
+    "tamperSuite": {"validBaselineAccepted": true, "modifiedCasesRejected": 8},
+    "cancelAfterProofSimulationStarts": true,
+    "staleWorkerAndJobEventsIgnored": true,
+    "startupTimeoutNativeAndMessageFailureRecovery": true,
+    "idleWorkerKeyLossNotification": true,
+    "callerProofBuffersRetained": true,
+    "viewCopiesAndAggregateBytesBounded": true
+  },
+  "reportCoverage": {
+    "publicContextLimitBytes": 8192,
+    "maximumHistoryEntries": 50,
+    "maximumFrameIntervalSamples": 4096,
+    "hiddenIntervalsFlagged": true,
+    "failureCancelAndTimeoutOutcomesRetained": true,
+    "secretKeysProofContentsAndChallengeNoncesExcluded": true
+  },
+  "verificationLimits": {
+    "actualBrowserVisualQA": false,
+    "phonePerformanceMeasured": false,
+    "browserModuleWorkerAndFileDownloadUXTestedOnDevices": false,
+    "opticalFullProofTransferImplemented": false,
+    "sessionReplayAndExpiryPolicyImplemented": false,
+    "offlineRestartCachingGuaranteed": false
+  },
+  "nextEvidence": "Follow CRYPTO_LAB.md on laptop and phone; export reports for default-profile reference, roundtrip, tamper, benchmark, cancellation, and public-file verification in both directions."
+}

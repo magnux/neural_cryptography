@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f5f1">
+  <meta name="description" content="Run and measure the experimental Neural Key proof engine locally in your browser.">
+  <title>Crypto Lab · Neural Key</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./crypto-lab.css">
+</head>
+<body class="crypto-lab">
+  <header class="site-header">
+    <a class="brand" href="./crypto.html" aria-label="Crypto Lab home"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M2 12V2h10M20 2h10v10M30 20v10H20M12 30H2V20"/><path d="M11 11h10v10H11z"/></svg><span>NEURAL KEY<span class="brand-divider">/</span><strong>CRYPTO LAB</strong></span></a>
+    <div class="header-actions"><span class="local-badge"><i></i> Browser-local</span><a class="text-button" href="#labGuide">Quick guide ↓</a></div>
+  </header>
+  <nav class="app-nav" aria-label="Application"><a href="./index.html">Optical Bench</a><a href="./crypto.html" aria-current="page">Crypto Lab</a><a href="./link.html">Live Demo</a></nav>
+  <main>
+    <section class="crypto-intro"><div><div class="eyebrow">EXPERIMENT 02 · THE PROOF ENGINE</div><h1>Create. Prove. Verify.</h1><p>Exercise the browser cryptography independently of the optical link.</p></div><span class="engine-label">ZKBoo-style · binary neural circuit</span></section>
+    <noscript><div class="notice">Enable JavaScript to run this browser-local experiment.</div></noscript>
+    <div id="environmentNotice" class="notice" role="alert" hidden></div>
+    <div id="operationError" class="notice crypto-error" role="alert" hidden></div>
+
+    <section class="panel execution-panel" aria-label="Experiment controls">
+      <div class="execution-heading"><div><strong>One complete round trip</strong><p>Generate a key if needed, create a fresh challenge, then prove and verify.</p></div><button id="runRoundTrip" class="button primary" disabled>Run round trip →</button></div>
+      <div class="operation-strip"><span id="operationLight" class="operation-light" aria-hidden="true"></span><div class="operation-copy"><strong id="operationStatus" role="status" aria-live="polite">Preparing the lab…</strong><span id="operationDetail">Computation runs in a dedicated worker.</span></div><span id="operationElapsed" class="mono">0.0 s</span><button id="cancelOperation" class="small-button" disabled>Cancel</button><button id="resetLab" class="text-button">Reset lab</button></div>
+      <progress id="operationProgress" max="1" value="0" aria-label="Current operation progress"></progress>
+    </section>
+
+    <div class="crypto-columns">
+      <section class="panel crypto-session" aria-labelledby="sessionHeading">
+        <div class="panel-heading"><div><span class="section-number">01</span><h2 id="sessionHeading">Key &amp; challenge</h2></div><span id="keyMode" class="mode-label">NO KEY</span></div>
+        <div class="crypto-panel-body">
+          <p id="profileSummary" class="profile-summary">8 × 8 circuit · 16 circuit rounds · key minimum 219 repetitions</p>
+          <details class="profile-options"><summary><strong>Advanced profile</strong><span class="summary-action">Configure</span></summary><div class="profile-fields">
+            <label for="profileSide">Circuit side<select id="profileSide"><option value="4">4 × 4</option><option value="8" selected>8 × 8</option><option value="16">16 × 16</option></select></label>
+            <label for="profileRounds">Circuit rounds<input id="profileRounds" type="number" min="2" max="64" step="1" value="16" required></label>
+            <label for="profileRepetitions">Key minimum repetitions<input id="profileRepetitions" type="number" min="1" max="512" step="1" value="219" required></label>
+            <p>Changing this profile clears the local key and current proof. Circuit size is independent of optical matrix size. The key minimum is an enrolled floor. For development, set a lower floor before generating the key, then choose the proof repetitions per challenge below. These settings do not establish security.</p>
+          </div></details>
+          <div class="crypto-button-row"><button id="generateKey" class="small-button" disabled>Generate key</button><span id="keyState" class="inline-note">No private key in memory.</span></div>
+          <dl class="key-details"><div><dt>Public key fingerprint</dt><dd id="keyFingerprint">—</dd></div></dl>
+          <div class="challenge-fields"><label for="lockId">Lock identifier<input id="lockId" type="text" value="demo-door" maxlength="256" autocomplete="off" spellcheck="false"></label><label for="challengeAction">Action<input id="challengeAction" type="text" value="unlock" maxlength="256" autocomplete="off" spellcheck="false"></label></div>
+          <div class="repetition-controls">
+            <label for="repetitionPreset">Proof repetition preset<select id="repetitionPreset"><option value="32">Development · 32</option><option value="64">Quick · 64</option><option value="110">110 repetitions</option><option value="160">160 repetitions</option><option value="219" selected>Reference · 219</option><option value="custom">Custom</option></select></label>
+            <label for="requestedRepetitions">Requested proof repetitions<input id="requestedRepetitions" type="number" min="1" max="512" step="1" value="219" required aria-describedby="repetitionSummary repetitionPolicy"></label>
+            <p id="repetitionSummary" class="repetition-summary" role="status" aria-live="polite"></p>
+            <p id="repetitionPolicy">The verifier chooses this lower bound; the enrolled key minimum still applies. Changing this request keeps the key and clears the challenge and proof. A shorter proof does not inherit security from an earlier proof. No automatic recency policy is applied.</p>
+          </div>
+          <div class="crypto-button-row"><button id="newChallenge" class="small-button" disabled>New challenge</button><span class="inline-note">A fresh random nonce each time.</span></div>
+          <div class="challenge-summary"><span class="field-caption">CURRENT CHALLENGE</span><p id="challengeSummary">Create a challenge to bind the proof to a lock and action.</p><code id="challengeNonce">—</code></div>
+          <p class="key-lifetime">The private key stays in worker memory. Cancel, reset, profile changes, context import, or leaving this page clear it. No private-key export or persistence.</p>
+        </div>
+      </section>
+
+      <section class="panel crypto-proof" aria-labelledby="proofHeading">
+        <div class="panel-heading"><div><span class="section-number">02</span><h2 id="proofHeading">Proof &amp; verification</h2></div><span id="proofOrigin" class="mode-label">WAITING</span></div>
+        <div class="verification-result" id="verificationResult" data-result="waiting"><span class="result-symbol" id="resultSymbol" aria-hidden="true">○</span><div><span class="field-caption">VERIFICATION</span><strong id="verificationTitle">Ready to experiment</strong><p id="verificationDetail">Run a round trip, or import a public context and binary proof.</p></div></div>
+        <div class="crypto-metrics"><div><span>Proof size</span><strong id="proofSize">—</strong></div><div><span>Prove</span><strong id="proveTime">—</strong></div><div><span>Verify</span><strong id="verifyTime">—</strong></div></div>
+        <div class="crypto-panel-body"><div class="crypto-button-row proof-actions"><button id="generateProof" class="button secondary" disabled>Generate proof</button><button id="verifyProof" class="button primary" disabled>Verify proof</button></div>
+          <dl class="proof-details"><div><dt>Proof SHA-256</dt><dd id="proofHash">—</dd></div><div><dt>Context</dt><dd id="contextState">No public context loaded.</dd></div></dl>
+          <details class="public-details"><summary><strong>Inspect public context</strong><span class="summary-action">View</span></summary><pre id="publicContext">No public context yet.</pre></details>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel exchange-panel" aria-labelledby="exchangeHeading"><div class="panel-heading"><div><span class="section-number">03</span><h2 id="exchangeHeading">Verify on another device</h2></div><span class="mode-label">PUBLIC FILES ONLY</span></div><div class="crypto-panel-body exchange-layout"><div><p>Download the context and proof, then import both in the Crypto Lab on the other device. Verification needs no private key.</p><div class="crypto-button-row"><button id="downloadContext" class="small-button" disabled>Download context ↓</button><button id="downloadProof" class="small-button" disabled>Download proof ↓</button></div></div><div><p>Import the context first. It includes the public key and the exact challenge; importing it clears any local private key and proof.</p><div class="crypto-button-row"><button id="importContext" class="small-button" disabled>Import context</button><button id="importProof" class="small-button" disabled>Import proof</button><input id="contextFile" type="file" accept=".json,application/json" hidden><input id="proofFile" type="file" accept=".bin,application/octet-stream" hidden></div><span id="importStatus" class="inline-note">Context ≤ 8 KiB · proof ≤ 8 MiB. Files are read locally.</span></div></div></section>
+
+    <div class="crypto-columns diagnostics-columns">
+      <section class="panel checks-panel" aria-labelledby="checksHeading"><div class="panel-heading"><div><span class="section-number">04</span><h2 id="checksHeading">Correctness checks</h2></div></div><div class="crypto-panel-body"><p class="section-description">Try altered proofs and challenges, or verify the bundled public Python reference fixture. At very low repetition counts, a tampered proof may pass by chance; these checks report observations, not a security guarantee.</p><div class="crypto-button-row"><button id="runTamper" class="small-button" disabled>Run tamper checks</button><button id="runReference" class="small-button" disabled>Run Python reference check</button></div><div class="check-results" id="tamperResults"><p class="empty-result">Tamper checks need a proof and its context.</p></div><div class="check-results" id="referenceResults"><p class="empty-result">Python reference check has not run.</p></div></div></section>
+      <section class="panel benchmark-panel" aria-labelledby="benchmarkHeading"><div class="panel-heading"><div><span class="section-number">05</span><h2 id="benchmarkHeading">Device performance</h2></div><span class="mode-label">MEASURED HERE</span></div><div class="crypto-panel-body"><p class="section-description">Repeat proof generation and verification with fresh challenges. Keep this tab visible for UI responsiveness measurements.</p><div class="crypto-button-row"><label class="benchmark-runs" for="benchmarkRuns">Runs <input id="benchmarkRuns" type="number" min="1" max="10" step="1" value="3" required></label><button id="runBenchmark" class="button secondary" disabled>Benchmark</button></div><div id="benchmarkResults"><p class="empty-result">No benchmark yet. Try three runs on your phone and laptop.</p></div><p id="responsivenessSummary" class="responsiveness-summary">UI frame gaps will be recorded during each operation.</p><details class="measurement-help"><summary>What does the UI measurement mean?</summary><p>Animation frame gaps show how regularly this page can update while its worker computes. They are not touch latency measurements or a security test. Background tabs pause animation callbacks, so hidden intervals are flagged in the report.</p></details></div></section>
+    </div>
+
+    <section class="panel report-panel" aria-label="Export device report"><div class="crypto-panel-body report-layout"><label for="testNotes">Test notes<input id="testNotes" type="text" maxlength="1000" placeholder="Phone or laptop model, browser, power mode, observations…"></label><div><span id="reportCount" class="inline-note">No measurements yet.</span><button id="downloadReport" class="button secondary" disabled>Download report ↓</button></div></div><p class="report-privacy">Reports contain timings, public fingerprints, check results, browser metadata, and your notes. They exclude private keys, raw proof bytes, and challenge nonces.</p></section>
+
+    <details class="panel lab-guide" id="labGuide"><summary><strong>Quick guide</strong><span class="summary-action">Read</span></summary><div class="crypto-panel-body"><ol><li><strong>Run a round trip.</strong> The default profile matches the full Python parity test and uses compact proofs. Proof repetitions change proof size independently of circuit rounds. The worker generates the secret, creates a proof, then verifies it using only the public context.</li><li><strong>Check failure handling.</strong> Run tamper checks and the independent Python reference check. Cancel a long run to terminate the worker immediately.</li><li><strong>Measure your device.</strong> Run the benchmark with this tab visible, add device notes, and download the report. Scroll and use the page while the worker runs.</li><li><strong>Cross-check two devices.</strong> Export both public files, import them on the other device, and select Verify proof. Optical transfer and session replay handling belong to the later app integration.</li></ol></div></details>
+    <footer class="page-footer"><span><i class="footer-dot"></i> NEURAL KEY · CRYPTO LAB</span><p>Unaudited research POC. Successful checks do not establish cryptographic security.</p><span>Worker memory · no key storage</span></footer>
+  </main>
+  <script type="module" src="./js/crypto-lab/lab.js"></script>
+</body>
+</html>

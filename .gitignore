@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+.DS_Store
+.env
+.env.*
+!.env.example
+certs/
+*.pem
+*.key
+.openai/
+out/
+coverage/
+.pytest_cache/
+*.log
+local-data/
+local-results/
+checkpoints/
+*.pt
+*.pth
+
+# Keep public test fixtures and recorded validation evidence tracked.
+# Put private keys, real capture exports, and local reports in local-data/.

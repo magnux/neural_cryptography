@@ -1,0 +1,27 @@
+{
+  "bundled_on": "2026-10-16",
+  "runtime_network_required": false,
+  "dependencies": [
+    {
+      "name": "Nayuki QR Code generator",
+      "version": "1.8.0",
+      "license": "MIT",
+      "source": "https://raw.githubusercontent.com/nayuki/QR-Code-generator/v1.8.0/typescript-javascript/qrcodegen.ts",
+      "source_sha256": "c4749095a91bf9696e3a303998b9905e467094f53041e64393e65e6d887737fd",
+      "build": "TypeScript 5.9.3: tsc qrcodegen.ts --target ES2018 --module none --outFile qrcodegen.js --strict; append ESM export",
+      "file": "qrcodegen.js",
+      "sha256": "92c44e3e29a2fded12cc74d2a75d13d2246434affb6f941d0551e3df5a202ff9"
+    },
+    {
+      "name": "jsQR",
+      "version": "1.4.0",
+      "license": "Apache-2.0",
+      "source": "https://registry.npmjs.org/jsqr/-/jsqr-1.4.0.tgz",
+      "archive_sha256": "b5299b37917a1fe7a8cab9dd5cc6b8accf82663add80abe5bf7761a921cc6602",
+      "source_sha256": "bc40c8a15196236b2314db0856f72ca0b49980cd5413b8c852a7349f5fee0859",
+      "build": "Unchanged dist/jsQR.js wrapped in a local CommonJS scope, followed by ESM default export",
+      "file": "jsQR.js",
+      "sha256": "9bfc10e366f0729e490e1852bf75ccbea40d56d581df218d00a3923edfbfb901"
+    }
+  ]
+}

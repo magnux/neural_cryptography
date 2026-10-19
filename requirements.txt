@@ -1,0 +1,3 @@
+# NumPy is used by the recovered Python ZKBoo reference and parity fixtures.
+# Serving the static apps requires only Python's standard library.
+numpy>=1.24
