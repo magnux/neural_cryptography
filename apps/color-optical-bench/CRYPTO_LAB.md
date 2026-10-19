@@ -6,12 +6,13 @@ state. Leaving the optical page stops the camera; leaving Crypto Lab destroys
 its temporary key. The shared navigation and visual styles do not couple the
 two experiments.
 
-All proof computation runs in a dedicated browser module worker. The reusable
-`dist/js/crypto/` engine remains independent of the interface; the worker,
-client, UI, public-context files, and reporting are in `dist/js/crypto-lab/`.
-There is no Flask or Python runtime requirement for the app. Serve `dist/` over
-HTTPS, or use the optional `serve.py` for localhost development. Python with
-NumPy remains useful for the independent reference tests.
+All proof computation runs in a dedicated browser module worker. The canonical
+engine and worker are in [`shared/browser-crypto/`](../../shared/browser-crypto/);
+`npm run prepare:app` copies them into ignored app-local `dist/js/crypto/` and
+`dist/js/crypto-lab/` paths. The UI and reports remain app-specific.
+There is no Flask or Python runtime requirement for the app. Serve the prepared
+`dist/` over HTTPS, or use the optional `serve.py` for localhost development.
+Python with NumPy remains useful for the independent reference tests.
 
 ## First run
 
@@ -40,6 +41,7 @@ levels. Circuit size is independent of the optical matrix dimensions.
 The public test sites are intentionally blank. To use this working copy locally:
 
 ```sh
+npm run prepare:app
 python serve.py --port 8000
 ```
 

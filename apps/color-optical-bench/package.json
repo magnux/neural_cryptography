@@ -5,11 +5,18 @@
   "type": "module",
   "description": "Optical transport bench and browser NeuralPicnic Crypto Lab",
   "scripts": {
+    "prepare:app": "node ../../scripts/prepare-apps.mjs --app color-optical-bench",
+    "pretest": "npm run prepare:app",
     "test": "node --test tests/*.test.mjs",
+    "pretest:link": "npm run prepare:app",
     "test:link": "node --test tests/link-*.test.mjs",
+    "pretest:crypto": "npm run prepare:app",
     "test:crypto": "node --test tests/crypto-*.test.mjs",
+    "pretest:parity": "npm run prepare:app",
     "test:parity": "node scripts/zk-cross-check.mjs",
+    "prebenchmark:crypto": "npm run prepare:app",
     "benchmark:crypto": "node scripts/crypto-size-benchmark.mjs",
-    "fixtures:zk": "python3 scripts/zk-fixtures.py generate"
+    "fixtures:zk": "python3 scripts/zk-fixtures.py generate",
+    "postfixtures:zk": "npm run prepare:app"
   }
 }

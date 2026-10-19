@@ -15,7 +15,10 @@ import sys
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON_REFERENCE = ROOT.parents[1] / "experiments" / "python-zkboo"
+REPOSITORY = ROOT.parents[1]
+PYTHON_REFERENCE = REPOSITORY / "experiments" / "python-zkboo"
+FIXTURES = REPOSITORY / "shared" / "fixtures" / "zk"
+BROWSER_FIXTURE = REPOSITORY / "shared" / "browser-crypto" / "worker" / "reference-fixture.js"
 sys.path.insert(0, str(PYTHON_REFERENCE))
 import neural_zkboo_reference as zk
 
@@ -257,8 +260,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     generation = sub.add_parser("generate", help="regenerate public deterministic fixtures")
-    generation.add_argument("--out", type=Path, default=ROOT / "tests" / "fixtures" / "zk")
-    generation.add_argument("--browser-fixture", type=Path, help="also write the public-only browser fixture module")
+    generation.add_argument("--out", type=Path, default=FIXTURES)
+    generation.add_argument("--browser-fixture", type=Path, default=BROWSER_FIXTURE,
+                            help="public-only browser fixture module (defaults to the canonical shared module)")
     verification = sub.add_parser("verify", help="verify proof files listed in a JSON manifest")
     verification.add_argument("manifest", type=Path)
     args = parser.parse_args()

@@ -4,17 +4,18 @@ Experiments in neural dynamical systems, a custom ZKBoo-style proof of knowledge
 and camera-to-screen optical communication. The browser applications perform
 computation locally; their servers only serve static files.
 
-This repository collects the latest recoverable implementations as of
-**19 October 2026**. The hosted test sites are intentionally blank. See the
-[source inventory](docs/SOURCE_INVENTORY.md) for provenance and the original
-Python scripts/notebook that still need to be restored.
+The repository keeps one current implementation of each experiment; earlier
+revisions belong in Git history. The hosted test sites are intentionally blank.
+See the [source inventory](docs/SOURCE_INVENTORY.md) for the source layout and
+the [Neural Waves notebook on Colab](https://colab.research.google.com/drive/19kV6VOT5zi6daMn6RaNWz_lDCxeAZgci#scrollTo=irKCCLQhd0_t)
+for the original dynamical-systems exploration.
 
 ## Experiments
 
 | Experiment | Source and entry point | Purpose |
 | --- | --- | --- |
-| Neural dynamics / symmetric neural key | [Experiment record](experiments/neural-dynamics/README.md) | Recurrent CNNs, rotating kernels, diffusion, bias, numerical agreement, and surrogate attacks. Original script pending recovery. |
-| Python ZKBoo core | [Python reference](experiments/python-zkboo/README.md) | Exact binary circuit, compact prover/verifier, and Python↔JavaScript reference behavior. |
+| Neural dynamics / symmetric neural key | [Python experiment](experiments/neural-dynamics/README.md) | Recurrent CNNs, rotating kernels, diffusion, bias, numerical agreement, and surrogate attacks. |
+| Python ZKBoo | [Python experiment and core](experiments/python-zkboo/README.md) | Exact binary circuit, compact prover/verifier, command-line provisioning and optical simulation, and Python↔JavaScript parity. |
 | Browser Crypto Lab | [Color app](apps/color-optical-bench/README.md), `crypto.html` | Generate keys, prove, verify, reject tampering, and measure local performance in a worker. |
 | Color optical transport | [Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Color matrices, image simulations, temporal fusion, error correction, and multipart transfers. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
@@ -22,21 +23,24 @@ Python scripts/notebook that still need to be restored.
 
 Read [use cases](docs/USE_CASES.md), [format boundaries](docs/FORMATS.md), and
 [development instructions](docs/DEVELOPMENT.md) before changing a protocol.
-The [import validation record](docs/VALIDATION.md) lists the checks performed.
+The [current validation record](docs/VALIDATION.md) lists the checks performed.
 Optical matrix dimensions and cryptographic circuit dimensions are separate
 parameters: transport carries the serialized proof bytes.
 
 ## Quick start
 
-Use Node.js 22+ for JavaScript tests and Python 3.10+ for the reference/optional
-static server. The browser apps bundle their dependencies and need no npm install.
+Use Node.js 22+ for preparation/tests and Python 3.10+ for the reference/optional
+static server. Preparation copies shared source and bundled dependencies into
+the two apps; it needs no npm install or network access.
 
 ```sh
 # From the repository root:
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
+npm run prepare:apps
 npm test
+npm run test:python
 npm run test:parity
 
 # Serve the color bench, including Crypto Lab:
@@ -52,6 +56,14 @@ computer requires **trusted HTTPS** for camera/Web Crypto access; ordinary LAN
 HTTP is not equivalent to localhost. Serve either app's `dist/` directory through
 a trusted HTTPS static host. The color app's optional server also accepts a
 trusted certificate and key; see [development instructions](docs/DEVELOPMENT.md).
+
+For the PyTorch dynamics experiment, install its additional dependency:
+
+```sh
+python -m pip install -r experiments/neural-dynamics/requirements.txt
+python experiments/neural-dynamics/neural_key_experiment.py --compare
+python experiments/python-zkboo/neural_zkboo_experiment.py --camera
+```
 
 ## Status and scope
 

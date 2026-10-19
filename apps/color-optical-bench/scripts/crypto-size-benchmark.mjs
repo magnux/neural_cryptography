@@ -34,12 +34,9 @@ try {
     assert.equal(await verify(document, {
       ...challenge, required_repetitions: repetitions + 1,
     }, proof), false);
-    const previousBytes = 58 + 752 * repetitions;
     measurements.push({
       repetitions,
       proofBytes: proof.length,
-      previousEncodingBytes: previousBytes,
-      reductionPercent: Number((100 * (1 - proof.length / previousBytes)).toFixed(2)),
       repetitionTermExponent: Number((repetitions * Math.log2(1.5)).toFixed(2)),
       proveMs: Number((proved - start).toFixed(2)),
       verifyMs: Number((verified - proved).toFixed(2)),

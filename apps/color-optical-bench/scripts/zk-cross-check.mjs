@@ -12,7 +12,8 @@ import { prove, verify } from '../dist/js/crypto/proof.js';
 import { shake256 } from '../dist/js/crypto/hashes.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const fixtureDirectory = join(root, 'tests', 'fixtures', 'zk');
+const repository = fileURLToPath(new URL('../../../', import.meta.url));
+const fixtureDirectory = join(repository, 'shared', 'fixtures', 'zk');
 const python = process.env.PYTHON || 'python3';
 const temporary = await mkdtemp(join(tmpdir(), 'neural-key-parity-'));
 function reference(...args) {
@@ -53,7 +54,7 @@ try {
   assert.equal(regenerated.cases, manifest.cases.length);
   assert.deepEqual(await readFile(join(generatedDirectory, 'manifest.json')), storedManifestBytes,
     'Python fixture manifest is reproducible');
-  assert.deepEqual(await readFile(generatedBrowser), await readFile(join(root, 'dist', 'js', 'crypto-lab', 'reference-fixture.js')),
+  assert.deepEqual(await readFile(generatedBrowser), await readFile(join(repository, 'shared', 'browser-crypto', 'worker', 'reference-fixture.js')),
     'Public-only browser fixture is reproducible');
   const cases = [], timings = [];
   for (const fixture of manifest.cases) {

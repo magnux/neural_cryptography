@@ -7,20 +7,26 @@ ZKBoo-style proof. The floating-point CNN experiment remains a separate POC.
 
 This step supplies browser-compatible ES modules and cross-language tests.
 [Crypto Lab](CRYPTO_LAB.md), added in step 3.2, runs these modules in a dedicated
-worker. Provisioning, session policy, and optical proof exchange remain integration
-work. The current optical bench keeps its OBM5 format.
+worker. The [QR authentication app](../qr-neural-key/AUTHENTICATION.md) supplies
+pairing, challenge policy, and optical proof exchange. The color optical bench
+keeps its OBM5 format and its separate transport-only Live Demo.
 Only the current proof format is accepted; there is no migration or old-format
 reader.
 
 ## Modules
 
+The canonical source is [`shared/browser-crypto/`](../../shared/browser-crypto/).
+Run `npm run prepare:app` in this app directory before serving it; tests do this
+automatically. Preparation generates the local `dist/js/crypto/` and worker
+modules without retaining duplicate implementations in Git.
+
 | File | Responsibility |
 |---|---|
-| `dist/js/crypto/bytes.js` | Python-compatible canonical JSON, domain-separated framing, MSB-first bit packing, strict byte/hex validation |
-| `dist/js/crypto/hashes.js` | Native Web Crypto SHA-256 and random bytes; bundled SHAKE-256 |
-| `dist/js/crypto/circuit.js` | Public circuit tables, exact rotating taps, clear evaluation/inversion, three-party simulation, two-view replay |
-| `dist/js/crypto/proof.js` | Public-key/challenge validation, statements, commitments, Fiat–Shamir selection, prover, verifier |
-| `dist/js/crypto/vendor/noble-hashes/` | Unmodified SHAKE dependency closure from `@noble/hashes` 2.4.0, with license, integrity, and source checksums |
+| `shared/browser-crypto/crypto/bytes.js` | Python-compatible canonical JSON, domain-separated framing, MSB-first bit packing, strict byte/hex validation |
+| `shared/browser-crypto/crypto/hashes.js` | Native Web Crypto SHA-256 and random bytes; bundled SHAKE-256 |
+| `shared/browser-crypto/crypto/circuit.js` | Public circuit tables, exact rotating taps, clear evaluation/inversion, three-party simulation, two-view replay |
+| `shared/browser-crypto/crypto/proof.js` | Public-key/challenge validation, statements, commitments, Fiat–Shamir selection, prover, verifier |
+| `shared/browser-crypto/crypto/vendor/noble-hashes/` | Unmodified SHAKE dependency closure from `@noble/hashes` 2.4.0, with license, integrity, and source checksums |
 | [`../../experiments/python-zkboo/neural_zkboo_reference.py`](../../experiments/python-zkboo/neural_zkboo_reference.py) | Canonical matching NumPy reference; setup and provenance are in its [README](../../experiments/python-zkboo/README.md) |
 | `scripts/zk-fixtures.py` | Deterministic public fixtures and Python verification of external proof files |
 | `scripts/zk-cross-check.mjs` | Python regeneration check and bidirectional verification with rejection cases |
@@ -28,8 +34,8 @@ reader.
 The browser modules have no Node, DOM, network-fetch, or CDN dependencies. SHA-256
 and randomness require native Web Crypto; there is no fallback RNG. Use HTTPS or
 localhost in browsers. SHAKE is bundled because the port needs the exact SHAKE
-stream used by Python. No ML framework, GPU, build step, or runtime package
-installation is required.
+stream used by Python. Apart from the file-copy preparation step, no ML
+framework, GPU, bundler, or runtime package installation is required.
 
 ## Core API
 
@@ -39,7 +45,7 @@ import { PROTOCOL, hex } from './dist/js/crypto/bytes.js';
 import { randomBytes } from './dist/js/crypto/hashes.js';
 import { publicKey, prove, verify, proofSize } from './dist/js/crypto/proof.js';
 
-// Local demonstration. The later app will separate key provisioning and roles.
+// Local API demonstration; the QR app manages its own pairing and roles.
 const circuit = await BinaryCircuit.create(8, 16);
 const secret = randomBytes(32);
 const enrolledPublic = await publicKey(secret, circuit, 219);
@@ -81,8 +87,8 @@ verification copy caller-owned key/proof bytes and public documents before
 asynchronous work, including Node Buffer inputs.
 
 The core proves a statement; it does not remember used nonces, expire challenges,
-identify devices, or authorize a lock action. Those checks belong to the later
-session controller. A valid proof can still be verified again by this stateless
+identify devices, or authorize a lock action. Those checks belong to an
+authentication session controller, such as the QR app's `AuthSession`. A valid proof can still be verified again by this stateless
 API. Temporary secret buffers are cleared where practical, but JavaScript does
 not guarantee secure erasure or constant-time execution.
 
@@ -132,7 +138,7 @@ at a time and retains packed traces, avoiding a full unpacked repetition tensor.
 
 The general size is `42 + B + ceil(t/4) + t*(160 + G/8)`. For side 8 and
 16 circuit rounds, this becomes `58 + ceil(t/4) + 544*t`. The default 219-repetition
-proof is **119,249 bytes**, 27.62% smaller than the previous 164,746-byte encoding.
+proof is **119,249 bytes**.
 It retains all three circuit lanes, including the challenge-derived response;
 this change removes reconstructible transcript data without removing circuit
 work or repetitions. There is no reader for the previous proof format.
@@ -177,7 +183,7 @@ session-layer responsibilities. Optical transport provides no assumed secrecy.
 
 ## Verification
 
-From the repository root, using Node 22+:
+From `apps/color-optical-bench/`, using Node 22+:
 
 ```sh
 npm test
@@ -194,7 +200,8 @@ verify them, and checks rejection of changed nonces, changed actions, and damage
 traces. Temporary files are removed after the run. Set `TMPDIR` to a writable
 directory in restricted environments.
 
-Four public fixture profiles cover all supported circuit sides and Unicode:
+The canonical [public fixtures](../../shared/fixtures/zk/) cover all supported
+circuit sides, Unicode, and requested repetitions above the enrolled floor:
 
 | Side | Rounds | Repetitions | Proof bytes |
 |---|---:|---:|---:|
@@ -202,6 +209,7 @@ Four public fixture profiles cover all supported circuit sides and Unicode:
 | 8 | 4 | 5 | 1,340 |
 | 16 | 3 | 4 | 1,515 |
 | 8 | 16 | 219 | 119,249 |
+| 8 | 4 | 32 (key floor 3) | 8,258 |
 
 Tests compare canonical JSON, circuit tables, anchors, outputs, MPC traces,
 random tapes, commitments, statement hashes, all Fiat–Shamir choices, and the
@@ -212,10 +220,8 @@ Deterministic entropy exists only in test scripts, never as an option in the
 served prover. All fixture keys and entropy are public and unsuitable for use
 as credentials.
 
-The checked-in `validation/crypto-step31.json` records this iteration's actual
-test results. Timings are development-host Node measurements, not mobile browser
-benchmarks. Step 3.2 adds real worker tests and a browser interface for collecting
-device measurements; see `CRYPTO_LAB.md` for their scope. Phone responsiveness and
-camera proof transfer require device testing. Byte parity demonstrates faithful implementation; it
-does not establish security of the custom primitive or the proof construction,
-and no post-quantum security level is claimed.
+See [VALIDATION.md](VALIDATION.md) for the current reproducible checks and
+[CRYPTO_LAB.md](CRYPTO_LAB.md) for collecting device measurements. Node timings
+do not predict mobile browser performance. Byte parity demonstrates faithful
+implementation; it does not establish security of the custom primitive or proof
+construction, and no post-quantum security level is claimed.

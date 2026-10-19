@@ -1,31 +1,47 @@
-# Repository import validation — 19 October 2026
+# Current validation — 19 October 2026
 
-Validation after organizing the recovered sources:
+The following checks were run from a fresh copy containing only tracked source.
+No previously generated app modules or private experiment results were present.
+The npm hooks successfully prepared both independently servable apps from the
+canonical shared modules and fixtures.
 
 | Check | Result |
 | --- | --- |
 | Color optical bench Node suite | 193 passed, 0 failed |
 | QR transport/authentication Node suite | 223 passed, 0 failed |
+| Python experiment suite | 6 passed; 4 PyTorch-only checks explicitly skipped because PyTorch is not installed in this environment |
+| Python syntax | All restored experiment, core, utility, and test files compile |
 | Python fixture regeneration | 7 fixture files reproduced |
 | Deterministic Python/JavaScript proof parity | 5 exact proof-byte matches |
 | Python-generated proof verification in JavaScript | 5 accepted |
 | Fresh JavaScript proof verification in Python | 28 cases: 5 accepted, 23 intentionally invalid cases rejected |
-| Python README example | Generated and verified a 17,474-byte, 32-repetition proof |
-| Relative Markdown links | All targets present |
-| QR and SHAKE dependency provenance | Bundled checksums and licenses retained |
+| Source selection | Both attachment manifests/checksum sets and all 14 nested ZIPs passed integrity checks |
+| Repository layout | One browser proof core and one fixture set; no source ZIPs, copied notebooks, or old report directories tracked |
 
-Environment: Node.js 24.19.0, Python 3.12.14, NumPy available. The Python core
-was moved without changing its contents; its fixture importer was updated.
-Application crypto/transport implementations were not refactored in this import.
-Existing upstream vendor whitespace and source checksums were preserved.
+The NumPy tests include keygen/challenge/prove commands, compact proof size and
+repetition policy, public-only verification, nonce consumption/replay rejection,
+three circuit sizes, and Python optical framing/capture invariants. The restored
+floating-point experiment retains its original numerical implementation; only
+its shared utility import location changed. Its four PyTorch runtime tests still
+need to be run in an environment with PyTorch installed.
 
-These checks do not repeat physical phone/webcam tests. Earlier simulation
-records remain under the individual apps' `validation/` directories, and device
-observations are distinguished from automated checks in [ROADMAP.md](ROADMAP.md).
+The current browser core, worker modules, fixtures, and vendor bytes were moved
+without algorithm changes. The restored ZKBoo CLI delegates to the current core
+instead of retaining the archived prover/serializer. The Python-only NPM1
+simulator uses its own domain label for sequence identity, independent of the
+cryptographic protocol version.
 
-Reproduce the main checks from the repository root:
+These checks do not repeat physical phone/webcam tests. Device observations are
+recorded separately in [ROADMAP.md](ROADMAP.md). Fresh benchmark output belongs
+in ignored `local-results/`; old run logs remain in Git history.
+
+Reproduce from the repository root:
 
 ```sh
 npm test
+npm run test:python
 npm run test:parity
+# Include all Python runtime checks:
+python -m pip install -r experiments/neural-dynamics/requirements.txt
+npm run test:python
 ```

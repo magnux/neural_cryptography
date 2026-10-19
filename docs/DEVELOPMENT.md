@@ -1,52 +1,64 @@
 # Development and local execution
 
-## Repository layout
+## Source layout
 
-`apps/color-optical-bench/` and `apps/qr-neural-key/` are independently runnable
-static browser apps. Their `dist/` directories contain the actual authored source,
-not disposable generated bundles. Keep their vendored JavaScript and licenses.
-Tests, deterministic public fixtures, benchmarks, and validation records live
-outside the served directory.
+Each experiment has one maintained implementation. Browser cryptography and its
+worker modules live in `shared/browser-crypto/`, and current public proof fixtures
+live in `shared/fixtures/zk/`. The NumPy proof core and CLI are in
+`experiments/python-zkboo/`; PyTorch dynamics are in `experiments/neural-dynamics/`.
+Both Python experiments use `shared/python/neural_optical.py`.
 
-`experiments/python-zkboo/` contains the canonical recovered Python core. The
-color app's fixture scripts import it from this location. `experiments/neural-dynamics/`
-and `notebooks/` currently document source-recovery gaps. No training code is
-implied by the learned-decoder roadmap.
+The two browser apps remain distinct: the color optical bench and QR transport
+have different channel implementations and experiments. Neither is an archived
+version of the other. Their authored HTML/CSS/JS remains under `apps/*/dist/`.
 
-The two apps retain copies of the browser crypto modules so they can be served
-as isolated static directories. This import preserves that behavior. Protocol
-changes must keep both copies and the Python implementation aligned.
+## Prepare and test
 
-## Requirements and checks
-
-- Node.js 22+ for the built-in test runner and Web Crypto.
-- Python 3.10+ and NumPy for Python↔JavaScript parity.
-- A browser with camera access and a secure context for device testing.
+Requirements: Node.js 22+, Python 3.10+, and NumPy. The dynamics experiment also
+requires PyTorch. There is no JavaScript dependency install, bundler, or network
+fetch during preparation.
 
 ```sh
 python -m pip install -r requirements.txt
+npm run prepare:apps
 npm test
+npm run test:python
 npm run test:parity
-npm run benchmark:crypto
-npm run benchmark:qr
 ```
 
-No npm dependency installation or browser build is needed. The root package
-delegates to the existing app packages. For a custom Python interpreter:
+`prepare:apps` copies canonical crypto, worker modules, and public fixtures into
+ignored app-local directories. It replaces stale generated files so each `dist/`
+can be served independently. Edit canonical shared source, then prepare again;
+never edit the generated copies. App npm tests/benchmarks automatically prepare
+before execution. The generated directories are not committed.
+
+For the dynamics experiment and its tests:
 
 ```sh
-PYTHON=/absolute/path/to/python npm run test:parity
+python -m pip install -r experiments/neural-dynamics/requirements.txt
+python experiments/neural-dynamics/neural_key_experiment.py --compare
+npm run test:python
 ```
 
-The checked-in fixture keys and entropy seeds are public deterministic test data.
-Runtime keys are generated with secure randomness. Keep real capture exports,
-private keys, and device reports in ignored `local-data/` unless deliberately
-reviewed for publication.
+Without PyTorch, Python test output explicitly skips the four dynamics checks;
+the NumPy/CLI checks still run. `PYTHON=/absolute/path/to/python npm run test:parity`
+selects a different Python for browser cross-verification.
+
+The current Python ZKBoo commands are documented in
+[the experiment guide](../experiments/python-zkboo/README.md). Both CLIs work from
+any working directory. Default results go into `neural_key_results/` and
+`neural_zkboo_results/`; these ignored directories may contain private keys.
+Never commit real private keys or camera exports. Fixture secrets are public,
+deterministic test material and must not be reused for enrollment.
 
 ## Local serving
 
+Prepare first, including after updating shared modules:
+
 ```sh
+npm run prepare:apps
 python apps/color-optical-bench/serve.py --port 8000
+# In another terminal, or instead of the color server:
 python -m http.server 8001 --bind 127.0.0.1 --directory apps/qr-neural-key/dist
 ```
 
@@ -58,29 +70,37 @@ python -m http.server 8001 --bind 127.0.0.1 --directory apps/qr-neural-key/dist
 | `http://localhost:8001/` | QR transport, scan check, and simulation |
 | `http://localhost:8001/auth.html` | QR neural-key authentication |
 
-For a phone, use trusted HTTPS. An example for the color app, using certificates
-already issued for and trusted by the test devices:
+A phone requires trusted HTTPS. For the color app, use a certificate already
+issued for and trusted by the test devices:
 
 ```sh
 python apps/color-optical-bench/serve.py --host 0.0.0.0 --port 8443 \
   --https --cert certs/dev.pem --key certs/dev-key.pem
 ```
 
-Use the hostname/IP covered by that certificate. An untrusted self-signed
-certificate or ordinary `http://LAN-IP` does not provide the same camera-access
-conditions as localhost. Either `dist/` can also be served by an HTTPS static
-server you already use. Serving requires no enrollment backend or uploads.
+Use the hostname/IP covered by the certificate. Ordinary `http://LAN-IP` is not
+the localhost camera exception. Either prepared `dist/` can be served by a
+trusted HTTPS static host. Keep tests, fixtures, and private results outside the
+served directory. No enrollment backend, server-side inference, or upload is
+required. The hosted test sites remain blank; repository work does not deploy.
 
-The former hosted demo URLs intentionally serve blank pages. This repository
-contains no hosting identity or automatic deployment configuration.
+## Benchmarks and formats
 
-## What a passing test establishes
+```sh
+npm run benchmark:crypto
+npm run benchmark:qr
+```
 
-The Node suites exercise codecs, state machines, malformed input rejection,
-simulated faults, and crypto behavior. The parity harness regenerates Python
-fixtures and cross-verifies fresh JavaScript proofs. Neither predicts physical
-camera throughput. Device testing must measure both optical directions and
-include alignment, dropped captures, acknowledgment recovery, and expiry.
+Benchmark files are written to ignored app-local `local-results/` directories
+when the benchmark has file output; crypto-size results are printed as JSON.
+Keep current validation conclusions in [VALIDATION.md](VALIDATION.md), not
+versioned run-log copies. Git history provides previous source states.
 
-See [USE_CASES.md](USE_CASES.md) for the app to use for each experiment and
-[FORMATS.md](FORMATS.md) before changing serialization.
+The Node suites exercise codecs, state machines, malformed input, fault
+simulation, and crypto behavior. Python parity regenerates fixtures and
+cross-verifies fresh proofs. None predicts physical camera throughput. Device
+tests must measure both optical directions, alignment, recovery, and expiry.
+
+See [USE_CASES.md](USE_CASES.md) and [FORMATS.md](FORMATS.md) before changing a
+protocol. Each layer accepts only its current format; changing the Python-only
+simulator is separate from changing browser optical framing.

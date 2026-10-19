@@ -5,8 +5,12 @@
   "type": "module",
   "description": "Browser-local QR transport and compact neural ZKBoo authentication POC",
   "scripts": {
+    "prepare:app": "node ../../scripts/prepare-apps.mjs --app qr-neural-key",
+    "pretest": "npm run prepare:app",
     "test": "node --test tests/*.test.mjs",
+    "prebenchmark": "npm run prepare:app",
     "benchmark": "node scripts/benchmark.mjs",
+    "prebenchmark:speed": "npm run prepare:app",
     "benchmark:speed": "node scripts/speed-benchmark.mjs"
   }
 }

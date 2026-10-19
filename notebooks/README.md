@@ -1,10 +1,10 @@
-# Research notebooks
+# Neural Waves notebook
 
-The original `neural_waves.ipynb` introduced the recurrent-network/dynamical-system
-view and a rotating-convolution implementation used to guide the later experiments.
-Its file was removed from the local workspace by maintenance and was not tracked
-in the recovered app repositories. Please restore the original notebook here;
-this directory currently contains documentation only.
+The original exploration of recurrent networks as dynamical systems, including
+rotating convolutions, is published on Colab:
 
-See the [source inventory](../docs/SOURCE_INVENTORY.md) and
-[neural dynamics experiment](../experiments/neural-dynamics/README.md).
+[Open Neural Waves in Colab](https://colab.research.google.com/drive/19kV6VOT5zi6daMn6RaNWz_lDCxeAZgci#scrollTo=irKCCLQhd0_t)
+
+The repository links to that publication instead of keeping another notebook
+copy. The runnable follow-up experiments are in
+[experiments/neural-dynamics/](../experiments/neural-dynamics/README.md).

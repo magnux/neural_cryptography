@@ -13,8 +13,8 @@ camera alignment, throughput comparisons, and arbitrary-byte transfers.
 The previous hosted test sites intentionally serve blank pages. Running this
 checkout does not depend on those deployments. The earlier color-matrix bench
 and its crypto lab are in [the sibling app](../color-optical-bench/).
-See the repository [source inventory](../../docs/SOURCE_INVENTORY.md) for recovered
-sources and gaps in the original standalone Python experiments. This integration
+See the repository [source inventory](../../docs/SOURCE_INVENTORY.md) for source
+locations and provenance. This integration
 uses the current compact v2 browser proof engine without changing its circuit or
 proof format. The server serves static app files; keys and proofs are processed
 locally.
@@ -238,13 +238,16 @@ and does not survive a page reload. The simulation separately caps payloads at
 
 ## Run and inspect
 
-Run these commands from `apps/qr-neural-key/`. Serve `dist/` from any static HTTPS
-server. No Flask, build step, CDN, or data
-relay is required. Source and tests use native JavaScript modules.
+Run these commands from `apps/qr-neural-key/`. Use Node.js 22+ to copy the
+canonical shared crypto modules into this app, then serve `dist/` from any
+static HTTPS server. Preparation requires no bundler or dependency installation.
+No Flask, CDN, or data relay is required. Source and tests use native JavaScript
+modules.
 
-For a **same-computer localhost** check, Python's standard library is sufficient:
+For a **same-computer localhost** check, Python's standard library serves the prepared app:
 
 ```sh
+npm run prepare:app
 python3 -m http.server 8000 --directory dist
 ```
 
@@ -263,7 +266,7 @@ npm run benchmark:speed
 The benchmark can also be run with `node scripts/benchmark.mjs`. It measures
 synthetic local QR processing and protocol recovery, not physical-camera speed.
 `npm run benchmark:speed` runs all five presets with 16 KiB, seed 1234, and the
-default packet faults, saving `validation/qr-speed-presets.json`. Payload and seed
+default packet faults, saving `local-results/qr-speed-presets.json`. Payload and seed
 are fixed, but presets use different packet counts, so fault locations do not
 match byte-for-byte. This checks recovery across configurations; its virtual
 link timing does not predict which preset will be fastest on real devices.
@@ -276,14 +279,15 @@ link timing does not predict which preset will be fastest on real devices.
 | `dist/js/simulation.js`, `simulation-worker.js` | Reproducible local fault experiment |
 | `dist/js/app.js`, `dist/index.html`, `dist/style.css` | Transport lab camera controls, display, received content, reports |
 | `dist/js/auth/`, `dist/auth.html` | `AuthSession` message ordering and authentication state, `OpticalLink` transport handoffs, and role views |
-| `dist/js/crypto/`, `dist/js/crypto-worker/` | Compact v2 neural circuit and proof engine; `CryptoClient` controls the worker that owns the secret |
+| [`shared/browser-crypto/`](../../shared/browser-crypto/) | Canonical compact proof engine and worker, copied into ignored `dist/js/crypto/` and `dist/js/crypto-worker/` outputs by preparation |
 | `tests/` | Codec, packet, session, and adversarial tests |
 
 QR dependencies are bundled locally: **Nayuki QR Code generator 1.8.0** (MIT)
 and **jsQR 1.4.0** (Apache-2.0). Exact sources, hashes, and wrapper changes are
 recorded in `dist/vendor/manifest.json`; licenses ship alongside the code.
-The proof engine also bundles its SHAKE dependency and license under
-`dist/js/crypto/vendor/`. QR Byte mode carries the original bytes without Base64. A generic phone scanner
+The proof engine also bundles its SHAKE dependency and license in
+[`shared/browser-crypto/crypto/vendor/`](../../shared/browser-crypto/crypto/vendor/);
+preparation includes them under `dist/js/crypto/vendor/`. QR Byte mode carries the original bytes without Base64. A generic phone scanner
 may show unreadable text for these binary packets; use this app's receiver.
 
 Files and camera frames are processed locally. JSON reports omit payload content

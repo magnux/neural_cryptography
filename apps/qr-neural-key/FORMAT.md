@@ -10,7 +10,7 @@ authentication. See [AUTHENTICATION.md](AUTHENTICATION.md) for the trust model a
 | --- | --- | --- |
 | Arbitrary-byte multipart optical transfer | `QRT` | [protocol.js](dist/js/protocol.js), [session.js](dist/js/session.js) |
 | Paired neural-key authentication messages | `neural-qr-auth-v1`, binary prefix `NQA1` | [envelope.js](dist/js/auth/envelope.js), [session.js](dist/js/auth/session.js) |
-| Public identities, challenges, and compact proofs | `NeuralPicnic-POC-MPC3-v2`, proof magic `NPZK0002` | [proof.js](dist/js/crypto/proof.js), [circuit.js](dist/js/crypto/circuit.js), [bytes.js](dist/js/crypto/bytes.js) |
+| Public identities, challenges, and compact proofs | `NeuralPicnic-POC-MPC3-v2`, proof magic `NPZK0002` | [proof.js](../../shared/browser-crypto/crypto/proof.js), [circuit.js](../../shared/browser-crypto/crypto/circuit.js), [bytes.js](../../shared/browser-crypto/crypto/bytes.js) |
 | Live QR transport / scan diagnostics | `schema: "qr-optical-report-v1"` | [app.js](dist/js/app.js) |
 | Synthetic QR transport experiment | `schema: "qr-link-report-v1"` | [simulation.js](dist/js/simulation.js) |
 | Live authentication diagnostics | `format: "QR-Neural-Key-auth-report-v2"` | [auth/app.js](dist/js/auth/app.js) |
@@ -128,7 +128,7 @@ to verification rather than duplicated inside the proof.
 Total length is `42 + blockBytes + ceil(R/4) + R*(160 + traceBytes)`.
 For the authentication profile this is `58 + ceil(R/4) + 544*R`: 17,474 bytes at
 32 repetitions and 119,249 bytes at 219. Exact-byte fixtures are under
-[`tests/fixtures/zk/`](tests/fixtures/zk/). They are deterministic test material,
+[`shared/fixtures/zk/`](../../shared/fixtures/zk/). They are deterministic test material,
 not live credentials. This remains an unaudited experimental proof protocol.
 
 ## JSON reports and interpretation

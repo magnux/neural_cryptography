@@ -10,8 +10,8 @@ a claimed post-quantum security level.
 
 | Question | Entry point | Current scope |
 | --- | --- | --- |
-| Can a recurrent CNN preserve diversity and diffuse small input changes? | [Neural dynamics experiment](../experiments/neural-dynamics/README.md) | Historical experiment and recovery notes. The original PyTorch script is not present in this snapshot. |
-| How does the exact binary circuit and its ZKBoo-style proof work? | [Python reference](../experiments/python-zkboo/neural_zkboo_reference.py) and [crypto format/API](../apps/color-optical-bench/CRYPTO_PARITY.md) | Recovered NumPy reference for the current compact proof format; it is not the missing original experiment CLI. |
+| Can a recurrent CNN preserve diversity and diffuse small input changes? | [Neural dynamics experiment](../experiments/neural-dynamics/README.md) | Runnable PyTorch comparison, avalanche/bias/surrogate probes, and simulated camera input. |
+| How does the exact binary circuit and its ZKBoo-style proof work? | [Python reference](../experiments/python-zkboo/neural_zkboo_reference.py) and [crypto format/API](../apps/color-optical-bench/CRYPTO_PARITY.md) | Current NumPy compact proof core plus the command-line provisioning, proof, verification, and camera simulation experiment. |
 | Can the browser generate and verify proofs without a Python backend? | [Crypto Lab](../apps/color-optical-bench/CRYPTO_LAB.md), page `crypto.html` | Local key generation, proof round trips, tamper checks, public-only verification, and performance reports. |
 | Can colored matrices carry arbitrary bytes between cameras and screens? | [Optical Bench](../apps/color-optical-bench/README.md), page `index.html` | Rendering, capture, rectification, palette phases, temporal sampling, recovery, and synthetic image tests. |
 | Can color matrices carry a complete multipart message? | [Color multipart transport](../apps/color-optical-bench/LINK_TRANSPORT.md), page `link.html` | Local fault simulation and bidirectional camera transfer. This page does not perform authentication. |
@@ -20,7 +20,7 @@ a claimed post-quantum security level.
 | Can a learned decoder improve color transport? | [Roadmap](ROADMAP.md) | Planned U-Net classifier, temporal fusion, synthetic training data, and real-device capture tooling. No decoder or training implementation is included. |
 
 Paths to HTML pages are relative to the selected app's `dist/` directory. Both
-apps can be served as static files. Camera access on a phone requires a secure
+apps can be served as static files after `npm run prepare:apps`. Camera access on a phone requires a secure
 origin; see each app's serving instructions. Historical test deployments were
 blanked, so the repository is the starting point for running these experiments.
 
@@ -37,7 +37,7 @@ The current proof engine instead uses an exact binary rotating-convolution
 Feistel circuit. It runs with byte and Boolean operations in Python and
 JavaScript, without PyTorch or a browser neural-inference runtime. Its neural
 terminology should not be confused with the planned image-decoding network.
-The original notebook is also absent; see [notebook recovery notes](../notebooks/README.md).
+The original [Neural Waves notebook is published on Colab](../notebooks/README.md).
 
 ## Local proof experiments
 
@@ -92,4 +92,4 @@ they do not require a different cryptographic circuit.
 
 The experiments accept their current formats only. Older encodings are not
 supported through compatibility readers or migrations. See the
-[source inventory](SOURCE_INVENTORY.md) for recovered versions and missing files.
+[source inventory](SOURCE_INVENTORY.md) for the current canonical components.

@@ -5,6 +5,8 @@
   "description": "Neural cryptography and optical transport research experiments",
   "engines": { "node": ">=22" },
   "scripts": {
+    "prepare:apps": "node scripts/prepare-apps.mjs",
+    "test:python": "python3 -m unittest discover -s tests/python -v",
     "test": "npm run test:color && npm run test:qr",
     "test:color": "npm --prefix apps/color-optical-bench test",
     "test:qr": "npm --prefix apps/qr-neural-key test",

@@ -1,145 +1,153 @@
 # Python ZKBoo experiment
 
-This directory is the canonical NumPy implementation of the binary rotating-
-convolution Feistel circuit and ZKBoo-style proof engine. It provides a Python
-API for key creation, challenges, proof generation, and verification, plus the
-reference used to check the browser implementation byte for byte. It is an
-unaudited research POC, not the Picnic standard or an established cryptographic
-primitive.
+This experiment has one canonical NumPy proof engine and a command-line wrapper:
 
-## Run a small round trip
+- `neural_zkboo_reference.py`: exact binary rotating-convolution Feistel circuit,
+  key creation, challenge validation, compact proof generation, and verification.
+- `neural_zkboo_experiment.py`: key files, challenge/prove/verify commands,
+  one-time nonce consumption, reports, and optional Python optical simulation.
+
+The CLI was recovered from the supplied project archive and updated to import
+the current reference. Its previous embedded proof implementation is not kept.
+The current protocol is **NeuralPicnic-POC-MPC3-v2**, with compact **NPZK0002**
+proofs and challenge-specific repetition requirements. No earlier proof reader
+or format migration is included. This is an unaudited research POC, not the
+Picnic standard or an established cryptographic primitive.
+
+## Quick demo
+
+From the repository root, with a virtual environment active:
+
+```sh
+python -m pip install -r experiments/python-zkboo/requirements.txt
+python experiments/python-zkboo/neural_zkboo_experiment.py --repetitions 32 --camera
+python experiments/python-zkboo/neural_zkboo_experiment.py --self-test
+python -m unittest discover -s tests/python -v
+```
+
+NumPy is the only external dependency. PyTorch is needed only for the separate
+neural-dynamics tests; those tests are skipped when PyTorch is unavailable.
+A default 8×8 circuit with 16 rounds and 32 proof repetitions produces **17,474
+bytes**. The default repetition profile is 219, producing **119,249 bytes**.
+These repetition counts are development settings, not claimed security levels.
+
+The default output directory is `neural_zkboo_results/`. It contains the private
+and public keys, challenge JSON, `proof.bin`, `summary.json`, and generated
+challenge/proof HTML, PNG, and NPZ displays. Keep the private key local. Reports
+contain public parameters and timings, not the private key.
+
+## Separate prover and verifier commands
+
+```sh
+# Enrollment creates private_key.json and public_key.json; existing keys are not overwritten.
+python experiments/python-zkboo/neural_zkboo_experiment.py \
+  --zk-action keygen --minimum-repetitions 32 --out local-data/key
+
+# The verifier creates and retains its expected challenge.
+python experiments/python-zkboo/neural_zkboo_experiment.py \
+  --zk-action challenge --required-repetitions 64 --out local-data/key
+
+# The prover reads its private key, enrolled public key, and received challenge.
+python experiments/python-zkboo/neural_zkboo_experiment.py \
+  --zk-action prove --out local-data/key
+
+# The verifier needs only the enrolled public key, its challenge, and the proof.
+python experiments/python-zkboo/neural_zkboo_experiment.py \
+  --zk-action verify --out local-data/key
+```
+
+These commands use one local directory for convenience; on separate devices,
+copy only the public key, challenge, and proof as required. `--secret-key`,
+`--public-key`, `--challenge`, `--proof`, and `--replay-cache` override individual
+paths. The verifier must obtain its enrolled public key and outstanding challenge
+from trusted local state. It does not read the private key.
+
+The `verify` command atomically records an accepted nonce in `consumed_challenges/`.
+The same nonce cannot be accepted again for that lock, even under another action.
+The mathematical API verifier does not consume nonces or enforce expiry. The
+CLI demonstrates nonce consumption but does not implement challenge expiration,
+peer enrollment, or the browser authentication state machine.
+
+## Repetition policy
+
+| Option | Effect |
+| --- | --- |
+| `--minimum-repetitions` | Enrolled floor for a new key; otherwise `--repetitions`, or 219 |
+| `--required-repetitions` | Requirement for a newly generated challenge; otherwise `--repetitions`, or the new-key floor |
+| `--repetitions` | Explicit proof count; when omitted while proving, resolve the greater of enrolled and challenge requirements |
+
+Every count is 1–512. Explicit proof counts below either floor are rejected.
+The actual proof count is bound into the statement, and changing the challenge
+requirement invalidates an existing proof. For a short standalone demo,
+`--repetitions 32` sets the new-key floor, challenge requirement, and proof count
+together. Existing demo key files must match the requested enrollment policy;
+use a fresh output directory when changing that policy.
+
+## Circuit and optical parameters
+
+| Option | Meaning |
+| --- | --- |
+| `--state-size` | Binary circuit half-side: 4, 8, or 16; default 8 |
+| `--zk-rounds` | Circuit rounds: 2–64; default 16 |
+| `--size` / `--matrix-size` | Python optical packet side: 8–512; default 256 |
+| `--colors` | Python packet palette: 2/4/8/16; default 16 |
+| `--frames` | Maximum packet frames: 1–8; default 8 |
+| `--captured FILE.npz` | Verify a decoded Python symbol-capture sequence instead of `proof.bin` |
+
+The optical dimensions do not change the proof circuit. The circuit uses a
+256-bit secret bias/key vector, public sparse XOR convolutions, AND nonlinear
+units, exact quarter-turn rotations, Feistel rounds, and public permutations.
+A proof binds the same key to the enrolled anchor outputs and the response to a
+fresh nonce, lock identity, action, and required proof count.
+
+The Python NPM1 packet simulator reserves 32 bytes per frame, supports reordering
+and identical repeats, and detects corruption using CRC32. It does not implement
+browser OBM5, QR framing, real camera decoding, or error correction. See
+[shared Python optical formats](../../shared/python/README.md). `--camera` is an
+aligned noisy-cell simulation only; `--captured` accepts symbol NPZs, not photos.
+
+## Python API
 
 From the repository root:
 
 ```sh
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r experiments/python-zkboo/requirements.txt
-cd experiments/python-zkboo
-python - <<'PYTHON'
+PYTHONPATH=experiments/python-zkboo python - <<'PYTHON'
 import secrets
 import neural_zkboo_reference as zk
 
 secret = secrets.token_bytes(32)
 circuit = zk.ZKBinaryCircuit(side=8, rounds=16)
-public_key = zk.zk_public_key(secret, circuit, repetitions=32)
-challenge = zk.zk_new_challenge("demo-door", "unlock", required_repetitions=32)
-proof = zk.zk_prove(secret, public_key, challenge)
-assert zk.zk_verify(public_key, challenge, proof)
+public = zk.zk_public_key(secret, circuit, repetitions=32)
+challenge = zk.zk_new_challenge('demo-door', 'unlock', required_repetitions=32)
+proof = zk.zk_prove(secret, public, challenge)
+assert zk.zk_verify(public, challenge, proof)
 assert len(proof) == zk.zk_proof_size(circuit, 32)
-print(f"Verified {len(proof):,}-byte proof")  # 17,474 bytes
+print(f'Verified {len(proof):,}-byte proof')
 PYTHON
 ```
 
-Thirty-two repetitions are a development profile, not a claimed security level.
-The `repetitions` argument in `zk_public_key` establishes the enrolled minimum.
-`zk_prove` defaults to the greater of that minimum and the challenge requirement.
-A caller may request more repetitions, but never fewer than either bound.
-Circuit sides are 4, 8, or 16; circuit rounds are 2–64; proof repetitions are
-1–512. Circuit dimensions are independent of the optical transport grid, which
-can be much larger.
+Keys, proof salts, views, and tapes use OS randomness. `--seed` affects only the
+camera simulator. Public deterministic fixture entropy must never be used for
+runtime proofs or credentials.
 
-For another Python program, add this directory to the module search path, for
-example `PYTHONPATH=experiments/python-zkboo python your_program.py` from the
-repository root, then `import neural_zkboo_reference as zk`. The module is an API;
-running it directly does not launch a CLI. There is no PyTorch dependency.
+## Browser parity
 
-## Source provenance and scope
-
-`neural_zkboo_reference.py` is the recovered crypto-only extraction of
-`neural_zkboo_experiment.py`. The extraction record identifies its original
-complete source with SHA-256:
-
-```
-fc7633f08f5aa89127fa7f740bb4c4fc0f8a3156f8bc4f098e76d1eabd8f1a7e
-```
-
-The recovered extraction has SHA-256
-`f42cbb0b63b647c02a5d4415a51c7a9d8496706426d82e7cd1e351bf96dffb86`; it was moved
-into this directory without changing its bytes.
-
-The extraction record states that the constants, helpers, `ZKBinaryCircuit`,
-public-key and challenge validation,
-statement and tape generation, commitments, Fiat–Shamir challenges, proof
-serialization, prover, verifier, and `zk_new_challenge` matched that
-experiment. The module documentation and imports were narrowed to the
-extracted code. Camera, optical framing, command-line orchestration, file-based
-key provisioning, and nonce-consumption policy are intentionally outside this
-reference; no readers for earlier formats were added. The current protocol is
-`NeuralPicnic-POC-MPC3-v2`, with compact `NPZK0002` proofs.
-
-The original standalone CLI wrappers (`neural_zkboo_experiment.py`,
-`neural_key_experiment.py`, `neural_optical.py`, and `test_neural_pocs.py`) and
-the original neural-waves notebook were not present in the recovered sources
-after workspace maintenance. They are not recreated or represented as included
-here. Their earlier descriptions and results are retained as historical context.
-This extraction covers the binary proof core, not the original floating-point
-CNN experiment.
-
-The reference depends only on Python's standard library and NumPy. Runtime
-proof randomness still comes from `secrets.token_bytes`. Fixed randomness is
-installed temporarily only by the optical app's `scripts/zk-fixtures.py` while
-creating public test vectors, and restored in a `finally` block. The generated fixture secrets
-and entropy seeds are public test material and must never be used as real keys.
-
-## Browser parity fixtures
-
-From the repository root, regenerate or verify the checked-in vectors with:
+The reference is the same engine used by the browser parity tooling:
 
 ```sh
 python apps/color-optical-bench/scripts/zk-fixtures.py generate
-python apps/color-optical-bench/scripts/zk-fixtures.py verify apps/color-optical-bench/tests/fixtures/zk/manifest.json
-cd apps/color-optical-bench
 npm run test:parity
 ```
 
-The default fixture profile uses 219 repetitions and produces 119,249 bytes.
-The compact layout omits reconstructible commitments and output shares, retains
-every circuit lane, and binds the actual repetition count into the statement.
-Challenges require `required_repetitions`; verification enforces the greater of
-that request and the enrolled `minimum_repetitions`. See
-[CRYPTO_PARITY.md](../../apps/color-optical-bench/CRYPTO_PARITY.md) for exact
-layout and API details. Smaller profiles are development vectors only; this
-extraction does not assert a security level for the custom primitive or protocol.
+See [CRYPTO_PARITY.md](../../apps/color-optical-bench/CRYPTO_PARITY.md) for exact
+compact layout, public-key/challenge schemas, fixture entropy, and APIs. The
+current shared fixture manifest has `version: 2` and a `cases` array. Each case
+records a public test secret and entropy seed, public key, challenge, relative
+proof file, SHA-256, and expected circuit/protocol intermediates. The verifier
+reconstructs omitted commitments and output shares; every circuit lane remains
+present in the proof statement.
 
-The manifest has `version: 2` and a `cases` array. Each generated case contains
-its identifier, public test secret and entropy seed in hexadecimal, enrolled
-`public` key, `challenge`, relative `proofFile`, proof SHA-256, and intermediate
-expected values. The latter include canonical JSON bytes, public circuit tables,
-anchors, response/context, the first repetition's seeds/shares/tapes,
-commitments and output shares, AND-trace hashes, and all Fiat–Shamir trits.
-Small cases also contain the first repetition's complete packed AND traces.
-
-Intermediates are independently reconstructed from the fixture entropy and
-checked against the actual `zk_prove` proof, including its packed challenge
-trits, hidden commitments, opened seed/share, and supplied AND trace. Full
-commitment and output arrays are independently reconstructed. Entropy is the
-continuous stream
-`SHAKE256(UTF8("NeuralPicnic parity fixture v2/" + case_id))`; splitting the
-stream across `token_bytes` calls does not restart it. Regeneration contains no
-timestamps or output-directory-dependent fields.
-
-For JavaScript-to-Python cross-verification, `verify` also accepts a minimal
-manifest:
-
-```json
-{
-  "cases": [
-    {
-      "id": "javascript-proof",
-      "public": {"...": "enrolled public key fields"},
-      "challenge": {"...": "expected challenge fields"},
-      "proofFile": "javascript-proof.bin",
-      "expectValid": true
-    }
-  ]
-}
-```
-
-`expectValid` defaults to `true`; set it to `false` for rejection tests. Proof
-paths are relative to the manifest. The command returns a compact JSON result
-with `ok`, `cases`, `verified`, and `rejected`, and exits nonzero if any actual
-verification result differs from its expectation. It uses only public inputs;
-the verifier does not load a secret from the manifest. Session-level challenge
-expiry or one-time nonce consumption is intentionally not tested by this
-mathematical proof verifier.
+The fixture verifier also accepts a minimal manifest of cases containing `id`,
+`public`, `challenge`, relative `proofFile`, and optional `expectValid` (default
+true). It exits nonzero on a disagreement. Session expiry and nonce consumption
+belong to the application and are outside mathematical parity verification.

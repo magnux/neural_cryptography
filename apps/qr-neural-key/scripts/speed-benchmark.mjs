@@ -19,8 +19,8 @@ for (const preset of SPEED_PRESETS) {
     `${report.stats.dropped} dropped, ${report.stats.corrupted} damaged, ` +
     `${(report.elapsedMs / 1000).toFixed(2)} s compute / ${(report.simulatedMs / 1000).toFixed(2)} s modeled`);
 }
-const output = new URL('../validation/qr-speed-presets.json', import.meta.url);
-await mkdir(new URL('../validation/', import.meta.url), { recursive: true });
+const output = new URL('../local-results/qr-speed-presets.json', import.meta.url);
+await mkdir(new URL('../local-results/', import.meta.url), { recursive: true });
 await writeFile(output, JSON.stringify({
   schema: 'qr-speed-validation-v1', generatedAt: new Date().toISOString(), runtime: process.version,
   note: 'Actual QR image encoding/decoding with synthetic packet faults. Preset names and modeled timings do not predict device performance; the simulator charges a dwell slot to control packets as well as data.',

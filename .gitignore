@@ -20,6 +20,20 @@ local-results/
 checkpoints/
 *.pt
 *.pth
+*.zip
+*.tar.gz
+validation/
+neural_key_results/
+neural_zkboo_results/
 
-# Keep public test fixtures and recorded validation evidence tracked.
+# Keep canonical public test fixtures and current validation documentation tracked.
 # Put private keys, real capture exports, and local reports in local-data/.
+
+# App-local outputs copied from shared/ by scripts/prepare-apps.mjs.
+/apps/*/dist/js/crypto/
+/apps/qr-neural-key/dist/js/crypto-worker/
+/apps/color-optical-bench/dist/js/crypto-lab/client.js
+/apps/color-optical-bench/dist/js/crypto-lab/operations.js
+/apps/color-optical-bench/dist/js/crypto-lab/reference-fixture.js
+/apps/color-optical-bench/dist/js/crypto-lab/worker.js
+/apps/*/tests/fixtures/zk/

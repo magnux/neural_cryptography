@@ -11,9 +11,11 @@ Three browser-local workspaces share top-level navigation:
   local fault simulation and a two-device camera transfer. Step 3.3a transfers
   bytes; pairing and authentication are not implemented in this tab yet.
 
-The reusable crypto engine stays in `dist/js/crypto/`; its lab UI and worker
-orchestration live in `dist/js/crypto-lab/`. Message framing, transfer state, and
-optical adaptation live in `dist/js/link/`. Each workspace has independent state.
+The reusable crypto engine and worker have one canonical source in
+[`shared/browser-crypto/`](../../shared/browser-crypto/). `npm run prepare:app`
+copies them into ignored app-local paths for serving. The lab UI and reports
+remain in `dist/js/crypto-lab/`; message framing, transfer state, and optical
+adaptation live in `dist/js/link/`. Each workspace has independent state.
 
 The hosted test sites are intentionally blank. The source remains available for
 local use and reference. Crypto Lab now uses the compact v2 proof format; the
@@ -48,11 +50,14 @@ npm run test:link
 
 ## Run
 
-Deploy the `dist/` directory on any static HTTPS host. The app needs no Flask,
-Python server, enrollment backend, or package installation. Python is an optional
-local serving convenience and the reference-test language:
+From this app directory, prepare the shared modules with Node.js 22+ before
+serving `dist/` on any static HTTPS host. Preparation copies files without
+bundling or downloading dependencies. The browser needs no Flask, enrollment
+backend, or package installation. Python is an optional local serving convenience
+and the reference-test language:
 
 ```sh
+npm run prepare:app
 python serve.py --port 8000
 ```
 
@@ -75,13 +80,13 @@ the module API, proof layout, and reference fixtures. The port matches the curre
 Python binary rotating-convolution Feistel circuit. It runs on bytes and Boolean
 operations; it does not require PyTorch, WebGPU, or a neural inference runtime.
 
-The v2 proof reconstructs omitted commitments and output shares, reducing the
-default side-8, 16-circuit-round, 219-repetition proof from 164,746 to **119,249
-bytes**. It retains every circuit lane and repetition. Python and JavaScript
+The compact proof reconstructs omitted commitments and output shares. The
+default side-8, 16-circuit-round, 219-repetition proof contains **119,249 bytes**.
+It retains every circuit lane and repetition. Python and JavaScript
 use one current format, `NeuralPicnic-POC-MPC3-v2` / `NPZK0002`; earlier proof and
-public-context files are not accepted. Earlier validation records are historical
-context; see the [Python core provenance](../../experiments/python-zkboo/README.md#source-provenance-and-scope)
-for which original standalone sources were recoverable.
+public-context files are not accepted. See the
+[Python implementation](../../experiments/python-zkboo/README.md) for the matching
+reference and standalone experiment CLI.
 
 Crypto Lab separates the **key minimum repetitions** from **requested proof
 repetitions**. Requests can change for each fresh challenge without generating a

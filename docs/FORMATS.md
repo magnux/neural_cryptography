@@ -6,8 +6,9 @@ fixtures when changing one.
 
 | Layer | Current identifier | Canonical documentation / source |
 | --- | --- | --- |
+| Python optical simulation | `NPM1`, raw symbols, NPZ captures | [Shared Python formats](../shared/python/README.md); separate from browser transport |
 | Neural proof statement | `NeuralPicnic-POC-MPC3-v2` | [Crypto API and proof format](../apps/color-optical-bench/CRYPTO_PARITY.md) |
-| Compact binary proof | `NPZK0002` | [Python core](../experiments/python-zkboo/README.md), browser `crypto/proof.js` |
+| Compact binary proof | `NPZK0002` | [Python core](../experiments/python-zkboo/README.md), [shared browser core](../shared/browser-crypto/crypto/proof.js) |
 | Color optical frame | `OBM5` | [Exact 64-byte header, palette, phases, and FEC](../apps/color-optical-bench/FORMAT.md) |
 | Optical content descriptor | Eight bytes, `OC`, version 1, type, length | [OBM5 header](../apps/color-optical-bench/FORMAT.md); descriptor is in the monochrome header |
 | Multipart color message | `OLM1` | [Link transport](../apps/color-optical-bench/LINK_TRANSPORT.md), `dist/js/link/protocol.js` |
@@ -46,10 +47,10 @@ by parsing a valid proof or a CRC-valid transport packet.
 Reports are JSON diagnostics, not wire packets or proof credentials. Consult
 the relevant [color testing guide](../apps/color-optical-bench/TESTING.md),
 [Crypto Lab guide](../apps/color-optical-bench/CRYPTO_LAB.md), or
-[QR testing guide](../apps/qr-neural-key/TESTING.md). Both apps retain historical
-validation results whose version labels describe the run that produced them.
+[QR testing guide](../apps/qr-neural-key/TESTING.md). Current validation conclusions live in [VALIDATION.md](VALIDATION.md); generated
+benchmark reports are ignored local output.
 
 The Python/browser parity manifest has `version: 2` and a `cases` array; its
 binary `.bin` files are compact proofs with deterministic **public test secrets**.
 See [Python reference and fixtures](../experiments/python-zkboo/README.md).
-Historical validation records do not imply support for old wire formats.
+Only the current fixture encoding is retained in `shared/fixtures/zk/`.

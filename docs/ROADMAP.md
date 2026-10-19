@@ -9,7 +9,7 @@ separate experiments so each can be measured independently.
 
 | Area | Implemented or observed | Remaining question |
 | --- | --- | --- |
-| Neural dynamics | Recurrent CNN, rotating-kernel, initialization, and Feistel experiments were run during development. Their original script and notebook are missing from the recovered snapshot. | Recover the original files before extending or reproducing those experiments. |
+| Neural dynamics | Restored recurrent CNN, rotating-kernel, initialization, and Feistel experiment; original notebook linked on Colab. | Reproduce larger comparisons on the target GPU and use the metrics to guide further architecture work. |
 | Python and browser cryptography | Exact binary circuit, compact v2 ZKBoo-style proof, configurable repetitions, worker-based browser lab, reference fixtures, and parity/tamper tests. | Continue independent analysis; passing tests is not a security proof. |
 | Color optical bench | Camera geometry, palette references, phased transmission, progressive sample selection, error recovery, content decoding, and image-lab simulations. | Achieve reliable bidirectional throughput without excessive repeated observations. |
 | Color multipart transport | Local fault simulator and a two-device multipart transfer page. | The successful single-matrix observations do not establish a complete proof-sized physical transfer. |
@@ -17,7 +17,7 @@ separate experiments so each can be measured independently.
 | QR authentication | Full pairing, challenge, proof transfer, verification, and result acknowledgment completed in device testing with 32 proof repetitions. | Reduce end-to-end latency and repeat the test reliably across device pairs. |
 | Learned optical decoding | Architecture and training approach proposed. | No model, dataset generator, training script, or dedicated collection app has been implemented. |
 
-The recovered source versions and omissions are listed in
+The current source components and their origins are listed in
 [SOURCE_INVENTORY.md](SOURCE_INVENTORY.md). Historical hosted demos were blanked;
 this repository preserves their source for local use and further development.
 
