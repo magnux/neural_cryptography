@@ -190,8 +190,11 @@ deadlines, integrity failure, optical codec integration, and fault simulation.
 They do not establish physical camera reliability. The two-device tests above
 are the remaining acceptance check for the user's devices.
 
-Step **3.3b** will use this byte channel to simulate symmetric identity exchange,
-transcript-bound mutual neural proofs, ephemeral key agreement, and key
-confirmation. Optical pairing, fast authentication, persistent identities,
-and restart-safe offline sessions are subsequent work; they are not implied by
-a successful transport result.
+The [current POC roadmap](../../docs/ROADMAP.md) uses this byte channel for local
+identity exchange, explicit pairing confirmation, a fresh challenge, the existing
+compact Neural ZKBoo proof, and a result/completion acknowledgment. Reuse the QR
+authentication session through a color-link adapter and integrate the
+[planned learned receiver](../../docs/OPTICAL_DECODER.md). Begin with one-direction
+authentication and reverse roles in a new attempt. Mutual proofs in one session,
+ephemeral key agreement, fast authentication, and persistent identities are
+deferred. They are not implied by a successful transport result.

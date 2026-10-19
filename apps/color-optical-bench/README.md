@@ -21,6 +21,14 @@ The hosted test sites are intentionally blank. The source remains available for
 local use and reference. Crypto Lab now uses the compact v2 proof format; the
 color transport experiments remain available without a new deployment.
 
+The next planned increment is [Neural ZKBoo authentication over color
+matrices](../../docs/ROADMAP.md), reusing the QR experiment's authentication flow
+and this app's multipart channel. The [optical decoder design and training
+plan](../../docs/OPTICAL_DECODER.md) specifies a small U-Net receiver and labeled
+capture tooling. These additions are planned; the current Live Demo still
+transfers bytes only. [Research connections](../../docs/RESEARCH_CONNECTIONS.md)
+describe the exploratory background and later cryptanalytic work.
+
 The optical transport supports 8/16 palette phases, progressive reception, per-cell robust
 sample selection, and reliability-guided Reed–Solomon recovery. **OBM5 is the only
 accepted format.** Reload both devices together. There is no old-format reader or

@@ -4,6 +4,13 @@ Experiments in neural dynamical systems, a custom ZKBoo-style proof of knowledge
 and camera-to-screen optical communication. The browser applications perform
 computation locally; their servers only serve static files.
 
+The immediate goal is **Neural ZKBoo authentication between a phone and computer
+using color-matrix optical transport**. The existing experiments are the
+exploratory foundation. The next increment adds a small learned optical decoder
+and reuses the working authentication flow with the color multipart channel.
+Cryptanalytic comparisons and adversarial architecture experiments are future
+research, outside the shortest path to this functional POC.
+
 The repository keeps one current implementation of each experiment; earlier
 revisions belong in Git history. The hosted test sites are intentionally blank.
 See the [source inventory](docs/SOURCE_INVENTORY.md) for the source layout and
@@ -19,13 +26,23 @@ for the original dynamical-systems exploration.
 | Browser Crypto Lab | [Color app](apps/color-optical-bench/README.md), `crypto.html` | Generate keys, prove, verify, reject tampering, and measure local performance in a worker. |
 | Color optical transport | [Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Color matrices, image simulations, temporal fusion, error correction, and multipart transfers. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
-| Learned optical decoder | [Roadmap](docs/ROADMAP.md) | Planned U-Net classifier, temporal fusion, synthetic training, and real-device capture. No trained model or implementation yet. |
+| Learned optical decoder | [Model and training design](docs/OPTICAL_DECODER.md) | Planned small U-Net symbol classifier, optional temporal fusion, synthetic training, and real-device capture. No trained model or implementation yet. |
 
 Read [use cases](docs/USE_CASES.md), [format boundaries](docs/FORMATS.md), and
 [development instructions](docs/DEVELOPMENT.md) before changing a protocol.
 The [current validation record](docs/VALIDATION.md) lists the checks performed.
 Optical matrix dimensions and cryptographic circuit dimensions are separate
 parameters: transport carries the serialized proof bytes.
+
+## Plan and research context
+
+- [POC roadmap](docs/ROADMAP.md): browser feasibility, capture/training,
+  authentication integration, first color exchange, and repeatable device tests.
+- [Optical decoder design](docs/OPTICAL_DECODER.md): architecture, input/output
+  contract, dataset collection, RTX 4090 training, and browser inference.
+- [Connections to previous research](docs/RESEARCH_CONNECTIONS.md): neural
+  synchronization, adversarial learning, neural cryptanalysis, SIMON, LowMC,
+  and Picnic, with primary references and future experiments.
 
 ## Quick start
 

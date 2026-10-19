@@ -6,6 +6,12 @@ changing the camera transport does not require changing the proof relation.
 These experiments do not establish a production cryptographic construction or
 a claimed post-quantum security level.
 
+The immediate delivery goal is the [color authentication POC](ROADMAP.md): reuse
+the current Neural ZKBoo engine and authentication flow over color multipart
+transport, with the [learned optical decoder](OPTICAL_DECODER.md) improving
+camera reception. The existing experiments are its exploratory foundation.
+[Cryptanalytic comparisons](RESEARCH_CONNECTIONS.md) remain future research.
+
 ## Choose an experiment
 
 | Question | Entry point | Current scope |
@@ -17,7 +23,7 @@ a claimed post-quantum security level.
 | Can color matrices carry a complete multipart message? | [Color multipart transport](../apps/color-optical-bench/LINK_TRANSPORT.md), page `link.html` | Local fault simulation and bidirectional camera transfer. This page does not perform authentication. |
 | How much data can standard QR codes carry reliably on these devices? | [QR transport lab](../apps/qr-neural-key/README.md), page `index.html` | Multipart bytes, outgoing profiles, pacing, acknowledgments, retries, and measurements. |
 | Can a device authenticate over an optical link? | [QR authentication](../apps/qr-neural-key/AUTHENTICATION.md), page `auth.html` | Local ephemeral keys, human pairing confirmation, a fresh challenge, optical proof transfer, and local verification. |
-| Can a learned decoder improve color transport? | [Roadmap](ROADMAP.md) | Planned U-Net classifier, temporal fusion, synthetic training data, and real-device capture tooling. No decoder or training implementation is included. |
+| Can a learned decoder improve color transport? | [Decoder design and training](OPTICAL_DECODER.md) | Planned U-Net classifier, temporal fusion, synthetic training data, and real-device capture tooling. No learned decoder or training implementation is included. |
 
 Paths to HTML pages are relative to the selected app's `dist/` directory. Both
 apps can be served as static files after `npm run prepare:apps`. Camera access on a phone requires a secure
