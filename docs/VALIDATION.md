@@ -1,4 +1,56 @@
-# Current validation — 19 October 2026
+# Current validation — 20 October 2026
+
+## Optical decoder M1
+
+The untrained model/export, rectified input and score adapter, and separate
+Decoder Lab were implemented and checked on 20 October. No physical device
+test or trained-model recovery result is claimed.
+
+| Check | Result |
+| --- | --- |
+| Full color optical bench Node suite | 215 passed, including 22 new decoder/input/lab tests |
+| Full QR transport/authentication Node suite | 223 passed |
+| Original Python experiment suite with CPU PyTorch | 10 passed; the four previously skipped dynamics checks now executed |
+| New model/export suite | 7 passed; 1 native ONNX Runtime check explicitly skipped |
+| PyTorch model and ONNX graph checks | 121,792 parameters; both G64/G128 shapes, identical initialized weights, input sensitivity, manifest and fixture byte checks passed |
+| ONNX Runtime Web 1.23.2 WASM in Node | Both sizes passed all 10 measured runs after 2 warm-ups, against every PyTorch output logit |
+| Node WASM maximum absolute logit error | 2.98×10⁻⁸ at both sizes; no non-finite outputs or tolerance failures |
+| Model/runtime preparation | Pinned runtime and both fixture bundles prepared locally with length/SHA-256 checks |
+
+The Web runtime check used the same `ort.webgpu.min.mjs` bundle and local JSEP
+WASM assets as the lab, with the WASM provider and one thread, in Node 24.19.0.
+It checked 65,536 logits per G64 run and 262,144 per G128 run, passing both the
+native fixture tolerance (2e-5 absolute + 2e-4 relative) and browser tolerance
+(1e-4 absolute + 1e-3 relative). In this development environment, warm Node
+p50/p95 was about 11.7/13.6 ms at G64 and 46.3/47.2 ms at G128. These are
+**Node WASM measurements**, not phone/browser performance estimates.
+
+Native Python ONNX Runtime aborts during CPU initialization in this restricted
+environment, so its check runs in an isolated subprocess and is reported as
+unavailable. The local smoke bundle was explicitly exported with
+`--skip-ort-check`, recording `not_run`. PyTorch execution, ONNX graph checks,
+and Web WASM parity ran successfully. A headless browser binary was unavailable;
+its installation was blocked, so browser UI/worker execution and WebGPU parity
+have not been verified here. Both real-device reports remain the M1 completion
+gate; follow [Decoder Lab](DECODER_LAB.md).
+
+New input tests cover actual rendered markers, perspective/rotation, current
+palette correction, stale/invalid headers, unsupported profiles, dense-crop
+normalization, palette masking and phase inversion, reference exclusion,
+finite-output rejection, and downstream CRC acceptance/rejection. Lab tests
+cover manifest/asset bounds and hashes, sticky parity failures, timing summaries,
+busy/cancel/worker lifecycle, and navigation. They do not establish optical
+recovery quality from the untrained network.
+
+Reproduce the M1 checks after the optional setup:
+
+```sh
+npm run test:decoder
+python -m unittest discover -s experiments/optical-decoder/tests -v
+npm run test:decoder:wasm
+```
+
+## Repository and cryptography baseline — 19 October
 
 The following checks were run from a fresh copy containing only tracked source.
 No previously generated app modules or private experiment results were present.
@@ -22,8 +74,8 @@ The NumPy tests include keygen/challenge/prove commands, compact proof size and
 repetition policy, public-only verification, nonce consumption/replay rejection,
 three circuit sizes, and Python optical framing/capture invariants. The restored
 floating-point experiment retains its original numerical implementation; only
-its shared utility import location changed. Its four PyTorch runtime tests still
-need to be run in an environment with PyTorch installed.
+its shared utility import location changed. Its four PyTorch runtime tests were
+subsequently run successfully in the 20 October checks above.
 
 The current browser core, worker modules, fixtures, and vendor bytes were moved
 without algorithm changes. The restored ZKBoo CLI delegates to the current core

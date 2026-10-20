@@ -37,3 +37,8 @@ neural_zkboo_results/
 /apps/color-optical-bench/dist/js/crypto-lab/reference-fixture.js
 /apps/color-optical-bench/dist/js/crypto-lab/worker.js
 /apps/*/tests/fixtures/zk/
+
+# Generated optical decoder exports and locally prepared inference runtime.
+/experiments/optical-decoder/artifacts/
+/apps/color-optical-bench/dist/models/optical-decoder/
+/apps/color-optical-bench/dist/vendor/onnxruntime/

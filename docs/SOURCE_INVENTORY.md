@@ -8,11 +8,12 @@ in the working tree; prior repository states remain in Git history.
 | --- | --- |
 | `experiments/neural-dynamics/` | Restored PyTorch recurrent CNN/rotating-convolution/Feistel experiment. |
 | `experiments/python-zkboo/` | Restored command-line experiment using the current NumPy compact ZKBoo core; no archived proof implementation alongside it. |
+| `experiments/optical-decoder/` | M1 untrained U-Net, tensor contract, ONNX export, tests, and optional pinned browser runtime. Training is not implemented yet. |
 | `shared/python/neural_optical.py` | Shared Python palette, packing, and simulated-camera utilities. |
 | `shared/browser-crypto/crypto/` | Single browser binary circuit, compact prover/verifier, byte helpers, and licensed SHAKE dependency. |
 | `shared/browser-crypto/worker/` | Single reusable crypto worker/client/operations and public reference fixture. |
 | `shared/fixtures/zk/` | Current deterministic Python↔JavaScript proof fixtures. |
-| `apps/color-optical-bench/` | Current OBM5 optical/image bench, Crypto Lab UI, and color multipart transport. |
+| `apps/color-optical-bench/` | Current OBM5 optical/image bench, Crypto Lab, color multipart transport, and separate M1 Decoder Lab. |
 | `apps/qr-neural-key/` | Current QR transport and authentication, including independent outgoing settings and adaptive fallback. |
 | `tests/python/` | Python experiment tests. |
 | `notebooks/README.md` | Link to the existing Colab notebook; no duplicate `.ipynb`. |

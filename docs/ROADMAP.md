@@ -29,7 +29,7 @@ primitive, or comprehensive attack bench is required to reach this POC.
 | Color optical bench | Detection, rectification, reference colors, palette phases, bounded temporal fusion, RS recovery, and CRC | Add learned classification at the receiver; preserve framing and recovery |
 | Color multipart link | OLM1 sender/receiver, selective retries, completion receipts, deadlines, and local fault simulation | Carry authentication envelopes and raw proof bytes |
 | QR authentication | Local identities, explicit pairing confirmation, fresh challenge, proof, result, and optical acknowledgments | Reuse the application flow and tests through a color-link adapter |
-| Learned decoder | Design only; no model, capture collector, generator, or training script yet | Next focused implementation effort |
+| Learned decoder | M1 untrained model, ONNX export, dense input/score adapter, and separate worker lab implemented; device checks pending | Establish phone/PC feasibility, then capture and train in M2 |
 
 Single-matrix reception does not establish reliable multipart communication.
 The particularly difficult direction is often **phone display to PC webcam**,
@@ -70,8 +70,10 @@ for the first completed authentication.
 
 ## Implementation order and completion criteria
 
-All milestones below are **planned**, not implemented. M2 and M3 can proceed in
-parallel after M1; integration should not wait for a polished model or dataset.
+As of **20 October 2026**, M1 software is implemented; its real phone/PC
+feasibility gate remains open. See [Decoder Lab](DECODER_LAB.md) and the
+[validation record](VALIDATION.md). M2–M5 remain planned. M2 and M3 can proceed
+in parallel after M1; integration should not wait for a polished model or dataset.
 
 | Milestone | Work | Completion criterion |
 | --- | --- | --- |
@@ -92,15 +94,16 @@ needed to compensate for optical failures.
 
 | Work | Location / execution |
 | --- | --- |
-| Model, generator, training, evaluation, export | Planned `experiments/optical-decoder/`; PyTorch/NumPy locally on the project owner's RTX 4090 |
+| Model, generator, training, evaluation, export | Model/export exist in `experiments/optical-decoder/`; generator/training/evaluation follow on the project owner's RTX 4090 |
 | Capture and replay UI | Extend `apps/color-optical-bench/`; use its existing renderer, detector, and image lab |
-| Learned inference and score adapter | Color decoder worker; local ONNX Runtime Web assets, bounded work queue |
+| Learned inference and score adapter | Separate M1 Decoder Lab worker and `learned-input.js` exist; connect to the color receiver after training |
 | Authentication application logic | Extract from `apps/qr-neural-key/dist/js/auth/` into planned `shared/browser-auth/` where reusable; retain transport-specific adapters |
 | Proof generation and verification | Existing `shared/browser-crypto/`, unchanged canonical engine |
 
-These planned directories and commands are not existing capabilities. Model
-training runs on the owner's GPU; the current development environment has no
-available PyTorch/GPU training setup. Training and capture data stay out of source
+The reusable authentication boundary is `auth/session.js` and `auth/envelope.js`;
+`auth/link.js` is the current QR adapter. M3 extracts only what the color integration needs.
+Model training is planned on the owner's GPU; M1 model/export checks run with CPU
+PyTorch here. No GPU training has been performed. Training and capture data stay out of source
 control. Record model provenance, export settings, runtime version, and metrics;
 package only the selected runtime model/assets when implementing integration.
 

@@ -15,8 +15,9 @@ version of the other. Their authored HTML/CSS/JS remains under `apps/*/dist/`.
 ## Prepare and test
 
 Requirements: Node.js 22+, Python 3.10+, and NumPy. The dynamics experiment also
-requires PyTorch. There is no JavaScript dependency install, bundler, or network
-fetch during preparation.
+requires PyTorch. The existing transport/crypto apps need no JavaScript dependency
+install, bundler, or network fetch during preparation. The optional learned
+decoder lab has a separate pinned dependency install described below.
 
 ```sh
 python -m pip install -r requirements.txt
@@ -53,6 +54,17 @@ deterministic test material and must not be reused for enrollment.
 
 ## Local serving
 
+### Optional learned-decoder lab
+
+Follow [Decoder Lab setup and device tests](DECODER_LAB.md) to install its pinned
+Python and browser-runtime dependencies, export the untrained model, and run
+`npm run prepare:decoder`. This is separate from `prepare:apps`; the original
+transport/crypto workspaces keep their lightweight setup. Model export and asset
+preparation are local build steps, not a Python inference service. Generated
+assets and datasets are ignored by Git.
+
+### Serve a prepared app
+
 Prepare first, including after updating shared modules:
 
 ```sh
@@ -67,6 +79,7 @@ python -m http.server 8001 --bind 127.0.0.1 --directory apps/qr-neural-key/dist
 | `http://localhost:8000/` | Color optical bench and image lab |
 | `http://localhost:8000/crypto.html` | Browser Crypto Lab |
 | `http://localhost:8000/link.html` | Color multipart transport |
+| `http://localhost:8000/decoder.html` | Optional M1 Decoder Lab, after `prepare:decoder` |
 | `http://localhost:8001/` | QR transport, scan check, and simulation |
 | `http://localhost:8001/auth.html` | QR neural-key authentication |
 

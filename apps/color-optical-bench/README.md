@@ -1,6 +1,6 @@
 # Neural Key · Optical Bench, Crypto Lab and Live Demo
 
-Three browser-local workspaces share top-level navigation:
+Four browser-local workspaces share top-level navigation:
 
 - **Optical Bench** (`index.html`) tests optical transport of bytes, UTF-8,
   PNG/JPEG, and PCM WAV, with Live link and Image lab workspaces.
@@ -10,6 +10,10 @@ Three browser-local workspaces share top-level navigation:
 - **Live Demo** (`link.html`) tests reliable multipart optical messages, with a
   local fault simulation and a two-device camera transfer. Step 3.3a transfers
   bytes; pairing and authentication are not implemented in this tab yet.
+- **Decoder Lab** (`decoder.html`) tests the untrained M1 optical model in a
+  dedicated worker. It compares full outputs against Python fixtures and measures
+  local inference, with an optional live camera crop. It does not decode payloads.
+  Follow the [separate setup and device checklist](../../docs/DECODER_LAB.md).
 
 The reusable crypto engine and worker have one canonical source in
 [`shared/browser-crypto/`](../../shared/browser-crypto/). `npm run prepare:app`
@@ -25,7 +29,8 @@ The next planned increment is [Neural ZKBoo authentication over color
 matrices](../../docs/ROADMAP.md), reusing the QR experiment's authentication flow
 and this app's multipart channel. The [optical decoder design and training
 plan](../../docs/OPTICAL_DECODER.md) specifies a small U-Net receiver and labeled
-capture tooling. These additions are planned; the current Live Demo still
+capture tooling. M1 model/export and the feasibility lab are implemented;
+training and capture datasets follow. The current Live Demo still
 transfers bytes only. [Research connections](../../docs/RESEARCH_CONNECTIONS.md)
 describe the exploratory background and later cryptanalytic work.
 

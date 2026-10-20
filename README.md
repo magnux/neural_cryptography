@@ -26,7 +26,7 @@ for the original dynamical-systems exploration.
 | Browser Crypto Lab | [Color app](apps/color-optical-bench/README.md), `crypto.html` | Generate keys, prove, verify, reject tampering, and measure local performance in a worker. |
 | Color optical transport | [Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Color matrices, image simulations, temporal fusion, error correction, and multipart transfers. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
-| Learned optical decoder | [Model and training design](docs/OPTICAL_DECODER.md) | Planned small U-Net symbol classifier, optional temporal fusion, synthetic training, and real-device capture. No trained model or implementation yet. |
+| Learned optical decoder | [Model/export](experiments/optical-decoder/README.md), [Decoder Lab](docs/DECODER_LAB.md), `decoder.html` | M1 untrained U-Net, dense rectified inputs, Python output fixtures, and worker inference/parity measurements. Capture datasets and training follow in M2. |
 
 Read [use cases](docs/USE_CASES.md), [format boundaries](docs/FORMATS.md), and
 [development instructions](docs/DEVELOPMENT.md) before changing a protocol.
@@ -81,6 +81,10 @@ python -m pip install -r experiments/neural-dynamics/requirements.txt
 python experiments/neural-dynamics/neural_key_experiment.py --compare
 python experiments/python-zkboo/neural_zkboo_experiment.py --camera
 ```
+
+For the new **Decoder Lab**, follow [its optional setup](docs/DECODER_LAB.md).
+It adds pinned PyTorch/ONNX build dependencies and a local browser runtime. The
+untrained model tests feasibility; it is not used to accept live payloads.
 
 ## Status and scope
 

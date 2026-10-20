@@ -217,6 +217,54 @@ export function extractCapture(image,{preview=true,spatial='cross'}={}){
   result.stats.ms=performance.now()-start;return result;
 }
 
+/** Dense M1 payload raster. The header and palette are read from this exposure.
+ * A supplied capture only saves marker detection; none of its RGB samples,
+ * diagnostic fields, or previously decoded bytes are used as evidence here.
+ */
+export function extractDensePayload(image,capture=null){
+  const start=performance.now();let stage='detect';
+  const failed=error=>({ok:false,stage,error,stats:{denseMs:performance.now()-start}});
+  if(!image||!Number.isInteger(image.width)||!Number.isInteger(image.height)||
+     image.width<32||image.height<32||image.width*image.height>20_000_000||
+     !(image.data instanceof Uint8Array||image.data instanceof Uint8ClampedArray)||
+     image.data.length!==image.width*image.height*4)return failed('Unsupported image dimensions.');
+  try{
+    const detected=capture??extractCapture(image,{preview:false});
+    if(!detected?.transform)return {ok:false,stage:detected?.stage??stage,
+      error:detected?.error??'No validated payload geometry.',stats:{denseMs:performance.now()-start}};
+    const h=detected.transform;
+    if(!Array.isArray(h)||h.length!==9||!h.every(Number.isFinite))return failed('Invalid payload transform.');
+    // Re-read rather than trust info from another exposure or a previous frame.
+    stage='header';const info=readHeader(image,h);
+    stage='profile';
+    if(![64,128].includes(info.size)||![4,16].includes(info.colors)){
+      return failed('Learned input supports 64/128 grids and 4/16 colors; use the classical decoder for this profile.');
+    }
+    stage='calibration';
+    const pilots=new Float32Array(96);let offset=0;
+    for(const x of [22,234])for(let i=0;i<16;i++){
+      pilots.set(patch(image,h,x,52+i*10,1.5),offset);offset+=3;
+    }
+    const calibration=calibrate(pilots,0),p=FORMAT.payload,side=4*info.size;
+    const horizontal=Math.hypot(...project(h,p.x+p.side,p.y).map((v,k)=>v-project(h,p.x,p.y)[k]))/info.size;
+    const vertical=Math.hypot(...project(h,p.x,p.y+p.side).map((v,k)=>v-project(h,p.x,p.y)[k]))/info.size;
+    const pixelsPerCell=Math.min(horizontal,vertical);
+    if(!Number.isFinite(pixelsPerCell)||pixelsPerCell<=0)throw Error('Invalid payload sampling scale.');
+    stage='raster';const rgb=new Float32Array(side*side*3);
+    for(let y=0;y<side;y++)for(let x=0;x<side;x++){
+      const point=project(h,p.x+(x+.5)*p.side/side,p.y+(y+.5)*p.side/side);
+      if(!point.every(Number.isFinite))throw Error('Invalid payload sampling coordinates.');
+      const observed=sample(image,...point);
+      if(!observed)throw Error('Payload crop extends outside the camera image.');
+      const corrected=calibration.apply(observed);
+      if(!corrected.every(Number.isFinite))throw Error('Non-finite calibrated payload color.');
+      rgb.set(corrected,3*(y*side+x));
+    }
+    return {ok:true,info,rgb,width:side,height:side,colorTransform:calibration.coefficients,
+      stats:{pixelsPerCell,colorRMSE:calibration.rmse,denseMs:performance.now()-start}};
+  }catch(error){return failed(error.message);}
+}
+
 /** Per-exposure calibration and bounded soft evidence in logical symbol space. */
 export function classifySamples(info,values,{local=Boolean(info.gridBlock)}={}){
   if(!(values instanceof Float32Array)||values.length!==info.size**2*3+96)throw Error('Invalid rectified RGB samples.');

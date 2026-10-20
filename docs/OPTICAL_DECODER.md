@@ -1,6 +1,8 @@
 # Learned color-matrix decoder: design and training plan
 
-Status: **proposed, not implemented or trained**, 2026-10-19. The immediate goal is browser-to-browser authentication
+Status: **M1 software implemented; device feasibility measurements pending**, 2026-10-20. The model is untrained.
+Use [Decoder Lab](DECODER_LAB.md) for setup and the phone/PC test checklist. Dataset capture, training, and live
+learned recovery remain later milestones. The immediate goal is browser-to-browser authentication
 using the existing Neural ZKBoo engine and color optical transport. This receiver improvement belongs to the shortest
 path in [ROADMAP.md](ROADMAP.md); cryptanalytic research remains future work in
 [RESEARCH_CONNECTIONS.md](RESEARCH_CONNECTIONS.md).
@@ -172,17 +174,24 @@ perceptual losses, GANs, or an RGB reconstruction head initially. Measure cell c
 select checkpoints using exact CRC recovery and time-to-recovery under equal observation budgets. After every chosen
 checkpoint, verify PyTorch/ONNX/browser outputs and the resulting transport decisions.
 
-## Planned files and acceptance
+## Implemented boundaries and remaining work
 
-Paths below are proposed; no model files or training code exist yet.
+The M1 model/export and separate inference lab are implemented. Generated weights, fixtures, and runtime assets are
+prepared locally rather than committed. The live optical receiver still uses the classical decoder.
 
-| Location | Responsibility |
+| Location | State and responsibility |
 | --- | --- |
-| `experiments/optical-decoder/{model,data,train,evaluate,export}.py` | Small model, datasets, synthetic corruption, training, export and parity |
-| `experiments/optical-decoder/README.md`, `requirements.txt`, `configs/` | Reproduction commands and one current dataset/model contract |
-| `apps/color-optical-bench/dist/js/capture-dataset.js` | Bounded local capture/export UI integration |
-| `apps/color-optical-bench/dist/js/learned-decoder.js` | Runtime, dense crops, model contract, score adapter |
-| Existing `decoder-worker.js`, `temporal.js`, `vision.js` | Async inference, evidence entry point, preserved classical baseline |
+| `experiments/optical-decoder/{model,contract,export}.py` | Implemented: exact small model, normalization, deterministic fixtures, checked ONNX exports |
+| `experiments/optical-decoder/browser-runtime/` | Implemented: pinned optional runtime install, lockfile, and upstream notices |
+| `scripts/prepare-decoder.mjs` | Implemented: validate and prepare local assets without downloading or deploying |
+| `apps/color-optical-bench/dist/decoder.html`, `js/decoder-lab/` | Implemented: isolated worker inference, numerical comparison, timings, camera crop probe, reports |
+| `apps/color-optical-bench/dist/js/{vision,learned-input}.js` | Implemented: dense physical crop and current-exposure correction, NCHW input, physical-logit to logical-score adapter |
+| `experiments/optical-decoder/{data,train,evaluate}.py` and capture UI | Planned M2: capture datasets, generator, training, and held-out evaluation |
+| Existing `decoder-worker.js`, `temporal.js` | Planned integration: learned evidence entry point; classical live path unchanged in M1 |
+
+The reusable authentication boundary is the session/envelope API in
+`apps/qr-neural-key/dist/js/auth/{session,envelope}.js`; its `link.js` adapter owns QR-specific transport behavior.
+M3 will preserve session and proof semantics while providing a color-link adapter. M1 does not duplicate that engine.
 
 Milestones follow [the POC plan](ROADMAP.md): M1 browser smoke and interfaces, then M2 capture/generator/single-frame
 training alongside M3 optical authentication integration, followed by M4 first color authentication. Optional five-frame

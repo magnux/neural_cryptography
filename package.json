@@ -6,6 +6,9 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "prepare:apps": "node scripts/prepare-apps.mjs",
+    "prepare:decoder": "node scripts/prepare-decoder.mjs",
+    "test:decoder": "node --test apps/color-optical-bench/tests/learned-*.test.mjs apps/color-optical-bench/tests/decoder-lab*.test.mjs",
+    "test:decoder:wasm": "node experiments/optical-decoder/browser-runtime/test-wasm.mjs",
     "test:python": "python3 -m unittest discover -s tests/python -v",
     "test": "npm run test:color && npm run test:qr",
     "test:color": "npm --prefix apps/color-optical-bench test",

@@ -1,0 +1,6 @@
+# Tested M1 versions. CPU is enough; torch==2.9.0 also accepts its +cpu build.
+# The manifest records the exact installed versions, including build suffixes.
+numpy==2.2.6
+torch==2.9.0
+onnx==1.19.1
+onnxruntime==1.23.2

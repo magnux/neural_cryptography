@@ -1,0 +1,9 @@
+{
+  "name": "optical-decoder-browser-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pinned optional inference runtime for the optical decoder feasibility lab",
+  "dependencies": {
+    "onnxruntime-web": "1.23.2"
+  }
+}

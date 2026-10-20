@@ -23,10 +23,11 @@ camera reception. The existing experiments are its exploratory foundation.
 | Can color matrices carry a complete multipart message? | [Color multipart transport](../apps/color-optical-bench/LINK_TRANSPORT.md), page `link.html` | Local fault simulation and bidirectional camera transfer. This page does not perform authentication. |
 | How much data can standard QR codes carry reliably on these devices? | [QR transport lab](../apps/qr-neural-key/README.md), page `index.html` | Multipart bytes, outgoing profiles, pacing, acknowledgments, retries, and measurements. |
 | Can a device authenticate over an optical link? | [QR authentication](../apps/qr-neural-key/AUTHENTICATION.md), page `auth.html` | Local ephemeral keys, human pairing confirmation, a fresh challenge, optical proof transfer, and local verification. |
-| Can a learned decoder improve color transport? | [Decoder design and training](OPTICAL_DECODER.md) | Planned U-Net classifier, temporal fusion, synthetic training data, and real-device capture tooling. No learned decoder or training implementation is included. |
+| Can the planned decoder run on these devices? | [Decoder Lab](DECODER_LAB.md), page `decoder.html` | Untrained U-Net, full-logit Python parity, worker latency/UI reports, and validated camera crop inference. Learned recovery and training are still planned. |
 
 Paths to HTML pages are relative to the selected app's `dist/` directory. Both
-apps can be served as static files after `npm run prepare:apps`. Camera access on a phone requires a secure
+apps can be served as static files after `npm run prepare:apps`; Decoder Lab additionally needs its optional
+model/runtime preparation. Camera access on a phone requires a secure
 origin; see each app's serving instructions. Historical test deployments were
 blanked, so the repository is the starting point for running these experiments.
 

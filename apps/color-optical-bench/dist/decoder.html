@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f5f1"><title>Decoder Lab · Neural Key</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./js/decoder-lab/style.css">
+</head>
+<body class="decoder-lab">
+  <header class="site-header"><a class="brand" href="./decoder.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M2 12V2h10M20 2h10v10M30 20v10H20M12 30H2V20"/><path d="M11 11h10v10H11z"/></svg><span>NEURAL KEY<span class="brand-divider">/</span><strong>DECODER LAB</strong></span></a><span class="local-badge"><i></i> Browser-local</span></header>
+  <nav class="app-nav" aria-label="Application"><a href="./index.html">Optical Bench</a><a href="./crypto.html">Crypto Lab</a><a href="./link.html">Live Demo</a><a href="./decoder.html" aria-current="page">Decoder Lab</a></nav>
+  <main>
+    <section class="decoder-intro"><div class="eyebrow">MILESTONE 1 · BROWSER FEASIBILITY</div><h1>A small model. A real device test.</h1><p>Check Python-to-browser agreement and inference speed before training the optical receiver.</p></section>
+    <div class="decoder-notice"><strong>Untrained model · no payload decoding</strong><p>This lab measures the proposed 122K-parameter U-Net. Its outputs are not useful color predictions yet. The existing optical transport is unchanged.</p></div>
+    <noscript><div class="notice">Enable JavaScript to run this local test.</div></noscript>
+    <div id="labError" class="notice" role="alert" hidden></div>
+    <div class="decoder-columns">
+      <section class="panel" aria-labelledby="fixtureHeading">
+        <div class="panel-heading"><div><span class="section-number">01</span><h2 id="fixtureHeading">Numerical fixture</h2></div><span class="mode-label">NO CAMERA REQUIRED</span></div>
+        <div class="decoder-body"><p>Run the same input as Python, compare every output logit, then measure warm inference. Keep this page visible.</p>
+          <div class="decoder-fields">
+            <label for="modelSize">Matrix size<select id="modelSize"><option value="64">64 × 64 · 256 px input</option><option value="128">128 × 128 · 512 px input</option></select></label>
+            <label for="backend">Backend<select id="backend"><option value="auto">Auto · WebGPU, then WASM</option><option value="wasm">WASM · CPU</option><option value="webgpu">WebGPU · GPU</option></select></label>
+            <label for="iterations">Measured runs<input id="iterations" type="number" min="1" max="30" value="10"></label>
+          </div>
+          <div class="decoder-actions"><button class="button primary" id="runBenchmark">Run fixture benchmark →</button><button class="small-button" id="cancel" disabled>Cancel</button></div>
+          <p class="decoder-status" id="labStatus" role="status" aria-live="polite">Ready. The first run loads the model and local runtime.</p>
+          <div class="decoder-results" id="results"><p class="muted">No measurements yet.</p></div>
+          <details class="decoder-help"><summary>Prepare the test assets</summary><p>From the repository, export the untrained model and numerical fixtures, install the pinned browser runtime, then run <code>npm run prepare:decoder</code>. See <a href="https://github.com/magnux/neural_cryptography/tree/main/experiments/optical-decoder">the decoder experiment instructions</a>. Serve the prepared app on localhost or trusted HTTPS. Assets stay on this origin; there is no inference server.</p></details>
+        </div>
+      </section>
+      <section class="panel" aria-labelledby="cameraHeading">
+        <div class="panel-heading"><div><span class="section-number">02</span><h2 id="cameraHeading">Camera load &amp; alignment</h2></div><span class="mode-label">OPTIONAL</span></div>
+        <div class="decoder-body"><p>Keep the camera active during the fixture benchmark to measure realistic device contention. For a crop test, point at a 64/128-cell matrix from the Optical Bench.</p>
+          <div class="decoder-fields camera-fields"><label for="camera">Camera<select id="camera"><option value="">Default camera</option></select></label><label for="resolution">Requested resolution<select id="resolution"><option value="720">720p</option><option value="1080">1080p</option><option value="480">480p</option></select></label></div>
+          <div class="decoder-camera"><video id="video" autoplay muted playsinline></video><span id="cameraPlaceholder">Camera is off</span></div>
+          <p class="muted" id="cameraStatus">No camera frames are saved or uploaded.</p>
+          <div class="decoder-actions"><button class="small-button" id="startCamera">Start camera</button><button class="small-button" id="stopCamera" disabled>Stop camera</button><button class="button secondary" id="runCapture" disabled>Test one matrix crop</button></div>
+          <p class="muted">The monochrome header selects the crop and palette. A 32×32 control matrix continues to use the classical receiver outside this lab.</p>
+        </div>
+      </section>
+    </div>
+    <section class="panel decoder-report"><div class="decoder-body"><div><h2>Save the device report</h2><p>Include both successful and failed tests from the phone and PC. Reports contain timings and settings, with no camera images, payloads, or keys.</p></div><label for="notes">Device and test notes<textarea id="notes" rows="2" maxlength="1000" placeholder="Phone/PC model, browser, power mode, camera arrangement…"></textarea></label><div class="decoder-actions"><button class="button secondary" id="downloadReport" disabled>Download JSON report ↓</button><span class="muted" id="reportCount">No tests recorded.</span></div></div></section>
+    <footer class="page-footer"><span>NEURAL KEY · DECODER LAB</span><p>Export → parity → device measurement → training</p><span>Local worker · bounded work</span></footer>
+  </main><script type="module" src="./js/decoder-lab/lab.js"></script>
+</body>
+</html>
