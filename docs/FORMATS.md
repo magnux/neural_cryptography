@@ -14,6 +14,10 @@ fixtures when changing one.
 | Multipart color message | `OLM1` | [Link transport](../apps/color-optical-bench/LINK_TRANSPORT.md), `dist/js/link/protocol.js` |
 | QR byte transport | `QRT` | [QR formats](../apps/qr-neural-key/FORMAT.md), `dist/js/protocol.js` |
 | QR authentication envelope | `NQA1`, `neural-qr-auth-v1` | [Authentication protocol](../apps/qr-neural-key/AUTHENTICATION.md), [QR formats](../apps/qr-neural-key/FORMAT.md) |
+| Optical model bundle | `optical-decoder`, version 1 | [Model/export contract](../experiments/optical-decoder/README.md); untrained or trained status, hashed graphs and fixtures |
+| Optical model checkpoint | `optical-decoder-checkpoint`, version 1 | [`checkpoint.py`](../experiments/optical-decoder/checkpoint.py); local state dict and training/split provenance |
+| Capture sender / receiver exports | `optical-decoder-sender` / `optical-decoder-captures`, version 1 | [M2 capture guide](OPTICAL_DECODER_TRAINING.md); independent exports joined offline |
+| Joined training dataset | `optical-decoder-dataset`, version 1 | [`data.py`](../experiments/optical-decoder/data.py), [`decoder-dataset.mjs`](../scripts/decoder-dataset.mjs); hashed NCHW inputs, physical labels, mask, baseline, expected bytes |
 
 ## Content and transport
 

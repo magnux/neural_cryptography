@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Prepare optional, local-only M1 inference assets. Never downloads or deploys. */
+/** Prepare optional, local-only decoder inference assets. Never downloads or deploys. */
 import {readFile, writeFile, mkdir, cp, stat} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
@@ -35,7 +35,7 @@ async function prepare() {
     if ((await stat(path)).size > 65536) throw Error('Manifest too large.');
     manifest = validateManifest(JSON.parse(await readFile(path, 'utf8')));
   } catch (error) {
-    throw Error(`Export the M1 model first: python experiments/optical-decoder/export.py. ${error.message}`);
+    throw Error(`Export the model first: python experiments/optical-decoder/export.py. ${error.message}`);
   }
 
   // Validate every source before replacing any served file.
@@ -71,7 +71,7 @@ async function prepare() {
   }, null, 2)+'\n');
   // Write the manifest last, so readers never see a new manifest with old files.
   await writeFile(join(modelTarget, 'manifest.json'), JSON.stringify(manifest, null, 2)+'\n');
-  console.log(`Prepared untrained decoder fixtures for ${manifest.cases.map(c=>c.size).join('/')} and ONNX Runtime Web ${version}.`);
+  console.log(`Prepared ${manifest.status} decoder fixtures for ${manifest.cases.map(c=>c.size).join('/')} and ONNX Runtime Web ${version}.`);
   console.log('Serve apps/color-optical-bench/dist and open decoder.html. Assets remain local and ignored by Git.');
 }
 

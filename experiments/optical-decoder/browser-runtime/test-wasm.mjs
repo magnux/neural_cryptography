@@ -32,7 +32,7 @@ async function main() {
   ort.env.wasm.numThreads = 1;
   ort.env.wasm.proxy = false;
   ort.env.wasm.wasmPaths = runtimeRoot.href;
-  const report = {format: 'optical-decoder-m1-node-wasm-report', version: 1,
+  const report = {format: 'optical-decoder-node-wasm-report', version: 1, modelStatus: manifest.status,
     environment: `Node.js ${process.version}`, runtimeVersions: {...ort.env.versions},
     execution: 'ONNX Runtime Web WebGPU bundle, WASM provider, one thread. Not a browser or phone measurement.',
     artifacts: fileURLToPath(artifacts), warmups: 2, measuredRuns: 10, cases: []};

@@ -1,15 +1,17 @@
-# Optical decoder — M1 model and export
+# Optical decoder — model, training, evaluation, and export
 
-This implements the first model/export increment of the
-[optical decoder plan](../../docs/OPTICAL_DECODER.md). It is an **untrained
-121,792-parameter U-Net**, with fixed browser profiles for physical grid sizes
-64 and 128. Its purpose is to test numerical agreement, operator support, and
-device cost before collecting a dataset and training a receiver.
+This implements M1 feasibility and the M2 capture/training pipeline from the
+[optical decoder plan](../../docs/OPTICAL_DECODER.md). The
+**121,792-parameter U-Net** has fixed browser profiles for physical grid sizes
+64 and 128. The submitted device reports support starting at G64. See the
+[capture and training guide](../../docs/OPTICAL_DECODER_TRAINING.md) for the full
+workflow, from browser captures through synthetic generation and RTX 4090 training.
 
-There is no trained denoiser, training command, or recovery-accuracy claim in
-this milestone. The existing classical decoder remains responsible for live
-transport. A low inference error on the numerical fixtures means the runtimes
-agree; it does not mean the random model recognizes palette symbols.
+No trained production/default weights are shipped. Export without a checkpoint
+uses random weights for feasibility checks; export with `--checkpoint` uses the
+trained weights and their provenance. The existing classical decoder remains
+responsible for live transport until held-out recovery validates a candidate.
+Numerical parity measures runtime agreement, not optical accuracy.
 
 ## Setup and export
 
@@ -20,6 +22,23 @@ python -m pip install -r experiments/optical-decoder/requirements.txt
 python experiments/optical-decoder/export.py
 python -m unittest discover -s experiments/optical-decoder/tests -v
 ```
+
+For a selected trained checkpoint:
+
+```sh
+python experiments/optical-decoder/export.py \
+  --checkpoint checkpoints/optical-decoder/real/best.pt \
+  --out experiments/optical-decoder/artifacts/selected
+npm ci --prefix experiments/optical-decoder/browser-runtime
+npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected
+npm run test:decoder:wasm -- --artifacts experiments/optical-decoder/artifacts/selected
+```
+
+The shared checkpoint loader uses `torch.load(weights_only=True)`, checks finite
+float32 parameter shapes, and validates dataset split provenance. Public model
+metadata includes checkpoint hashes and bounded scalar training settings; local
+session identities and filesystem paths stay in the checkpoint. Training uses
+`best.pt`, selected by validation exact-frame recovery with loss as the tie-break.
 
 CPU execution is the default and sufficient for this step. If installing
 PyTorch separately, choose the CPU or CUDA build appropriate for the machine;
@@ -54,12 +73,14 @@ build/test tools, not a service used during an authentication attempt.
 
 ## Tensor and bundle contract
 
-The manifest has `format: "optical-decoder-m1"`, `version: 1`, and
-`status: "untrained"`. Each case contains a SHA-256 digest and byte count for:
+The current manifest has `format: "optical-decoder"`, `version: 1`, and
+`status: "untrained"` or `"trained"`. Trained exports require `checkpointSha256`
+and public `training` metadata. Regenerate old local exports after updating;
+there is no earlier-format reader. Each case contains a SHA-256 digest and byte count for:
 
 | File | Meaning |
 | --- | --- |
-| `model-64.onnx` / `model-128.onnx` | Static batch-one inference graph, public random weights |
+| `model-64.onnx` / `model-128.onnx` | Static batch-one inference graph, identical weights for both sizes |
 | `input-64.f32` / `input-128.f32` | Diagnostic tensor, little-endian float32, contiguous NCHW |
 | `expected-64.f32` / `expected-128.f32` | PyTorch logits, same numeric encoding |
 
@@ -96,7 +117,7 @@ Python/ONNX checks pass. Test WASM as well as WebGPU where available, both grid
 sizes, and camera-active runs. Record output agreement, warm median/p95 timing,
 load time, backend, model hash, and UI responsiveness.
 
-## Files and next milestone
+## Files and acceptance
 
 - `model.py`: the small single-frame U-Net, with no normalization layers.
 - `contract.py`: shape constants, RGB normalization, fixture generation, numeric
@@ -105,10 +126,19 @@ load time, backend, model hash, and UI responsiveness.
   and manifest generation with an honest validation status.
 - `tests/test_decoder.py`: tensor contract, model structure/input sensitivity,
   graph shape checks, and actual runtime parity.
+- `checkpoint.py`: one bounded checkpoint loader for training, evaluation, and export.
+- `data.py`: hashed local datasets and whole-session/payload split checks.
+- `synthetic.py`: correlated moiré, blur, sampling, color, and noise corruptions.
+- `train.py`: shape/palette-grouped AdamW training, real/synthetic mixtures, and validation selection.
+- `evaluate.py`: held-out cell/confidence metrics and exact recovery through the canonical JS decoder.
+- `../../scripts/decoder-dataset.mjs`: canonical clean examples, offline joins, baseline refresh, and CRC/RS evaluation.
+- `tests/test_training.py`, `tests/test_export_checkpoint.py`: training/decoder integration, split isolation, masking, and checkpoint export checks.
 
 Without optional model/export packages, the tests explicitly skip those portions
 while still testing the NumPy tensor contract. Install the full requirements
 before claiming export validation. A subprocess probes native ONNX Runtime;
-unavailable native execution is a separate visible skip. M2 will add labeled capture, synthetic
-corruptions, training, real-data validation, and checkpoint export after the
-browser feasibility results are available; see the [roadmap](../../docs/ROADMAP.md).
+unavailable native execution is a separate visible skip. The short CPU training
+smoke validates wiring only; it is not a useful receiver checkpoint. M2 remains
+open until a trained model improves held-out real recovery without regressing
+the 4-color control. Use the [training guide](../../docs/OPTICAL_DECODER_TRAINING.md)
+and [roadmap](../../docs/ROADMAP.md) for the next device work.

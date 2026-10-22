@@ -10,8 +10,8 @@
   <header class="site-header"><a class="brand" href="./decoder.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M2 12V2h10M20 2h10v10M30 20v10H20M12 30H2V20"/><path d="M11 11h10v10H11z"/></svg><span>NEURAL KEY<span class="brand-divider">/</span><strong>DECODER LAB</strong></span></a><span class="local-badge"><i></i> Browser-local</span></header>
   <nav class="app-nav" aria-label="Application"><a href="./index.html">Optical Bench</a><a href="./crypto.html">Crypto Lab</a><a href="./link.html">Live Demo</a><a href="./decoder.html" aria-current="page">Decoder Lab</a></nav>
   <main>
-    <section class="decoder-intro"><div class="eyebrow">MILESTONE 1 · BROWSER FEASIBILITY</div><h1>A small model. A real device test.</h1><p>Check Python-to-browser agreement and inference speed before training the optical receiver.</p></section>
-    <div class="decoder-notice"><strong>Untrained model · no payload decoding</strong><p>This lab measures the proposed 122K-parameter U-Net. Its outputs are not useful color predictions yet. The existing optical transport is unchanged.</p></div>
+    <section class="decoder-intro"><div class="eyebrow">OPTICAL DECODER · INFERENCE LAB</div><h1>A small model. A real device test.</h1><p>Check Python-to-browser agreement and inference speed for the prepared model. <a href="./capture.html">Collect training captures →</a></p></section>
+    <div class="decoder-notice"><strong id="modelNoticeTitle">Model status appears after the first run</strong><p id="modelNoticeText">Test the prepared 122K-parameter U-Net and export device measurements. Use Dataset Capture to collect training examples; use offline evaluation to assess payload recovery.</p></div>
     <noscript><div class="notice">Enable JavaScript to run this local test.</div></noscript>
     <div id="labError" class="notice" role="alert" hidden></div>
     <div class="decoder-columns">
@@ -26,7 +26,7 @@
           <div class="decoder-actions"><button class="button primary" id="runBenchmark">Run fixture benchmark →</button><button class="small-button" id="cancel" disabled>Cancel</button></div>
           <p class="decoder-status" id="labStatus" role="status" aria-live="polite">Ready. The first run loads the model and local runtime.</p>
           <div class="decoder-results" id="results"><p class="muted">No measurements yet.</p></div>
-          <details class="decoder-help"><summary>Prepare the test assets</summary><p>From the repository, export the untrained model and numerical fixtures, install the pinned browser runtime, then run <code>npm run prepare:decoder</code>. See <a href="https://github.com/magnux/neural_cryptography/tree/main/experiments/optical-decoder">the decoder experiment instructions</a>. Serve the prepared app on localhost or trusted HTTPS. Assets stay on this origin; there is no inference server.</p></details>
+          <details class="decoder-help"><summary>Prepare the test assets</summary><p>From the repository, export a model and its numerical fixtures, install the pinned browser runtime, then run <code>npm run prepare:decoder</code>. See <a href="https://github.com/magnux/neural_cryptography/tree/main/experiments/optical-decoder">the decoder experiment instructions</a>. Serve the prepared app on localhost or trusted HTTPS. Assets stay on this origin; there is no inference server.</p></details>
         </div>
       </section>
       <section class="panel" aria-labelledby="cameraHeading">
@@ -41,7 +41,7 @@
       </section>
     </div>
     <section class="panel decoder-report"><div class="decoder-body"><div><h2>Save the device report</h2><p>Include both successful and failed tests from the phone and PC. Reports contain timings and settings, with no camera images, payloads, or keys.</p></div><label for="notes">Device and test notes<textarea id="notes" rows="2" maxlength="1000" placeholder="Phone/PC model, browser, power mode, camera arrangement…"></textarea></label><div class="decoder-actions"><button class="button secondary" id="downloadReport" disabled>Download JSON report ↓</button><span class="muted" id="reportCount">No tests recorded.</span></div></div></section>
-    <footer class="page-footer"><span>NEURAL KEY · DECODER LAB</span><p>Export → parity → device measurement → training</p><span>Local worker · bounded work</span></footer>
+    <footer class="page-footer"><span>NEURAL KEY · DECODER LAB</span><p>Capture → train → evaluate → export → parity</p><span>Local worker · bounded work</span></footer>
   </main><script type="module" src="./js/decoder-lab/lab.js"></script>
 </body>
 </html>

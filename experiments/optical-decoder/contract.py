@@ -1,4 +1,4 @@
-"""The current M1 tensor contract; no camera decoder or protocol implementation."""
+"""The current optical tensor contract; no camera decoder or protocol implementation."""
 
 from pathlib import Path
 import hashlib
@@ -6,7 +6,7 @@ import hashlib
 import numpy as np
 
 
-FORMAT = "optical-decoder-m1"
+FORMAT = "optical-decoder"
 VERSION = 1
 SIZES = (64, 128)
 PIXELS_PER_CELL = 4
@@ -23,7 +23,7 @@ RTOL = 2e-4
 
 def shapes(size: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
     if isinstance(size, bool) or not isinstance(size, int) or size not in SIZES:
-        raise ValueError("M1 supports physical grid sizes 64 and 128 only")
+        raise ValueError("The decoder supports physical grid sizes 64 and 128 only")
     return (1, CHANNELS, size * PIXELS_PER_CELL, size * PIXELS_PER_CELL), (1, CLASSES, size, size)
 
 

@@ -80,6 +80,7 @@ python -m http.server 8001 --bind 127.0.0.1 --directory apps/qr-neural-key/dist
 | `http://localhost:8000/crypto.html` | Browser Crypto Lab |
 | `http://localhost:8000/link.html` | Color multipart transport |
 | `http://localhost:8000/decoder.html` | Optional M1 Decoder Lab, after `prepare:decoder` |
+| `http://localhost:8000/capture.html` | M2 dataset sender/receiver; model assets not required |
 | `http://localhost:8001/` | QR transport, scan check, and simulation |
 | `http://localhost:8001/auth.html` | QR neural-key authentication |
 
@@ -98,6 +99,13 @@ served directory. No enrollment backend, server-side inference, or upload is
 required. The hosted test sites remain blank; repository work does not deploy.
 
 ## Benchmarks and formats
+
+The [M2 capture/training guide](OPTICAL_DECODER_TRAINING.md) covers canonical
+dataset generation, offline joining, CPU smoke checks, RTX 4090 training,
+held-out recovery evaluation, and browser checkpoint preparation. These tools
+use the current OBM5 renderer/decoder through Node; Python does not maintain a
+second optical wire implementation. Keep downloaded camera files and model
+checkpoints in the ignored `local-data/` and `checkpoints/` directories.
 
 ```sh
 npm run benchmark:crypto

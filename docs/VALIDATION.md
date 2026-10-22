@@ -1,4 +1,68 @@
-# Current validation — 20 October 2026
+# Current validation — 22 October 2026
+
+## M2 software checks
+
+| Check | Result |
+| --- | --- |
+| Full color app JavaScript suite | 226 passed |
+| Full QR transport/authentication JavaScript suite | 223 passed |
+| Optical decoder Python suites | 16 passed; 1 native ONNX Runtime check explicitly skipped |
+| Canonical dataset and capture checks | Physical phase/reference/parity labels, failed-payload retention, stable-header guards, bounded records, full-header joins, distinct IDs, exact CRC/RS recovery, and path checks passed |
+| Python training/evaluation checks | Session/payload split rejection, masked loss and inactive-class gradients, correlated corruption, optimizer updates, checkpoint validation, and canonical decoder integration passed |
+| Complete CPU pipeline smoke | Clean OBM5 examples → correlated corruption → current baseline regeneration → 10 optimizer updates → validation selection → separate held-out evaluation → checkpoint export completed |
+| Trained checkpoint Web/WASM parity in Node | Both G64/G128 exports passed all 10 measured runs; maximum absolute error 4.84×10⁻⁸ / 5.96×10⁻⁸ |
+| Prepared model assets | Trained status, checkpoint provenance, both graphs, fixtures, and pinned runtime validated and copied locally |
+
+The 10-update checkpoint is **only a wiring smoke test**, not a useful decoder:
+it recovered 0/4 held-out synthetic frames while the classical baseline
+recovered 4/4. The test therefore establishes neither a recovery improvement
+nor real-device generalization. The checkpoint and generated data are ignored
+local outputs, not shipped weights. The actual pilot and real-data fine-tuning
+remain for the user's GPU and collected sessions.
+
+Native Python ONNX Runtime still cannot initialize in this environment, so
+the smoke export explicitly records native parity as `not_run`. Actual ONNX
+Runtime Web/WASM numerical checks ran in Node. A headless browser binary could
+not be obtained from its download endpoint; the new capture UI has automated
+module/lifecycle tests but still requires a real-device collection run.
+The supplied M1 browser reports below are separate evidence for the inference
+path. Follow [the M2 guide](OPTICAL_DECODER_TRAINING.md) for device work.
+
+## M1 device reports — 22 October
+
+The two supplied reports establish a useful **64×64 starting profile** for M2.
+They do not contain 128×128 measurements or a successful PC camera crop.
+
+| Device / test | Backend | Result |
+| --- | --- | --- |
+| Android Chrome, G64 fixture, camera off | WebGPU | All 10 runs passed full-logit parity; warm p50 26.8 ms, p95 33.7 ms |
+| Linux Chrome, G64 fixture, camera off | WASM, one thread | All 10 runs passed full-logit parity; warm p50 10.4 ms, p95 11.5 ms |
+| Phone camera, two G64/16-color crops | WebGPU | Both inferred finite logits; preprocessing 191.8 / 133.2 ms, inference 37.4 / 30.2 ms |
+| PC camera, three G64 crop attempts | Not reached | One unreadable header, two incomplete marker detections; no inference ran |
+
+Both fixture reports have maximum absolute logit error 2.98×10⁻⁸ and no
+failures. All recorded operations had zero animation-frame gaps above 50 ms.
+The phone used a 720×1280, 60 fps rear-camera feed, with about six observed
+pixels per cell. The PC used 1920×1080 at 30 fps. WebGPU was exposed by the PC
+browser but adapter initialization failed; automatic WASM fallback worked.
+Device model names and power settings were not supplied, and reported JS heap
+values do not measure total runtime/GPU memory.
+
+Proceed with the existing network and G64 for initial training. Keep G128
+available as an experimental profile. PC marker/header acquisition remains an
+optical alignment/detection issue; learning payload colors cannot repair a
+missing crop. Phone preprocessing is already more expensive than inference,
+so capture and later receive scheduling must remain bounded. Additional G128,
+explicit phone WASM, camera-active fixture, and PC crop checks remain useful,
+but do not block building M2 capture/training tools.
+
+Source reports (retained by the user; summarized here rather than copied into
+the repository):
+
+- `decoder-m1-2026-10-22T14-22-55-695Z.json` — SHA-256
+  `5011dc809e74ad84e780dd5e297f643782b5a187c61a8ae6694145324ffd4749`.
+- `decoder-m1-2026-10-22T14-31-23-287Z.json` — SHA-256
+  `77ac46205aab1db70d6ca905558dc33fef3d247beeba7a77cd490b6f58ccb90f`.
 
 ## Optical decoder M1
 

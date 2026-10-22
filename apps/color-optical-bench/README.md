@@ -10,10 +10,17 @@ Four browser-local workspaces share top-level navigation:
 - **Live Demo** (`link.html`) tests reliable multipart optical messages, with a
   local fault simulation and a two-device camera transfer. Step 3.3a transfers
   bytes; pairing and authentication are not implemented in this tab yet.
-- **Decoder Lab** (`decoder.html`) tests the untrained M1 optical model in a
+- **Decoder Lab** (`decoder.html`) tests the prepared optical model or checkpoint in a
   dedicated worker. It compares full outputs against Python fixtures and measures
   local inference, with an optional live camera crop. It does not decode payloads.
   Follow the [separate setup and device checklist](../../docs/DECODER_LAB.md).
+
+**Capture Dataset** (`capture.html`), linked from Decoder Lab, adds the M2
+sender/receiver data collector. Display a static random matrix, collect bounded
+camera bursts, and export the sender manifest and receiver captures separately.
+No model installation is needed to collect data. Follow the
+[capture and training guide](../../docs/OPTICAL_DECODER_TRAINING.md) for offline
+label joining, train/validation/test splits, and checkpoint evaluation.
 
 The reusable crypto engine and worker have one canonical source in
 [`shared/browser-crypto/`](../../shared/browser-crypto/). `npm run prepare:app`
@@ -29,8 +36,9 @@ The next planned increment is [Neural ZKBoo authentication over color
 matrices](../../docs/ROADMAP.md), reusing the QR experiment's authentication flow
 and this app's multipart channel. The [optical decoder design and training
 plan](../../docs/OPTICAL_DECODER.md) specifies a small U-Net receiver and labeled
-capture tooling. M1 model/export and the feasibility lab are implemented;
-training and capture datasets follow. The current Live Demo still
+capture tooling. M1 supports a G64 profile on the tested phone/PC; M2 collection,
+synthetic generation, training, evaluation, and checkpoint export are implemented.
+Real-data recovery validation remains open. The current Live Demo still
 transfers bytes only. [Research connections](../../docs/RESEARCH_CONNECTIONS.md)
 describe the exploratory background and later cryptanalytic work.
 

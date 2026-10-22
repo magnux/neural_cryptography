@@ -8,7 +8,8 @@ in the working tree; prior repository states remain in Git history.
 | --- | --- |
 | `experiments/neural-dynamics/` | Restored PyTorch recurrent CNN/rotating-convolution/Feistel experiment. |
 | `experiments/python-zkboo/` | Restored command-line experiment using the current NumPy compact ZKBoo core; no archived proof implementation alongside it. |
-| `experiments/optical-decoder/` | M1 untrained U-Net, tensor contract, ONNX export, tests, and optional pinned browser runtime. Training is not implemented yet. |
+| `experiments/optical-decoder/` | U-Net, current tensor/checkpoint contracts, synthetic generator, PyTorch training/evaluation, ONNX export, and pinned browser runtime. |
+| `scripts/decoder-dataset.mjs`, color app `js/dataset/` | Canonical clean examples, bounded browser capture, offline label joins, and exact classical/learned recovery comparison. |
 | `shared/python/neural_optical.py` | Shared Python palette, packing, and simulated-camera utilities. |
 | `shared/browser-crypto/crypto/` | Single browser binary circuit, compact prover/verifier, byte helpers, and licensed SHAKE dependency. |
 | `shared/browser-crypto/worker/` | Single reusable crypto worker/client/operations and public reference fixture. |

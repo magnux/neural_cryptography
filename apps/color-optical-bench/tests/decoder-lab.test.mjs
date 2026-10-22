@@ -5,12 +5,12 @@ import {DecoderClient} from '../dist/js/decoder-lab/client.js';
 
 function manifest() {
   const entry=(file,bytes)=>({file,bytes,sha256:'a'.repeat(64)});
-  return {format:'optical-decoder-m1',version:1,status:'untrained',parameterCount:121792,pixelsPerCell:4,channels:3,classes:16,
+  return {format:'optical-decoder',version:1,status:'untrained',parameterCount:121792,pixelsPerCell:4,channels:3,classes:16,
     inputName:'pixels',outputName:'logits',seed:7,opset:17,versions:{torch:'test'},cases:[64,128].map(size=>({size,
       inputShape:[1,3,4*size,4*size],outputShape:[1,16,size,size],model:entry(`model-${size}.onnx`,500000),
       input:entry(`input-${size}.f32`,3*16*size*size*4),expected:entry(`expected-${size}.f32`,16*size*size*4)}))};
 }
-test('M1 manifest accepts only bounded current shape/artifact contracts',()=>{
+test('decoder manifest accepts only bounded current shape/artifact contracts',()=>{
   const valid=manifest(); assert.equal(validateManifest(valid),valid);
   for (const mutate of [m=>m.status='trained',m=>m.cases[0].size=512,m=>m.cases[1].size=64,m=>m.channels=15,
     m=>m.cases[0].inputShape[2]=512,m=>m.cases[0].model.bytes=8*1024*1024,m=>m.cases[0].expected.bytes--,
@@ -18,6 +18,13 @@ test('M1 manifest accepts only bounded current shape/artifact contracts',()=>{
     m=>m.cases[0].model.sha256='invalid',m=>m.cases[1].model.file=m.cases[0].model.file]) {
     const invalid=manifest(); mutate(invalid); assert.throws(()=>validateManifest(invalid));
   }
+});
+test('trained exports require checkpoint provenance and the current format',()=>{
+  const trained={...manifest(),status:'trained',checkpointSha256:'b'.repeat(64),training:{steps:20}};
+  assert.equal(validateManifest(trained),trained);
+  assert.throws(()=>validateManifest({...trained,checkpointSha256:'bad'}),/provenance/);
+  assert.throws(()=>validateManifest({...trained,training:null}),/provenance/);
+  assert.throws(()=>validateManifest({...trained,format:'optical-decoder-m1'}),/manifest/);
 });
 test('bounded benchmark choices reject oversized workloads',()=>{
   assert.deepEqual(validateOptions(),{size:64,backend:'auto',iterations:10});

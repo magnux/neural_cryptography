@@ -37,6 +37,10 @@ function monitorUI() {
     note: 'Animation-frame spacing, not touch latency. Optional browser JS heap readings exclude GPU/worker/native runtime memory.'}; };
 }
 function showResult(result) {
+  $('modelNoticeTitle').textContent = result.modelStatus === 'trained' ? 'Trained checkpoint · numerical checks' : 'Untrained model · numerical checks';
+  $('modelNoticeText').textContent = result.modelStatus === 'trained'
+    ? 'The prepared checkpoint is loaded. Numerical agreement tests runtime correctness; evaluate recovery on held-out captures before using this model for transport.'
+    : 'These random weights test runtime feasibility. Collect labeled captures, then train and evaluate a checkpoint before measuring recovery.';
   const box=$('results'); box.replaceChildren();
   const title=document.createElement('div'); title.className='decoder-parity';
   title.dataset.pass=String(result.operation === 'benchmark' ? result.parity.passed : result.logitsFinite);
@@ -136,11 +140,11 @@ $('cancel').addEventListener('click',cancel);
 $('startCamera').addEventListener('click',startCamera);
 $('stopCamera').addEventListener('click',stopCamera);
 $('downloadReport').addEventListener('click',()=>{
-  const report={format:'optical-decoder-m1-device-report',version:1,created:new Date().toISOString(),
+  const report={format:'optical-decoder-device-report',version:1,created:new Date().toISOString(),
     environment:{userAgent:navigator.userAgent,hardwareConcurrency:navigator.hardwareConcurrency,deviceMemoryGiB:navigator.deviceMemory,
       secureContext:isSecureContext,webgpuExposed:Boolean(navigator.gpu)},notes:$('notes').value,records};
   const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
-  link.href=url; link.download=`decoder-m1-${new Date().toISOString().replace(/[:.]/g,'-')}.json`; link.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+  link.href=url; link.download=`decoder-${new Date().toISOString().replace(/[:.]/g,'-')}.json`; link.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
 });
 window.addEventListener('pagehide',shutdown);
 document.addEventListener('visibilitychange',()=>{ if (document.hidden) shutdown(); });

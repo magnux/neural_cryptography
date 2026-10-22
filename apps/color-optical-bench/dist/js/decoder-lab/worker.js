@@ -45,6 +45,7 @@ async function load(options, progress) {
   // A changed fixture must never reuse a previous expected-output buffer.
   const fixtureKey = `${entry.input.sha256}/${entry.expected.sha256}`;
   if (cached?.key === key && cached.fixtureKey === fixtureKey) {
+    cached.manifest = manifest;
     return {...cached, loadMs: performance.now()-started, initMs: 0, cacheReused: true};
   }
   if (cached) { await cached.session.release(); cached = null; }
@@ -87,7 +88,8 @@ async function inference(context, pixels) {
   }
 }
 function describe(context, options) {
-  return {format: 'optical-decoder-m1-report', version: 1, modelStatus: context.manifest.status, size: options.size,
+  return {format: 'optical-decoder-report', version: 1, modelStatus: context.manifest.status,
+    checkpointSha256: context.manifest.checkpointSha256 ?? null, size: options.size,
     requestedBackend: options.backend, effectiveBackend: context.effectiveBackend, fallbackReason: context.fallbackReason,
     runtimeVersions: {...(ort.env.versions || {})}, exportVersions: context.manifest.versions,
     modelSha256: context.entry.model.sha256, modelBytes: context.entry.model.bytes, parameterCount: context.manifest.parameterCount,
@@ -118,12 +120,12 @@ async function capture(options, progress, image) {
   if (!input.ok) throw new Error(input.error || 'No supported 64/128-cell matrix was found.');
   if (input.info.size !== options.size) throw new Error(`Camera sees ${input.info.size} cells; select that model size first.`);
   const context = await load(options, progress);
-  progress('Running the untrained model on this camera crop…');
+  progress('Running the selected model on this camera crop…');
   const result = await inference(context, input.input);
   if (result.values.some(value => !Number.isFinite(value))) throw new Error('Camera inference produced non-finite logits.');
   return {...describe(context, options), operation: 'capture', inputStats: input.stats, inferenceMs: result.ms,
     paletteColors: input.info.colors, logitsFinite: true,
-    note: 'Untrained inference only. No payload was decoded or accepted.'};
+    note: 'Crop inference only. Assess symbol and payload recovery with the offline evaluation tools.'};
 }
 self.onmessage = async event => {
   const {id, operation, options = {}} = event.data || {};

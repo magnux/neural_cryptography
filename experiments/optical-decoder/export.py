@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Export the untrained M1 optical decoder and deterministic parity fixtures.
+"""Export the optical decoder and deterministic parity fixtures.
 
-The exported weights are PUBLIC DIAGNOSTIC material, not a trained receiver.
-The browser benchmark verifies execution and numerical agreement, not recovery.
+Without a checkpoint, the weights are untrained public diagnostic material.
+With a checkpoint, export the trained weights and public training provenance.
+The numerical benchmark verifies runtime agreement, not recovery accuracy.
 """
 
 import argparse
+import hashlib
 import importlib.metadata
 import json
 from pathlib import Path
@@ -13,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 import numpy as np
 import onnx
@@ -22,6 +25,7 @@ from contract import (ATOL, CHANNELS, CLASSES, FORMAT, INPUT_NAME, OUTPUT_NAME,
                       PARAMETER_COUNT, PIXELS_PER_CELL, RTOL, SIZES, VERSION,
                       describe_file, fixture_input, shapes, write_f32)
 from model import OpticalDecoder, parameter_count
+from checkpoint import load_checkpoint, training_provenance
 
 
 OPSET = 17
@@ -64,8 +68,8 @@ print(json.dumps(checks))
 
 
 def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threads: int = 1,
-                 check_ort: bool = True) -> dict:
-    """Export one initialized set of weights at each fixed shape, on CPU.
+                 check_ort: bool = True, checkpoint: Path | None = None) -> dict:
+    """Export one initialized or checkpoint-loaded set of weights on CPU.
 
     Validate every graph and, unless explicitly disabled, two independent inputs
     per size against Python ONNX Runtime before publishing manifest.json.
@@ -83,6 +87,11 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
     torch.set_num_threads(threads)
     torch.manual_seed(seed)
     model = OpticalDecoder().cpu().eval()
+    provenance = {}
+    if checkpoint is not None:
+        loaded = load_checkpoint(checkpoint, model)
+        provenance = {"checkpointSha256": hashlib.sha256(Path(checkpoint).read_bytes()).hexdigest(),
+                      "training": training_provenance(loaded["training"])}
     count = parameter_count(model)
     if count != PARAMETER_COUNT:
         raise RuntimeError(f"Model contract changed: expected {PARAMETER_COUNT} parameters, got {count}")
@@ -95,7 +104,7 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
         except importlib.metadata.PackageNotFoundError:
             versions[name] = "not-installed"
     manifest = {
-        "format": FORMAT, "version": VERSION, "status": "untrained", "seed": seed,
+        "format": FORMAT, "version": VERSION, "status": "trained" if checkpoint is not None else "untrained", "seed": seed,
         "parameterCount": count, "pixelsPerCell": PIXELS_PER_CELL, "channels": CHANNELS,
         "classes": CLASSES, "inputName": INPUT_NAME, "outputName": OUTPUT_NAME, "opset": OPSET,
         "versions": versions,
@@ -105,6 +114,7 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
         "pythonParityStatus": {"status": "passed" if check_ort else "not_run",
                                "reason": None if check_ort else "Explicit --skip-ort-check; Python ONNX Runtime parity not run."},
         "cases": [],
+        **provenance,
     }
     with tempfile.TemporaryDirectory(prefix=".optical-export-", dir=out.parent) as temporary:
         stage = Path(temporary)
@@ -162,15 +172,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "artifacts" / "smoke")
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--checkpoint", type=Path, help="export a checkpoint from the current training command")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--skip-ort-check", action="store_true",
                         help="explicitly skip Python ONNX Runtime parity; record not_run in manifest")
     args = parser.parse_args()
     try:
-        manifest = export_smoke(args.out, args.seed, threads=args.threads, check_ort=not args.skip_ort_check)
-    except (ValueError, RuntimeError) as error:
+        manifest = export_smoke(args.out, args.seed, threads=args.threads, check_ort=not args.skip_ort_check,
+                                checkpoint=args.checkpoint)
+    except (ValueError, RuntimeError, OSError, zipfile.BadZipFile) as error:
         parser.exit(1, f"Export failed: {error}\n")
-    print(f"Untrained M1 model: {manifest['parameterCount']:,} parameters; CPU export, opset {OPSET}.")
+    print(f"{manifest['status'].capitalize()} model: {manifest['parameterCount']:,} parameters; CPU export, opset {OPSET}.")
     for case in manifest["cases"]:
         if case["pythonParity"]:
             error = max(item["maxAbsError"] for item in case["pythonParity"])
@@ -179,7 +191,10 @@ def main() -> None:
             note = "Python ONNX Runtime parity NOT RUN; browser parity still required"
         print(f"G={case['size']}: {case['model']['bytes']:,} ONNX bytes; {note}.")
     print(f"Bundle: {args.out.resolve() / 'manifest.json'}")
-    print("This model is untrained. Benchmark execution/parity only; do not use it for live payload decisions.")
+    if manifest["status"] == "untrained":
+        print("This model is untrained. Benchmark execution/parity only; do not use it for live payload decisions.")
+    else:
+        print("Trained checkpoint exported. Runtime parity and held-out real-device recovery still require validation.")
 
 
 if __name__ == "__main__":

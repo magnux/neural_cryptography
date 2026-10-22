@@ -26,7 +26,7 @@ for the original dynamical-systems exploration.
 | Browser Crypto Lab | [Color app](apps/color-optical-bench/README.md), `crypto.html` | Generate keys, prove, verify, reject tampering, and measure local performance in a worker. |
 | Color optical transport | [Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Color matrices, image simulations, temporal fusion, error correction, and multipart transfers. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
-| Learned optical decoder | [Model/export](experiments/optical-decoder/README.md), [Decoder Lab](docs/DECODER_LAB.md), `decoder.html` | M1 untrained U-Net, dense rectified inputs, Python output fixtures, and worker inference/parity measurements. Capture datasets and training follow in M2. |
+| Learned optical decoder | [Model and training](experiments/optical-decoder/README.md), [capture/training guide](docs/OPTICAL_DECODER_TRAINING.md), `decoder.html` and `capture.html` | Small U-Net, labeled device capture, canonical synthetic examples, PyTorch training, exact recovery evaluation, checkpoint export, and browser parity. Real-device improvement still needs a trained checkpoint and held-out captures. |
 
 Read [use cases](docs/USE_CASES.md), [format boundaries](docs/FORMATS.md), and
 [development instructions](docs/DEVELOPMENT.md) before changing a protocol.
@@ -83,8 +83,10 @@ python experiments/python-zkboo/neural_zkboo_experiment.py --camera
 ```
 
 For the new **Decoder Lab**, follow [its optional setup](docs/DECODER_LAB.md).
-It adds pinned PyTorch/ONNX build dependencies and a local browser runtime. The
-untrained model tests feasibility; it is not used to accept live payloads.
+It adds pinned PyTorch/ONNX build dependencies and a local browser runtime.
+[M2 capture and training](docs/OPTICAL_DECODER_TRAINING.md) is now implemented;
+the capture page itself needs only the existing static app. Live transport
+continues to use the classical decoder until a trained model passes evaluation.
 
 ## Status and scope
 

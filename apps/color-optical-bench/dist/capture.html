@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f5f1"><title>Capture Dataset · Neural Key</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./js/dataset/style.css">
+</head>
+<body class="capture-lab">
+  <header class="site-header"><a class="brand" href="./capture.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M2 12V2h10M20 2h10v10M30 20v10H20M12 30H2V20"/><path d="M11 11h10v10H11z"/></svg><span>NEURAL KEY<span class="brand-divider">/</span><strong>CAPTURE DATASET</strong></span></a><span class="local-badge"><i></i> Browser-local</span></header>
+  <nav class="app-nav" aria-label="Application"><a href="./index.html">Optical Bench</a><a href="./crypto.html">Crypto Lab</a><a href="./link.html">Live Demo</a><a href="./decoder.html">Decoder Lab</a><a href="./capture.html" aria-current="page">Capture Dataset</a></nav>
+  <main>
+    <section class="capture-intro"><div class="eyebrow">MILESTONE 2 · TRAINING DATA</div><h1>Capture the difficult frames.</h1><p>Display a known random matrix on one device. Collect camera samples on the other, then join the two files offline.</p></section>
+    <div id="captureError" class="notice" role="alert" hidden></div>
+    <noscript><div class="notice">Enable JavaScript to collect local samples.</div></noscript>
+    <div class="capture-role" role="group" aria-label="Device role"><button id="senderRole" class="role-button" aria-pressed="true">Display a matrix</button><button id="receiverRole" class="role-button" aria-pressed="false">Collect camera samples</button></div>
+    <section id="senderPanel" class="panel">
+      <div class="panel-heading"><div><span class="section-number">01</span><h2>Sender</h2></div><span class="mode-label">STATIC DISPLAY</span></div>
+      <div class="capture-body">
+        <p>Create and save the sender manifest before recording. Keep the displayed matrix unchanged for the entire receiver burst. Advance manually after the receiver finishes.</p>
+        <div class="capture-fields sender-fields">
+          <label>Grid<select id="senderSize"><option value="64">64 × 64</option><option value="128">128 × 128</option></select></label>
+          <label>Palette<select id="senderColors"><option value="16">16 colors</option><option value="4">4 colors · control</option></select></label>
+          <label>Palette phases<select id="senderPhases"><option value="4">4 phases</option><option value="1">1 phase</option><option value="8">8 phases</option><option value="16">16 phases</option></select></label>
+        </div>
+        <div class="capture-actions"><button class="button primary" id="createSender">Create random sequence</button><button class="button secondary" id="downloadSender" disabled>Save sender manifest ↓</button><button class="small-button" id="nextPhase" disabled>Next phase →</button><button class="small-button" id="focusMatrix" aria-expanded="false" disabled>Focus matrix</button></div>
+        <p id="senderStatus" class="capture-status" role="status">Grid-8 references and RS32 are fixed for this capture profile.</p>
+        <div id="senderCanvasWrap" class="sender-canvas-wrap" hidden><button id="closeFocus" class="small-button" hidden>Close focus · Esc</button><canvas id="senderCanvas" width="1024" height="1024" aria-label="Current training matrix"></canvas></div>
+        <div class="capture-session"><span id="senderSession"></span><button class="small-button" id="newSenderSession">New physical session</button></div>
+        <p class="muted">Each new sequence has fresh random bytes. Keep one session for the same device arrangement; start a new session after changing devices or returning later. All phases of a payload stay in the same training split.</p>
+      </div>
+    </section>
+    <section id="receiverPanel" class="panel" hidden>
+      <div class="panel-heading"><div><span class="section-number">02</span><h2>Receiver</h2></div><span class="mode-label">NO SENDER FILE REQUIRED</span></div>
+      <div class="capture-body">
+        <p>Fit all four corner markers and the monochrome header in view. A failed payload CRC is useful training data; an unreadable header is saved only as a diagnostic.</p>
+        <div class="capture-fields camera-fields"><label>Camera<select id="camera"><option value="">Default camera</option></select></label><label>Requested resolution<select id="resolution"><option value="720">720p</option><option value="1080">1080p</option><option value="480">480p</option></select></label></div>
+        <div class="capture-camera"><video id="video" autoplay muted playsinline></video><canvas id="alignmentOverlay" aria-hidden="true"></canvas><span id="cameraPlaceholder">Camera is off</span></div>
+        <p class="muted" id="cameraStatus">Camera images stay on this device until you download a capture file.</p>
+        <div class="capture-actions"><button class="small-button" id="startCamera">Start camera</button><button class="small-button" id="stopCamera" disabled>Stop camera</button><button class="small-button" id="probeCamera" disabled>Check alignment</button></div>
+        <div class="capture-fields burst-fields"><label>Samples per burst<input id="burstCount" type="number" min="1" max="20" value="5"></label><label>Spacing, ms<input id="burstInterval" type="number" min="500" max="5000" step="100" value="500"></label></div>
+        <label class="capture-checkbox"><input id="saveOriginal" type="checkbox">Include one original PNG per burst, when it fits (maximum two snapshots, 1 MiB each).</label>
+        <p class="muted">Hold the sender still for one second before collecting. A fresh header stability check runs at the start of every burst; its guard exposures are not counted as saved samples. Do not advance the sender until collection stops.</p>
+        <div class="capture-actions"><button class="button primary" id="collectBurst" disabled>Collect burst →</button><button class="small-button" id="cancelBurst" disabled>Stop burst</button><button class="small-button" id="clearCaptures">Clear downloaded batch</button><button class="small-button" id="newReceiverSession">New physical session</button></div>
+        <p class="capture-status" id="receiverStatus" role="status" aria-live="polite">Ready to collect. No camera samples recorded.</p>
+        <dl class="capture-metrics"><div><dt>Saved samples</dt><dd id="sampleCount">0 / 20</dd></div><div><dt>Diagnostics</dt><dd id="diagnosticCount">0</dd></div><div><dt>Export budget</dt><dd id="captureBytes">0 / 32 MiB</dd></div></dl>
+        <div class="capture-diagnostics"><h3>Latest capture</h3><p id="latestCapture">Start the camera, then check alignment.</p><p class="muted" id="latestDetails"></p></div>
+        <label class="capture-notes">Session notes<textarea id="captureNotes" rows="3" maxlength="1000" placeholder="Phone / PC, direction, screen brightness, distance, motion or focus changes…"></textarea></label>
+        <div class="capture-actions"><button class="button secondary" id="downloadCaptures" disabled>Save receiver captures ↓</button><span id="receiverSession" class="muted"></span></div>
+        <p class="muted">The capture JSON contains calibrated pixels and may include the original camera view if selected. Save before clearing or leaving this page. Clearing a downloaded batch keeps the physical session ID; start a new physical session only after changing the device arrangement or returning later. Collection is capped at 20 samples and 32 MiB; nothing is uploaded.</p>
+      </div>
+    </section>
+    <footer class="page-footer"><span>NEURAL KEY · CAPTURE DATASET</span><p>Save both files → join offline → train → evaluate held-out sessions</p><a href="https://github.com/magnux/neural_cryptography/blob/main/docs/OPTICAL_DECODER.md">Decoder plan ↗</a></footer>
+  </main><script type="module" src="./js/dataset/lab.js"></script>
+</body>
+</html>

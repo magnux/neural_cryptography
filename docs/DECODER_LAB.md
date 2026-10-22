@@ -1,8 +1,10 @@
-# Decoder Lab — M1 setup and device checks
+# Decoder Lab — model parity and device checks
 
-M1 implements the small optical model, reproducible exports, and an isolated
-browser inference lab. It is **untrained**. This tests runtime feasibility before
-M2 dataset collection and training; it does not improve live reception yet.
+Decoder Lab tests the small optical model, reproducible exports, and worker
+inference. Export without a checkpoint uses **untrained** weights; M2 also
+supports a selected trained checkpoint. The status appears after loading the
+prepared model. See [capture and training](OPTICAL_DECODER_TRAINING.md) to collect
+data, train, evaluate recovery, and prepare checkpoint exports.
 See [the architecture](OPTICAL_DECODER.md) and [the POC roadmap](ROADMAP.md).
 
 ## Prepare once
@@ -61,9 +63,9 @@ the Python fixture. The browser requires finite logits and elementwise
 
 The camera probe revalidates geometry/header and samples the current exposure's
 palette, even if payload CRC would fail. It reports preprocessing and inference
-cost; random logits cannot establish symbol accuracy. A wrong grid selection,
+cost; numerical checks alone cannot establish symbol accuracy. A wrong grid selection,
 unsupported palette, or invalid header produces a failure record. The lab does
-not feed these random outputs into live recovery or report decoded content.
+not feed these outputs into live recovery or report decoded content.
 
 Report fields include model and fixture hashes, package versions, requested and
 effective backend, fallback reasons, full-output parity, warm p50/p95, load and
