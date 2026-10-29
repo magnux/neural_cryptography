@@ -161,3 +161,20 @@ npm run test:parity
 python -m pip install -r experiments/neural-dynamics/requirements.txt
 npm run test:python
 ```
+
+## Capture collector iteration — 2026-10-29
+
+Automatic alignment scanning and filled overlays replace the manual check button.
+Collection uses separate frame/phase pools (32 by default), uniform random
+thinning (keep 16 by default), and worker-computed sampled pairwise RGB RMS
+distance. The importer accepts the larger bounded exports (128 records / 160 MiB).
+
+`npm run test:decoder`: **39 tests passed**. Checks include real rendered-header
+probes, capture signatures, worker metric dispatch, 32-sample pools, thinning and
+refill, phase isolation, byte-budget recovery, a 24-record offline join, duplicate
+and stale-frame protections, and the existing learned-input/decoder parity
+contracts. A deterministic camera/worker/DOM harness exercises the actual page
+controller through automatic scan, fill, thin, refill, phase switch, pause, camera
+stop, and hidden-page cleanup. No browser binary or physical camera was available
+for a new visual/device run. Device acquisition and perceived overlay visibility
+remain user checks; no claim of improved marker detection or trained decoding.

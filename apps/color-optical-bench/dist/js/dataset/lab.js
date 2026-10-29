@@ -1,13 +1,23 @@
 import {CaptureClient} from './client.js';
 import {CaptureBuffer} from './capture.js';
+import {ScanLoop} from './scan-loop.js';
 import {project} from '../vision.js';
 
 const $=id=>document.getElementById(id),client=new CaptureClient(),buffer=new CaptureBuffer();
 const supported=isSecureContext&&typeof Worker==='function'&&Boolean(globalThis.crypto?.subtle);
 const session=prefix=>`${prefix}-${globalThis.crypto?.randomUUID?.()??'unavailable'}`;
 let senderSession=session('sender'),receiverSession=session('receiver'),sender=null,phase=0,role='sender';
-let busy=false,epoch=0,stream=null,cameraStarting=false,cameraEpoch=0,delayCancel=null;
-let lastMediaTime=-1,snapshotCount=0;
+let busy=false,epoch=0,stream=null,cameraStarting=false,cameraEpoch=0;
+let lastMediaTime=-1,collecting=false,budgetFull=false,receiverEpoch=0,activeKey=null,activeInfo=null;
+const distances=new Map(),originalAttempts=new Set();
+const phaseMaximum=()=>Number($('phaseMaximum').value);
+const keepCount=()=>Number($('keepCount').value);
+const scanner=new ScanLoop({sample:scanOne,receive:receiveScan,cancel:()=>client.cancel(),
+  interval:()=>Number($('scanInterval').value),onError:error=>{
+    buffer.resetStability();clearOverlay();
+    $('latestCapture').textContent=error.message;
+    status(collecting?'Waiting for a fresh camera frame; collection remains armed.':'Waiting for a fresh camera frame.');
+  }});
 let previousFocus=null;
 
 function showError(message=''){$('captureError').textContent=message;$('captureError').hidden=!message;}
@@ -30,12 +40,21 @@ function refresh(){
   $('startCamera').disabled=!supported||cameraStarting||Boolean(stream)||busy;
   $('stopCamera').disabled=!stream&&!cameraStarting;
   $('camera').disabled=Boolean(stream)||cameraStarting;$('resolution').disabled=Boolean(stream)||cameraStarting;
-  $('probeCamera').disabled=!stream||busy;
-  $('collectBurst').disabled=!stream||busy||counts.records>=counts.maxRecords||counts.bytes>=counts.maxBytes;
-  $('cancelBurst').disabled=!busy||role!=='receiver';$('clearCaptures').disabled=busy;
-  $('newReceiverSession').disabled=busy;
-  for(const id of ['burstCount','burstInterval','saveOriginal'])$(id).disabled=busy;
-  $('downloadCaptures').disabled=busy||(!counts.records&&!counts.diagnostics);
+  const phaseCount=buffer.phaseRecords(activeKey).length;
+  $('collectBurst').disabled=!stream||collecting||budgetFull;
+  $('cancelBurst').disabled=!collecting;
+  $('thinCaptures').disabled=!stream||!activeKey||phaseCount<=keepCount();
+  $('thinCaptures').textContent=`Keep ${keepCount()} at random & resume`;
+  $('clearCaptures').disabled=collecting;$('newReceiverSession').disabled=collecting;
+  $('downloadCaptures').disabled=collecting||(!counts.records&&!counts.diagnostics);
+  for(const option of $('keepCount').options)option.disabled=Number(option.value)>=phaseMaximum();
+  $('phaseCount').textContent=`${phaseCount} / ${phaseMaximum()}`;
+  $('activePhase').textContent=activeInfo?`${activeInfo.id} · phase ${activeInfo.phase+1}/${activeInfo.phases}`:'No matrix detected yet';
+  const metric=distances.get(activeKey),mean=metric?.result.mean;
+  $('meanDistance').textContent=mean==null?'—':`${mean.toFixed(2)}%`;
+  $('distanceDetails').textContent=metric
+    ? `${metric.result.samples} samples · ${metric.result.pairs} pairs${metric.revision!==buffer.revision(activeKey)?' · updating…':''}${metric.previous==null?'':` · before thinning: ${metric.previous.toFixed(2)}%`}`
+    : 'Needs at least two retained captures of this phase.';
   $('sampleCount').textContent=`${counts.records} / ${counts.maxRecords}`;
   $('diagnosticCount').textContent=String(counts.diagnostics);
   $('captureBytes').textContent=`${(counts.bytes/1048576).toFixed(1)} / ${(counts.maxBytes/1048576).toFixed(0)} MiB`;
@@ -83,18 +102,18 @@ function overlay(record,width,height){
   const canvas=$('alignmentOverlay');canvas.width=width;canvas.height=height;
   const context=canvas.getContext('2d');context.clearRect(0,0,width,height);
   if(!record.transform)return;
-  const points=[[8,8],[248,8],[248,248],[8,248]].map(([x,y])=>project(record.transform,x,y));
+  const points=[[0,0],[256,0],[256,256],[0,256]].map(([x,y])=>project(record.transform,x,y));
   if(points.some(point=>point.some(value=>!Number.isFinite(value))))return;
   context.strokeStyle='#8ff3ad';context.lineWidth=Math.max(2,width/400);context.beginPath();
-  points.forEach(([x,y],i)=>i?context.lineTo(x,y):context.moveTo(x,y));context.closePath();context.stroke();
+  points.forEach(([x,y],i)=>i?context.lineTo(x,y):context.moveTo(x,y));context.closePath();context.fillStyle=record.ok?'rgba(50,235,135,0.26)':'rgba(255,190,50,0.25)';context.fill();context.stroke();
 }
 function showCapture(record){
   $('latestCapture').textContent=record.ok
-    ? `Header valid · ${record.info.size}×${record.info.size} / ${record.info.colors} colors · phase ${record.info.phase+1}/${record.info.phases}. Classical payload ${record.baseline?.accepted?'passed CRC':'failed CRC — sample still useful'}.`
+    ? `Header valid · ${record.info.size}×${record.info.size} / ${record.info.colors} colors · phase ${record.info.phase+1}/${record.info.phases}. Classical payload ${record.probe?'not tested during alignment':record.baseline?.accepted?'passed CRC':'failed CRC — sample still useful'}.`
     : `${record.stage??'Capture'}: ${record.error??'No usable image.'}`;
   const stats=record.stats??{};
   $('latestDetails').textContent=record.ok
-    ? `${Number(stats.pixelsPerCell??0).toFixed(2)} camera pixels/cell · color RMSE ${Number(stats.colorRMSE??0).toFixed(1)} · preprocessing ${Number(stats.preprocessMs??0).toFixed(0)} ms.${record.originalNote?` ${record.originalNote}`:''}`
+    ? `${Number(stats.pixelsPerCell??0).toFixed(2)} camera pixels/cell · color RMSE ${stats.colorRMSE==null?'—':Number(stats.colorRMSE).toFixed(1)} · processing ${Number(stats.preprocessMs??stats.ms??0).toFixed(0)} ms.${record.originalNote?` ${record.originalNote}`:''}`
     : 'Keep the full border visible. Enlarge the displayed matrix or move closer; try 720p if focus or moiré is unstable.';
 }
 function currentImage(){
@@ -109,61 +128,69 @@ function currentImage(){
   const pixels=context.getImageData(0,0,canvas.width,canvas.height),camera={...cameraInfo(),captureWidth:canvas.width,captureHeight:canvas.height,mediaTime};
   return {image:{width:pixels.width,height:pixels.height,data:pixels.data},timestamp:Date.now(),camera};
 }
-async function captureOne(original=false){
-  const options=currentImage();options.original=original;
-  const result=await client.call('capture',options,[options.image.data.buffer]);
-  overlay(result,options.image.width,options.image.height);showCapture(result);
-  return result;
+function clearOverlay(){const canvas=$('alignmentOverlay');canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);}
+function restartScanner(){receiverEpoch++;scanner.stop();buffer.resetStability();if(stream)scanner.start();}
+async function scanOne(){
+  const options=currentImage();
+  const full=collecting&&(!activeKey||buffer.phaseRecords(activeKey).length<phaseMaximum());
+  options.original=full&&$('saveOriginal').checked&&activeKey&&!originalAttempts.has(activeKey)&&buffer.originals<2;
+  if(options.original)originalAttempts.add(activeKey);
+  const record=await client.call(full?'capture':'probe',options,[options.image.data.buffer]);
+  return {record,width:options.image.width,height:options.image.height};
 }
-function pause(ms){
-  return new Promise(resolve=>{const finish=()=>{clearTimeout(timer);delayCancel=null;resolve();};const timer=setTimeout(finish,ms);delayCancel=finish;});
+async function receiveScan({record,width,height}){
+  const token=receiverEpoch;
+  overlay(record,width,height);showCapture(record);
+  if(record.ok){activeKey=record.key;activeInfo=record.info;}else buffer.resetStability();
+  if(collecting&&!record.probe){
+    const outcome=buffer.add(record,{alreadyValidated:true,maxPerPhase:phaseMaximum()});
+    if(outcome.stage==='full'){
+      collecting=false;budgetFull=true;
+      status('Export budget reached. Pause is automatic: save receiver captures, clear the downloaded batch, then resume.');
+    }else if(!record.ok)status('Looking for a valid matrix. Collection is armed; failed payload CRCs are still useful.');
+    else if(outcome.stage==='settling')status('Matrix detected. Waiting for a stable header before saving samples…');
+    else status(buffer.phaseRecords(activeKey).length>=phaseMaximum()
+      ? 'Phase pool full. Thin and resume, or advance the sender to collect a different phase automatically.'
+      : 'Collecting this phase. Keep the matrix static; small changes in angle or focus can add variety.');
+  }else if(collecting){
+    status(record.ok&&buffer.phaseRecords(activeKey).length>=phaseMaximum()
+      ? 'Phase pool full. Thin and resume, or advance the sender. Alignment remains automatic.'
+      : 'Collection armed. Waiting for stable captures of the detected phase…');
+  }else if(budgetFull)status('Export budget reached. Save receiver captures, clear the downloaded batch, then resume.');
+  else if(record.ok)status('Matrix detected. Start / resume collection when ready.');
+  else status('Looking for a matrix. Fit all four markers and the header in view.');
+  if(record.probe&&!record.ok)buffer.add(record,{alreadyValidated:true});
+  refresh();
+  const revision=buffer.revision(activeKey),previous=distances.get(activeKey);
+  if(activeKey&&buffer.phaseRecords(activeKey).length&&previous?.revision!==revision){
+    const key=activeKey;
+    const result=await client.call('compare',{signatures:buffer.phaseSignatures(key)});
+    if(token!==receiverEpoch)return;
+    distances.set(key,{result,revision,previous:previous?.previous??null});refresh();
+  }
+}
+function collectBurst(){
+  if(!stream||collecting||budgetFull)return;showError();collecting=true;restartScanner();
+  status('Collection armed. Samples will be saved after the detected header stays stable.');refresh();
 }
 function cancel(){
-  epoch++;client.cancel();delayCancel?.();buffer.resetStability();busy=false;
-  status('Stopped. Previously collected samples are retained. Save the receiver file before leaving.');refresh();
+  collecting=false;restartScanner();
+  status('Collection paused. Alignment continues; retained samples can be downloaded.');refresh();
 }
-async function probe(){
-  if(busy||!stream)return;showError();busy=true;const token=++epoch;refresh();
-  try{
-    const record=await captureOne();if(token!==epoch)return;
-    if(!record.ok)buffer.add(record);
-    status(record.ok?'Alignment is ready. This check did not add a training sample. Keep the sender static, then collect a burst.':'Alignment failed. The diagnostic is retained; adjust the angle or display size and check again.');
-  }catch(error){if(token===epoch)showError(error.message);}
-  finally{if(token===epoch){busy=false;refresh();}}
+function thinCaptures(){
+  if(!stream||!activeKey||buffer.phaseRecords(activeKey).length<=keepCount())return;
+  receiverEpoch++;scanner.stop();
+  const metric=distances.get(activeKey);
+  const result=buffer.thin(activeKey,keepCount());budgetFull=false;
+  if(metric)distances.set(activeKey,{...metric,previous:metric.result.mean});
+  collecting=true;
+  status(`Kept ${result.retained} random samples of this phase, discarded ${result.discarded}. Resuming collection.`);
+  refresh();scanner.start();
 }
-async function collectBurst(){
-  if(busy||!stream)return;showError();
-  const requested=Number($('burstCount').value),spacing=Number($('burstInterval').value);
-  if(!Number.isInteger(requested)||requested<1||requested>20||!Number.isInteger(spacing)||spacing<500||spacing>5000){showError('Choose 1–20 samples and 500–5000 ms spacing.');return;}
-  const initial=buffer.summary().records,target=Math.min(requested,20-initial),token=++epoch;
-  busy=true;buffer.resetStability();refresh();
-  let saved=0,attempts=0,originalAttempted=false,full=false;
-  const started=performance.now(),maxAttempts=target+5;
-  try{
-    while(token===epoch&&saved<target&&attempts<maxAttempts&&performance.now()-started<120000){
-      status(`Collecting ${saved}/${target} samples · observation ${attempts+1}. Keep the displayed phase unchanged.`);
-      const original=$('saveOriginal').checked&&!originalAttempted&&attempts>=1&&snapshotCount<2;
-      if(original)originalAttempted=true;
-      attempts++;
-      let record;
-      try{record=await captureOne(original);}catch(error){
-        if(token!==epoch)break;
-        if(error.name==='AbortError')break;
-        record={ok:false,timestamp:Date.now(),stage:'camera',error:error.message,stats:{}};showCapture(record);
-      }
-      if(token!==epoch)break;
-      const outcome=buffer.add(record,{alreadyValidated:true});
-      if(record.original)snapshotCount++;
-      if(outcome.accepted)saved++;
-      full=outcome.stage==='full';refresh();
-      if(full)break;
-      if(saved<target&&attempts<maxAttempts)await pause(spacing);
-    }
-    if(token===epoch)status(full
-      ? `Capture budget reached after ${saved} new samples. Save the receiver file and start a new batch.`
-      : `Burst finished: ${saved}/${target} samples saved from ${attempts} observations. ${saved<target?'Some captures did not pass header stability; review the latest diagnostic. ':'Only stable, header-validated samples were retained. '}You may now advance the sender.`);
-  }catch(error){if(token===epoch)showError(error.message);}
-  finally{if(token===epoch){busy=false;buffer.resetStability();refresh();}}
+function changePoolSize(){
+  if(keepCount()>=phaseMaximum())$('keepCount').value=String(phaseMaximum()/2);
+  // Existing captures are never silently deleted by changing a setting.
+  if(stream)restartScanner();refresh();
 }
 async function enumerateCameras(){
   if(!navigator.mediaDevices?.enumerateDevices)return;
@@ -174,7 +201,7 @@ async function enumerateCameras(){
   }catch{/* Camera names become available after permission. */}
 }
 function stopCamera(){
-  cameraEpoch++;if(busy&&role==='receiver')cancel();
+  cameraEpoch++;receiverEpoch++;collecting=false;scanner.stop();
   stream?.getTracks().forEach(track=>track.stop());stream=null;cameraStarting=false;lastMediaTime=-1;buffer.resetStability();
   $('video').srcObject=null;$('cameraPlaceholder').hidden=false;$('cameraStatus').textContent='Camera is off. Collected samples remain available for download.';
   const canvas=$('alignmentOverlay');canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);refresh();
@@ -191,11 +218,12 @@ async function startCamera(){
     lastMediaTime=-1;$('cameraPlaceholder').hidden=true;const actual=cameraInfo();
     $('cameraStatus').textContent=`Actual capture ${actual.width}×${actual.height}, ${actual.frameRate?.toFixed(0)??'unknown'} fps. Fit all four markers and the top header in view.`;
     await enumerateCameras();
+    if(token===cameraEpoch)scanner.start();
   }catch(error){if(token===cameraEpoch){stopCamera();showError(error.message);}}
   finally{if(token===cameraEpoch){cameraStarting=false;refresh();}}
 }
 function chooseRole(value){if(busy)return;if(value==='sender')stopCamera();role=value;showError();refresh();}
-function shutdown(){closeFocus(false);cancel();stopCamera();}
+function shutdown(){closeFocus(false);epoch++;busy=false;stopCamera();client.cancel();}
 $('senderRole').addEventListener('click',()=>chooseRole('sender'));
 $('receiverRole').addEventListener('click',()=>chooseRole('receiver'));
 $('createSender').addEventListener('click',createSender);
@@ -209,10 +237,15 @@ document.addEventListener('keydown',event=>{
 $('downloadSender').addEventListener('click',()=>{if(sender)saveJSON(sender.manifest,`decoder-sender-${sender.manifest.sequenceId}.json`);});
 $('newSenderSession').addEventListener('click',()=>{senderSession=session('sender');sender=null;phase=0;$('senderCanvasWrap').hidden=true;$('senderStatus').textContent='New physical session. Create and save a fresh sequence.';refresh();});
 $('startCamera').addEventListener('click',startCamera);$('stopCamera').addEventListener('click',stopCamera);
-$('probeCamera').addEventListener('click',probe);$('collectBurst').addEventListener('click',collectBurst);$('cancelBurst').addEventListener('click',cancel);
-$('clearCaptures').addEventListener('click',()=>{buffer.reset();snapshotCount=0;status('Batch cleared. The physical session ID is retained for the next capture file.');refresh();});
-$('newReceiverSession').addEventListener('click',()=>{buffer.reset();receiverSession=session('receiver');snapshotCount=0;status('Samples cleared. A new physical receiver session is ready.');refresh();});
-$('downloadCaptures').addEventListener('click',()=>saveJSON(buffer.export({notes:$('captureNotes').value,sessionId:receiverSession,camera:cameraInfo()}),`decoder-captures-${receiverSession}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`));
+$('collectBurst').addEventListener('click',collectBurst);$('cancelBurst').addEventListener('click',cancel);
+$('thinCaptures').addEventListener('click',thinCaptures);
+$('phaseMaximum').addEventListener('change',changePoolSize);$('keepCount').addEventListener('change',refresh);
+$('scanInterval').addEventListener('change',()=>{if(stream)restartScanner();});
+$('clearCaptures').addEventListener('click',()=>{receiverEpoch++;scanner.stop();buffer.reset();budgetFull=false;distances.clear();originalAttempts.clear();activeKey=null;activeInfo=null;if(stream)scanner.start();status('Batch cleared. The physical session ID is retained for the next capture file.');refresh();});
+$('newReceiverSession').addEventListener('click',()=>{receiverEpoch++;scanner.stop();buffer.reset();budgetFull=false;distances.clear();originalAttempts.clear();activeKey=null;activeInfo=null;receiverSession=session('receiver');if(stream)scanner.start();status('Samples cleared. A new physical receiver session is ready.');refresh();});
+$('downloadCaptures').addEventListener('click',()=>saveJSON({...buffer.export({notes:$('captureNotes').value,sessionId:receiverSession,camera:cameraInfo()}),
+  collection:{maxPerPhase:phaseMaximum(),keepRandom:keepCount(),scanIntervalMs:Number($('scanInterval').value),
+    distances:[...distances].map(([key,value])=>({key,...value.result,current:value.revision===buffer.revision(key),beforeThinning:value.previous}))}},`decoder-captures-${receiverSession}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`));
 window.addEventListener('pagehide',shutdown);document.addEventListener('visibilitychange',()=>{if(document.hidden)shutdown();});
 if(!supported)showError('Use a current browser with Web Workers and Web Crypto on trusted HTTPS or localhost.');
 refresh();enumerateCameras();

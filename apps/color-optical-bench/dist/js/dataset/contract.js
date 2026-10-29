@@ -3,8 +3,8 @@ import {capacity, encodeSequence, phaseFrames, parseHeader, frameKey, randomByte
 
 export const DATASET_FORMAT = 'optical-decoder-dataset';
 export const DATASET_VERSION = 1;
-export const MAX_CAPTURE_BYTES = 32 * 1024 * 1024;
-export const MAX_RECORDS = 20;
+export const MAX_CAPTURE_BYTES = 160 * 1024 * 1024;
+export const MAX_RECORDS = 128;
 export const captureKey = info => `${frameKey(info)}/${info.phase}`;
 export function canonicalJSON(value) {
   if(Array.isArray(value))return `[${value.map(canonicalJSON).join(',')}]`;

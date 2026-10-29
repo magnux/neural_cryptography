@@ -4,7 +4,7 @@ import {readFile,writeFile,mkdir,stat,realpath,readdir} from 'node:fs/promises';
 import {resolve,dirname,join,sep,isAbsolute} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
-import {createSender,senderFrames,captureKey,base64ToBytes,floatBytes,floatsFromBytes,DATASET_FORMAT,validateSessionId,canonicalJSON} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
+import {createSender,senderFrames,captureKey,base64ToBytes,floatBytes,floatsFromBytes,DATASET_FORMAT,validateSessionId,canonicalJSON,MAX_RECORDS,MAX_CAPTURE_BYTES} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
 import {validateCapture} from '../apps/color-optical-bench/dist/js/dataset/capture.js';
 import {renderFrame,parseHeader,PALETTE,sameBytes} from '../apps/color-optical-bench/dist/js/format.js';
 import {gridLayout} from '../apps/color-optical-bench/dist/js/grid.js';
@@ -12,7 +12,7 @@ import {extractLearnedInput,logitsToLogicalScores} from '../apps/color-optical-b
 import {classifySamples,decodeScores} from '../apps/color-optical-bench/dist/js/vision.js';
 
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
-const MAX_JSON=36*1024*1024;
+const MAX_JSON=MAX_CAPTURE_BYTES+4*1024*1024;
 function int(value,def,min,max){const n=value===undefined?def:Number(value);if(!Number.isInteger(n)||n<min||n>max)throw Error('Invalid numeric argument.');return n;}
 function splitName(value='train'){if(!['train','validation','test'].includes(value))throw Error('Use split train, validation, or test.');return value;}
 function flags(args) {
@@ -101,7 +101,7 @@ export async function joinCaptures(options) {
   const dataset={format:DATASET_FORMAT,version:1,created:new Date().toISOString(),samples:[],excluded:[],diagnostics:[]},ids=new Set();
   await freshDirectory(out);
   for(const path of options.captures.split(',')) {
-    const bundle=await jsonFile(path);if(bundle.format!=='optical-decoder-captures'||bundle.version!==1||!Array.isArray(bundle.records)||bundle.records.length>20)throw Error('Unsupported receiver capture bundle.');
+    const bundle=await jsonFile(path);if(bundle.format!=='optical-decoder-captures'||bundle.version!==1||!Array.isArray(bundle.records)||bundle.records.length>MAX_RECORDS)throw Error('Unsupported receiver capture bundle.');
     validateSessionId(bundle.sessionId);
     for(let i=0;i<bundle.records.length;i++) {
       const captureId=`${bundle.sessionId}/${bundle.records[i].timestamp}`;

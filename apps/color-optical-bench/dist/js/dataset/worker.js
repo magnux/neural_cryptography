@@ -1,5 +1,8 @@
+import {extractCapture} from '../vision.js';
+import {captureKey} from './contract.js';
 import {createSender} from './contract.js';
 import {captureFrame,validateCapture} from './capture.js';
+import {meanCaptureDistance} from './diversity.js';
 import {renderFrame} from '../format.js';
 
 let busy=false;
@@ -27,18 +30,27 @@ self.onmessage=async event=>{
       const {frame,pixels}=options;
       if(![1024,2048].includes(pixels)||![64,128].includes(frame?.size)||![4,16].includes(frame?.colors))throw Error('Unsupported capture display profile.');
       result=renderFrame(frame,pixels);transfer=[result.data.buffer];
-    }else if(operation==='capture'){
+    }else if(operation==='compare'){
+      result=meanCaptureDistance(options.signatures);
+    }else if(operation==='capture'||operation==='probe'){
       const {image,timestamp,camera,original=false}=options;
       if(!image||!Number.isSafeInteger(image.width)||!Number.isSafeInteger(image.height)||
          image.width<32||image.height<32||image.width*image.height>2073600||
          !(image.data instanceof Uint8ClampedArray)||image.data.length!==image.width*image.height*4)throw Error('Capture exceeds the 1080p pixel limit or has invalid pixels.');
       // No sender manifest, labels, expected bytes, or sequence seed enters here.
-      result=await captureFrame(image,{timestamp,camera});
+      if(operation==='probe'){
+        const detected=extractCapture(image,{preview:false});
+        const supported=[64,128].includes(detected.info?.size)&&[4,16].includes(detected.info?.colors);
+        result={timestamp,camera,probe:true,ok:Boolean(detected.samples)&&supported,
+          info:detected.info,key:detected.info?captureKey(detected.info):null,
+          transform:detected.transform,stats:detected.stats,stage:supported?detected.stage:(detected.info?'profile':detected.stage),
+          error:detected.info&&!supported?'Collection supports 64/128 grids and 4/16 colors.':detected.error};
+      }else result=await captureFrame(image,{timestamp,camera,signature:true});
       if(original){
         try{const snapshot=await originalPNG(image);if(snapshot.omitted)result.originalNote=snapshot.omitted;else result.original=snapshot;}
         catch(error){result.originalNote=`Original snapshot unavailable: ${error.message}`;}
       }
-      if(result.ok)validateCapture(result);
+      if(result.ok&&!result.probe){validateCapture(result);transfer=[result.signature.buffer];}
     }else throw Error('Unknown dataset operation.');
     self.postMessage({id,type:'result',result},transfer);
   }catch(error){self.postMessage({id,type:'error',error:error.message||String(error)});}

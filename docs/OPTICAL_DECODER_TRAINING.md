@@ -30,21 +30,44 @@ does not need PyTorch, model files, or ONNX Runtime. Use the existing
 2. Use **Focus matrix** to fit the complete marker into the screen. The display
    stays static. Close focus to change phase after the receiver finishes.
 3. On the receiver, choose **Collect camera samples**, select the camera and
-   **720p**, and press **Check alignment**. A valid monochrome header is required
-   for a labeled sample; payload CRC may fail and the example is still useful.
-4. Hold the displayed phase unchanged for a second, then collect **5 samples**
-   at **500 ms spacing**. The collector first waits for consecutive identical
-   valid headers across a 500 ms guard. Detection loss resets that guard.
-5. After collection stops, advance the sender manually and repeat for the four
-   phases. Save receiver captures, then use **Clear downloaded batch**. This
-   keeps the physical session ID, so batches from one session stay in one split.
-6. Generate a second fresh sequence, save its sender manifest, and repeat.
+   **720p**, and press **Start camera**. Alignment scans start automatically at
+   the selected interval (500 ms by default; 250/500/1000/2000 ms available).
+   There is only one in-flight worker task; slow processing lowers the actual
+   scan rate. The translucent green rectangle fills the detected matrix area.
+   An unreadable header clears the fill. The overlay is never part of saved pixels.
+4. Set **Maximum per phase (m)** to **32** and **Keep at random (n)** to **16**.
+   Press **Start / resume collection** once. Each new matrix/phase must have
+   consecutive identical valid headers over at least 500 ms before saving starts.
+   Missing headers reset the guard. Payload CRC failures still produce useful
+   training examples. Collection waits indefinitely while the page is visible;
+   pause it or stop the camera when finished.
+5. At 32 samples the phase pool stops growing but alignment keeps running. To
+   vary observations, make a small angle/distance adjustment while keeping the
+   matrix visible, then press **Keep 16 at random & resume**. This replaces the
+   current phase's pool with a uniform random subset and fills the free slots
+   with new captures after a fresh stability guard. Other phase pools are intact.
+   Maximum choices are 8/16/32/64; retention choices are 4/8/16/32, strictly below
+   the maximum. Changing the maximum never silently deletes existing samples;
+   use the thinning button if a pool already exceeds the new setting.
+6. The **Mean RGB distance** updates automatically for the current phase. Note
+   the value after the initial fill and after two or three thin/refill cycles.
+   The previous pre-thinning value remains visible for comparison. Do not mix
+   phases to raise the metric. It is diagnostic, not a quality target or an
+   automatic near-duplicate rejection rule (see below).
+7. When ready, advance the sender manually. Collection remains armed and starts
+   a separate pool after the new phase passes the guard. Pause collection before
+   **Save receiver captures**, then **Clear downloaded batch** before resuming.
+   Clearing keeps the physical session ID. Download once per final batch: saving
+   overlapping copies and joining both creates duplicate capture IDs.
+8. Generate a second fresh sequence, save its sender manifest, and repeat.
    Include easy captures and mild motion, focus/white-balance changes, different
-   distances, and moiré. Avoid advancing the display during a burst.
-7. Record device/direction/brightness/conditions in the notes. Repeat with roles
-   reversed, and collect the 4-color control. Use **New physical session** when
-   changing the arrangement or returning later; do not assign adjacent bursts
-   to different splits merely by starting another file.
+   distances, and moiré. Keep each displayed phase static while collecting.
+9. Record device/direction/brightness/conditions in the notes. Repeat with roles
+   reversed when alignment permits, and collect the 4-color control. Start a
+   **New physical session** when changing camera/device arrangement or returning
+   later; rear and front cameras should have distinct session IDs. Keep entire
+   sessions together in a split. Stopping the camera or hiding the page pauses
+   collection and preserves the samples; reopening does not restart the camera.
 
 An initial collection can use two training sessions and one validation session
 per direction, with two fresh payloads per session. Reserve a later session for
@@ -52,13 +75,41 @@ the final test, before selecting model settings. This is a starting budget,
 not enough to establish generalization to other screen/camera pairs. Add data
 where the held-out failures show a gap.
 
-Each download is capped at **20 saved samples / 32 MiB** of encoded data, plus
-bounded diagnostic counts within that same byte budget. G128 may hit the byte
-limit before the sample limit. Optional original PNGs are limited to two per
+Each download is capped at **128 saved samples / 160 MiB** of encoded data
+across all phase pools, with at most 100 diagnostics within the same byte budget.
+The byte budget can stop a G128 batch before its requested sample counts; this
+pauses collection and asks you to save/clear. Use a smaller per-phase maximum
+on memory-constrained phones. Browser memory use is higher than export size,
+especially during JSON download. Optional original PNGs are limited to two per
 batch and 1 MiB each; oversized originals are omitted while tensor collection
 continues. The receiver file contains calibrated pixels and may contain the
-camera scene if originals are enabled. Store all downloads in ignored
-`local-data/`; do not commit camera files.
+camera scene if originals are enabled. Store downloads in ignored `local-data/`.
+
+### Interpreting diversity
+
+The worker samples the same 1,024 stratified, deterministically jittered RGB
+positions in each aligned, color-corrected dense crop. It computes the RMS RGB
+difference for every pair of retained signatures, then averages those distances.
+The displayed percentage is relative to the nominal 0–255 RGB range (normalization
+is inverted by a factor of 127.5); calibrated overshoot can exceed that range.
+It is an estimate from sampled pixels, not the full-tensor distance. Fewer than
+two samples displays no metric. Signatures are temporary and are not exported
+as training features. Only captures with the same complete frame identity and
+palette phase are compared. Computation stays in the worker.
+
+Random thinning is deliberately independent of pixels, CRC outcome, and labels.
+It can retain near-duplicates and can lower or raise the mean. Blur, registration
+errors, and strong noise can also raise distance, so do not maximize it blindly.
+A stable value across several cycles is a useful observation, not evidence that
+all device conditions are covered. Capture both easy and difficult conditions.
+Receiver exports include current collection settings, per-phase distance summaries
+(with a `current` flag), and the most recent 100 thinning events. These metadata
+never influence decoding or offline labels.
+
+For the next device check, report camera/direction, grid/palette, scan interval,
+chosen m/n, retained counts, distance after the initial fill and after each refill,
+and whether the green overlay remains easy to see. Include failures to acquire
+markers/headers separately; this iteration improves collection, not the detector.
 
 The guard cannot prove the absence of a rolling-shutter display transition.
 Keep the sender static, review questionable captures, and exclude mixed frames

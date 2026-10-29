@@ -62,6 +62,11 @@ test('offline joining requires full header match and preserves receiver session 
   const labels=await readFile(join(out,m.samples[0].labels));assert.deepEqual(new Uint8Array(labels),frame.symbols);
   const conflicting={...sender.manifest,sessionId:'another-session'},s2=join(root,'sender2.json');await writeFile(s2,JSON.stringify(conflicting));
   await assert.rejects(joinCaptures({out:join(root,'conflict'),senders:`${s},${s2}`,captures:r}),/Conflicting sender/);
+  const larger=bundle(),first=larger.records[0];
+  larger.records=Array.from({length:24},(_,i)=>({...first,timestamp:first.timestamp+i*600}));
+  await writeFile(r,JSON.stringify(larger));
+  const largeResult=await joinCaptures({out:join(root,'large-pool'),senders:s,captures:r});
+  assert.equal(largeResult.samples,24,'current importer accepts pools larger than 20');
   const broken=bundle();broken.records[0].info.bits=1;await writeFile(r,JSON.stringify(broken));
   await assert.rejects(joinCaptures({out:join(root,'bad'),senders:s,captures:r}),/metadata/);
   const invalid=bundle();invalid.records[0].stability.observations=null;await writeFile(r,JSON.stringify(invalid));
