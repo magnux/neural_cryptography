@@ -27,6 +27,16 @@ Pilot defaults: 20,000 updates at 1e-4. With `--initialize`: 32,000 updates at
 and a configurable 1 TiB estimated output budget (`--max-output-mib 0` disables
 that estimate). Browser capture limits remain independent.
 
+Synthetic generation now also includes burst-correlated white-balance shifts,
+over/underexposure, and translucent black or white rectangles covering roughly
+one quarter of a crop. Defaults are enabled by the existing commands;
+`--white-balance-stops`, `--exposure-stops`, `--shade-opacity`, and
+`--shade-probability` control them. Reuse clean corpora and real recordings, and
+regenerate corrupted synthetic corpora into empty output directories before
+training. See the [training guide](../../docs/OPTICAL_DECODER_TRAINING.md#generate-the-synthetic-pilot)
+for ranges and provenance. These are residual calibrated-RGB approximations;
+held-out real recovery must establish their value.
+
 ## Setup and export
 
 From the repository root, in your Python virtual environment:
@@ -134,7 +144,8 @@ load time, backend, model hash, and UI responsiveness.
 
 ## Files and acceptance
 
-- `model.py`: the small single-frame U-Net, with no normalization layers.
+- `model.py`: compact and wide single-frame U-Nets; wide adds feature-channel
+  LayerNorm and an unnormalized cell-RGB readout.
 - `contract.py`: shape constants, RGB normalization, fixture generation, numeric
   parity, and little-endian serialization.
 - `export.py`: static ONNX graphs, optional explicit native-runtime validation,
@@ -143,7 +154,8 @@ load time, backend, model hash, and UI responsiveness.
   graph shape checks, and actual runtime parity.
 - `checkpoint.py`: one bounded checkpoint loader for training, evaluation, and export.
 - `data.py`: hashed local datasets and whole-session/payload split checks.
-- `synthetic.py`: correlated moiré, blur, sampling, color, and noise corruptions.
+- `synthetic.py`: correlated moiré, blur, sampling, white-balance/exposure,
+  translucent shading, and noise corruptions.
 - `train.py`: shape/palette-grouped AdamW training, real/synthetic mixtures, and validation selection.
 - `evaluate.py`: held-out cell/confidence metrics and exact recovery through the canonical JS decoder.
 - `../../scripts/decoder-dataset.mjs`: canonical clean examples, offline joins, baseline refresh, and CRC/RS evaluation.

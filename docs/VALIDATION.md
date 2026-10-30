@@ -217,3 +217,25 @@ Validation on this host:
 The controller is exercised with a deterministic DOM/camera/worker harness; a
 physical-device layout/capture check remains necessary. No trained wide weights
 are shipped and no improved real optical recovery is claimed.
+
+## Broader synthetic lighting — 2026-10-30
+
+The generator now includes burst-correlated residual white balance and signed
+exposure, plus a translucent black or white rectangle covering 20–30% of affected
+crops. Each effect has a CLI control. A separate photometric random stream keeps
+moiré, motion, and sensor-noise draws fixed when toggling the new effects.
+Algorithm/settings hashes distinguish synthetic recipes without changing the
+recording or dataset formats, supervision, or session/payload split ownership.
+
+- **14 affected Python tests passed**: six photometric tests and eight existing
+  training/data tests. Checks cover both crop sizes, deterministic generation,
+  exposure signs and clipping, WB bounds, quarter-area shade blending, temporal
+  correlation, disabled controls, invalid options, unchanged labels/masks/bytes,
+  recipe identity, corrupted-input baselines, and the existing optimizer/split
+  checks.
+- A CLI smoke generated and loaded **eight 16-color crops across all four palette
+  phases** with custom lighting settings, verifying hashes, tensors, and recorded
+  controls through the current dataset reader and canonical baseline bridge.
+
+These checks establish generator correctness, not improved learned recovery.
+No full training or held-out real-device evaluation was performed for this change.

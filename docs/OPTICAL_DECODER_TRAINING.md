@@ -163,6 +163,13 @@ independent decoding to measure whether accepted output is exact.
 
 Use the experiment's pinned dependencies in a virtual environment. Select an
 appropriate PyTorch CUDA build for the 4090; CPU works for small smoke runs.
+If you already generated the clean corpora below, reuse them: only the corrupted
+synthetic train/validation/test corpora need regeneration to include the new
+photometric effects. Existing real recordings and joined datasets remain usable;
+their recording and dataset formats have not changed. Choose empty output
+directories; generation refuses to overwrite an existing corpus. If you keep the
+previous generated data for comparison locally, use new output paths here and
+pass those same paths to training and evaluation.
 
 ```sh
 python -m pip install -r experiments/optical-decoder/requirements.txt
@@ -198,10 +205,35 @@ CLI accepts multiple directories. Use the same pattern for G128 when ready.
 
 The generator applies an RGB stripe carrier before blur/resampling, curved and
 chirped channel-dependent moiré, bounded subcell jitter, short motion blur,
-color/exposure/gamma changes, clipping, and shot/read noise. Disturbance evolves
-across a burst rather than drawing unrelated images. This is a **calibrated-crop
-approximation**; it does not simulate the full optical sensor or header failures.
-Real held-out examples determine whether it covers the device's artifacts.
+color/gamma changes, clipping, and shot/read noise. The following effects are
+enabled by default, so the existing commands above also generate them:
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `--white-balance-stops` | `.6` | Channel-dependent RGB gains, in 80% of bursts; the maximum absolute log2 gain is scaled by severity. |
+| `--exposure-stops` | `1.5` | Signed exposure gain, in 80% of bursts, including both underexposure and overexposure; the maximum absolute log2 gain is scaled by severity. |
+| `--shade-opacity` | `.45` | Maximum alpha for a translucent black or white rectangle, scaled by severity. |
+| `--shade-probability` | `.7` | Fraction of bursts receiving a rectangle; its area is sampled between 20% and 30% of the crop. |
+
+At `--severity .65`, the respective maximum strengths are ±0.39 stops of
+white-balance gain, ±0.975 stops of exposure gain, and 0.2925 rectangle opacity.
+Zero strength disables the corresponding added effect; use
+`--shade-probability 0` to disable rectangles. `--severity 0` returns the clean
+crop unchanged. The generator records its algorithm and settings in synthetic
+provenance so different corruption runs can be distinguished.
+
+The white-balance and exposure offsets are shared across each burst with mild
+correlated drift. A rectangle retains its color and approximate placement,
+with softened edges and slight motion. These are semi-transparent blends, not
+opaque cutouts, and neither their selection nor their parameters use payload
+symbols or labels. The mixture includes milder captures as well as difficult
+ones; saturation can still erase color information and cannot always be undone.
+
+Disturbances evolve across a burst rather than drawing unrelated images. This
+is a **calibrated-crop approximation** of residual color distortion; it does
+not simulate the full camera pipeline, recalibration, or header failures.
+More varied synthetics are not evidence of improved device recovery: held-out
+real sessions determine whether the added effects reduce the observed gap.
 Synthetic classical baselines are recomputed from the same corrupted crop;
 real baselines use the independently captured current-exposure samples.
 
@@ -295,9 +327,11 @@ directly comparable with real-only validation loss.
 
 The code review found no obvious phase-label/channel-order error, but the log
 cannot establish the quality of the recorded examples or split coverage. The
-current synthetic corruption mostly produces easier captures than these real
-examples; it clips to the nominal RGB range while real affine-calibrated tensors
-can overshoot to [-1.5,1.5]. More training steps alone need not close that gap.
+synthetic generator used for that run mostly produced easier captures than these
+real examples. The added white-balance, exposure, and rectangle effects have not
+yet been evaluated on the devices. Synthetic crops still clip to the nominal RGB
+range while real affine-calibrated tensors can overshoot to [-1.5,1.5]. More
+training steps alone need not close that gap.
 Inspect representative rectified crops and labels offline, expand independent
 sessions/payloads in both directions, and compare per-session validation results.
 Do not reuse training sessions for validation when doubling the collection.

@@ -23,7 +23,7 @@ if HAS_TORCH:
     from checkpoint import load_checkpoint
     from evaluate import canonical_recovery, masked_loss
     from model import OpticalDecoder
-    from synthetic import corrupt_burst, generate
+    from synthetic import CORRUPTION_KIND, PhotometricConfig, corrupt_burst, generate
     from train import run_training, training_defaults, prepare_batch_groups, choose_batch
     torch.set_num_threads(1)
 
@@ -142,7 +142,9 @@ for (const count of [0, -1, 1.5, 2**20+1, 'x']) assert.throws(()=>generationCoun
         self.assertGreater(float(np.corrcoef(residuals[0], residuals[1])[0, 1]), .3)
         self.assertTrue(np.isfinite(burst).all())
         out = self.directory/"corrupted"
-        generate([self.directory/"train"], out, frames=2, seed=55)
+        result = generate([self.directory/"train"], out, frames=2, seed=55)
+        self.assertEqual(result["generator"]["kind"], CORRUPTION_KIND)
+        self.assertEqual(result["generator"]["photometric"]["exposure_stops"], 1.5)
         dataset = Dataset([out], "train")
         for item in dataset.samples:
             _, actual_labels, actual_mask = item.tensors()
@@ -150,6 +152,21 @@ for (const count of [0, -1, 1.5, 2**20+1, 'x']) assert.throws(()=>generationCoun
             np.testing.assert_array_equal(actual_mask, mask)
             self.assertEqual(item.metadata["payloadId"], sample.metadata["payloadId"])
             self.assertEqual(item.metadata["sessionId"], sample.metadata["sessionId"])
+            self.assertEqual(item.metadata["split"], sample.metadata["split"])
+            self.assertEqual(item.metadata["synthetic"]["recipeSha256"], result["generator"]["recipeSha256"])
+            for field in ("labels", "mask", "expected"):
+                self.assertEqual(item.metadata["hashes"][field], sample.metadata["hashes"][field])
+            self.assertEqual(item.metadata["baselineMode"], "canonical-from-corrupted-input")
+            self.assertNotEqual(item.metadata["hashes"]["baseline"], sample.metadata["hashes"]["baseline"])
+        # Distinct corruption settings can coexist for the same payload/seed.
+        # Identical settings remain deterministic, including the canonical baseline.
+        repeated = generate([self.directory/"train"], self.directory/"repeat-corrupted", frames=2, seed=55)
+        self.assertEqual(result, repeated)
+        ablated = self.directory/"ablated"
+        disabled = generate([self.directory/"train"], ablated, frames=2, seed=55,
+                            photometric=PhotometricConfig(0, 0, 0, 0))
+        self.assertNotEqual(result["generator"]["recipeSha256"], disabled["generator"]["recipeSha256"])
+        self.assertEqual(len(Dataset([out, ablated], "train").samples), 4)
         with self.assertRaisesRegex(ValueError, "canonical synthetic clean"):
             generate([out], self.directory/"double")
 

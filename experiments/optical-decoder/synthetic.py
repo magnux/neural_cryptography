@@ -7,6 +7,7 @@ All frames in a burst retain the source session/payload split and physical label
 """
 
 import argparse
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 from pathlib import Path
@@ -18,6 +19,92 @@ import torch
 from torch.nn import functional as F
 
 from data import DATASET_FORMAT, Dataset, digest, local_path
+
+
+CORRUPTION_KIND = "correlated-calibrated-crop-v2"
+
+
+@dataclass(frozen=True)
+class PhotometricConfig:
+    """Maximum residual color distortions at severity=1, before camera noise."""
+
+    white_balance_stops: float = .6
+    exposure_stops: float = 1.5
+    shade_opacity: float = .45
+    shade_probability: float = .7
+
+    def __post_init__(self):
+        for name, limit in (("white_balance_stops", 4), ("exposure_stops", 4),
+                            ("shade_opacity", .95), ("shade_probability", 1)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not np.isfinite(value) or not 0 <= value <= limit:
+                raise ValueError(f"{name.replace('_', '-')} must be finite and in [0, {limit}]")
+
+
+def sample_photometric(rng, frames, severity, config):
+    """Draw a payload-independent, correlated trajectory and one optional shade.
+
+    Per-channel log2 gains have zero mean, separating color cast from exposure.
+    Keeping 20% of bursts free of each gain effect preserves easier examples.
+    The trajectory stays within the severity-scaled configured stop limits.
+    """
+    times = np.arange(frames, dtype=np.float32)
+    phases = rng.uniform(0, 2*np.pi, 3)
+    wb_limit = severity * config.white_balance_stops
+    temperature, tint = rng.uniform(-1, 1, 2)
+    base = np.array([temperature, .35*tint, -temperature], dtype=np.float32)
+    base -= base.mean()
+    base /= max(1., float(np.max(np.abs(base))))
+    drift = np.stack([np.sin(times*.35+p) for p in phases], axis=1)
+    drift -= drift.mean(axis=1, keepdims=True)
+    drift /= max(1., float(np.max(np.abs(drift))))
+    wb_stops = wb_limit * (.85*base[None] + .15*drift)
+    if rng.random() >= .8:
+        wb_stops[:] = 0
+    exposure = severity*config.exposure_stops * (
+        .85*rng.uniform(-1, 1) + .15*np.sin(times*.3+rng.uniform(0, 2*np.pi)))
+    if rng.random() >= .8:
+        exposure[:] = 0
+    shade = None
+    if config.shade_opacity > 0 and severity > 0 and rng.random() < config.shade_probability:
+        area, aspect = rng.uniform(.20, .30), rng.uniform(.65, 1.55)
+        width, height = float(np.sqrt(area*aspect)), float(np.sqrt(area/aspect))
+        shade = {"x": float(rng.uniform(0, 1-width)), "y": float(rng.uniform(0, 1-height)),
+                 "width": width, "height": height, "color": int(rng.integers(0, 2)),
+                 "opacity": float(severity*config.shade_opacity*rng.uniform(.35, .9)),
+                 "feather": float(rng.uniform(.002, .008)),
+                 "driftX": float(rng.uniform(-.006, .006)),
+                 "driftY": float(rng.uniform(-.006, .006)),
+                 "phase": float(rng.uniform(0, 2*np.pi))}
+    return {"whiteBalanceGains": np.exp2(wb_stops).astype(np.float32),
+            "exposureStops": exposure.astype(np.float32), "shade": shade}
+
+
+def apply_color_exposure(image, white_balance_gains, exposure_stops):
+    """Residual RGB gains with highlight/shadow clipping, not a raw-sensor model."""
+    gains = torch.as_tensor(white_balance_gains, dtype=image.dtype, device=image.device)[:, None, None]
+    return (image*gains*float(2.**exposure_stops)).clamp(0, 1)
+
+
+def rectangle_alpha(side, shade, frame):
+    """Soft-edged, translucent rectangle with small correlated positional drift."""
+    axis = (torch.arange(side, dtype=torch.float32)+.5)/side
+    movement = np.sin(frame*.35+shade["phase"])-np.sin(shade["phase"])
+    left = float(np.clip(shade["x"]+shade["driftX"]*movement, 0, 1-shade["width"]))
+    top = float(np.clip(shade["y"]+shade["driftY"]*movement, 0, 1-shade["height"]))
+    feather = shade["feather"]
+    # Feather inward so the footprint remains the sampled 20–30% rectangle.
+    horizontal = torch.minimum((axis-left)/feather, (left+shade["width"]-axis)/feather).clamp(0, 1)
+    vertical = torch.minimum((axis-top)/feather, (top+shade["height"]-axis)/feather).clamp(0, 1)
+    opacity = shade["opacity"]*(1+.1*np.sin(frame*.3+shade["phase"]))
+    return opacity*vertical[:, None]*horizontal[None, :]
+
+
+def apply_rectangle_shade(image, shade, frame=0):
+    if shade is None:
+        return image
+    alpha = rectangle_alpha(image.shape[-1], shade, frame).to(image)
+    return image*(1-alpha)+shade["color"]*alpha
 
 
 def gaussian_blur(image: torch.Tensor, sigma: float) -> torch.Tensor:
@@ -34,11 +121,13 @@ def gaussian_blur(image: torch.Tensor, sigma: float) -> torch.Tensor:
                     kernel.view(1, 1, -1, 1).expand(channels, 1, -1, 1), groups=channels)
 
 
-def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float = .65) -> np.ndarray:
+def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float = .65,
+                  *, photometric: PhotometricConfig | None = None) -> np.ndarray:
     """Return [T,3,H,W]; a shared texture evolves under small motion/focus shifts.
 
     Labels are unaffected by less than half-cell registration jitter. Spatial
-    aliasing, curved multi-channel bands, blur, exposure changes, and shot/read
+    aliasing, curved multi-channel bands, blur, white balance, signed exposure,
+    translucent rectangular shade/reflections, and shot/read
     noise vary independently of payload symbols. Seed is public augmentation data.
     """
     clean = np.asarray(clean, dtype=np.float32)
@@ -48,6 +137,7 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
         raise ValueError("Input violates the finite normalized crop contract")
     if not 1 <= frames <= 16 or not 0 <= severity <= 1 or not 0 <= seed <= 0xffffffff:
         raise ValueError("Frames 1–16, severity 0–1, uint32 seed required")
+    photometric = photometric or PhotometricConfig()
     if severity == 0:
         return np.repeat(clean[None], frames, axis=0).copy()
     rng = np.random.default_rng(seed)
@@ -73,6 +163,10 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
     base_sigma = rng.uniform(.15, 1.3) * severity
     base_shift = rng.uniform(-.6, .6, 2) * severity
     drift = rng.uniform(-.18, .18, 2) * severity
+    # Separate stream: toggling photometric controls does not redraw moiré,
+    # motion or sensor noise, making controlled ablations easier to interpret.
+    lighting_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x50484f54]))
+    lighting = sample_photometric(lighting_rng, frames, severity, photometric)
     outputs = []
     for t in range(frames):
         blurred = gaussian_blur(high, base_sigma + severity*.15*np.sin(t*.6+phase0))
@@ -91,8 +185,9 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
                              for c in range(3)])
         observed = observed + amplitudes*bands
         observed = torch.einsum("cd,dhw->chw", color_mix, observed) * illumination
-        gain = 1 + severity * (.07*np.sin(phase*.6) + (.08 if t == frames//2 else 0))
-        observed = (observed*gain).clamp(0, 1).pow(gamma)
+        observed = apply_color_exposure(observed, lighting["whiteBalanceGains"][t],
+                                         lighting["exposureStops"][t]).pow(gamma)
+        observed = apply_rectangle_shade(observed, lighting["shade"], t)
         # Shot variance follows intensity; read noise is independent per capture.
         std = severity*(.008 + .025*observed.sqrt())
         noise = torch.from_numpy(rng.normal(size=clean.shape).astype(np.float32))
@@ -101,9 +196,14 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
     return np.stack(outputs).astype(np.float32, copy=False)
 
 
-def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65, max_output_mib=2**20, node="node"):
+def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
+             max_output_mib=2**20, node="node", photometric: PhotometricConfig | None = None):
     if not isinstance(max_output_mib, int) or isinstance(max_output_mib, bool) or max_output_mib < 0:
         raise ValueError("max-output-mib must be a nonnegative integer; zero disables the estimate limit")
+    photometric = photometric or PhotometricConfig()
+    recipe = {"kind": CORRUPTION_KIND, "seed": seed, "severity": severity,
+              "frames": frames, "photometric": asdict(photometric)}
+    recipe_hash = hashlib.sha256(json.dumps(recipe, sort_keys=True, allow_nan=False).encode()).hexdigest()
     dataset = Dataset(clean_directories)
     if any(sample.metadata["source"] != "synthetic" or "synthetic" in sample.metadata for sample in dataset.samples):
         raise ValueError("Generate corruptions from canonical synthetic clean datasets only; real captures remain unchanged")
@@ -122,15 +222,15 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65, ma
         sample.read("baseline", "<f4")
         sample.read("expected", "u1")
         derived = int.from_bytes(hashlib.sha256(f"{seed}/{sample.id}".encode()).digest()[:4], "little")
-        burst = corrupt_burst(pixels, derived, frames, severity)
+        burst = corrupt_burst(pixels, derived, frames, severity, photometric=photometric)
         for index, value in enumerate(burst):
-            identifier = hashlib.sha256(f"{sample.id}/{seed}/{index}".encode()).hexdigest()[:24]
+            identifier = hashlib.sha256(f"{sample.id}/{recipe_hash}/{index}".encode()).hexdigest()[:24]
             directory = out / identifier
             directory.mkdir()
             record = {**sample.metadata, "id": identifier, "hashes": {},
                       "source": "synthetic", "synthetic": {"seed": derived, "frame": index,
                       "frames": frames, "severity": severity, "parentId": sample.id,
-                      "kind": "correlated-calibrated-crop-v1"},
+                      "kind": CORRUPTION_KIND, "recipeSha256": recipe_hash},
                       "baselineMode": "canonical-from-corrupted-input"}
             for field in ("input", "labels", "mask", "baseline", "expected"):
                 suffix = {"input": "f32", "baseline": "f32", "expected": "bin"}.get(field, "u8")
@@ -145,7 +245,7 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65, ma
             record.pop("samples", None)
             records.append(record)
     manifest = {"format": DATASET_FORMAT, "version": 1, "samples": records,
-                "generator": {"seed": seed, "severity": severity, "frames": frames,
+                "generator": {**recipe, "recipeSha256": recipe_hash,
                               "sourceManifestSha256": dataset.manifest_hash,
                               "note": "Correlated calibrated-crop approximation; real-device evaluation is required."}}
     (out/"manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
@@ -166,6 +266,14 @@ def main():
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--frames", type=int, default=7)
     parser.add_argument("--severity", type=float, default=.65)
+    parser.add_argument("--white-balance-stops", type=float, default=.6,
+                        help="max residual per-channel log2 gain at severity 1 (default: .6); 0 disables")
+    parser.add_argument("--exposure-stops", type=float, default=1.5,
+                        help="max absolute exposure log2 gain at severity 1 (default: 1.5); 0 disables")
+    parser.add_argument("--shade-opacity", type=float, default=.45,
+                        help="max translucent black/white rectangle opacity at severity 1 (default: .45); 0 disables")
+    parser.add_argument("--shade-probability", type=float, default=.7,
+                        help="fraction of bursts with one 20–30%% area rectangle (default: .7)")
     parser.add_argument("--max-output-mib", type=int, default=2**20, help="estimated binary output budget in MiB (default: 1 TiB); 0 disables the limit")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--node", default="node")
@@ -174,8 +282,11 @@ def main():
         parser.error("threads must be 1–64 and max-output-mib nonnegative")
     torch.set_num_threads(args.threads)
     try:
+        photometric = PhotometricConfig(args.white_balance_stops, args.exposure_stops,
+                                         args.shade_opacity, args.shade_probability)
         result = generate(args.clean, args.out, seed=args.seed, frames=args.frames,
-                          severity=args.severity, max_output_mib=args.max_output_mib, node=args.node)
+                          severity=args.severity, max_output_mib=args.max_output_mib, node=args.node,
+                          photometric=photometric)
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f"Synthetic generation failed: {error}\n")
     print(f"Wrote {len(result['samples'])} correlated synthetic crops to {args.out.resolve()}")
