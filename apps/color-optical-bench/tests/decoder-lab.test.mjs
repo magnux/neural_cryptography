@@ -86,3 +86,11 @@ test('cancel terminates inference and late messages cannot resolve a new request
   workers[0].receive({id,type:'result',result:'stale'});
   workers[1].receive({id,type:'result',result:'current'});assert.equal(await second,'current');client.cancel();
 });
+
+test('active model profiles validate exact parameter counts without changing tensor shapes',()=>{
+  const compact={...manifest(),modelProfile:'compact'};validateManifest(compact);
+  const wide={...manifest(),modelProfile:'wide',parameterCount:487104};validateManifest(wide);
+  assert.throws(()=>validateManifest({...wide,modelProfile:'compact'}),/profile/);
+  assert.throws(()=>validateManifest({...wide,modelProfile:undefined}),/profile/);
+  assert.throws(()=>validateManifest({...wide,parameterCount:487105}),/manifest/);
+});

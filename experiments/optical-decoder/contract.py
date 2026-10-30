@@ -12,6 +12,7 @@ SIZES = (64, 128)
 PIXELS_PER_CELL = 4
 CHANNELS = 3
 CLASSES = 16
+# Compact is an active ablation. Wide exports record their actual parameter count.
 PARAMETER_COUNT = 121_792
 INPUT_NAME = "pixels"
 OUTPUT_NAME = "logits"

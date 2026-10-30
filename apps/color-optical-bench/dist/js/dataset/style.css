@@ -2,4 +2,36 @@
 /* Keep every marker visible on short laptop screens and narrow phones. */
 .capture-lab .sender-canvas-wrap{max-width:min(900px,calc(100vh - 160px));max-width:min(900px,calc(100dvh - 160px))}.capture-lab.matrix-focused{overflow:hidden}.capture-lab.matrix-focused .sender-canvas-wrap{position:fixed;inset:0;z-index:1000;max-width:none;width:100vw;height:100vh;height:100dvh;margin:0;box-sizing:border-box;padding:64px 12px 12px;display:flex;align-items:center;justify-content:center;background:#fff}.capture-lab.matrix-focused .sender-canvas-wrap canvas{width:min(calc(100vw - 24px),calc(100vh - 76px));width:min(calc(100vw - 24px),calc(100dvh - 76px));height:auto;flex:none}.capture-lab #closeFocus{position:fixed;top:12px;right:16px;z-index:1001;background:#fff;border:1px solid #a8b4a5;color:#274b37;padding:10px 14px}
 
-.capture-lab .capture-metrics{grid-template-columns:repeat(auto-fit,minmax(125px,1fr))}.capture-lab #activePhase{overflow-wrap:anywhere}.capture-lab #thinCaptures{border:1px solid #709578;background:#eff7eb}.capture-lab .capture-camera canvas{opacity:1}
+.capture-lab .capture-metrics{grid-template-columns:repeat(auto-fit,minmax(125px,1fr))}.capture-lab #activePhase{overflow-wrap:anywhere}.capture-lab .capture-camera canvas{opacity:1}
+/* Keep the controls, live counts, and alignment image in one phone-sized surface. */
+.capture-workbench{position:sticky;top:8px;z-index:4;background:#fff;border:1px solid #dce2d8;border-radius:9px;overflow:hidden;box-shadow:0 3px 14px #1733220d;margin:18px 0}
+.capture-toolbar{padding:12px 14px;background:#f7f9f3}
+.capture-lab .capture-settings{grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 10px}
+.capture-settings label{font-size:11px;gap:4px}
+.capture-settings select{padding:8px;font-size:12px}
+.capture-lab .capture-live-actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}
+.capture-live-actions button{min-width:0;padding:9px 5px;font-size:12px;min-height:37px;justify-content:center}
+.capture-live-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0 0}
+.capture-live-metrics dt{font-size:10px;color:#647068;white-space:nowrap}
+.capture-live-metrics dd{font-size:18px;font-weight:600;margin:3px 0 0;font-variant-numeric:tabular-nums}
+.capture-workbench .capture-camera{border-radius:0;aspect-ratio:auto;height:min(42vh,420px);height:min(42dvh,420px);min-height:130px}
+.capture-workbench .capture-status{font-size:12px;line-height:1.4;padding:8px 14px 0;margin:0;min-height:0}
+.capture-workbench #activePhase{padding:4px 14px 9px;margin:0;font-size:10px;line-height:1.3}
+.capture-lab .sender-session-actions{margin-top:64px;padding:28px 0 10px;border-top:1px solid #dce2d8;gap:24px}
+.capture-lab .sender-session-actions button{align-self:flex-end;min-height:44px;margin-top:8px}
+@media(max-width:650px){
+  .capture-toolbar{padding:10px}
+  .capture-lab .capture-settings{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:8px}
+  .capture-settings select{padding:7px 8px}
+  .capture-live-actions button{font-size:11px;padding:8px 3px}
+  .capture-live-metrics{margin-top:9px;gap:6px}
+  .capture-live-metrics dd{font-size:16px}
+  .capture-workbench{top:4px;margin-left:-7px;margin-right:-7px}
+  .capture-workbench .capture-camera{height:min(35vh,310px);height:min(35dvh,310px)}
+  .capture-lab .sender-session-actions{margin-top:80px;padding-top:30px;gap:20px}
+}
+@media(max-height:560px){
+  .capture-workbench{position:relative;top:0}
+  .capture-workbench .capture-camera{height:36vh;height:36dvh}
+  .capture-lab .capture-settings{grid-template-columns:repeat(4,minmax(0,1fr))}
+}

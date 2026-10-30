@@ -35,39 +35,42 @@ does not need PyTorch, model files, or ONNX Runtime. Use the existing
    There is only one in-flight worker task; slow processing lowers the actual
    scan rate. The translucent green rectangle fills the detected matrix area.
    An unreadable header clears the fill. The overlay is never part of saved pixels.
-4. Set **Maximum per phase (m)** to **32** and **Keep at random (n)** to **16**.
-   Press **Start / resume collection** once. Each new matrix/phase must have
-   consecutive identical valid headers over at least 500 ms before saving starts.
-   Missing headers reset the guard. Payload CRC failures still produce useful
-   training examples. Collection waits indefinitely while the page is visible;
-   pause it or stop the camera when finished.
-5. At 32 samples the phase pool stops growing but alignment keeps running. To
-   vary observations, make a small angle/distance adjustment while keeping the
-   matrix visible, then press **Keep 16 at random & resume**. This replaces the
-   current phase's pool with a uniform random subset and fills the free slots
-   with new captures after a fresh stability guard. Other phase pools are intact.
-   Maximum choices are 8/16/32/64; retention choices are 4/8/16/32, strictly below
-   the maximum. Changing the maximum never silently deletes existing samples;
-   use the thinning button if a pool already exceeds the new setting.
-6. The **Mean RGB distance** updates automatically for the current phase. Note
-   the value after the initial fill and after two or three thin/refill cycles.
-   The previous pre-thinning value remains visible for comparison. Do not mix
-   phases to raise the metric. It is diagnostic, not a quality target or an
-   automatic near-duplicate rejection rule (see below).
-7. When ready, advance the sender manually. Collection remains armed and starts
-   a separate pool after the new phase passes the guard. Pause collection before
+4. The camera, scan interval, recording buttons, and live counters sit above
+   the camera in one compact viewport. Set **Pool per phase** to **32** and press
+   **Record**. Each new matrix/phase needs consecutive identical valid headers
+   over at least 500 ms before saving. Missing headers reset the guard. Payload
+   CRC failures remain useful examples.
+5. The first 32 captures fill the pool. Recording then continues automatically:
+   a randomized, sampled-distance heuristic compares each new capture to the
+   current phase pool and may replace a redundant observation. The count remains
+   32; **Seen** and **Replaced** show continuing activity. Small angle, distance,
+   focus, or white-balance changes can provide new examples. No manual thinning
+   action is required. The maximum choices are 8/16/32/64; reducing it below a
+   retained pool requires saving and clearing first.
+6. **Mean distance** summarizes the current phase pool. Watch it together with
+   replacement count and the live image. A larger value is not automatically
+   better; avoid collecting only damaged images. See the heuristic below.
+7. Advance the sender manually when ready. Recording remains armed and starts
+   a separate pool after the new phase passes the guard. **Pause** before
    **Save receiver captures**, then **Clear downloaded batch** before resuming.
    Clearing keeps the physical session ID. Download once per final batch: saving
    overlapping copies and joining both creates duplicate capture IDs.
-8. Generate a second fresh sequence, save its sender manifest, and repeat.
-   Include easy captures and mild motion, focus/white-balance changes, different
-   distances, and moiré. Keep each displayed phase static while collecting.
+8. Generate fresh sequences and save each sender manifest. More sessions should
+   also contain new payloads, not only more correlated frames of a few messages.
+   Keep each displayed phase static while collecting. The sender's physical-session
+   button is separated from the matrix by extra spacing and a divider.
 9. Record device/direction/brightness/conditions in the notes. Repeat with roles
    reversed when alignment permits, and collect the 4-color control. Start a
    **New physical session** when changing camera/device arrangement or returning
    later; rear and front cameras should have distinct session IDs. Keep entire
    sessions together in a split. Stopping the camera or hiding the page pauses
-   collection and preserves the samples; reopening does not restart the camera.
+   recording and preserves samples; reopening does not restart the camera.
+
+**Recording files are unchanged:** sender and receiver formats, versions, record
+fields, tensor normalization, and offline label joining remain the same. Existing
+recordings can be joined directly. Existing optional collection metadata keeps
+its shape (`keepRandom` is now 0; `recentThinning` is empty). The selection method
+value describes automatic distance replacement. No conversion is needed.
 
 An initial collection can use two training sessions and one validation session
 per direction, with two fresh payloads per session. Reserve a later session for
@@ -97,19 +100,27 @@ two samples displays no metric. Signatures are temporary and are not exported
 as training features. Only captures with the same complete frame identity and
 palette phase are compared. Computation stays in the worker.
 
-Random thinning is deliberately independent of pixels, CRC outcome, and labels.
-It can retain near-duplicates and can lower or raise the mean. Blur, registration
-errors, and strong noise can also raise distance, so do not maximize it blindly.
-A stable value across several cycles is a useful observation, not evidence that
-all device conditions are covered. Capture both easy and difficult conditions.
-Receiver exports include current collection settings, per-phase distance summaries
-(with a `current` flag), and the most recent 100 thinning events. These metadata
-never influence decoding or offline labels.
+Once a phase pool is full, the worker draws up to eight reference samples and
+up to eight candidate records at random. It estimates novelty by nearest-reference
+RGB distance and replaces a crowded candidate only if novelty improves by more
+than max(0.05 percentage points, 5% of the candidate's crowding distance). For
+selection only, each RGB component's difference is capped at 25 percentage points
+so a few extreme pixels cannot dominate. An isolation guard rejects incoming
+samples farther than max(12 percentage points, three times the median reference
+pair distance). These are initial tunable heuristic constants, not correctness
+thresholds. Randomness chooses comparison subsets and resolves equal candidates.
 
-For the next device check, report camera/direction, grid/palette, scan interval,
-chosen m/n, retained counts, distance after the initial fill and after each refill,
-and whether the green overlay remains easy to see. Include failures to acquire
-markers/headers separately; this iteration improves collection, not the detector.
+Selection receives no labels or CRC outcome. It can miss duplicates outside the
+sampled references, and neither global mean distance nor image quality is guaranteed
+to increase. The displayed mean remains the ordinary, unclipped sampled RMS metric,
+so it is distinct from the clipped selection score. A phase's count stays bounded;
+replacement preserves the stable-header guard, byte budget, and snapshot limits.
+Receiver exports retain the same distance-summary fields and recording schema.
+
+For device checks, report camera/direction, grid/palette, interval, pool maximum,
+seen/replaced counts, mean distance at first fill and later, and whether the
+controls/counters and camera fit together on screen. Marker/header acquisition
+failures remain separate: this iteration improves collection, not the detector.
 
 The guard cannot prove the absence of a rolling-shutter display transition.
 Keep the sender static, review questionable captures, and exclude mixed frames
@@ -157,22 +168,30 @@ appropriate PyTorch CUDA build for the 4090; CPU works for small smoke runs.
 python -m pip install -r experiments/optical-decoder/requirements.txt
 
 node scripts/decoder-dataset.mjs generate --out local-data/clean-train \
-  --count 16 --size 64 --colors 16 --phases 4 --seed 100 --split train
+  --count 2048 --size 64 --colors 16 --phases 4 --seed 100 --split train
 node scripts/decoder-dataset.mjs generate --out local-data/clean-validation \
-  --count 4 --size 64 --colors 16 --phases 4 --seed 10000 --split validation
+  --count 256 --size 64 --colors 16 --phases 4 --seed 10000 --split validation
 node scripts/decoder-dataset.mjs generate --out local-data/clean-test \
-  --count 4 --size 64 --colors 16 --phases 4 --seed 20000 --split test
+  --count 256 --size 64 --colors 16 --phases 4 --seed 20000 --split test
 
 python experiments/optical-decoder/synthetic.py --clean local-data/clean-train \
-  --out local-data/synthetic-train --frames 3 --severity .65 --seed 7
+  --out local-data/synthetic-train --frames 7 --severity .65 --seed 7
 python experiments/optical-decoder/synthetic.py --clean local-data/clean-validation \
-  --out local-data/synthetic-validation --frames 3 --severity .65 --seed 8
+  --out local-data/synthetic-validation --frames 7 --severity .65 --seed 8
 python experiments/optical-decoder/synthetic.py --clean local-data/clean-test \
-  --out local-data/synthetic-test --frames 3 --severity .8 --seed 9
+  --out local-data/synthetic-test --frames 7 --severity .8 --seed 9
 ```
 
 `--count` counts fresh payloads; phases and burst frames multiply the resulting
-samples. Keep all outputs of one payload in the same split. Choose disjoint seed
+samples. These commands produce 57,344 corrupted training samples and 7,168 each
+for validation/test. They are offline disk workloads, not browser buffers.
+Generation accepts up to 2**20 payloads; corpus manifests allow 256 MiB and have
+no fixed sample-count ceiling. Synthetic output defaults to an estimated 2**20
+MiB budget (1 TiB); `--max-output-mib 0` explicitly removes that disk-budget check.
+The 256 MiB JSON bound still applies per manifest; use several corpus directories
+for larger collections. Python and JavaScript use the same offline manifest ceiling.
+Browser capture memory limits are separate and unchanged. Training partitions
+source pools once, avoiding a full-corpus scan on every microbatch. Keep all outputs of one payload in the same split. Choose disjoint seed
 ranges for clean corpora; changing a folder name is not a split. Add separate
 4-color corpora with fresh seeds to both training and validation; the training
 CLI accepts multiple directories. Use the same pattern for G128 when ready.
@@ -188,15 +207,18 @@ real baselines use the independently captured current-exposure samples.
 
 ## Train and evaluate
 
-The default pilot uses AdamW at 1e-3, 2,000 optimizer updates, microbatches of 4,
-and accumulation of 4 (effective batch 16). Microbatches share a grid size and
+The default fresh pilot uses **wide**, AdamW at **1e-4**, **20,000** optimizer
+updates, microbatches of 4, and accumulation of 4 (effective batch 16).
+With `--initialize`, defaults become **5e-5** and **32,000** updates, matching the
+completed attached run. `--steps 320000` remains an explicit option; the submitted
+log ended at 32,000 despite 320,000 in the copied command. Microbatches share a grid size and
 palette; inactive color classes are masked before cross-entropy.
 
 ```sh
 python experiments/optical-decoder/train.py \
   --train local-data/synthetic-train \
   --validation local-data/synthetic-validation \
-  --device cuda --steps 2000 --out checkpoints/optical-decoder/pilot
+  --model wide --device cuda --out checkpoints/optical-decoder/wide-pilot
 ```
 
 For a quick CPU pipeline check, use `--device cpu --steps 10 --batch-size 1
@@ -217,23 +239,26 @@ Fine-tune with real captures and synthetic examples at a lower learning rate:
 python experiments/optical-decoder/train.py \
   --train local-data/real-train local-data/synthetic-train \
   --validation local-data/real-validation \
-  --initialize checkpoints/optical-decoder/pilot/best.pt \
-  --real-fraction .5 --lr .0001 --device cuda --steps 2000 \
-  --out checkpoints/optical-decoder/real
+  --initialize checkpoints/optical-decoder/wide-pilot/best.pt \
+  --real-fraction .5 --device cuda \
+  --out checkpoints/optical-decoder/wide-real
 
 python experiments/optical-decoder/evaluate.py \
   --dataset local-data/real-test \
-  --checkpoint checkpoints/optical-decoder/real/best.pt --split test \
+  --checkpoint checkpoints/optical-decoder/wide-real/best.pt --split test \
   --device cuda --out local-results/optical-decoder/real-test.json
 ```
 
-Validation is bounded by `--validation-samples` (128 by default); set it to cover
-the intended validation sessions and profiles, and inspect the report's selected
-counts. Synthetic validation is only a pipeline/pilot check. After choosing the
-model on validation data, evaluate the untouched real test sessions once.
-The loader rejects overlaps of sender sessions, receiver sessions, and whole
-payloads, including checkpoint ancestry when fine-tuning. Keep original session
-IDs intact when moving or joining files.
+Training validation defaults to 128 captures, selected deterministically with
+round-robin coverage across receiver sessions, sources, and grid/palette profiles.
+Increase `--validation-samples` to cover the intended held-out corpus. Evaluation
+reports available/selected/omitted sessions and per-session cell error, phase
+counts, and exact recovery, so a poor camera direction cannot be hidden in a total.
+Standalone `evaluate.py --max-samples 0` evaluates all examples; there is no
+4,096-frame offline ceiling. Subset results are not full-corpus results.
+After model selection, evaluate untouched real test sessions once. The loader
+rejects overlapping sender sessions, receiver sessions, and payloads, including
+checkpoint ancestry. Keep original session IDs intact when moving or joining files.
 
 Reports include cell confusion/error, confidence calibration, raw CRC passes,
 ordinary RS and total acceptance, exact frames, wrong accepted frames, profile
@@ -241,11 +266,47 @@ counts, and inference timing. Both methods receive one exposure per candidate.
 This does not compare temporal windows or measure live goodput; those comparisons
 follow when connecting the selected model to the receiver.
 
+## Model profiles and the first training result
+
+| Profile | Parameters | Changes |
+| --- | ---: | --- |
+| `compact` | 121,792 | Existing plain U-Net baseline, including your trained checkpoints |
+| `wide` | 487,104 | Doubled feature widths; per-location channel LayerNorm on feature convolutions; unnormalized pooled RGB readout added to context logits |
+
+Both take `[N,3,4G,4G]` calibrated pixels and output `[N,16,G,G]` physical-color
+logits. LayerNorm does not normalize raw RGB or depend on batch statistics. The
+separate color readout preserves absolute color evidence. This is an architectural
+experiment, not a demonstrated improvement on real data. Wider browser inference
+needs fresh device latency measurements; fixed G64/G128 export and WASM parity
+are checked separately from recovery quality.
+
+Use `--model compact` for a fresh baseline. `--initialize` automatically retains
+the checkpoint's architecture; it does not widen existing weights. An explicit
+conflicting `--model` fails. To test wide, train a new pilot from your existing
+datasets, then fine-tune that pilot. Both are active profiles in the same current
+checkpoint representation; weights are validated exactly, never partially loaded.
+
+The supplied log selected compact's synthetic checkpoint at step 19,400:
+117/128 exact frames (91.41%) versus classical 124/128 (96.88%). Real validation
+selected step 30,600 by loss, with 48.33% cell error and zero exact frames for
+both methods. These are capped validation results, not full test-set results.
+The real run finishes at 32,000 steps. Mixed real/synthetic training loss is not
+directly comparable with real-only validation loss.
+
+The code review found no obvious phase-label/channel-order error, but the log
+cannot establish the quality of the recorded examples or split coverage. The
+current synthetic corruption mostly produces easier captures than these real
+examples; it clips to the nominal RGB range while real affine-calibrated tensors
+can overshoot to [-1.5,1.5]. More training steps alone need not close that gap.
+Inspect representative rectified crops and labels offline, expand independent
+sessions/payloads in both directions, and compare per-session validation results.
+Do not reuse training sessions for validation when doubling the collection.
+
 ## Export the selected checkpoint
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/real/best.pt \
+  --checkpoint checkpoints/optical-decoder/wide-real/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected

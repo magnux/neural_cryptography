@@ -98,7 +98,7 @@ class ExportTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary) / "bundle"
-            manifest = export_smoke(directory, check_ort=False)
+            manifest = export_smoke(directory, check_ort=False, profile="compact")
             self.assertEqual(manifest["status"], "untrained")
             self.assertEqual(manifest["parameterCount"], PARAMETER_COUNT)
             self.assertEqual(manifest["pythonParityStatus"]["status"], "not_run")

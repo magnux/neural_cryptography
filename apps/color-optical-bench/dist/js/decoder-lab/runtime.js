@@ -3,16 +3,19 @@ export const MODEL_FORMAT = 'optical-decoder';
 export const MAX_MODEL_BYTES = 4 * 1024 * 1024;
 export const PARITY_TOLERANCE = Object.freeze({atol: 1e-4, rtol: 1e-3});
 const shapeEqual = (a, b) => Array.isArray(a) && a.length === b.length && a.every((v, i) => v === b[i]);
+export const MODEL_PROFILES = Object.freeze({compact:121792,wide:487104});
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
 
 export function validateManifest(manifest) {
   if (!plain(manifest) || manifest.format !== MODEL_FORMAT || manifest.version !== 1 ||
-      !['untrained', 'trained'].includes(manifest.status) || manifest.parameterCount !== 121792 || manifest.pixelsPerCell !== 4 ||
+      !['untrained', 'trained'].includes(manifest.status) || ![121792,487104].includes(manifest.parameterCount) || manifest.pixelsPerCell !== 4 ||
       manifest.channels !== 3 || manifest.classes !== 16 || manifest.inputName !== 'pixels' || manifest.outputName !== 'logits' ||
       !Number.isSafeInteger(manifest.seed) || !Number.isSafeInteger(manifest.opset) || manifest.opset < 13 || manifest.opset > 25 ||
       !plain(manifest.versions) || !Array.isArray(manifest.cases) || manifest.cases.length !== 2) {
     throw new Error('Unsupported decoder manifest. Regenerate the current model and fixtures.');
   }
+  const profile=manifest.modelProfile??(manifest.parameterCount===MODEL_PROFILES.compact?'compact':null);
+  if (!Object.hasOwn(MODEL_PROFILES,profile)||MODEL_PROFILES[profile]!==manifest.parameterCount) throw new Error('Invalid decoder model profile/count.');
   if (manifest.status === 'trained' && (!/^[a-f0-9]{64}$/.test(manifest.checkpointSha256) || !plain(manifest.training))) {
     throw new Error('Trained exports require checkpoint provenance.');
   }

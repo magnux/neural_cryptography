@@ -178,3 +178,42 @@ controller through automatic scan, fill, thin, refill, phase switch, pause, came
 stop, and hidden-page cleanup. No browser binary or physical camera was available
 for a new visual/device run. Device acquisition and perceived overlay visibility
 remain user checks; no claim of improved marker detection or trained decoding.
+
+## Continuous collection and larger training runs — 2026-10-30
+
+The submitted compact-model log selected a synthetic checkpoint at step 19,400:
+117/128 exact frames (91.40625%) versus classical 124/128 (96.875%). Its real
+validation selected step 30,600 by loss (1.387155), with 48.32963% cell error and
+zero exact frames for both methods; the run ends at 32,000 steps. These are
+128-sample checkpoint-selection measurements, not full-corpus test results.
+No user's recorded tensors or trained checkpoint were attached, so alignment,
+split coverage, and real-device predictions could not be independently replayed.
+The source log SHA-256 is `802a0956bca7988195fc5a6ef0e4491b002eb2c759840c68a703f45e3724dcc4`.
+
+This iteration preserves recording versions/keys/tensor layouts, moves capture
+controls and counters above the camera, and continuously refines full phase pools
+using a randomized distance heuristic. Offline corpus count caps are removed or
+raised as documented, with 256 MiB manifests and a configurable synthetic output
+budget. Pilot/fine-tuning defaults follow the completed 20k/32k runs. Compact
+checkpoints remain usable; the new wide model has 487,104 parameters and requires
+new training to establish any recovery gain. Evaluation now reports per-session
+coverage and selects bounded subsets by session/profile round-robin.
+
+Validation on this host:
+
+- **42 JavaScript tests passed** (`npm run test:decoder`), including continuous
+  replacement, stale results, phase/memory bounds, recording export shape,
+  offline joins, generation argument limits, and model-profile validation.
+- **25 Python tests passed; one native ONNX Runtime test skipped** because its
+  native CPU initialization is unavailable on this host. Tests include an actual
+  50,001-record corpus manifest, compact/wide checkpoint loading, optimizer
+  updates, initialized defaults/profile checks, session-safe selection, gradients,
+  color sensitivity, and ONNX graph/fixture checks.
+- Wide G64/G128 graphs exported and passed **ONNX Runtime Web 1.23.2 WASM parity**
+  in Node, 10 runs per size, with maximum absolute error 1.85e-6/3.10e-6. These are
+  execution-agreement tests, not browser/phone performance or recovery results.
+- Decoder asset preparation passed with the wide bundle. No site was deployed.
+
+The controller is exercised with a deterministic DOM/camera/worker harness; a
+physical-device layout/capture check remains necessary. No trained wide weights
+are shipped and no improved real optical recovery is claimed.

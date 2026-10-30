@@ -15,18 +15,29 @@ import time
 import numpy as np
 import torch
 
-from checkpoint import load_checkpoint
+from checkpoint import load_model_checkpoint
 from data import DATASET_FORMAT, Dataset, assert_disjoint, check_checkpoint_overlap, digest
 from evaluate import evaluate_model, masked_loss
-from model import OpticalDecoder
+from model import MODEL_PROFILES, OpticalDecoder
+
+
+def training_defaults(initialize=None, steps=None, learning_rate=None):
+    """Use the measured pilot/fine-tuning budgets unless explicitly overridden."""
+    return (steps if steps is not None else (32_000 if initialize is not None else 20_000),
+            learning_rate if learning_rate is not None else (5e-5 if initialize is not None else 1e-4))
+
+
+def prepare_batch_groups(groups):
+    """Partition once, not once per microbatch in a large offline corpus."""
+    return {shape: {source: [sample for sample in values if sample.metadata["source"] == source]
+                    for source in ("real", "synthetic")}
+            for shape, values in groups.items()}
 
 
 def choose_batch(groups, rng, batch_size: int, real_fraction: float):
     """One palette and tensor shape per microbatch; source mixture is explicit."""
     shape = rng.choice(sorted(groups))
-    values = groups[shape]
-    real = [sample for sample in values if sample.metadata["source"] == "real"]
-    synthetic = [sample for sample in values if sample.metadata["source"] == "synthetic"]
+    real, synthetic = groups[shape]["real"], groups[shape]["synthetic"]
     chosen = []
     for _ in range(batch_size):
         pool = real if real and (not synthetic or rng.random() < real_fraction) else synthetic
@@ -46,9 +57,10 @@ def save_checkpoint(path: Path, model, training: dict):
     temporary.replace(path)
 
 
-def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=2000, batch_size=4,
-                 accumulate=4, learning_rate=1e-3, device="cpu", seed=7, eval_every=200,
-                 validation_samples=128, real_fraction=.5, initialize=None, node="node"):
+def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, batch_size=4,
+                 accumulate=4, learning_rate=None, device="cpu", seed=7, eval_every=200,
+                 validation_samples=128, real_fraction=.5, initialize=None, node="node", model_profile=None):
+    steps, learning_rate = training_defaults(initialize, steps, learning_rate)
     if (not 1 <= steps <= 1_000_000 or not 1 <= batch_size <= 128 or not 1 <= accumulate <= 128
             or not 0 < learning_rate <= .1 or not 0 <= real_fraction <= 1
             or not 0 <= seed <= 0xffffffff or eval_every < 1 or validation_samples < 1):
@@ -64,11 +76,17 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=2000, 
     out.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(seed)
     rng = random.Random(seed)
-    model = OpticalDecoder()
+    if model_profile is not None and model_profile not in MODEL_PROFILES:
+        raise ValueError("Unknown decoder model profile")
+    if initialize is None:
+        model = OpticalDecoder(model_profile or "wide")
+    else:
+        model, previous = load_model_checkpoint(initialize)
+        if model_profile is not None and model.profile != model_profile:
+            raise ValueError("Requested --model differs from the initialized checkpoint profile; train that architecture from scratch")
     train_sessions, train_payloads = set(train.session_ids), set(train.payload_ids)
     validation_sessions, validation_payloads = set(validation.session_ids), set(validation.payload_ids)
     if initialize is not None:
-        previous = load_checkpoint(initialize, model)
         check_checkpoint_overlap(previous, validation, "validation")
         # A previous model-selection session cannot become training material.
         previous_training = previous["training"]
@@ -81,7 +99,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=2000, 
         validation_payloads.update(previous_training["validationPayloadIds"])
     model.to(device).train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    groups = train.groups()
+    groups = prepare_batch_groups(train.groups())
     history, best = [], (-1., -float("inf"))
     started = time.perf_counter()
     for step in range(1, steps+1):
@@ -140,16 +158,17 @@ def main():
     parser.add_argument("--train", type=Path, nargs="+", required=True)
     parser.add_argument("--validation", type=Path, nargs="+", required=True)
     parser.add_argument("--out", type=Path, default=Path("checkpoints/optical-decoder/pilot"))
-    parser.add_argument("--steps", type=int, default=2000)
+    parser.add_argument("--steps", type=int, help="optimizer updates (default: 20,000 pilot; 32,000 with --initialize)")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--accumulate", type=int, default=4, help="microbatches per update; default effective batch is 16")
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, help="learning rate (default: 1e-4 pilot; 5e-5 with --initialize)")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--eval-every", type=int, default=200)
     parser.add_argument("--validation-samples", type=int, default=128)
     parser.add_argument("--real-fraction", type=float, default=.5)
+    parser.add_argument("--model", choices=MODEL_PROFILES, help="architecture (default: wide for a fresh run; checkpoint profile with --initialize)")
     parser.add_argument("--initialize", type=Path, help="fine-tune a validated checkpoint; optimizer starts fresh")
     parser.add_argument("--node", default="node")
     args = parser.parse_args()
@@ -166,7 +185,7 @@ def main():
         result = run_training(train, validation, args.out, steps=args.steps, batch_size=args.batch_size,
             accumulate=args.accumulate, learning_rate=args.lr, device=device, seed=args.seed,
             eval_every=args.eval_every, validation_samples=args.validation_samples,
-            real_fraction=args.real_fraction, initialize=args.initialize, node=args.node)
+            real_fraction=args.real_fraction, initialize=args.initialize, node=args.node, model_profile=args.model)
     except (OSError, ValueError, RuntimeError) as error:
         parser.exit(1, f"Training failed: {error}\n")
     print(json.dumps({key: value for key, value in result.items() if key != "history"}, indent=2))

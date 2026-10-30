@@ -9,9 +9,9 @@ const session=prefix=>`${prefix}-${globalThis.crypto?.randomUUID?.()??'unavailab
 let senderSession=session('sender'),receiverSession=session('receiver'),sender=null,phase=0,role='sender';
 let busy=false,epoch=0,stream=null,cameraStarting=false,cameraEpoch=0;
 let lastMediaTime=-1,collecting=false,budgetFull=false,receiverEpoch=0,activeKey=null,activeInfo=null;
-const distances=new Map(),originalAttempts=new Set();
+const distances=new Map(),originalAttempts=new Set(),phaseActivity=new Map();
+let previousMaximum=32;
 const phaseMaximum=()=>Number($('phaseMaximum').value);
-const keepCount=()=>Number($('keepCount').value);
 const scanner=new ScanLoop({sample:scanOne,receive:receiveScan,cancel:()=>client.cancel(),
   interval:()=>Number($('scanInterval').value),onError:error=>{
     buffer.resetStability();clearOverlay();
@@ -43,17 +43,18 @@ function refresh(){
   const phaseCount=buffer.phaseRecords(activeKey).length;
   $('collectBurst').disabled=!stream||collecting||budgetFull;
   $('cancelBurst').disabled=!collecting;
-  $('thinCaptures').disabled=!stream||!activeKey||phaseCount<=keepCount();
-  $('thinCaptures').textContent=`Keep ${keepCount()} at random & resume`;
   $('clearCaptures').disabled=collecting;$('newReceiverSession').disabled=collecting;
   $('downloadCaptures').disabled=collecting||(!counts.records&&!counts.diagnostics);
-  for(const option of $('keepCount').options)option.disabled=Number(option.value)>=phaseMaximum();
+  $('phaseMaximum').disabled=collecting;
   $('phaseCount').textContent=`${phaseCount} / ${phaseMaximum()}`;
+  const activity=phaseActivity.get(activeKey);
+  $('seenCount').textContent=String(activity?.seen??0);
+  $('replacementCount').textContent=String(activity?.replaced??0);
   $('activePhase').textContent=activeInfo?`${activeInfo.id} · phase ${activeInfo.phase+1}/${activeInfo.phases}`:'No matrix detected yet';
   const metric=distances.get(activeKey),mean=metric?.result.mean;
   $('meanDistance').textContent=mean==null?'—':`${mean.toFixed(2)}%`;
   $('distanceDetails').textContent=metric
-    ? `${metric.result.samples} samples · ${metric.result.pairs} pairs${metric.revision!==buffer.revision(activeKey)?' · updating…':''}${metric.previous==null?'':` · before thinning: ${metric.previous.toFixed(2)}%`}`
+    ? `${metric.result.samples} samples · ${metric.result.pairs} pairs${metric.revision!==buffer.revision(activeKey)?' · updating…':''}`
     : 'Needs at least two retained captures of this phase.';
   $('sampleCount').textContent=`${counts.records} / ${counts.maxRecords}`;
   $('diagnosticCount').textContent=String(counts.diagnostics);
@@ -132,7 +133,7 @@ function clearOverlay(){const canvas=$('alignmentOverlay');canvas.getContext('2d
 function restartScanner(){receiverEpoch++;scanner.stop();buffer.resetStability();if(stream)scanner.start();}
 async function scanOne(){
   const options=currentImage();
-  const full=collecting&&(!activeKey||buffer.phaseRecords(activeKey).length<phaseMaximum());
+  const full=collecting;
   options.original=full&&$('saveOriginal').checked&&activeKey&&!originalAttempts.has(activeKey)&&buffer.originals<2;
   if(options.original)originalAttempts.add(activeKey);
   const record=await client.call(full?'capture':'probe',options,[options.image.data.buffer]);
@@ -143,18 +144,33 @@ async function receiveScan({record,width,height}){
   overlay(record,width,height);showCapture(record);
   if(record.ok){activeKey=record.key;activeInfo=record.info;}else buffer.resetStability();
   if(collecting&&!record.probe){
-    const outcome=buffer.add(record,{alreadyValidated:true,maxPerPhase:phaseMaximum()});
+    let replaceIndex=null;
+    if(record.ok){
+      let activity=phaseActivity.get(record.key);
+      if(!activity){
+        activity={seen:0,replaced:0};phaseActivity.set(record.key,activity);
+        if(phaseActivity.size>256)phaseActivity.delete(phaseActivity.keys().next().value);
+      }
+      activity.seen++;
+      if(buffer.phaseRecords(record.key).length>=phaseMaximum()){
+        const selected=await client.call('select',{signatures:buffer.phaseSignatures(record.key),incomingSignature:record.signature});
+        if(token!==receiverEpoch)return;
+        replaceIndex=selected.replaceIndex;
+      }
+    }
+    const outcome=buffer.add(record,{alreadyValidated:true,maxPerPhase:phaseMaximum(),replaceIndex});
+    if(outcome.stage==='replaced')phaseActivity.get(record.key).replaced++;
     if(outcome.stage==='full'){
       collecting=false;budgetFull=true;
       status('Export budget reached. Pause is automatic: save receiver captures, clear the downloaded batch, then resume.');
     }else if(!record.ok)status('Looking for a valid matrix. Collection is armed; failed payload CRCs are still useful.');
     else if(outcome.stage==='settling')status('Matrix detected. Waiting for a stable header before saving samples…');
     else status(buffer.phaseRecords(activeKey).length>=phaseMaximum()
-      ? 'Phase pool full. Thin and resume, or advance the sender to collect a different phase automatically.'
+      ? 'Pool full: continuing to compare new captures and replace redundant samples. Pause when ready to save.'
       : 'Collecting this phase. Keep the matrix static; small changes in angle or focus can add variety.');
   }else if(collecting){
     status(record.ok&&buffer.phaseRecords(activeKey).length>=phaseMaximum()
-      ? 'Phase pool full. Thin and resume, or advance the sender. Alignment remains automatic.'
+      ? 'Pool full: recording continues with automatic diversity selection.'
       : 'Collection armed. Waiting for stable captures of the detected phase…');
   }else if(budgetFull)status('Export budget reached. Save receiver captures, clear the downloaded batch, then resume.');
   else if(record.ok)status('Matrix detected. Start / resume collection when ready.');
@@ -177,19 +193,15 @@ function cancel(){
   collecting=false;restartScanner();
   status('Collection paused. Alignment continues; retained samples can be downloaded.');refresh();
 }
-function thinCaptures(){
-  if(!stream||!activeKey||buffer.phaseRecords(activeKey).length<=keepCount())return;
-  receiverEpoch++;scanner.stop();
-  const metric=distances.get(activeKey);
-  const result=buffer.thin(activeKey,keepCount());budgetFull=false;
-  if(metric)distances.set(activeKey,{...metric,previous:metric.result.mean});
-  collecting=true;
-  status(`Kept ${result.retained} random samples of this phase, discarded ${result.discarded}. Resuming collection.`);
-  refresh();scanner.start();
-}
 function changePoolSize(){
-  if(keepCount()>=phaseMaximum())$('keepCount').value=String(phaseMaximum()/2);
-  // Existing captures are never silently deleted by changing a setting.
+  const maximum=phaseMaximum(),counts=new Map();
+  for(const record of buffer.records)counts.set(record.key,(counts.get(record.key)??0)+1);
+  if([...counts.values()].some(count=>count>maximum)){
+    $('phaseMaximum').value=String(previousMaximum);
+    showError('The new maximum is smaller than a saved phase pool. Save and clear this batch before lowering it.');
+    return;
+  }
+  previousMaximum=maximum;showError();
   if(stream)restartScanner();refresh();
 }
 async function enumerateCameras(){
@@ -238,13 +250,12 @@ $('downloadSender').addEventListener('click',()=>{if(sender)saveJSON(sender.mani
 $('newSenderSession').addEventListener('click',()=>{senderSession=session('sender');sender=null;phase=0;$('senderCanvasWrap').hidden=true;$('senderStatus').textContent='New physical session. Create and save a fresh sequence.';refresh();});
 $('startCamera').addEventListener('click',startCamera);$('stopCamera').addEventListener('click',stopCamera);
 $('collectBurst').addEventListener('click',collectBurst);$('cancelBurst').addEventListener('click',cancel);
-$('thinCaptures').addEventListener('click',thinCaptures);
-$('phaseMaximum').addEventListener('change',changePoolSize);$('keepCount').addEventListener('change',refresh);
+$('phaseMaximum').addEventListener('change',changePoolSize);
 $('scanInterval').addEventListener('change',()=>{if(stream)restartScanner();});
-$('clearCaptures').addEventListener('click',()=>{receiverEpoch++;scanner.stop();buffer.reset();budgetFull=false;distances.clear();originalAttempts.clear();activeKey=null;activeInfo=null;if(stream)scanner.start();status('Batch cleared. The physical session ID is retained for the next capture file.');refresh();});
-$('newReceiverSession').addEventListener('click',()=>{receiverEpoch++;scanner.stop();buffer.reset();budgetFull=false;distances.clear();originalAttempts.clear();activeKey=null;activeInfo=null;receiverSession=session('receiver');if(stream)scanner.start();status('Samples cleared. A new physical receiver session is ready.');refresh();});
+$('clearCaptures').addEventListener('click',()=>{receiverEpoch++;scanner.stop();buffer.reset();budgetFull=false;distances.clear();originalAttempts.clear();phaseActivity.clear();activeKey=null;activeInfo=null;if(stream)scanner.start();status('Batch cleared. The physical session ID is retained for the next capture file.');refresh();});
+$('newReceiverSession').addEventListener('click',()=>{receiverEpoch++;scanner.stop();buffer.reset();budgetFull=false;distances.clear();originalAttempts.clear();phaseActivity.clear();activeKey=null;activeInfo=null;receiverSession=session('receiver');if(stream)scanner.start();status('Samples cleared. A new physical receiver session is ready.');refresh();});
 $('downloadCaptures').addEventListener('click',()=>saveJSON({...buffer.export({notes:$('captureNotes').value,sessionId:receiverSession,camera:cameraInfo()}),
-  collection:{maxPerPhase:phaseMaximum(),keepRandom:keepCount(),scanIntervalMs:Number($('scanInterval').value),
+  collection:{maxPerPhase:phaseMaximum(),keepRandom:0,scanIntervalMs:Number($('scanInterval').value),
     distances:[...distances].map(([key,value])=>({key,...value.result,current:value.revision===buffer.revision(key),beforeThinning:value.previous}))}},`decoder-captures-${receiverSession}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`));
 window.addEventListener('pagehide',shutdown);document.addEventListener('visibilitychange',()=>{if(document.hidden)shutdown();});
 if(!supported)showError('Use a current browser with Web Workers and Web Crypto on trusted HTTPS or localhost.');

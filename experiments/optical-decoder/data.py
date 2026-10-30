@@ -14,7 +14,7 @@ import numpy as np
 
 DATASET_FORMAT = "optical-decoder-dataset"
 SPLITS = ("train", "validation", "test")
-MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+MAX_MANIFEST_BYTES = 256 * 1024 * 1024
 SHA256 = re.compile(r"^[a-f0-9]{64}$")
 
 
@@ -90,13 +90,13 @@ class Dataset:
             if manifest.is_dir():
                 manifest /= "manifest.json"
             if manifest.stat().st_size > MAX_MANIFEST_BYTES:
-                raise ValueError("Dataset manifest exceeds 16 MiB")
+                raise ValueError("Dataset manifest exceeds 256 MiB")
             value = json.loads(manifest.read_text(encoding="utf8"))
             if value.get("format") != DATASET_FORMAT or value.get("version") != 1:
                 raise ValueError("Unsupported dataset format; regenerate the current M2 dataset")
             entries = value.get("samples")
-            if not isinstance(entries, list) or not entries or len(entries) > 50_000:
-                raise ValueError("Dataset must contain 1–50,000 samples")
+            if not isinstance(entries, list) or not entries:
+                raise ValueError("Dataset samples must be a nonempty list")
             self.manifests.append({"path": str(manifest), "sha256": digest(manifest)})
             for item in entries:
                 if not isinstance(item, dict):

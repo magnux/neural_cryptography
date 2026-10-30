@@ -1,8 +1,7 @@
-"""Small untrained optical symbol classifier used for M1 browser feasibility.
+"""Single-frame optical symbol classifiers with a shared browser tensor contract.
 
-The network is deliberately independent of cryptographic keys and wire parsing.
-Its input is one calibrated, normalized RGB payload crop in NCHW layout; its
-output is a physical-palette logit for each of the 16 classes at every grid cell.
+Both profiles accept calibrated RGB, [N,3,4G,4G], and predict physical palette
+logits, [N,16,G,G]. Neither receives keys, labels, or expected payload bytes.
 """
 
 import torch
@@ -10,29 +9,63 @@ from torch import nn
 from torch.nn import functional as F
 
 
-def conv(in_channels: int, out_channels: int, stride: int = 1) -> nn.Sequential:
-    return nn.Sequential(
-        nn.Conv2d(in_channels, out_channels, 3, stride=stride, padding=1, bias=True),
-        nn.ReLU(),
-    )
+MODEL_PROFILES = ("compact", "wide")
+
+
+class ChannelLayerNorm(nn.Module):
+    """Normalize learned channels at each spatial position, not camera RGB.
+
+    Explicit arithmetic exports as basic ONNX reductions/elementwise operators.
+    There are no running statistics and no batch or image-size dependence.
+    """
+
+    def __init__(self, channels: int, eps: float = 1e-5) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(1, channels, 1, 1))
+        self.bias = nn.Parameter(torch.zeros(1, channels, 1, 1))
+        self.eps = eps
+
+    def forward(self, values: torch.Tensor) -> torch.Tensor:
+        centered = values - values.mean(dim=1, keepdim=True)
+        variance = (centered * centered).mean(dim=1, keepdim=True)
+        return centered / torch.sqrt(variance + self.eps) * self.weight + self.bias
+
+
+def conv(in_channels: int, out_channels: int, stride: int = 1,
+         normalize: bool = False) -> nn.Sequential:
+    layers = [nn.Conv2d(in_channels, out_channels, 3, stride=stride, padding=1, bias=True)]
+    if normalize:
+        layers.append(ChannelLayerNorm(out_channels))
+    layers.append(nn.ReLU())
+    return nn.Sequential(*layers)
 
 
 class OpticalDecoder(nn.Module):
-    """121,792-parameter, single-frame, four-raster-pixels-per-cell U-Net.
+    """Compact baseline or wider feature-normalized U-Net with local RGB path.
 
-    The exported M1 profiles are batch-one G=64 and G=128. There is no softmax
-    here: the receiver masks inactive palette classes before normalizing logits.
+    The compact profile is the 121,792-parameter ablation already tested on
+    devices. Wide doubles its feature widths and normalizes feature channels.
+    A small unnormalized cell-RGB readout preserves absolute color evidence
+    alongside the normalized spatial context. Wide still requires retraining
+    and held-out device evaluation; capacity is not a claim of better recovery.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, profile: str = "compact") -> None:
         super().__init__()
-        self.inlet = nn.Sequential(conv(3, 8, 2), conv(8, 16, 2))
-        self.e0 = nn.Sequential(conv(16, 16), conv(16, 16))
-        self.e1 = nn.Sequential(conv(16, 32, 2), conv(32, 32))
-        self.bottleneck = nn.Sequential(conv(32, 64, 2), conv(64, 64))
-        self.d1 = nn.Sequential(conv(96, 32), conv(32, 32))
-        self.d0 = nn.Sequential(conv(48, 16), conv(16, 16))
-        self.head = nn.Conv2d(16, 16, 1, bias=True)
+        if profile not in MODEL_PROFILES:
+            raise ValueError(f"Choose model profile from {MODEL_PROFILES}")
+        self.profile = profile
+        width = 16 if profile == "compact" else 32
+        normalize = profile == "wide"
+        self.inlet = nn.Sequential(conv(3, width // 2, 2), conv(width // 2, width, 2))
+        self.e0 = nn.Sequential(conv(width, width, normalize=normalize), conv(width, width, normalize=normalize))
+        self.e1 = nn.Sequential(conv(width, 2 * width, 2, normalize), conv(2 * width, 2 * width, normalize=normalize))
+        self.bottleneck = nn.Sequential(conv(2 * width, 4 * width, 2, normalize), conv(4 * width, 4 * width, normalize=normalize))
+        self.d1 = nn.Sequential(conv(6 * width, 2 * width, normalize=normalize), conv(2 * width, 2 * width, normalize=normalize))
+        self.d0 = nn.Sequential(conv(3 * width, width, normalize=normalize), conv(width, width, normalize=normalize))
+        self.head = nn.Conv2d(width, 16, 1, bias=True)
+        if profile == "wide":
+            self.local_color = nn.Sequential(nn.Conv2d(3, 16, 1), nn.ReLU(), nn.Conv2d(16, 16, 1))
 
     def forward(self, pixels: torch.Tensor) -> torch.Tensor:
         e0 = self.e0(self.inlet(pixels))
@@ -40,7 +73,26 @@ class OpticalDecoder(nn.Module):
         context = self.bottleneck(e1)
         d1 = self.d1(torch.cat((F.interpolate(context, scale_factor=2, mode="nearest"), e1), dim=1))
         d0 = self.d0(torch.cat((F.interpolate(d1, scale_factor=2, mode="nearest"), e0), dim=1))
-        return self.head(d0)
+        logits = self.head(d0)
+        if self.profile == "wide":
+            logits = logits + self.local_color(F.avg_pool2d(pixels, kernel_size=4, stride=4))
+        return logits
+
+
+def profile_from_state(state: dict) -> str:
+    """Identify one supported architecture; the checkpoint loader checks every tensor.
+
+    Profiles share the same current checkpoint representation. No state is
+    reshaped, renamed, partially loaded, or migrated between architectures.
+    """
+    if not isinstance(state, dict) or not isinstance(state.get("head.weight"), torch.Tensor):
+        raise ValueError("Checkpoint has no valid decoder head")
+    shape = tuple(state["head.weight"].shape)
+    if shape == (16, 16, 1, 1):
+        return "compact"
+    if shape == (16, 32, 1, 1):
+        return "wide"
+    raise ValueError("Checkpoint model does not match a supported decoder profile")
 
 
 def parameter_count(model: nn.Module) -> int:

@@ -2,7 +2,7 @@ import {extractCapture} from '../vision.js';
 import {captureKey} from './contract.js';
 import {createSender} from './contract.js';
 import {captureFrame,validateCapture} from './capture.js';
-import {meanCaptureDistance} from './diversity.js';
+import {meanCaptureDistance,selectCaptureReplacement} from './diversity.js';
 import {renderFrame} from '../format.js';
 
 let busy=false;
@@ -32,6 +32,8 @@ self.onmessage=async event=>{
       result=renderFrame(frame,pixels);transfer=[result.data.buffer];
     }else if(operation==='compare'){
       result=meanCaptureDistance(options.signatures);
+    }else if(operation==='select'){
+      result=selectCaptureReplacement(options.signatures,options.incomingSignature);
     }else if(operation==='capture'||operation==='probe'){
       const {image,timestamp,camera,original=false}=options;
       if(!image||!Number.isSafeInteger(image.width)||!Number.isSafeInteger(image.height)||

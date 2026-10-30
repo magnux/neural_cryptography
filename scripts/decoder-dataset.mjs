@@ -12,7 +12,11 @@ import {extractLearnedInput,logitsToLogicalScores} from '../apps/color-optical-b
 import {classifySamples,decodeScores} from '../apps/color-optical-bench/dist/js/vision.js';
 
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
-const MAX_JSON=MAX_CAPTURE_BYTES+4*1024*1024;
+// Offline corpora and browser capture bundles have different resource budgets.
+const MAX_MANIFEST_BYTES=256*1024*1024;
+const MAX_CAPTURE_JSON=MAX_CAPTURE_BYTES+4*1024*1024;
+export const MAX_GENERATION_COUNT=2**20;
+export function generationCount(value){return int(value,8,1,MAX_GENERATION_COUNT);}
 function int(value,def,min,max){const n=value===undefined?def:Number(value);if(!Number.isInteger(n)||n<min||n>max)throw Error('Invalid numeric argument.');return n;}
 function splitName(value='train'){if(!['train','validation','test'].includes(value))throw Error('Use split train, validation, or test.');return value;}
 function flags(args) {
@@ -30,7 +34,7 @@ async function safeReadPath(root,name) {
   if(!actual.startsWith(base+sep))throw Error('Dataset symlink escapes root.');
   return actual;
 }
-async function jsonFile(path,limit=MAX_JSON){if((await stat(path)).size>limit)throw Error(`JSON file exceeds bound: ${path}`);return JSON.parse(await readFile(path,'utf8'));}
+async function jsonFile(path,limit=MAX_MANIFEST_BYTES){if((await stat(path)).size>limit)throw Error(`JSON file exceeds bound: ${path}`);return JSON.parse(await readFile(path,'utf8'));}
 async function freshDirectory(path){await mkdir(path,{recursive:true});if((await readdir(path)).length)throw Error('Output dataset directory must be empty; use a new output directory.');}
 async function putSample(out,index,metadata,{input,labels,mask,baseline,expected,samples,original}) {
   const prefix=`sample-${String(index).padStart(6,'0')}`;
@@ -63,7 +67,7 @@ export function denseClassicalScores(input,info) {
 export async function generate(options) {
   only(options,['out','count','size','colors','phases','seed','split']);
   if(!options.out)throw Error('generate requires --out DIRECTORY.');
-  const out=resolve(options.out),size=int(options.size,64,64,128),colors=int(options.colors,16,4,16),phases=int(options.phases,4,1,16),count=int(options.count,8,1,256),seed=int(options.seed,7,0,0xffffffff),split=splitName(options.split);
+  const out=resolve(options.out),size=int(options.size,64,64,128),colors=int(options.colors,16,4,16),phases=int(options.phases,4,1,16),count=generationCount(options.count),seed=int(options.seed,7,0,0xffffffff),split=splitName(options.split);
   if(![64,128].includes(size)||![4,16].includes(colors)||![1,2,4,8,16].includes(phases))throw Error('Unsupported generation profile.');
   await freshDirectory(out);
   const sessionId=`synthetic-${seed}-${size}-${colors}`,dataset={format:DATASET_FORMAT,version:1,created:new Date().toISOString(),
@@ -101,7 +105,7 @@ export async function joinCaptures(options) {
   const dataset={format:DATASET_FORMAT,version:1,created:new Date().toISOString(),samples:[],excluded:[],diagnostics:[]},ids=new Set();
   await freshDirectory(out);
   for(const path of options.captures.split(',')) {
-    const bundle=await jsonFile(path);if(bundle.format!=='optical-decoder-captures'||bundle.version!==1||!Array.isArray(bundle.records)||bundle.records.length>MAX_RECORDS)throw Error('Unsupported receiver capture bundle.');
+    const bundle=await jsonFile(path,MAX_CAPTURE_JSON);if(bundle.format!=='optical-decoder-captures'||bundle.version!==1||!Array.isArray(bundle.records)||bundle.records.length>MAX_RECORDS)throw Error('Unsupported receiver capture bundle.');
     validateSessionId(bundle.sessionId);
     for(let i=0;i<bundle.records.length;i++) {
       const captureId=`${bundle.sessionId}/${bundle.records[i].timestamp}`;
@@ -146,7 +150,7 @@ async function readSampleFile(root,sample,kind,maxBytes) {
 export async function baselines(options) {
   only(options,['dataset']);if(!options.dataset)throw Error('baselines requires --dataset DIRECTORY.');
   const root=resolve(options.dataset),manifestPath=await safeReadPath(root,'manifest.json'),manifest=await jsonFile(manifestPath);
-  if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||manifest.samples.length>100000||manifest.samples.some(s=>s.source!=='synthetic'))throw Error('Baseline refresh accepts only a synthetic dataset.');
+  if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||manifest.samples.some(s=>s.source!=='synthetic'))throw Error('Baseline refresh accepts only a synthetic dataset.');
   if(new Set(manifest.samples.map(s=>s.id)).size!==manifest.samples.length)throw Error('Duplicate dataset sample ID.');
   for(const sample of manifest.samples) {
     const g=sample.size,info=sample.info;
@@ -161,7 +165,7 @@ export async function baselines(options) {
 export async function evaluate(options) {
   only(options,['dataset','predictions','split']);if(!options.dataset||!options.predictions)throw Error('evaluate requires --dataset DIRECTORY --predictions FILE.');
   const root=resolve(options.dataset),manifest=await jsonFile(join(root,'manifest.json')),predictionPath=resolve(options.predictions),predictions=await jsonFile(predictionPath);
-  if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||manifest.samples.length>100000||!Array.isArray(predictions.samples)||predictions.samples.length>100000)throw Error('Unsupported dataset/prediction manifest.');
+  if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||!Array.isArray(predictions.samples)||!predictions.samples.length)throw Error('Unsupported dataset/prediction manifest.');
   if(new Set(manifest.samples.map(s=>s.id)).size!==manifest.samples.length)throw Error('Duplicate dataset sample ID.');
   if(options.split)splitName(options.split);
   const eligible=manifest.samples.filter(s=>!options.split||s.split===options.split),eligibleIds=new Set(eligible.map(s=>s.id)),byId=new Map();

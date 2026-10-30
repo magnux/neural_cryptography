@@ -57,5 +57,7 @@ test('capture worker rejects oversized frames before extraction',async()=>{
     assert.equal(messages[3].result.ok,true);assert.equal(messages[3].result.signature.length,3072);
     await self.onmessage({data:{id:5,operation:'compare',options:{signatures:[messages[3].result.signature,messages[3].result.signature]}}});
     assert.equal(messages[4].result.mean,0);
+    await self.onmessage({data:{id:6,operation:'select',options:{signatures:[messages[3].result.signature,messages[3].result.signature],incomingSignature:messages[3].result.signature}}});
+    assert.equal(messages[5].result.replaceIndex,null);assert.equal(messages[5].result.reason,'no-diversity-gain');
   }finally{if(previous===undefined)delete globalThis.self;else globalThis.self=previous;}
 });

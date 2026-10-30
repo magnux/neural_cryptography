@@ -19,8 +19,9 @@ Four browser-local workspaces share top-level navigation:
 sender/receiver data collector. Display a static random matrix, collect bounded
 camera samples with automatic filled alignment feedback, and export the sender
 manifest and receiver captures separately. Collection keeps per-phase pools
-(default 32 samples), supports random thinning and refill (default keep 16),
-and shows a within-phase RGB distance metric.
+(default 32 samples), continuously replaces redundant captures with a randomized
+distance heuristic, and shows within-phase RGB distance and replacement counters
+above the camera. Recording file formats are unchanged.
 No model installation is needed to collect data. Follow the
 [capture and training guide](../../docs/OPTICAL_DECODER_TRAINING.md) for offline
 label joining, train/validation/test splits, and checkpoint evaluation.

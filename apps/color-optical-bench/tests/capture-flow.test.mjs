@@ -7,25 +7,27 @@ import {captureFrame} from '../dist/js/dataset/capture.js';
 import {meanCaptureDistance} from '../dist/js/dataset/diversity.js';
 import {renderFrame} from '../dist/js/format.js';
 
-test('page scans automatically, fills/thins/resumes pools, switches phases, and stops safely',async()=>{
+test('page keeps sampling full pools, applies selection, isolates phases, and pauses without losing records',async()=>{
   const html=await readFile(new URL('../dist/capture.html',import.meta.url),'utf8');
   const sender=await createSender({seed:90,sessionId:'flow'});
   const record=captureFrame(renderFrame(sender.frames[0],1024),{signature:true});
-  let phase=0,clock=1000,media=1,stopped=0,filled=0;
+  let phase=0,clock=1000,media=1,stopped=0,filled=0,replacementChoice=null,holdSelection=false,lateSelection=null,download=null;
   const timers=new Map();let timerId=0;const operations=[];
   const context={clearRect(){},drawImage(){},getImageData:()=>({width:32,height:32,data:new Uint8ClampedArray(4096)}),
     beginPath(){},moveTo(){},lineTo(){},closePath(){},stroke(){},fill(){filled++;}};
   class Element{
     constructor(id){this.id=id;this.value='';this.disabled=false;this.hidden=false;this.handlers={};this.options=[];this.width=32;this.height=32;}
     addEventListener(type,handler){this.handlers[type]=handler;}
-    setAttribute(){}removeAttribute(){}getContext(){return context;}
+    setAttribute(){}removeAttribute(){}getContext(){return context;}click(){}
     replaceChildren(...children){this.options=children;}add(child){this.options.push(child);}
     async fire(type='click'){if(type==='click')assert.equal(this.disabled,false,`${this.id} is enabled`);await this.handlers[type]?.();}
   }
   const elements=new Map([...html.matchAll(/id="([^"]+)"/g)].map(m=>[m[1],new Element(m[1])]));
   const get=id=>{assert.ok(elements.has(id),`real HTML contains #${id}`);return elements.get(id);};
-  for(const [id,value] of Object.entries({phaseMaximum:'32',keepCount:'16',scanInterval:'500',resolution:'720'}))get(id).value=value;
-  get('keepCount').options=[4,8,16,32].map(value=>({value:String(value)}));
+  for(const [id,value] of Object.entries({phaseMaximum:'32',scanInterval:'500',resolution:'720'}))get(id).value=value;
+  assert.equal(elements.has('keepCount'),false);assert.equal(elements.has('thinCaptures'),false);
+  assert.ok(html.indexOf('id="collectBurst"')<html.indexOf('id="video"'));
+  assert.ok(html.indexOf('id="phaseCount"')<html.indexOf('id="video"'));
   Object.assign(get('video'),{readyState:2,videoWidth:32,videoHeight:32,play:async()=>{}});
   Object.defineProperty(get('video'),'currentTime',{get:()=>media++});
   const track={stop:()=>stopped++,getSettings:()=>({width:32,height:32,frameRate:30})};
@@ -33,14 +35,16 @@ test('page scans automatically, fills/thins/resumes pools, switches phases, and 
   class Worker{
     postMessage({id,operation,options}){
       operations.push(operation);const info={...record.info,phase},key=captureKey(info);
-      const result=operation==='compare'?meanCaptureDistance(options.signatures):operation==='probe'
+      const result=operation==='select'?{replaceIndex:replacementChoice,reason:'test selection'}:operation==='compare'?meanCaptureDistance(options.signatures):operation==='probe'
         ?{ok:true,probe:true,info,key,transform:record.transform,stats:record.stats}
         :{...record,info,key,timestamp:options.timestamp};
-      queueMicrotask(()=>this.onmessage?.({data:{id,type:'result',result}}));
+      const reply=()=>this.onmessage?.({data:{id,type:'result',result}});
+      if(operation==='select'&&holdSelection){holdSelection=false;lateSelection=reply;}else queueMicrotask(reply);
     }
     terminate(){}
   }
-  const replacements={Worker,isSecureContext:true,Option:class{constructor(label,value){this.label=label;this.value=value;}},
+  const NativeURL=URL;
+  const replacements={URL:class extends NativeURL{static createObjectURL(blob){download=blob;return 'blob:download';}static revokeObjectURL(){}},Worker,isSecureContext:true,Option:class{constructor(label,value){this.label=label;this.value=value;}},
     navigator:{mediaDevices:{enumerateDevices:async()=>[],getUserMedia:async()=>({getVideoTracks:()=>[track],getTracks:()=>[track]})}},
     document:{getElementById:get,createElement:id=>new Element(id),addEventListener:(k,f)=>documentEvents[k]=f,
       body:{classList:{remove(){},contains:()=>false}}},window:{addEventListener:(k,f)=>windowEvents[k]=f},
@@ -58,16 +62,31 @@ test('page scans automatically, fills/thins/resumes pools, switches phases, and 
     await get('collectBurst').fire();await flush();
     for(let i=0;i<32;i++)await tick();
     assert.equal(get('phaseCount').textContent,'32 / 32');assert.equal(get('meanDistance').textContent,'0.00%');
-    await tick();assert.equal(operations.at(-1),'probe','full pool keeps scanning without storing tensors');
-    await get('thinCaptures').fire();await flush();assert.equal(get('phaseCount').textContent,'16 / 32');
-    for(let i=0;i<16;i++)await tick();assert.equal(get('phaseCount').textContent,'32 / 32');
-    phase=1;await tick();await tick();await tick();
+    await tick();assert.equal(operations.at(-1),'select','full pool continues capturing and selecting');
+    assert.equal(get('phaseCount').textContent,'32 / 32');assert.equal(get('replacementCount').textContent,'0');
+    replacementChoice=0;await tick();
+    assert.equal(get('phaseCount').textContent,'32 / 32');assert.equal(get('replacementCount').textContent,'1');
+    const seen=Number(get('seenCount').textContent);assert.ok(seen>32);
+    // A selection already in flight must not replace a record after pause.
+    holdSelection=true;await tick();assert.ok(lateSelection);
+    await get('cancelBurst').fire();await flush();lateSelection();await flush();
+    assert.equal(get('replacementCount').textContent,'1');
+    await get('collectBurst').fire();await flush();
+    phase=1;await tick();await tick();
     assert.equal(get('phaseCount').textContent,'1 / 32');assert.equal(get('sampleCount').textContent,'33 / 128');
     await get('cancelBurst').fire();await flush();const count=get('sampleCount').textContent;
     await tick();assert.equal(get('sampleCount').textContent,count);assert.equal(get('downloadCaptures').disabled,false);
     await get('stopCamera').fire();await flush();assert.equal(timers.size,0);assert.equal(stopped,1);
     await get('startCamera').fire();await flush();document.hidden=true;documentEvents.visibilitychange();await flush();
     assert.equal(timers.size,0);assert.equal(stopped,2);assert.equal(get('sampleCount').textContent,count);
+    await get('downloadCaptures').fire();
+    const exported=JSON.parse(await download.text());
+    assert.equal(exported.format,'optical-decoder-captures');assert.equal(exported.version,1);
+    assert.equal(exported.records.length,33);assert.equal(exported.collection.keepRandom,0);
+    assert.deepEqual(Object.keys(exported.collection).sort(),['distances','keepRandom','maxPerPhase','scanIntervalMs']);
+    assert.ok(exported.records.every(row=>row.inputBase64&&row.samplesBase64&&row.stability&&!('signature' in row)));
+    assert.ok(Array.isArray(exported.selection.recentThinning));
+    timers.clear();
   }finally{
     windowEvents.pagehide?.();Date.now=now;
     for(const [k,descriptor] of saved)if(descriptor)Object.defineProperty(globalThis,k,descriptor);else delete globalThis[k];

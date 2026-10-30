@@ -37,8 +37,8 @@ JavaScript. Retain the reference grid in the crop; its observed colors provide l
 their fixed physical palette labels across phases. No uniform pre-calibration sequence or persistent moiré texture map
 is required.
 
-Use ordinary biased Conv2D layers with ReLU, 3×3 kernels and padding 1, except the final 1×1 classification head. No
-BatchNorm/InstanceNorm in the first model: absolute calibrated color is useful, and inference should not depend on a
+Use ordinary biased Conv2D layers with ReLU, 3×3 kernels and padding 1, except the final 1×1 classification head. The compact baseline has no
+BatchNorm/InstanceNorm: absolute calibrated color is useful, and inference should not depend on a
 batch.
 
 | Stage | Operation | Output, omitting batch dimension |
@@ -64,10 +64,19 @@ flowchart TD
   D0 --> O[Palette logits per cell]
 ```
 
-This specified graph has **121,792 parameters**, about 0.49 MB of float32 weights, and approximately 0.132/0.528 billion
+The compact graph specified above has **121,792 parameters**, about 0.49 MB of float32 weights, and approximately 0.132/0.528 billion
 convolution MACs at G=64/128, excluding preprocessing, activation, resize, and runtime overhead. These are calculations,
 not measured phone performance. The same weights serve both sizes; begin with fixed-shape exports from one checkpoint to
 reduce deployment uncertainty.
+
+The current fresh-training default is the **wide** experiment (487,104 parameters):
+double feature widths to 32/64/128, normalize channels at each feature position
+with LayerNorm after feature convolutions, and add a small unnormalized pooled-RGB
+readout to the logits. Raw camera RGB and the inlet are not normalized by these
+layers. Compact remains the baseline and loads its existing checkpoints unchanged.
+Both share the current capture/tensor formats; wide requires new training and
+held-out real recovery plus phone performance checks. See the
+[updated training guide](OPTICAL_DECODER_TRAINING.md#model-profiles-and-the-first-training-result).
 
 Train a single-frame model first. If needed, a second model stacks five registered RGB captures as 15 input channels;
 only the first convolution changes (+864 parameters). Use five distinct captures of the **same sequence, logical frame,
@@ -165,9 +174,8 @@ symbols. Preserve the measured screen texture when applying only mild real-data 
 and disturbance ranges; synthetic success alone cannot pass the device milestone.
 
 Train on the user's RTX 4090 with plain PyTorch, NumPy, and a small image I/O dependency if needed; no Hugging Face or
-training framework. Provide CPU smoke mode and configurable device/batch/steps. Start AdamW at 1e-3, effective batch 16,
-and a short 2,000-update synthetic pilot; inspect held-out real performance before extending toward 20,000 updates.
-Fine-tune with mixed real/synthetic batches at 1e-4, stop on held-out exact-frame recovery, and keep training-time
+training framework. Provide CPU smoke mode and configurable device/batch/steps. Default to AdamW at 1e-4, effective batch 16,
+and 20,000 synthetic pilot updates. Fine-tuning defaults to 32,000 mixed real/synthetic updates at 5e-5; stop on held-out exact-frame recovery, and keep training-time
 measurements. These budgets are starting configurations, not promised convergence or duration.
 
 Use cross-entropy on data-cell physical labels, masking reference cells from the main loss so easy pilots cannot

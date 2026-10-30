@@ -84,7 +84,7 @@ G64. Training begins after we establish a usable receiving profile on each side.
 
 | Component | Implementation |
 | --- | --- |
-| 121,792-parameter U-Net and fixed-shape ONNX graphs | [`experiments/optical-decoder/`](../experiments/optical-decoder/README.md) |
+| Compact/wide U-Nets and fixed-shape ONNX graphs | [`experiments/optical-decoder/`](../experiments/optical-decoder/README.md) |
 | Validated dense physical crop, including references | `vision.js` → `extractDensePayload()` |
 | Current color correction and `[1,3,4G,4G]` float32 tensor | `learned-input.js` → `extractLearnedInput()` |
 | Palette mask, phase inversion, reference exclusion | `learned-input.js` → `logitsToLogicalScores()` |

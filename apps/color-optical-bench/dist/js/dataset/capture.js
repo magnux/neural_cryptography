@@ -43,28 +43,12 @@ export class CaptureBuffer {
   reset(){this.records=[];this.diagnostics=[];this.bytes=0;this.active=null;this.originals=0;this.signatures=new WeakMap();this.sizes=new WeakMap();this.revisions=new Map();this.thinning=[];}
   phaseRecords(key){return this.records.filter(record=>record.key===key);}
   revision(key){return this.revisions.get(key)??0;}
-  phaseSignatures(key){return this.phaseRecords(key).map(record=>this.signatures.get(record)).filter(Boolean);}
-  thin(key,keep,random=Math.random){
-    if(!Number.isInteger(keep)||keep<1||keep>64)throw Error('Invalid retention count.');
-    const rows=this.phaseRecords(key),before=rows.length;
-    // Uniform subset, independent of pixel quality, CRC outcome, and labels.
-    for(let i=rows.length-1;i>0;i--){const j=Math.floor(random()*(i+1));[rows[i],rows[j]]=[rows[j],rows[i]];}
-    const retained=new Set(rows.slice(0,keep));
-    this.records=this.records.filter(record=>{
-      if(record.key!==key||retained.has(record))return true;
-      this.bytes-=this.sizes.get(record);return false;
-    });
-    this.originals=[...this.records,...this.diagnostics].filter(record=>record.original).length;
-    this.revisions.set(key,this.revision(key)+1);this.resetStability();
-    const result={before,retained:Math.min(before,keep),discarded:Math.max(0,before-keep)};
-    this.thinning.push({timestamp:Date.now(),key,...result});if(this.thinning.length>100)this.thinning.shift();
-    return result;
-  }
+  phaseSignatures(key){return this.phaseRecords(key).map(record=>this.signatures.get(record));}
   resetStability(){this.active=null;}
   summary(){return {records:this.records.length,diagnostics:this.diagnostics.length,bytes:this.bytes,maxRecords:this.maxRecords,maxBytes:this.maxBytes};}
   // alreadyValidated is reserved for records produced/validated by our worker.
   // Imported JSON must always take the full validation path (including offline join).
-  add(record,{alreadyValidated=false,maxPerPhase=64}={}) {
+  add(record,{alreadyValidated=false,maxPerPhase=64,replaceIndex=null}={}) {
     if(!Number.isInteger(maxPerPhase)||maxPerPhase<1||maxPerPhase>64)throw Error('Invalid per-phase limit.');
     const {signature,...evidence}=record;record=evidence;
     const byteSize=value=>new TextEncoder().encode(JSON.stringify(value)).length;
@@ -84,21 +68,32 @@ export class CaptureBuffer {
     if(!this.active||record.key!==this.active.key) this.active={key:record.key,since:record.timestamp,last:record.timestamp,observations:1};
     else {this.active.last=record.timestamp;this.active.observations++;}
     if(record.timestamp-this.active.since<this.stableMs||this.active.observations<2) return diagnostic('settling','Waiting for a stable header; keep a static matrix visible.');
-    if(this.phaseRecords(record.key).length>=maxPerPhase)return {accepted:false,stage:'phase-full',count:this.records.length,bytes:this.bytes};
-    if(this.records.length>=this.maxRecords) return diagnostic('full','Capture count limit reached; export and start a new batch.');
+    const phaseRows=this.phaseRecords(record.key),phaseFull=phaseRows.length>=maxPerPhase;
+    if(replaceIndex!==null&&(!Number.isInteger(replaceIndex)||replaceIndex<0||replaceIndex>=phaseRows.length))throw Error('Invalid phase replacement index.');
+    if(phaseFull&&replaceIndex===null)return {accepted:false,stage:'kept',count:this.records.length,bytes:this.bytes};
+    const replaced=phaseFull?phaseRows[replaceIndex]:null;
+    if(!replaced&&this.records.length>=this.maxRecords) return diagnostic('full','Capture count limit reached; export and start a new batch.');
     const saved={...record,stability:{durationMs:record.timestamp-this.active.since,observations:this.active.observations,guardMs:this.stableMs}};
-    if(saved.original&&this.originals>=2) delete saved.original;
+    const removedSize=replaced?this.sizes.get(replaced):0;
+    const removedOriginal=replaced?.original?1:0;
+    if(saved.original&&this.originals-removedOriginal>=2) delete saved.original;
     const size=new TextEncoder().encode(JSON.stringify(saved)).length;
-    if(this.bytes+size+65536>this.maxBytes) return diagnostic('full','Capture memory limit reached; export and start a new batch.');
-    this.records.push(saved);this.sizes.set(saved,size);if(signature)this.signatures.set(saved,signature);this.revisions.set(record.key,this.revision(record.key)+1);this.bytes+=size;if(saved.original)this.originals++;
-    return {accepted:true,count:this.records.length,bytes:this.bytes,stage:'saved'};
+    if(this.bytes-removedSize+size+65536>this.maxBytes){
+      // A larger replacement must not stop an otherwise usable full pool.
+      if(replaced)return {accepted:false,stage:'kept',reason:'Replacement exceeds byte budget.',count:this.records.length,bytes:this.bytes};
+      return diagnostic('full','Capture memory limit reached; export and start a new batch.');
+    }
+    if(replaced)this.records[this.records.indexOf(replaced)]=saved;else this.records.push(saved);
+    this.sizes.set(saved,size);if(signature)this.signatures.set(saved,signature);this.revisions.set(record.key,this.revision(record.key)+1);
+    this.bytes+=size-removedSize;this.originals+=Number(Boolean(saved.original))-removedOriginal;
+    return {accepted:true,count:this.records.length,bytes:this.bytes,stage:replaced?'replaced':'saved'};
   }
   export({notes='',sessionId=crypto.randomUUID(),camera={}}={}) {
     validateSessionId(sessionId);
     return {format:'optical-decoder-captures',version:1,created:new Date().toISOString(),sessionId,
       notes:String(notes).slice(0,2000),camera,limits:{maxRecords:this.maxRecords,maxBytes:this.maxBytes,stableMs:this.stableMs},
       transitionPolicy:'Manual static sender; consecutive checksum-valid identical headers after guard. Review and exclude mixed/settling captures offline.',
-      selection:{method:'uniform-random-subset',recentThinning:this.thinning},
+      selection:{method:'sampled-distance-replacement',recentThinning:this.thinning},
       records:this.records,diagnostics:this.diagnostics};
   }
 }

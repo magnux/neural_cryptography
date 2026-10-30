@@ -2,7 +2,7 @@
 
 This implements M1 feasibility and the M2 capture/training pipeline from the
 [optical decoder plan](../../docs/OPTICAL_DECODER.md). The
-**121,792-parameter U-Net** has fixed browser profiles for physical grid sizes
+**compact (121,792 parameters)** and **wide (487,104 parameters)** U-Nets have fixed browser profiles for physical grid sizes
 64 and 128. The submitted device reports support starting at G64. See the
 [capture and training guide](../../docs/OPTICAL_DECODER_TRAINING.md) for the full
 workflow, from browser captures through synthetic generation and RTX 4090 training.
@@ -12,6 +12,20 @@ uses random weights for feasibility checks; export with `--checkpoint` uses the
 trained weights and their provenance. The existing classical decoder remains
 responsible for live transport until held-out recovery validates a candidate.
 Numerical parity measures runtime agreement, not optical accuracy.
+
+Fresh training and export default to `wide`: feature widths 32/64/128,
+channel LayerNorm after learned feature convolutions, and a separate unnormalized
+cell-RGB readout. `--model compact` is the existing active baseline. Existing
+compact checkpoints still load in their exact architecture; `--initialize` and
+`--checkpoint` infer the supported profile from validated parameter shapes.
+The recording format and tensor contract are unchanged. Wide needs a fresh pilot,
+then held-out real evaluation; it has no measured recovery advantage yet.
+
+Pilot defaults: 20,000 updates at 1e-4. With `--initialize`: 32,000 updates at
+5e-5. Source pools are partitioned once for large corpora. Offline manifests allow
+256 MiB without a fixed row cap; synthetic generation defaults to seven frames
+and a configurable 1 TiB estimated output budget (`--max-output-mib 0` disables
+that estimate). Browser capture limits remain independent.
 
 ## Setup and export
 
@@ -40,9 +54,9 @@ metadata includes checkpoint hashes and bounded scalar training settings; local
 session identities and filesystem paths stay in the checkpoint. Training uses
 `best.pt`, selected by validation exact-frame recovery with loss as the tie-break.
 
-CPU execution is the default and sufficient for this step. If installing
+CPU execution is sufficient for export and small pipeline checks. If installing
 PyTorch separately, choose the CPU or CUDA build appropriate for the machine;
-the later training milestone will use the RTX 4090. Exporting these models
+full training is intended for the RTX 4090. Exporting these models
 does not need a GPU. There is no Hugging Face dependency or training framework.
 
 By default, export writes `artifacts/smoke/` beside this README. That directory
@@ -54,7 +68,8 @@ data, unrelated to runtime cryptographic randomness.
 Export performs ONNX graph validation and runs two distinct inputs per shape
 through PyTorch and Python ONNX Runtime before writing the final manifest. The
 graph uses opset 17 and the explicit TorchScript exporter (`dynamo=False`), with
-Conv, ReLU, Concat, Resize, and Constant operations. This avoids an additional
+Conv, ReLU, Concat, Resize, and constants; wide also uses AveragePool and
+channel-normalization reductions/basic arithmetic. This avoids an additional
 `onnxscript` dependency. Exact installed package versions and operator names
 are recorded in the manifest. An unsupported graph or failed parity check stops
 the export; it does not produce a passing report.

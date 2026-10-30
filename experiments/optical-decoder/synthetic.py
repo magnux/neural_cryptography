@@ -34,7 +34,7 @@ def gaussian_blur(image: torch.Tensor, sigma: float) -> torch.Tensor:
                     kernel.view(1, 1, -1, 1).expand(channels, 1, -1, 1), groups=channels)
 
 
-def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 3, severity: float = .65) -> np.ndarray:
+def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float = .65) -> np.ndarray:
     """Return [T,3,H,W]; a shared texture evolves under small motion/focus shifts.
 
     Labels are unaffected by less than half-cell registration jitter. Spatial
@@ -101,15 +101,17 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 3, severity: float
     return np.stack(outputs).astype(np.float32, copy=False)
 
 
-def generate(clean_directories, out: Path, *, seed=7, frames=3, severity=.65, max_output_mib=1024, node="node"):
+def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65, max_output_mib=2**20, node="node"):
+    if not isinstance(max_output_mib, int) or isinstance(max_output_mib, bool) or max_output_mib < 0:
+        raise ValueError("max-output-mib must be a nonnegative integer; zero disables the estimate limit")
     dataset = Dataset(clean_directories)
     if any(sample.metadata["source"] != "synthetic" or "synthetic" in sample.metadata for sample in dataset.samples):
         raise ValueError("Generate corruptions from canonical synthetic clean datasets only; real captures remain unchanged")
     estimated = sum(sum(local_path(s.root, s.metadata[field]).stat().st_size
                         for field in ("input", "labels", "mask", "baseline", "expected"))
                     for s in dataset.samples)*frames
-    if estimated > max_output_mib*1024**2:
-        raise ValueError("Requested synthetic dataset exceeds --max-output-mib; use fewer source frames/burst captures")
+    if max_output_mib and estimated > max_output_mib*1024**2:
+        raise ValueError("Requested synthetic dataset exceeds --max-output-mib; increase the budget or use 0 to disable this estimate limit")
     out = Path(out).resolve()
     if out.exists() and any(out.iterdir()):
         raise ValueError("Choose an empty output directory")
@@ -162,14 +164,14 @@ def main():
     parser.add_argument("--clean", nargs="+", required=True, type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--frames", type=int, default=3)
+    parser.add_argument("--frames", type=int, default=7)
     parser.add_argument("--severity", type=float, default=.65)
-    parser.add_argument("--max-output-mib", type=int, default=1024)
+    parser.add_argument("--max-output-mib", type=int, default=2**20, help="estimated binary output budget in MiB (default: 1 TiB); 0 disables the limit")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--node", default="node")
     args = parser.parse_args()
-    if not 1 <= args.threads <= 64 or args.max_output_mib < 1:
-        parser.error("threads must be 1–64 and max-output-mib positive")
+    if not 1 <= args.threads <= 64 or args.max_output_mib < 0:
+        parser.error("threads must be 1–64 and max-output-mib nonnegative")
     torch.set_num_threads(args.threads)
     try:
         result = generate(args.clean, args.out, seed=args.seed, frames=args.frames,

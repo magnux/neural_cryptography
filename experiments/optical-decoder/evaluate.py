@@ -7,6 +7,8 @@ the same single capture; this report does not measure temporal throughput.
 """
 
 import argparse
+from collections import defaultdict
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -18,7 +20,6 @@ import torch
 from torch.nn import functional as F
 
 from data import Dataset, check_checkpoint_overlap
-from model import OpticalDecoder
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -61,13 +62,39 @@ def canonical_recovery(dataset, selected, predictions, work_dir: Path, node="nod
             "observationBudget": "One identical input capture per method; no temporal fusion or throughput claim."}
 
 
+def select_samples(samples, maximum=0):
+    """Deterministic round-robin coverage of sessions, sources, and profiles.
+
+    IDs within each group are already hash-derived but sorted explicitly so file
+    order cannot change the checkpoint-selection set. Unlimited means all rows.
+    """
+    if not isinstance(maximum, int) or maximum < 0:
+        raise ValueError("max_samples must be nonnegative")
+    if not maximum or maximum >= len(samples):
+        return list(samples)
+    groups = defaultdict(list)
+    for sample in samples:
+        row = sample.metadata
+        groups[(row["sessionId"], row["size"], row["colors"], row["source"])].append(sample)
+    keys = sorted(groups, key=lambda key: hashlib.sha256(repr(key).encode()).digest())
+    for values in groups.values():
+        values.sort(key=lambda sample: sample.id)
+    selected, offset = [], 0
+    while len(selected) < maximum:
+        for key in keys:
+            if offset < len(groups[key]):
+                selected.append(groups[key][offset])
+                if len(selected) == maximum:
+                    break
+        offset += 1
+    return selected
+
+
 def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node="node", exact=True,
                    work_dir=None):
     if max_samples < 0:
         raise ValueError("max_samples must be nonnegative")
-    selected = dataset.samples[:max_samples] if max_samples else dataset.samples
-    if len(selected) > 4096:
-        raise ValueError("Evaluation is bounded to 4096 captures; set --max-samples explicitly")
+    selected = select_samples(dataset.samples, max_samples)
     directory = Path(work_dir or Path.cwd()/"local-results/optical-decoder").resolve()
     directory.mkdir(parents=True, exist_ok=True)
     previous_mode = model.training
@@ -77,6 +104,7 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
     bins = np.zeros((15, 3), dtype=np.float64)
     loss_sum, cells = 0., 0
     timings, predictions, profile_counts = [], {}, {}
+    per_session = {}
     try:
         with tempfile.TemporaryDirectory(prefix="eval-", dir=directory) as temporary:
             temp = Path(temporary)
@@ -104,6 +132,14 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
                     chosen = probabilities.argmax(axis=0)[mask]
                     truth = labels[mask]
                     confidence = probabilities.max(axis=0)[mask]
+                    session_id = sample.metadata["sessionId"]
+                    group = per_session.setdefault(session_id, {"samples": 0, "dataCells": 0, "wrongCells": 0,
+                        "phases": {}, "learnedExactFrames": 0, "classicalExactFrames": 0})
+                    group["samples"] += 1
+                    group["dataCells"] += count
+                    group["wrongCells"] += int(np.count_nonzero(chosen != truth))
+                    phase = str(sample.metadata["info"].get("phase", 0))
+                    group["phases"][phase] = group["phases"].get(phase, 0)+1
                     np.add.at(confusion, (truth, chosen), 1)
                     calibration_bin = np.minimum(14, (confidence*15).astype(int))
                     np.add.at(bins[:, 0], calibration_bin, 1)
@@ -118,12 +154,26 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
             recovery = canonical_recovery(dataset, selected, predictions, temp, node) if exact else None
     finally:
         model.train(previous_mode)
+    selected_by_id = {sample.id: sample for sample in selected}
+    if recovery:
+        for row in recovery["samples"]:
+            group = per_session[selected_by_id[row["id"]].metadata["sessionId"]]
+            group["learnedExactFrames"] += int(row["learned"]["exact"])
+            group["classicalExactFrames"] += int(row["classical"]["exact"])
+    for group in per_session.values():
+        group["cellErrorRate"] = group["wrongCells"]/group["dataCells"]
+    available_sessions = {sample.metadata["sessionId"] for sample in dataset.samples}
     nonempty = bins[:, 0] > 0
     ece = np.sum(np.abs(bins[nonempty, 1]-bins[nonempty, 2])) / cells
     ordered = sorted(timings)
     return {"format": "optical-decoder-evaluation", "version": 1,
             "samples": len(selected), "availableSamples": len(dataset.samples),
             "manifestSha256": dataset.manifest_hash, "profiles": profile_counts,
+            "selection": {"method": "session-profile-round-robin", "maximum": max_samples,
+                "availableSessions": len(available_sessions), "selectedSessions": len(per_session),
+                "omittedSessions": sorted(available_sessions-set(per_session)),
+                "note": "A capped evaluation is a subset; use --max-samples 0 for all held-out samples."},
+            "sessions": per_session,
             "dataCells": cells, "loss": loss_sum/cells,
             "cellErrorRate": 1-float(np.trace(confusion))/cells,
             "confusion": confusion.tolist(), "expectedCalibrationError": float(ece),
@@ -151,13 +201,13 @@ def main():
     torch.set_num_threads(args.threads)
     device = "cuda" if args.device == "auto" and torch.cuda.is_available() else ("cpu" if args.device == "auto" else args.device)
     try:
-        from checkpoint import load_checkpoint
+        from checkpoint import load_model_checkpoint
         dataset = Dataset(args.dataset, args.split)
-        model = OpticalDecoder()
-        checkpoint = load_checkpoint(args.checkpoint, model)
+        model, checkpoint = load_model_checkpoint(args.checkpoint)
         check_checkpoint_overlap(checkpoint, dataset, args.split)
         result = evaluate_model(model, dataset, device=device, max_samples=args.max_samples,
                                 node=args.node, work_dir=args.out.resolve().parent)
+        result["modelProfile"] = model.profile
         result["split"] = args.split
         result["checkpoint"] = str(args.checkpoint.resolve())
         args.out.parent.mkdir(parents=True, exist_ok=True)

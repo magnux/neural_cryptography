@@ -8,10 +8,11 @@ import zipfile
 import numpy as np
 import torch
 
-from model import OpticalDecoder
+from model import OpticalDecoder, profile_from_state
 
 
-MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024
+MAX_CHECKPOINT_BYTES = 512 * 1024 * 1024
+MAX_METADATA_BYTES = 256 * 1024 * 1024
 
 
 def training_provenance(training: dict) -> dict:
@@ -22,8 +23,8 @@ def training_provenance(training: dict) -> dict:
         metadata = json.dumps(training, allow_nan=False)
     except (TypeError, ValueError) as error:
         raise ValueError("Checkpoint training metadata must contain finite JSON values") from error
-    if len(metadata.encode("utf-8")) > 1024 * 1024:
-        raise ValueError("Checkpoint training metadata exceeds 1 MiB")
+    if len(metadata.encode("utf-8")) > MAX_METADATA_BYTES:
+        raise ValueError("Checkpoint training metadata exceeds 256 MiB")
     result = {}
     for key, minimum, maximum in (("steps", 1, 10_000_000), ("seed", 0, 0xFFFFFFFF),
                                    ("samples", 1, 1_000_000_000), ("batchSize", 1, 65536),
@@ -74,7 +75,7 @@ def validate_split_provenance(training: dict) -> None:
     """Keep full split identities locally so evaluation can reject data leakage."""
     for key in ("trainSessionIds", "trainPayloadIds", "validationSessionIds", "validationPayloadIds"):
         values = training.get(key)
-        if not isinstance(values, list) or len(values) > 100_000 or any(
+        if not isinstance(values, list) or any(
                 not isinstance(value, str) or not 1 <= len(value) <= 128 for value in values):
             raise ValueError(f"Checkpoint requires bounded {key} identities")
         if len(values) != len(set(values)):
@@ -89,12 +90,12 @@ def load_checkpoint(path: Path, model: OpticalDecoder | None = None) -> dict:
     """Load one current plain state checkpoint with strict dtype/shape checks."""
     path = Path(path)
     if not 0 < path.stat().st_size <= MAX_CHECKPOINT_BYTES:
-        raise ValueError("Checkpoint must be between 1 byte and 16 MiB")
+        raise ValueError("Checkpoint must be between 1 byte and 512 MiB")
     if not zipfile.is_zipfile(path):
         raise ValueError("Checkpoint must use the current torch.save ZIP serialization")
     with zipfile.ZipFile(path) as archive:
         if sum(info.file_size for info in archive.infolist()) > MAX_CHECKPOINT_BYTES:
-            raise ValueError("Expanded checkpoint exceeds 16 MiB")
+            raise ValueError("Expanded checkpoint exceeds 512 MiB")
     # weights_only rejects executable/custom pickle classes; map_location never
     # allocates CUDA tensors merely because the training checkpoint used CUDA.
     try:
@@ -105,7 +106,7 @@ def load_checkpoint(path: Path, model: OpticalDecoder | None = None) -> dict:
             type(checkpoint.get("version")) is not int or checkpoint["version"] != 1 or checkpoint.get("status") != "trained":
         raise ValueError("Unsupported decoder checkpoint; use the current training command")
     state = checkpoint.get("modelState")
-    model = OpticalDecoder() if model is None else model
+    model = OpticalDecoder(profile_from_state(state)) if model is None else model
     expected = model.state_dict()
     if not isinstance(state, dict) or set(state) != set(expected):
         raise ValueError("Checkpoint model parameters do not match the decoder")
@@ -117,3 +118,11 @@ def load_checkpoint(path: Path, model: OpticalDecoder | None = None) -> dict:
     validate_split_provenance(checkpoint["training"])
     model.load_state_dict(state, strict=True)
     return checkpoint
+
+
+def load_model_checkpoint(path: Path) -> tuple[OpticalDecoder, dict]:
+    """Instantiate the exact supported profile represented by a validated state."""
+    checkpoint = load_checkpoint(path)
+    model = OpticalDecoder(profile_from_state(checkpoint["modelState"]))
+    model.load_state_dict(checkpoint["modelState"], strict=True)
+    return model, checkpoint

@@ -24,7 +24,7 @@ if HAS_TORCH:
     from evaluate import canonical_recovery, masked_loss
     from model import OpticalDecoder
     from synthetic import corrupt_burst, generate
-    from train import run_training
+    from train import run_training, training_defaults, prepare_batch_groups, choose_batch
     torch.set_num_threads(1)
 
 
@@ -82,6 +82,53 @@ class DatasetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "escapes"):
             sample.tensors()
 
+    def test_large_offline_manifest_and_generation_count(self):
+        original = json.loads((self.directory/"train"/"manifest.json").read_text())
+        sample = original["samples"][0]
+        # Metadata only: exercise the old count/byte ceilings without writing
+        # 50,001 image tensors. Reusing binary paths is valid for this loader.
+        entries = [{**sample, "id": f"scale-{i}"} for i in range(50_001)]
+        path = self.directory/"train"/"large-manifest.json"
+        try:
+            path.write_text(json.dumps({"format": original["format"], "version": 1, "samples": entries}))
+            self.assertGreater(path.stat().st_size, 16*1024*1024)
+            loaded = Dataset([path], "train")
+            self.assertEqual(len(loaded.samples), 50_001)
+            for invalid in ([], {}, None):
+                path.write_text(json.dumps({"format": original["format"], "version": 1, "samples": invalid}))
+                with self.assertRaisesRegex(ValueError, "nonempty list"):
+                    Dataset([path])
+        finally:
+            path.unlink(missing_ok=True)
+        module = json.dumps((ROOT/"scripts/decoder-dataset.mjs").as_uri())
+        script = f"""import assert from 'node:assert/strict';
+import {{generationCount}} from {module};
+for (const count of [2048, 2**20]) assert.equal(generationCount(String(count)), count);
+for (const count of [0, -1, 1.5, 2**20+1, 'x']) assert.throws(()=>generationCount(count));
+"""
+        subprocess.run(["node", "--input-type=module", "-e", script], check=True, capture_output=True, text=True)
+
+    @unittest.skipUnless(HAS_TORCH, "PyTorch needed for training defaults and batch selection")
+    def test_training_defaults_and_prepared_source_pools(self):
+        import random
+        self.assertEqual(training_defaults(), (20_000, 1e-4))
+        self.assertEqual(training_defaults("checkpoint.pt"), (32_000, 5e-5))
+        self.assertEqual(training_defaults("checkpoint.pt", 320_000, 1e-5), (320_000, 1e-5))
+        class Example:
+            def __init__(self, source, marker):
+                self.metadata = {"source": source}
+                self.marker = marker
+            def tensors(self):
+                return np.full((3, 4, 4), self.marker, np.float32), np.zeros((1, 1), np.int64), np.ones((1, 1), bool)
+        real, synthetic = Example("real", 1), Example("synthetic", 0)
+        prepared = prepare_batch_groups({(64, 4): [real, synthetic]})
+        self.assertEqual(prepared[(64, 4)]["real"], [real])
+        self.assertEqual(prepared[(64, 4)]["synthetic"], [synthetic])
+        # choose_batch no longer walks sample metadata, even in a large corpus.
+        real.metadata = synthetic.metadata = None
+        self.assertTrue(torch.all(choose_batch(prepared, random.Random(1), 4, 1)[0] == 1))
+        self.assertTrue(torch.all(choose_batch(prepared, random.Random(1), 4, 0)[0] == 0))
+
     @unittest.skipUnless(HAS_TORCH, "PyTorch needed for corruptions and learning")
     def test_correlated_corruptions_and_materialized_provenance(self):
         sample = Dataset([self.directory/"train"]).samples[0]
@@ -125,13 +172,21 @@ class DatasetTests(unittest.TestCase):
         validation = Dataset([self.directory/"validation"], "validation")
         out = self.directory/"run"
         result = run_training(train, validation, out, steps=2, batch_size=1, accumulate=1,
-                              eval_every=2, validation_samples=1, seed=19, device="cpu")
+                              eval_every=2, validation_samples=1, seed=19, device="cpu", model_profile="compact")
         model = OpticalDecoder()
         checkpoint = load_checkpoint(result["checkpoint"], model)
         self.assertEqual(checkpoint["training"]["selection"], "validation-exact")
         torch.manual_seed(19)
         initial = OpticalDecoder()
         self.assertFalse(torch.equal(initial.head.bias, model.head.bias))
+        fine = run_training(train, validation, self.directory/"fine", initialize=result["checkpoint"],
+                            steps=1, batch_size=1, accumulate=1, eval_every=1,
+                            validation_samples=1, device="cpu")
+        fine_checkpoint = load_checkpoint(fine["checkpoint"], OpticalDecoder("compact"))
+        self.assertEqual(fine_checkpoint["training"]["learningRate"], 5e-5)
+        with self.assertRaisesRegex(ValueError, "differs from.*checkpoint profile"):
+            run_training(train, validation, self.directory/"wrong-profile", initialize=result["checkpoint"],
+                         model_profile="wide", steps=1, batch_size=1, accumulate=1)
         # Ground truth logits are a diagnostic of the downstream boundary only.
         # They never enter the model or any training/validation inference above.
         sample = validation.samples[0]
