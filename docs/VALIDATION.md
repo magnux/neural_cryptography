@@ -268,45 +268,44 @@ unchanged. The preview preference persists through camera restarts within a page
 
 No physical-device mirror/layout check, full training, or deployment was performed.
 
-## Combined real-data adaptation recipe — 2026-10-31
+## Target-matched synthesis and training — 2026-10-31
 
-Implemented the selected blend without changing capture, dataset, tensor, model
-or checkpoint format versions. An explicit session-group sidecar assigns camera
-directions. Offline update sampling balances sources and real groups, then draws
-by session/payload/phase while avoiding repeated bursts when available. Real-only
-online color/exposure/noise augmentation preserves geometry and saved inputs.
-The objective is 90% per-frame mean CE plus 10% hardest-quarter CE; validation
-remains ordinary CE with canonical RS/CRC recovery.
+The submitted adaptation run recovered 62/768 real validation frames versus
+69/768 for the earlier `wide-real` checkpoint, on the same captures. All 62 were
+already recovered by the earlier model; phone→PC remained at zero. The
+unsuccessful adaptation recipe, online augmentation, hard-cell objective and
+plateau controller have been removed. The current training path uses ordinary
+masked cross-entropy; source/session balancing, explicit direction metrics,
+initial-checkpoint protection and split checks remain useful and are retained.
 
-Adaptation defaults to LR 1e-5, AdamW decay 0.05, a 32k maximum, full validation
-every 1,000 updates, LR cuts after four stagnant checks, and stopping after twelve.
-Checkpoint selection averages real directions equally and breaks exact-recovery
-ties by CE. Meaningful-progress patience ignores relative CE changes of 0.1% or
-less. An initialized step-zero baseline can remain the selected checkpoint; it
-must carry its initial checkpoint hash and an explicit baseline flag. Fresh
-random weights never become a trained step-zero checkpoint. Split ancestry and
-wrong-acceptance checks remain enforced.
+The new `targets` dataset command reconstructs canonical clean matrices from
+verified sender truth in joined recordings. It deduplicates captures by physical
+session, payload, frame and phase, preserves split identities and verifies
+regenerated headers, labels, masks and payload bytes. It never treats a noisy
+camera image as clean. Recording formats and existing joined corpora are unchanged.
 
-The submitted full report covers 768 captures: 69 exact learned recoveries versus
-zero classical, 39.32% cell error, ECE 3.11 percentage points. Mapping session IDs
-to the supplied acquisition paths gives PC→phone 69/512 with 24.76% cell error and
-phone→PC 0/256 with 68.43% error. These validation observations motivate the recipe;
-the recipe itself has not yet been trained/evaluated on the user's recordings.
+Synthetic generation now adds independent bursts per target, drifting rolling-
+shutter exposure/color bands, bounded scanline skew, and rotated soft rectangles
+and ellipses with gradients and tints. Shadows attenuate light; reflections add
+light. These are calibrated-crop approximations, not a full sensor simulation.
+The paired sampler places equal numbers of real captures and synthetic variants
+of the same exact target in each update. Matching content does not establish
+matching camera distributions or improved generalization.
 
 Validation on this host:
 
-- **63 Python tests passed and one native ONNX Runtime test skipped** because
-  its CPU initialization remains unavailable. The full suite had 63 tests;
-  the subsequently added training-CLI smoke and its four integration companions
-  also passed, bringing the distinct total to 64.
-- Tests cover exact update quotas, unbalanced pools, repeated-burst handling,
-  deterministic augmentation and untouched synthetic inputs, masked gradients,
-  group-weighted metrics, LR/stop patience, inherited baseline checkpoint export,
-  split rejection, and unchanged recordings. Small canonical renderings marked
-  as real solely for branch coverage exercise actual optimizer/JS-recovery wiring;
-  they are not claimed as device data or recovery benchmarks.
-- The actual adaptation CLI completes a one-step CPU fixture run and emits
-  validated settings/history/checkpoints. Controlled degrading-validation tests
-  preserve the original weights while reducing LR and stopping early.
-- **42 JavaScript decoder/capture tests passed.** No site was deployed, and no
-  full GPU training, new phone test, or optical recovery improvement is claimed.
+- **62 Python tests passed; one native ONNX Runtime initialization check was
+  explicitly skipped** on this restricted host (63 tests total).
+- 32 affected JavaScript tests passed, covering target reconstruction, capture
+  controls, learned-input conversion and decoder-lab checks.
+- End-to-end target→corruption→pairing tests verify independently seeded bursts,
+  unchanged label hashes and phase identities, reproducibility, split isolation
+  and the scaled output budget. Actual paired CPU optimizer/CLI tests preserve
+  the initialized baseline and reject wrong accepted payloads.
+- Deterministic corruption tests cover rolling-shutter row/color variation and
+  temporal drift, bounded displacement, rotated/feathered shapes, multiplicative
+  shade, additive reflection, zero-effect controls and both input sizes.
+
+Canonical fixtures marked real exercise data/training branches only; they are
+not device measurements. No new full GPU training, optical recovery improvement or browser
+performance result is claimed, and no site is deployed by this change.

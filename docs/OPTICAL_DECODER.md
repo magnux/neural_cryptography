@@ -155,42 +155,60 @@ until the model and receiver settings are selected; report results on those sess
 
 ## Synthetic data and training
 
-Use the current OBM5 JavaScript renderer as the canonical label/geometry source: export clean randomized frames and
-metadata to the Python training pipeline. Keep a small parity fixture rather than reimplementing the wire format in
-Python. Generate correlated bursts, not independent Gaussian-noise images:
+Use the current OBM5 JavaScript renderer as the canonical label/geometry source.
+Random-payload clean corpora remain available for pretraining. For real fine-tuning,
+`decoder-dataset.mjs targets` reconstructs the exact clean matrices represented by
+the sender-derived bytes and metadata in a joined training dataset. It verifies
+headers/labels/masks, deduplicates repeated captures of the same target, and
+preserves sender/receiver session, payload and split identities. This is offline
+supervision; the receiver never receives the expected matrix as an inference input.
 
-- Render screen pixels/subpixels at higher resolution, vary camera sampling scale,
-  and downsample after optical blur to produce aliasing.
-- Add spatially varying sinusoidal/chirped interference with curved phase fields,
-  multiple orientations/frequencies, and channel-dependent amplitude. Curvature
-  belongs in the interference texture even when rectification is accurate.
-- Evolve phase/scale smoothly under motion and autofocus; share base disturbances
-  across each burst. Add defocus, short motion-blur trajectories, resampling error,
-  illumination gradients, affine color mixing, gamma, clipping, shot/read noise,
-  and occasional exposure/white-balance changes. Avoid only easy clean examples.
+Generate multiple independently seeded bursts for each target, with correlated
+frames inside each burst:
 
-Treat this as an approximation fitted against real failures. Randomize nuisance parameters separately from payload
-symbols. Preserve the measured screen texture when applying only mild real-data augmentation. Hold out generator seeds
-and disturbance ranges; synthetic success alone cannot pass the device milestone.
+- Render screen pixels/subpixels at higher resolution, then blur and sample to
+  approximate aliasing; add curved/chirped channel-dependent moiré.
+- Evolve texture, subcell motion and focus across frames. Include short motion
+  blur, illumination gradients, affine color mixing, gamma, clipping, shot/read
+  noise, and residual exposure/white-balance changes.
+- Approximate rolling-shutter/screen-flicker interaction using row-dependent,
+  drifting exposure/color bands and a small bounded row-wise skew. Do not label
+  a transition between different payloads as one static target.
+- Add soft, rotated rectangle/ellipse shapes with opacity gradients: tinted
+  multiplicative shadows and additive reflections/highlights, with burst motion.
 
-Train on the user's RTX 4090 with plain PyTorch, NumPy, and a small image I/O dependency if needed; no Hugging Face or
-training framework. Provide CPU smoke mode and configurable device/batch/steps. Default to AdamW at 1e-4, effective batch 16,
-and 32,000 synthetic pilot updates. The implemented `adapt` recipe reuses the pilot,
-uses LR 1e-5 and AdamW decay 0.05, and caps updates at 32,000 with validation-driven
-LR reduction and early stopping. It balances real acquisition directions within
-the 50:50 real/synthetic mixture and mildly augments real inputs online. Full real
-validation selects checkpoints by direction-balanced exact recovery, then CE;
-the initial checkpoint remains eligible if adaptation never improves it. See the
-[training guide](OPTICAL_DECODER_TRAINING.md#recommended-next-training-run) for the
-session sidecar and command. These budgets are starting configurations, not
-promised convergence or duration.
+Treat these as calibrated-crop approximations, not a full camera simulator.
+Randomize nuisance parameters independently of payload symbols. Preserve original
+real captures. Whole sessions/payloads and their synthetic derivatives remain in
+one split; synthetic targets reconstructed from validation/test must never enter
+training. Matching content reduces one source of distribution difference, but
+only held-out real recovery can demonstrate useful optical generalization.
 
-Use cross-entropy on data-cell physical labels, masking reference cells from the main loss so easy pilots cannot
-dominate. Adaptation uses 90% mean CE plus 10% hardest-quarter CE within each frame;
-validation retains ordinary CE. Train mixed G=64/128 batches separately by shape; mask inactive classes for each palette. Do not use
-perceptual losses, GANs, or an RGB reconstruction head initially. Measure cell confusion and confidence calibration, but
-select checkpoints using exact CRC recovery and time-to-recovery under equal observation budgets. After every chosen
-checkpoint, verify PyTorch/ONNX/browser outputs and the resulting transport decisions.
+Train on the user's RTX 4090 using plain PyTorch and NumPy; CPU supports small
+pipeline checks. The current trainer has one ordinary masked cross-entropy path,
+AdamW weight decay `.01`, effective batch 16, a 32,000-update default, and learning
+rate `1e-4` fresh or `5e-5` initialized. The unsuccessful adaptation recipe and its
+extra objective, online augmentation and plateau machinery have been removed.
+Keep useful source/group metrics and initialized-checkpoint baseline protection.
+
+For the next experiment, reuse `wide-pilot/best.pt`, generate 16 independent
+nine-frame corruption bursts per recorded training target, and enable
+`--paired-targets`. Each real draw receives a synthetic counterpart of the exact
+same session/payload/frame/phase and target hashes. The 50:50 source quota applies
+to each complete optimizer update; an optional session sidecar balances real
+acquisition directions. Full real validation every 1,000 updates selects by exact
+recovery, then ordinary CE. Per-direction results remain essential when one
+direction recovers nothing. Keep `wide-real/best.pt` as the comparison baseline.
+See the [training guide](OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
+for generation, cleanup and training commands.
+
+Mask reference cells and inactive palette classes from the objective. Batch
+G64/G128 profiles separately by shape. The architecture still predicts physical
+palette classes from a single calibrated crop; no reconstruction head or
+consistency loss is needed for this paired-data experiment. Measure cell confusion
+and calibration as diagnostics, and validate exact CRC recovery at equal capture
+budgets. A selected checkpoint must pass PyTorch/ONNX/browser parity before live
+transport integration.
 
 ## Implemented boundaries and remaining work
 
@@ -204,9 +222,9 @@ prepared locally rather than committed. The live optical receiver still uses the
 | `scripts/prepare-decoder.mjs` | Implemented: validate and prepare local assets without downloading or deploying |
 | `apps/color-optical-bench/dist/decoder.html`, `js/decoder-lab/` | Implemented: isolated worker inference, numerical comparison, timings, camera crop probe, reports |
 | `apps/color-optical-bench/dist/js/{vision,learned-input}.js` | Implemented: dense physical crop and current-exposure correction, NCHW input, physical-logit to logical-score adapter |
-| `experiments/optical-decoder/{data,synthetic,train,evaluate,checkpoint}.py` | Implemented M2: dataset checks, correlated corruption, training, held-out evaluation, and checkpoint validation |
+| `experiments/optical-decoder/{data,synthetic,sampling,train,evaluate,checkpoint}.py` | Implemented M2: dataset checks, independent corruption bursts, paired sampling, training, held-out evaluation, and checkpoint validation |
 | `apps/color-optical-bench/dist/capture.html`, `js/dataset/` | Implemented: static sender, bounded receiver capture, independent exports, and diagnostic originals |
-| `scripts/decoder-dataset.mjs` | Implemented: canonical renderer examples, offline label joins, corrupted-input baselines, and exact CRC/RS comparison |
+| `scripts/decoder-dataset.mjs` | Implemented: clean random/recorded target rendering, offline label joins, corrupted-input baselines, and exact CRC/RS comparison |
 | Existing `decoder-worker.js`, `temporal.js` | Planned integration: learned evidence entry point; classical live path unchanged |
 
 The reusable authentication boundary is the session/envelope API in

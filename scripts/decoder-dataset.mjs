@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {createSender,senderFrames,captureKey,base64ToBytes,floatBytes,floatsFromBytes,DATASET_FORMAT,validateSessionId,canonicalJSON,MAX_RECORDS,MAX_CAPTURE_BYTES} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
 import {validateCapture} from '../apps/color-optical-bench/dist/js/dataset/capture.js';
-import {renderFrame,parseHeader,PALETTE,sameBytes} from '../apps/color-optical-bench/dist/js/format.js';
+import {renderFrame,parseHeader,encodeSequence,phaseFrames,PALETTE,sameBytes} from '../apps/color-optical-bench/dist/js/format.js';
 import {gridLayout} from '../apps/color-optical-bench/dist/js/grid.js';
 import {extractLearnedInput,logitsToLogicalScores} from '../apps/color-optical-bench/dist/js/learned-input.js';
 import {classifySamples,decodeScores} from '../apps/color-optical-bench/dist/js/vision.js';
@@ -50,6 +50,12 @@ async function putSample(out,index,metadata,{input,labels,mask,baseline,expected
   return result;
 }
 function maskFor(info){const mask=new Uint8Array(info.size**2);for(const cell of gridLayout(info.size,info.colors,info.gridBlock).cells)mask[cell]=1;return mask;}
+function cleanCrop(frame) {
+  const pixels=frame.size===64?1024:2048,scale=pixels/256;
+  const learned=extractLearnedInput(renderFrame(frame,pixels),{transform:[scale,0,0,0,scale,0,0,0,1]});
+  if(!learned.ok)throw Error(`Clean canonical crop failed: ${learned.error}`);
+  return learned.input;
+}
 
 /** Calibrated-crop baseline for synthetic inputs; no clean truth used. */
 export function denseClassicalScores(input,info) {
@@ -75,13 +81,10 @@ export async function generate(options) {
   for(let i=0;i<count;i++) {
     const generated=await createSender({size,colors,phases,seed:(seed+i)>>>0,sessionId});
     for(const frame of generated.frames) {
-      const pixels=size===64?1024:2048,image=renderFrame(frame,pixels),scale=pixels/256;
-      const learned=extractLearnedInput(image,{transform:[scale,0,0,0,scale,0,0,0,1]});
-      if(!learned.ok)throw Error(`Clean canonical crop failed: ${learned.error}`);
-      const info=parseHeader(frame.header);
+      const input=cleanCrop(frame),info=parseHeader(frame.header);
       dataset.samples.push(await putSample(out,dataset.samples.length,{sessionId,payloadId:generated.manifest.payloadId,split,source:'synthetic',size,colors,info,
         burstId:captureKey(info),timestamp:info.phase*500,provenance:{generator:'OBM5 renderFrame + validated dense crop',seed:(seed+i)>>>0,corruption:'none',baseline:'calibrated-crop approximation'}},
-        {input:learned.input,labels:frame.symbols,mask:maskFor(info),baseline:denseClassicalScores(learned.input,info),expected:frame.chunk}));
+        {input,labels:frame.symbols,mask:maskFor(info),baseline:denseClassicalScores(input,info),expected:frame.chunk}));
     }
   }
   await writeFile(join(out,'manifest.json'),JSON.stringify(dataset,null,2)+'\n');
@@ -132,6 +135,64 @@ export async function joinCaptures(options) {
   if(!dataset.samples.length)throw Error('No labeled captures matched; check headers/manifests and exclusions.');
   await writeFile(join(out,'manifest.json'),JSON.stringify(dataset,null,2)+'\n');
   return {dataset:out,samples:dataset.samples.length,excluded:dataset.excluded,diagnostics:dataset.diagnostics.length,split};
+}
+
+/** Re-render joined sender truth offline, once per physical session/frame/phase.
+ * No captured pixels enter the clean image; keep session/payload ownership so
+ * these targets and their future corruptions cannot cross held-out splits.
+ */
+export async function targets(options) {
+  only(options,['dataset','out']);
+  if(!options.dataset||!options.out)throw Error('targets requires --dataset DIRECTORY[,DIRECTORY] --out DIRECTORY.');
+  const grouped=new Map(),ids=new Set(),owners={sessionId:new Map(),payloadId:new Map()},sources=[];
+  let captures=0;
+  for(const location of options.dataset.split(',')) {
+    const root=resolve(location),manifestPath=await safeReadPath(root,'manifest.json'),manifest=await jsonFile(manifestPath);
+    if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length)throw Error('Unsupported joined dataset manifest.');
+    sources.push({manifestSha256:hash(await readFile(manifestPath))});
+    for(const sample of manifest.samples) {
+      if(!sample||sample.source!=='real')throw Error('Target reconstruction requires joined real captures.');
+      validateSessionId(sample.sessionId);validateSessionId(sample.senderSessionId);
+      const split=splitName(sample.split),info=sample.info;
+      if(sample.split===undefined||typeof sample.id!=='string'||!sample.id||ids.has(sample.id))throw Error('Missing/duplicate joined sample identity or split.');
+      ids.add(sample.id);
+      if(!/^[a-f0-9]{64}$/.test(sample.payloadId)||![64,128].includes(sample.size)||![4,16].includes(sample.colors)||
+        !info||info.size!==sample.size||info.colors!==sample.colors||!/^[a-f0-9]{16}$/.test(info.id))throw Error('Invalid joined target profile or identity.');
+      for(const [kind,values] of Object.entries({sessionId:[sample.sessionId,sample.senderSessionId],payloadId:[sample.payloadId]}))for(const value of values) {
+        const previous=owners[kind].get(value);if(previous&&previous!==split)throw Error(`${kind} crosses dataset splits.`);
+        owners[kind].set(value,split);
+      }
+      // The capture app emits one static logical frame and its palette phases.
+      // Refuse partial multipart truth rather than inventing the missing bytes.
+      if(info.count!==1||info.index!==0)throw Error('Target reconstruction requires the capture app\'s complete single-frame payload.');
+      const expected=await readSampleFile(root,sample,'expected',65536),labels=await readSampleFile(root,sample,'labels',sample.size**2),mask=await readSampleFile(root,sample,'mask',sample.size**2);
+      if(hash(expected)!==sample.payloadId)throw Error('Joined expected bytes disagree with whole-payload identity.');
+      const frames=phaseFrames(encodeSequence(expected,{...info,id:Uint8Array.from(info.id.match(/../g),s=>parseInt(s,16)),contentType:info.content?.type}));
+      const frame=frames[info.phase];
+      if(!frame||canonicalJSON(parseHeader(frame.header))!==canonicalJSON(info))throw Error('Regenerated target header disagrees with joined metadata.');
+      if(!sameBytes(frame.symbols,labels)||!sameBytes(maskFor(info),mask))throw Error('Regenerated target labels or mask disagree with joined truth.');
+      const key=canonicalJSON([sample.sessionId,sample.payloadId,captureKey(info)]),previous=grouped.get(key);
+      if(previous&&(previous.sample.senderSessionId!==sample.senderSessionId||previous.sample.split!==split))throw Error('Conflicting identities for one target matrix.');
+      if(!previous)grouped.set(key,{sample,frame});
+      captures++;
+    }
+  }
+  const out=resolve(options.out);await freshDirectory(out);
+  const dataset={format:DATASET_FORMAT,version:1,created:new Date().toISOString(),
+    description:'Canonical clean targets reconstructed from joined sender truth; no camera input used.',sources,samples:[]};
+  for(const [key,{sample,frame}] of [...grouped].sort(([a],[b])=>a.localeCompare(b))) {
+    const input=cleanCrop(frame),info=parseHeader(frame.header);
+    dataset.samples.push(await putSample(out,dataset.samples.length,{
+      id:`target-${hash(Buffer.from(key)).slice(0,24)}`,sessionId:sample.sessionId,senderSessionId:sample.senderSessionId,
+      payloadId:sample.payloadId,split:sample.split,source:'synthetic',size:sample.size,colors:sample.colors,info,
+      burstId:sample.burstId,timestamp:info.phase*500,
+      provenance:{generator:'OBM5 renderFrame + validated joined sender truth',corruption:'none',
+        baseline:'calibrated-crop approximation',targetKey:key}},
+      {input,labels:frame.symbols,mask:maskFor(info),baseline:denseClassicalScores(input,info),expected:frame.chunk}));
+  }
+  await writeFile(join(out,'manifest.json'),JSON.stringify(dataset,null,2)+'\n');
+  return {dataset:out,captures,samples:dataset.samples.length,deduplicated:captures-dataset.samples.length,
+    splits:[...new Set(dataset.samples.map(sample=>sample.split))]};
 }
 
 function recoveryResult(info,scores,expected) {
@@ -195,8 +256,8 @@ export async function evaluate(options) {
 
 async function main() {
   const [command,...args]=process.argv.slice(2),options=flags(args);
-  const action={generate,join:joinCaptures,baselines,evaluate}[command];
-  if(!action)throw Error('Usage: decoder-dataset.mjs generate|join|baselines|evaluate [--option value].');
+  const action={generate,join:joinCaptures,targets,baselines,evaluate}[command];
+  if(!action)throw Error('Usage: decoder-dataset.mjs generate|join|targets|baselines|evaluate [--option value].');
   console.log(JSON.stringify(await action(options),null,2));
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))main().catch(error=>{console.error(`Decoder dataset failed: ${error.message}`);process.exitCode=1;});

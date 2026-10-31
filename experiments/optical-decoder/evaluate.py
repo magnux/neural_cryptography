@@ -105,7 +105,7 @@ def summarize_groups(per_session, session_groups=None, *, exact=True):
     """Aggregate session measurements, retaining macro group selection separately.
 
     Each group's CE/error is cell weighted and its recovery is frame weighted.
-    Adaptation selection then gives each real group equal weight, regardless of
+    Checkpoint selection gives each real group equal weight, regardless of
     its number of frames; synthetic rows never dilute that selection objective.
     """
     grouped, sourced = defaultdict(list), defaultdict(list)

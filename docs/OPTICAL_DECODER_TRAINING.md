@@ -167,13 +167,15 @@ independent decoding to measure whether accepted output is exact.
 
 Use the experiment's pinned dependencies in a virtual environment. Select an
 appropriate PyTorch CUDA build for the 4090; CPU works for small smoke runs.
-If you already generated the clean corpora below, reuse them: only the corrupted
-synthetic train/validation/test corpora need regeneration to include the new
-photometric effects. Existing real recordings and joined datasets remain usable;
-their recording and dataset formats have not changed. Choose empty output
-directories; generation refuses to overwrite an existing corpus. If you keep the
-previous generated data for comparison locally, use new output paths here and
-pass those same paths to training and evaluation.
+**If you already have `wide-pilot/best.pt`, skip this optional pilot generation
+and use the [target-paired run below](#recommended-next-training-run).** Its
+weights remain a useful initialization; a fresh pilot is not required after
+changing corruptions.
+
+For a fresh pilot, reuse existing clean corpora or generate them below. Generate
+corrupted corpora into empty directories. Real recordings and joined datasets
+remain usable without conversion. The following independent random-payload route
+also remains available for broader pretraining:
 
 ```sh
 python -m pip install -r experiments/optical-decoder/requirements.txt
@@ -210,184 +212,208 @@ CLI accepts multiple directories. Use the same pattern for G128 when ready.
 The generator applies an RGB stripe carrier before blur/resampling, curved and
 chirped channel-dependent moiré, bounded subcell jitter, short motion blur,
 color/gamma changes, clipping, and shot/read noise. The following effects are
-enabled by default, so the existing commands above also generate them:
+enabled by default:
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `--white-balance-stops` | `.6` | Channel-dependent RGB gains, in 80% of bursts; the maximum absolute log2 gain is scaled by severity. |
-| `--exposure-stops` | `1.5` | Signed exposure gain, in 80% of bursts, including both underexposure and overexposure; the maximum absolute log2 gain is scaled by severity. |
-| `--shade-opacity` | `.45` | Maximum alpha for a translucent black or white rectangle, scaled by severity. |
-| `--shade-probability` | `.7` | Fraction of bursts receiving a rectangle; its area is sampled between 20% and 30% of the crop. |
+| `--white-balance-stops` | `.6` | Residual channel-dependent RGB gains in 80% of bursts. |
+| `--exposure-stops` | `1.5` | Signed exposure gain in 80% of bursts, with highlight/shadow clipping. |
+| `--shade-opacity` | `.45` | Maximum strength of soft, rotated rectangle/ellipse shadows and reflections. |
+| `--shade-probability` | `.7` | Probability of a burst receiving one broad shape, sometimes with a smaller second shape. |
+| `--rolling-shutter-stops` | `.65` | Maximum row-dependent exposure-band strength, with mild channel variation. |
+| `--rolling-shutter-probability` | `.7` | Probability of correlated drifting rolling-shutter bands/skew. |
+| `--rolling-shutter-skew` | `.5` | Maximum row-dependent horizontal displacement in dense-crop pixels, before severity scaling. |
+| `--bursts-per-target` | `1` | Independently seeded corruption trajectories for each clean target. |
 
-At `--severity .65`, the respective maximum strengths are ±0.39 stops of
-white-balance gain, ±0.975 stops of exposure gain, and 0.2925 rectangle opacity.
-Zero strength disables the corresponding added effect; use
-`--shade-probability 0` to disable rectangles. `--severity 0` returns the clean
-crop unchanged. The generator records its algorithm and settings in synthetic
-provenance so different corruption runs can be distinguished.
+Strengths are scaled by `--severity`; at `.65`, a `.65`-stop rolling-shutter
+limit becomes `.4225` stops. Zero strength disables its effect; set rolling-shutter
+probability to zero to disable both bands and skew, or shade probability to zero
+to disable overlays. `--severity 0` returns the clean crop unchanged.
 
-The white-balance and exposure offsets are shared across each burst with mild
-correlated drift. A rectangle retains its color and approximate placement,
-with softened edges and slight motion. These are semi-transparent blends, not
-opaque cutouts, and neither their selection nor their parameters use payload
-symbols or labels. The mixture includes milder captures as well as difficult
-ones; saturation can still erase color information and cannot always be undone.
+Rolling-shutter effects approximate exposure bands from a rolling readout and
+screen flicker: broad/narrow bands evolve over successive frames, with slight
+tilt and color variation. A small row-dependent skew is bounded together with
+registration jitter and motion blur to remain below half a four-pixel cell.
+This does not simulate a transition between different displayed payloads; those
+mixed-label captures should still be excluded.
 
-Disturbances evolve across a burst rather than drawing unrelated images. This
-is a **calibrated-crop approximation** of residual color distortion; it does
-not simulate the full camera pipeline, recalibration, or header failures.
-More varied synthetics are not evidence of improved device recovery: held-out
-real sessions determine whether the added effects reduce the observed gap.
-Synthetic classical baselines are recomputed from the same corrupted crop;
-real baselines use the independently captured current-exposure samples.
+Shadows multiply the image by a spatially varying, slightly tinted attenuation;
+reflections add light with highlight clipping. Shapes vary in angle, aspect,
+position, edge softness and opacity gradient, with correlated movement across a
+burst. The main shape's bounding rectangle covers roughly 18–32% of the crop;
+ellipses and edge clipping reduce the affected area. Neither corruption choice
+nor its parameters depend on payload symbols. Multiple independently seeded
+bursts provide different conditions for the same target, while frames within a
+burst remain correlated.
+
+These are **calibrated-crop approximations**, not a full camera/display/readout
+simulation. They do not reproduce detection, recalibration, or header failures.
+The algorithm/settings and independent burst identity are recorded in synthetic
+provenance. Synthetic classical baselines are recomputed from each corrupted
+crop; real baselines use independently captured current-exposure samples.
+Held-out real recovery must establish whether the additional effects help.
 
 ## Train and evaluate
 
-Both recipes use plain PyTorch/AdamW, float32, microbatches of 4 and accumulation
-of 4 (effective batch 16). The maximum budget defaults to **32,000 updates**.
-Use `--steps` to override it. Microbatches share a grid size and palette; reference
-cells and inactive palette classes are excluded from the data-cell objective.
+There is one training path: plain PyTorch/AdamW, float32, ordinary masked
+cross-entropy, microbatches of 4 and accumulation of 4 (effective batch 16).
+Training defaults to **32,000 updates**, learning rate `1e-4` for fresh weights or
+`5e-5` for an initialized checkpoint, and weight decay `.01`. Full validation
+runs every 1,000 updates. `--steps`, `--lr`, `--eval-every` and
+`--validation-samples` remain explicit controls. The unsuccessful adaptation
+recipe, its hard-cell loss, online augmentation and plateau scheduler have been
+removed; there is no `--recipe` option.
 
-| Recipe | Default selection | Learning rate | Objective | Validation |
-| --- | --- | ---: | --- | --- |
-| `pilot` | Fresh runs, or initialized runs without real training data | 1e-4 fresh; 5e-5 initialized | Ordinary per-frame mean CE | 128 captures every 200 updates |
-| `adapt` | Initialized runs containing real training captures | 1e-5 | 90% mean CE + 10% hardest-quarter CE | All captures every 1,000 updates |
-
-Use `--recipe pilot` explicitly for the plain-CE baseline. The adaptation recipe
-requires `--initialize`, real training data, and an explicit `--session-groups`
-sidecar covering every real receiver session in training and validation. Both
-splits must represent the same real groups. The recommended combined run is
-[below](#recommended-next-training-run); an existing trained wide pilot can be reused.
+For a fresh synthetic pilot:
 
 ```sh
 python experiments/optical-decoder/train.py \
-  --recipe pilot --train local-data/synthetic-train \
+  --train local-data/synthetic-train \
   --validation local-data/synthetic-validation \
   --model wide --device cuda --out checkpoints/optical-decoder/wide-pilot
 ```
 
-For a quick CPU pipeline check, use `--device cpu --steps 10 --batch-size 1
---accumulate 1 --eval-every 5 --validation-samples 4`, with a small corpus and an
-empty run directory. A short smoke run need not recover a payload.
+Microbatches share a grid size and palette. Reference cells and inactive palette
+classes are excluded from the data-cell objective. Standard source sampling
+remains available; `--paired-targets` enables the matched-real/synthetic route
+[below](#recommended-next-training-run). An optional `--session-groups` sidecar
+balances real acquisition directions and adds direction-specific evaluation.
 
-Validation always uses unaugmented inputs and ordinary data-cell CE, even when
-the training objective includes hard cells. Exact recovery uses the current JS
-palette mapping, reliability ranking, RS and CRC; accepted bytes are compared
-with expected bytes afterward. An accepted incorrect payload stops training for
-investigation. Expected payload bytes never enter model inference or repair.
+For a quick CPU pipeline check, use `--device cpu --steps 10 --batch-size 1
+--accumulate 1 --eval-every 5 --validation-samples 4` without paired sampling.
+Paired sampling requires an even effective batch of at least two. Short smoke
+runs validate wiring and need not recover payloads.
+
+Exact recovery uses the current JS palette mapping, reliability ranking, RS and
+CRC; accepted bytes are compared with expected bytes afterward. An accepted
+incorrect payload stops training for investigation. Expected payload bytes never
+enter model inference or repair.
 
 The trainer evaluates at step zero. An initialized model is eligible for
-`best.pt` immediately, so an unsuccessful adaptation cannot overwrite its starting
-performance with a worse model. A fresh pilot's step-zero random weights are
-only diagnostic, not a trained checkpoint. With group metadata, checkpoint
-selection uses the mean exact-recovery rate across real groups, then their mean
-CE as the tie-break. Without real group metadata it uses the global metrics.
+`best.pt` immediately, preserving its starting performance if training never
+improves it. A fresh model's random step-zero weights are diagnostic only.
+With explicit real groups, checkpoint selection uses mean exact recovery across
+those groups, then mean CE as the tie-break; otherwise it uses global metrics.
+Read the per-direction results too: mean recovery alone can improve while a
+still-failing direction stays at zero.
 
-Pilot validation uses a fixed session/profile-balanced subset by default.
-`--validation-samples 0` evaluates the entire validation corpus; it is the
-adaptation default. Capped evaluation must still include every mapped real group.
-Standalone `evaluate.py --max-samples 0` also evaluates all examples. Reports
-include per-session and per-group CE/error/recovery, confidence calibration,
-phase identities, raw/hard/erasure recovery, wrong accepted frames, and inference
-timing. Both methods receive one exposure per candidate; these are not temporal
-throughput measurements.
+`--validation-samples 0` evaluates all validation captures and is the default.
+Capped evaluation uses a fixed session/profile-balanced subset and must include
+every mapped real group. Standalone `evaluate.py --max-samples 0` also evaluates
+all examples. Reports include per-session/group CE, error and recovery,
+confidence calibration, phase identities, raw/hard/erasure recovery, wrong
+accepted frames, and inference timing. These are single-exposure measurements,
+not temporal throughput measurements.
 
-Whole-session and payload split checks, including checkpoint ancestry, remain
-mandatory. Keep original sender/receiver session IDs intact when moving or
-joining files. Use untouched test sessions only after selecting the model and
-receiver settings on validation.
+Whole-session and whole-payload split checks, including checkpoint ancestry,
+remain mandatory. Keep sender/receiver identities intact when generating paired
+targets. Use untouched test sessions only after selecting the model and receiver
+settings on validation.
 
 ## Model profiles and the latest training result
 
-| Profile | Parameters | Changes |
+| Profile | Parameters | Structure |
 | --- | ---: | --- |
-| `compact` | 121,792 | Existing plain U-Net baseline, including your trained checkpoints |
-| `wide` | 487,104 | Doubled feature widths; per-location channel LayerNorm on feature convolutions; unnormalized pooled RGB readout added to context logits |
+| `compact` | 121,792 | Plain U-Net baseline |
+| `wide` | 487,104 | Doubled widths, feature-channel LayerNorm, and an unnormalized pooled-RGB readout alongside context logits |
 
 Both take `[N,3,4G,4G]` calibrated pixels and output `[N,16,G,G]` physical-color
-logits. LayerNorm does not normalize raw RGB or depend on batch statistics. The
-separate color readout preserves absolute color evidence. The latest combined
-model/data iteration improves submitted validation recovery; it does not isolate
-the architecture's contribution. Wider browser inference
-needs fresh device latency measurements; fixed G64/G128 export and WASM parity
-are checked separately from recovery quality.
+logits. LayerNorm does not normalize raw RGB or depend on batch statistics.
+`--initialize` keeps the checkpoint's exact architecture; it does not widen
+weights. An explicitly conflicting `--model` fails. The model and browser tensor
+contract are unchanged by paired training.
 
-Use `--model compact` for a fresh baseline. `--initialize` automatically retains
-the checkpoint's architecture; it does not widen existing weights. An explicit
-conflicting `--model` fails. To test wide, train a new pilot from your existing
-datasets, then fine-tune that pilot. Both are active profiles in the same current
-checkpoint representation; weights are validated exactly, never partially loaded.
+The latest submitted evaluation compares the same 768 captures from six physical
+sessions. The discarded adaptation recipe did not beat the previous checkpoint:
 
-The 2026-10-31 log contains 1,536 joined real training captures and 768 real
-validation captures, with no exclusions. The 12 training and six validation
-capture bundles are correlated collections, not 2,304 independent device setups.
-The 1,200/600 diagnostic entries are bounded acquisition event records, not counts
-of rejected training samples. Synthetic counts are consistent: 2,048/256/256
-payloads × four phases × nine frames = 73,728/9,216/9,216 examples.
-
-| Run / checkpoint | Step | Exact frames | Data-cell error | Validation CE |
-| --- | ---: | ---: | ---: | ---: |
-| Synthetic selected | 16,000 | 125/128 (97.66%) | 0.455% | 0.01347 |
-| Synthetic final | 20,000 | 121/128 (94.53%) | 0.529% | 0.01484 |
-| Real selected | 5,200 | 7/128 (5.47%) | 40.50% | 1.14159 |
-| Real final | 32,000 | 1/128 (0.78%) | 46.75% | 2.20347 |
-
-Classical recovery is 68/128 (53.125%) on the synthetic subset and zero on the
-real subset. These are fixed 128-capture validation measurements, not full-corpus
-or untouched test results. `wide-real/best.pt` correctly retains step 5,200.
-The large later increase in real validation loss and deterioration in accuracy
-support overfitting in addition to a synthetic/real distribution gap. The new
-architecture, augmentations, burst length, and real collection changed together;
-their separate contributions cannot be established from these runs.
-
-The source mixture is already explicit: `--real-fraction .5` gives approximately
-half the draws to real data when both sources share a profile, despite only about
-2% of stored training examples being real. In that submitted run, effective batch
-16 and 32k updates drew each real crop about 167 times on average (about 27 by
-step 5,200), without online real augmentation. Its `trainLoss` was the latest
-update's mixed-source mean, not an averaged real-only training loss. The current
-adaptation recipe adds augmentation and interval-averaged source/group metrics.
-
-Review found no obvious physical-color/phase, mask, or loss aggregation bug.
-Actual alignment and label quality still require inspecting capture tensors.
-Synthetic crops clip to nominal RGB while real affine-calibrated inputs can
-overshoot to [-1.5,1.5]. Camera processing and interference may differ in other
-ways. The log does not identify which mismatch matters most.
-
-The subsequent full evaluation of that same selected checkpoint covers all 768
-real validation captures: **69 exact recoveries (8.98%)**, 39.32% cell error and
-CE 1.10503; classical recovery is zero. All 69 accepted outputs are correct and
-require ordinary hard-decision RS correction. There are no raw CRC passes or
-additional erasure-assisted recoveries. The higher rate than 7/128 reflects a
-larger evaluation of the same model, not another model improvement.
-
-Matching receiver sessions to the supplied capture paths gives:
-
-| Direction | Exact recovery | Cell error |
+| Validation metric | `wide-real/best.pt` | Discarded adaptation run |
 | --- | ---: | ---: |
-| PC screen → phone camera | 69/512 (13.48%) | 24.76% |
-| Phone screen → PC camera | 0/256 | 68.43% |
+| Exact recovered frames | 69/768 (8.98%) | 62/768 (8.07%) |
+| Overall cell error | 39.32% | 39.96% |
+| PC → phone cell error | 24.76% | 25.13% |
+| Phone → PC exact recovery | 0/256 | 0/256 |
 
-All successes come from two of six sessions (46 and 23 frames). The four other
-sessions recover nothing. Each session contributes 128 captures with 32 per phase.
-Class frequencies are nearly balanced (6.11–6.34% each). Aggregate expected
-calibration error is 3.11 percentage points; the highest-confidence quarter of
-cells is 99.15% correct at 97.90% average confidence. Group-specific calibration
-may differ, but these measurements prioritize acquisition-domain generalization
-and overfitting over global confidence adjustment or class-frequency weighting.
+All 62 later successes were already successful before; neither run recovered any
+phone→PC frame. Keep `wide-real/best.pt` as the comparison baseline and
+`wide-pilot/best.pt` as the recommended initialization. The recordings are
+correlated captures, not 768 independent physical setups. Historical validation
+measurements are recorded in [VALIDATION.md](VALIDATION.md); the current next
+experiment is matched target content plus improved corruption generation.
 
 ## Recommended next training run
 
-Run the implemented **combined adaptation recipe once**, keeping the wide
-architecture and the trained `wide-pilot/best.pt`. Reuse the current real and
-synthetic datasets: neither recording again, regenerating synthetics, nor
-retraining the pilot is required for this experiment.
+**Reuse `wide-pilot/best.pt` and train on real captures paired with synthetics of
+the exact same target matrices.** Starting from scratch is possible by omitting
+`--initialize`, but is not required: the architecture and labels are unchanged,
+and the pilot already learned useful color/spatial features. Keep the earlier
+`wide-real/best.pt` for a direct comparison rather than initializing from the
+failed adaptation run.
 
-First create a local direction sidecar. The example below follows the supplied
-folder organization: `local-data/phone/` contains captures recorded **on the phone**
-(PC→phone), and `local-data/pc/` contains captures recorded **on the PC** (phone→PC).
-Verify that this describes the files being passed. Flags assign direction;
-filenames, camera names and UUIDs are never used to infer it.
+### Remove obsolete generated outputs
+
+Run from the repository root, after retaining any reports you still want. These
+commands delete the failed run and old *corrupted* synthetic corpora; they do not
+touch recordings, joined real data, clean corpora or the two useful checkpoints.
+Do not run cleanup while training/generation uses those directories. If you need
+the old synthetic test corpus for a pending comparison, leave that directory out.
+
+```sh
+# Explicit old output paths only; no broad checkpoint/data wildcards.
+rm -rf -- checkpoints/optical-decoder/wide-adapt
+rm -rf -- local-data/synthetic-train local-data/synthetic-validation local-data/synthetic-test
+```
+
+Preserve `checkpoints/optical-decoder/wide-pilot/`,
+`checkpoints/optical-decoder/wide-real/`, `local-data/real-*`,
+`local-data/clean-*`, and the original sender/receiver JSON files. The new run
+uses different, empty output paths below. Check any additional old run's contents
+before deleting it; directory names alone do not establish that its weights are
+replaceable.
+
+### Reconstruct clean targets and generate paired corruptions
+
+```sh
+node scripts/decoder-dataset.mjs targets \
+  --dataset local-data/real-train \
+  --out local-data/target-clean-train
+
+python experiments/optical-decoder/synthetic.py \
+  --clean local-data/target-clean-train \
+  --out local-data/target-synthetic-train \
+  --bursts-per-target 16 --frames 9 --severity .65 --seed 31
+```
+
+`targets` reconstructs canonical clean matrices from the sender-derived bytes
+and frame metadata already in the joined dataset. It verifies regenerated
+headers, physical labels and masks against the source, and makes one clean
+example per receiver session/payload/frame/phase, regardless of how many real
+captures show it. **No noisy camera pixels are treated as clean truth.** The
+sender/receiver identities, whole-payload identity and split are preserved;
+recording files remain unchanged. Multiple joined source directories can be
+passed as a comma-separated `--dataset` list. This command supports the capture
+app’s single logical frame with palette phases; it rejects incomplete multipart
+payloads rather than inventing missing target bytes.
+
+Sixteen independent corruption bursts with nine frames each provide **144
+synthetic observations per clean target**. Independent bursts vary optical
+conditions; nine frames of one burst are correlated. The generator reports the
+actual target/sample count and estimates its disk budget before writing. This
+avoids duplicating the same canonical clean raster for every real capture.
+
+Generate training targets **only from `real-train`**. Do not add validation or
+test target matrices to training, including through a pilot checkpoint. Synthetic
+derivatives of a real target remain in that target's split; changing a seed or
+folder name does not make them independent held-out data.
+
+The matched examples remove target-content differences between the real and
+synthetic parts of an update. They do not by themselves make camera artifacts
+identical or prove domain alignment; the new corruptions and held-out real
+results test that hypothesis. The clean references are offline supervision,
+not an additional model input or a browser decoding oracle.
+
+### Train the paired model
+
+Reuse the existing direction sidecar. If it does not exist, create it once:
 
 ```sh
 python experiments/optical-decoder/session_groups.py \
@@ -395,80 +421,47 @@ python experiments/optical-decoder/session_groups.py \
   --phone-to-pc local-data/pc/*decoder-captures*.json \
   --datasets local-data/real-train local-data/real-validation \
   --out local-data/session-groups.json
+```
 
+The paths follow the existing capture organization: captures recorded on the
+phone are PC→phone, and captures recorded on the PC are phone→PC. Verify those
+assignments; filenames/UUIDs are not used to infer direction. The helper refuses
+to overwrite an existing sidecar. The mapping is optional for generic training,
+but the following run uses it to balance and report both directions.
+
+```sh
 python experiments/optical-decoder/train.py \
-  --recipe adapt \
-  --train local-data/real-train local-data/synthetic-train \
+  --train local-data/real-train local-data/target-synthetic-train \
   --validation local-data/real-validation \
   --initialize checkpoints/optical-decoder/wide-pilot/best.pt \
   --session-groups local-data/session-groups.json \
-  --device cuda --out checkpoints/optical-decoder/wide-adapt
+  --paired-targets --real-fraction .5 \
+  --lr .00005 --steps 32000 --eval-every 1000 --validation-samples 0 \
+  --device cuda --out checkpoints/optical-decoder/wide-paired
 ```
 
-The sidecar command reads actual receiver session IDs from current capture
-exports, rejects conflicting assignments, and verifies coverage against the
-joined datasets before writing. Extra mappings are allowed; missing real-session
-mappings fail. It refuses to overwrite an existing sidecar. Choose an empty run
-directory too. No recording, tensor, dataset or checkpoint format migration is
-needed; session mappings stay in a separate file.
+Each effective update pairs every chosen real capture with one synthetic of its
+exact session, payload, frame and phase, with identical label/mask/expected-byte
+hashes. Pairing applies across the complete optimizer update, so shuffled
+microbatches still have equal real/synthetic totals. Missing targets, mismatched
+labels, unrelated synthetic targets and incompatible split identities fail
+rather than silently falling back to unrelated images. Use only the new paired
+synthetics for this run, not a random-payload corpus alongside them.
 
-| Setting | Adaptation default |
-| --- | --- |
-| Source allocation | 50% synthetic / 50% real, controlled by `--real-fraction` |
-| Real allocation | Equal quotas per mapped direction, then session → payload → phase → frame |
-| Objective | `0.9 × mean CE + 0.1 × mean CE of the hardest 25% of valid cells`, computed per frame |
-| Online real-only augmentation | Exposure ±0.15 stops, per-channel WB ±0.1 stops, RGB noise standard deviation 0.005 |
-| Optimizer | AdamW, LR 1e-5, weight decay 0.05; gradient norm capped at 5 |
-| Validation | All validation captures every 1,000 updates, plus the step-zero baseline |
-| LR control | Halve after four checks without meaningful selection improvement; floor 2e-6 |
-| Stopping | Stop after twelve checks without meaningful selection improvement; maximum 32k updates |
-
-Source/direction quotas apply to the **whole optimizer update**, not independently
-to its microbatches. With one common profile, two directions, and the default
-batch/accumulation settings, each update contains eight synthetic, four PC→phone,
-and four phone→PC captures. For other batch sizes, fractional source counts use
-seeded stochastic rounding and group remainders are randomized. The sampler
-avoids repeating bursts within an update while distinct bursts are available,
-and avoids repeating exact samples until the relevant pool is exhausted. It
-indexes once rather than scanning the corpus on every update. Every represented
-real grid/palette profile must contain all real groups, preventing a profile from
-silently dropping the difficult direction.
-
-Quotas apply within the profile selected for that update. If additional 4-color
-or G128 profiles contain only synthetic examples, those updates are entirely
-synthetic and the overall real fraction falls below 50%. Check the recorded
-`trainSources` draw counts for the realized mixture; the eight/four/four allocation
-above describes the current shared G64/16 profile, not every heterogeneous corpus.
-
-Augmentation is mild and online: labels/masks and geometry are unchanged,
-synthetic samples pass through unchanged, and measured real moiré is retained.
-The final tensor keeps the calibrated `[-1.5,1.5]` contract without first clipping
-to nominal RGB. The noise standard deviation is specified in RGB 0–1 units
-(0.01 in normalized units). No additional strong moiré, opaque shading or spatial
-smoothing is added. The sampler and augmentation use separate seeded generators.
-
-Checkpoint saving and plateau patience have distinct purposes. `best.pt` accepts
-any strict improvement in direction-balanced exact recovery, then lower ordinary
-CE. Patience resets on a higher balanced exact rate, or, when that rate ties, a
-**relative CE decrease greater than 0.001 (0.1%)** from the meaningful-progress
-anchor. This prevents tiny CE fluctuations from extending training indefinitely.
-LR reductions do not reset the stopping count. With the defaults, four checks
-mean 4,000 updates and twelve mean 12,000 updates. Use `--lr-patience 0` or
-`--stop-patience 0` to disable the respective control; the explicit `pilot` recipe
-disables both by default and keeps plain CE/zero online augmentation.
+With effective batch 16 and two mapped directions, an update contains four real
+PC→phone captures, four real phone→PC captures, and their eight matched synthetic
+counterparts. Real draws remain balanced by group/session/payload/phase; the
+sampler avoids duplicate bursts where possible. Both sides of a pair use the
+same ordinary classification objective. There is no consistency loss,
+reconstruction head, online real augmentation or hidden recipe switch.
 
 The run writes `settings.json`, `history.json`, `baseline-validation.json`,
 `final-validation.json`, selected `validation.json` and `best.pt`. History records
-interval-averaged objective, separate real/synthetic CE and draw counts,
-per-direction CE and counts, repeated-burst/sample counts, validation groups,
-selection metrics and LR changes. These training values are measured on the
-actual training inputs, including real augmentation, rather than being directly
-comparable to unaugmented validation loss. The exact group mapping is copied to
-the local run/checkpoint and hashed; public exports expose only the validated
-scalar/hash provenance, not session identities or local paths.
+source/group CE, source counts, pairing counts, repeated captures, and validation
+recovery. Inspect the best checkpoint's per-direction results, not only the
+final update. All model selection uses the unchanged real validation set.
 
-Compare the existing real checkpoint and the new adaptation checkpoint on the
-**same full validation corpus and grouping**:
+### Compare against the retained baseline
 
 ```sh
 python experiments/optical-decoder/evaluate.py \
@@ -480,37 +473,23 @@ python experiments/optical-decoder/evaluate.py \
 
 python experiments/optical-decoder/evaluate.py \
   --dataset local-data/real-validation --split validation \
-  --checkpoint checkpoints/optical-decoder/wide-adapt/best.pt \
+  --checkpoint checkpoints/optical-decoder/wide-paired/best.pt \
   --session-groups local-data/session-groups.json \
   --max-samples 0 --device cuda \
-  --out local-results/optical-decoder/wide-adapt-validation.json
+  --out local-results/optical-decoder/wide-paired-validation.json
 ```
 
-Send both evaluation reports and the adaptation run's `history.json`. The main
-question is whether phone→PC improves while PC→phone is preserved or improves;
-a gain confined to the two already successful sessions leaves the main failure
-unresolved. Check that reported source/group draw counts match the intended
-allocation and whether stopping selected the starting model or a later step.
-Validation remains model-selection data, with correlated captures; after choosing
-the model, evaluate untouched test sessions separately. Add their receiver IDs
-to a new sidecar using their capture exports if group coverage is needed, without
-moving them into training or validation.
-
-The combined recipe deliberately leaves focal loss, label smoothing, Brier loss,
-temperature fitting and class-frequency weighting out of this run. Same-phase
-consistency and RS-aware auxiliary objectives remain deferred, along with a
-comparison of temporal fusion under equal observation budgets. The present
-experiment tests the practical combined improvement rather than running a long
-ablation sequence. Relevant background includes
-[regularization under group shifts](https://arxiv.org/abs/1911.08731) and
-[confidence calibration](https://arxiv.org/abs/1706.04599); those publications do
-not establish a recovery gain for this optical decoder.
+Report the generation summaries, new `history.json`, and both full validation
+reports. The practical objective is better exact recovery in phone→PC without
+losing PC→phone performance, with zero wrong accepted frames. Validation is used
+for model selection; evaluate untouched real test sessions only after choosing
+the model. Synthetic accuracy alone does not establish device improvement.
 
 ## Export the selected checkpoint
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/wide-adapt/best.pt \
+  --checkpoint checkpoints/optical-decoder/wide-paired/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected

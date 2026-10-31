@@ -21,7 +21,7 @@ from torch.nn import functional as F
 from data import DATASET_FORMAT, Dataset, digest, local_path
 
 
-CORRUPTION_KIND = "correlated-calibrated-crop-v2"
+CORRUPTION_KIND = "correlated-calibrated-crop-v3"
 
 
 @dataclass(frozen=True)
@@ -32,17 +32,22 @@ class PhotometricConfig:
     exposure_stops: float = 1.5
     shade_opacity: float = .45
     shade_probability: float = .7
+    rolling_shutter_stops: float = .65
+    rolling_shutter_probability: float = .7
+    rolling_shutter_skew: float = .5
 
     def __post_init__(self):
         for name, limit in (("white_balance_stops", 4), ("exposure_stops", 4),
-                            ("shade_opacity", .95), ("shade_probability", 1)):
+                            ("shade_opacity", .95), ("shade_probability", 1),
+                            ("rolling_shutter_stops", 3), ("rolling_shutter_probability", 1),
+                            ("rolling_shutter_skew", .75)):
             value = getattr(self, name)
             if isinstance(value, bool) or not np.isfinite(value) or not 0 <= value <= limit:
                 raise ValueError(f"{name.replace('_', '-')} must be finite and in [0, {limit}]")
 
 
 def sample_photometric(rng, frames, severity, config):
-    """Draw a payload-independent, correlated trajectory and one optional shade.
+    """Draw a payload-independent trajectory and optional shade/reflection shapes.
 
     Per-channel log2 gains have zero mean, separating color cast from exposure.
     Keeping 20% of bursts free of each gain effect preserves easier examples.
@@ -65,19 +70,25 @@ def sample_photometric(rng, frames, severity, config):
         .85*rng.uniform(-1, 1) + .15*np.sin(times*.3+rng.uniform(0, 2*np.pi)))
     if rng.random() >= .8:
         exposure[:] = 0
-    shade = None
+    overlays = []
     if config.shade_opacity > 0 and severity > 0 and rng.random() < config.shade_probability:
-        area, aspect = rng.uniform(.20, .30), rng.uniform(.65, 1.55)
-        width, height = float(np.sqrt(area*aspect)), float(np.sqrt(area/aspect))
-        shade = {"x": float(rng.uniform(0, 1-width)), "y": float(rng.uniform(0, 1-height)),
-                 "width": width, "height": height, "color": int(rng.integers(0, 2)),
-                 "opacity": float(severity*config.shade_opacity*rng.uniform(.35, .9)),
-                 "feather": float(rng.uniform(.002, .008)),
-                 "driftX": float(rng.uniform(-.006, .006)),
-                 "driftY": float(rng.uniform(-.006, .006)),
-                 "phase": float(rng.uniform(0, 2*np.pi))}
+        # One broad reflection/shadow, occasionally a smaller overlapping shape.
+        # Rotating, feathering and clipping at crop edges avoids a fixed box cue.
+        for index in range(1+int(rng.random() < .25)):
+            area = rng.uniform(.18, .32) if index == 0 else rng.uniform(.06, .16)
+            aspect = rng.uniform(.5, 2.)
+            kind = "shadow" if rng.random() < .5 else "reflection"
+            color = rng.uniform(0, .18, 3) if kind == "shadow" else rng.uniform(.75, 1., 3)
+            overlays.append({"cx": float(rng.uniform(.15, .85)), "cy": float(rng.uniform(.15, .85)),
+                "width": float(np.sqrt(area*aspect)), "height": float(np.sqrt(area/aspect)),
+                "shape": "rectangle" if rng.random() < .65 else "ellipse", "kind": kind,
+                "color": color.tolist(), "angle": float(rng.uniform(-np.pi, np.pi)),
+                "opacity": float(severity*config.shade_opacity*rng.uniform(.35, .9)),
+                "feather": float(rng.uniform(.08, .45)), "gradient": float(rng.uniform(-.4, .4)),
+                "driftX": float(rng.uniform(-.01, .01)), "driftY": float(rng.uniform(-.01, .01)),
+                "phase": float(rng.uniform(0, 2*np.pi))})
     return {"whiteBalanceGains": np.exp2(wb_stops).astype(np.float32),
-            "exposureStops": exposure.astype(np.float32), "shade": shade}
+            "exposureStops": exposure.astype(np.float32), "overlays": overlays}
 
 
 def apply_color_exposure(image, white_balance_gains, exposure_stops):
@@ -86,25 +97,71 @@ def apply_color_exposure(image, white_balance_gains, exposure_stops):
     return (image*gains*float(2.**exposure_stops)).clamp(0, 1)
 
 
-def rectangle_alpha(side, shade, frame):
-    """Soft-edged, translucent rectangle with small correlated positional drift."""
+def overlay_alpha(side, overlay, frame):
+    """Rotated soft shape with a spatial opacity gradient and correlated drift."""
     axis = (torch.arange(side, dtype=torch.float32)+.5)/side
-    movement = np.sin(frame*.35+shade["phase"])-np.sin(shade["phase"])
-    left = float(np.clip(shade["x"]+shade["driftX"]*movement, 0, 1-shade["width"]))
-    top = float(np.clip(shade["y"]+shade["driftY"]*movement, 0, 1-shade["height"]))
-    feather = shade["feather"]
-    # Feather inward so the footprint remains the sampled 20–30% rectangle.
-    horizontal = torch.minimum((axis-left)/feather, (left+shade["width"]-axis)/feather).clamp(0, 1)
-    vertical = torch.minimum((axis-top)/feather, (top+shade["height"]-axis)/feather).clamp(0, 1)
-    opacity = shade["opacity"]*(1+.1*np.sin(frame*.3+shade["phase"]))
-    return opacity*vertical[:, None]*horizontal[None, :]
+    y, x = torch.meshgrid(axis, axis, indexing="ij")
+    movement = np.sin(frame*.35+overlay["phase"])-np.sin(overlay["phase"])
+    x = x-overlay["cx"]-overlay["driftX"]*movement
+    y = y-overlay["cy"]-overlay["driftY"]*movement
+    sine, cosine = np.sin(overlay["angle"]), np.cos(overlay["angle"])
+    u = (cosine*x+sine*y)/(overlay["width"]/2)
+    v = (-sine*x+cosine*y)/(overlay["height"]/2)
+    radius = torch.maximum(u.abs(), v.abs()) if overlay["shape"] == "rectangle" else torch.sqrt(u*u+v*v)
+    feathered = ((1-radius)/overlay["feather"]).clamp(0, 1)
+    gradient = (1+overlay["gradient"]*u.clamp(-1, 1))/(1+abs(overlay["gradient"]))
+    opacity = overlay["opacity"]*(.95+.05*np.sin(frame*.3+overlay["phase"]))
+    return opacity*feathered*gradient
 
 
-def apply_rectangle_shade(image, shade, frame=0):
-    if shade is None:
-        return image
-    alpha = rectangle_alpha(image.shape[-1], shade, frame).to(image)
-    return image*(1-alpha)+shade["color"]*alpha
+def apply_overlays(image, overlays, frame=0):
+    """Shadows attenuate transmitted light; tinted reflections add light and clip."""
+    for overlay in overlays:
+        alpha = overlay_alpha(image.shape[-1], overlay, frame).to(image)
+        color = torch.tensor(overlay["color"], dtype=image.dtype, device=image.device)[:, None, None]
+        if overlay["kind"] == "shadow":
+            image = image*(1-alpha*(1-color))
+        else:
+            image = (image+alpha*color).clamp(0, 1)
+    return image
+
+
+def sample_rolling_shutter(rng, severity, config):
+    """Approximate refresh/PWM interference and residual scanline motion.
+
+    This models the visible crop artifact, not a calibrated sensor readout. A
+    shared drifting band pattern correlates captures without freezing the noise.
+    """
+    if severity == 0 or (config.rolling_shutter_stops == 0 and config.rolling_shutter_skew == 0):
+        return None
+    if rng.random() >= config.rolling_shutter_probability:
+        return None
+    return {"stops": float(severity*config.rolling_shutter_stops*rng.uniform(.25, 1)),
+            "skew": float(severity*config.rolling_shutter_skew*rng.uniform(.3, 1)),
+            "cycles": float(rng.uniform(1.5, 12)), "tilt": float(rng.uniform(-.12, .12)),
+            "phase": float(rng.uniform(0, 2*np.pi)), "velocity": float(rng.uniform(.2, .9)),
+            "color": rng.uniform(.8, 1, 3).tolist()}
+
+
+def rolling_shutter_maps(side, shutter, frame):
+    """Return RGB exposure gains and horizontal offsets in dense-input pixels.
+
+    Offset magnitude never exceeds configured skew (at most .75 dense pixels).
+    Together with existing jitter/motion this stays below half a four-pixel cell.
+    """
+    if shutter is None:
+        return torch.ones((3, side, side)), torch.zeros((side, side))
+    axis = torch.linspace(-1, 1, side)
+    y, x = torch.meshgrid(axis, axis, indexing="ij")
+    phase = shutter["phase"]+frame*shutter["velocity"]
+    scan = y+shutter["tilt"]*x
+    wave = torch.sin(np.pi*shutter["cycles"]*scan+phase)
+    # Smooth PWM-like dark/light plateaus plus a sinusoidal component.
+    bands = .6*wave+.4*torch.tanh(3*wave)
+    color = torch.tensor(shutter["color"], dtype=torch.float32)[:, None, None]
+    gains = torch.exp2(shutter["stops"]*color*bands)
+    offsets = shutter["skew"]*(.65*y+.35*torch.sin(np.pi*y+phase))
+    return gains, offsets
 
 
 def gaussian_blur(image: torch.Tensor, sigma: float) -> torch.Tensor:
@@ -126,8 +183,8 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
     """Return [T,3,H,W]; a shared texture evolves under small motion/focus shifts.
 
     Labels are unaffected by less than half-cell registration jitter. Spatial
-    aliasing, curved multi-channel bands, blur, white balance, signed exposure,
-    translucent rectangular shade/reflections, and shot/read
+    aliasing, curved multi-channel bands, rolling-shutter exposure/skew, blur,
+    white balance, signed exposure, soft tinted shade/reflections, and shot/read
     noise vary independently of payload symbols. Seed is public augmentation data.
     """
     clean = np.asarray(clean, dtype=np.float32)
@@ -167,16 +224,22 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
     # motion or sensor noise, making controlled ablations easier to interpret.
     lighting_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x50484f54]))
     lighting = sample_photometric(lighting_rng, frames, severity, photometric)
+    shutter_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x53485554]))
+    shutter = sample_rolling_shutter(shutter_rng, severity, photometric)
     outputs = []
     for t in range(frames):
         blurred = gaussian_blur(high, base_sigma + severity*.15*np.sin(t*.6+phase0))
         shift = np.clip(base_shift + np.sin(t*.55)*drift + rng.normal(0, .04, 2)*severity, -.9, .9)
-        grid = torch.stack((x+2*float(shift[0])/side, y+2*float(shift[1])/side), dim=-1)[None]
+        shutter_gains, row_offsets = rolling_shutter_maps(side, shutter, t)
+        grid = torch.stack((x+2*(float(shift[0])+row_offsets)/side,
+                            y+2*float(shift[1])/side), dim=-1)[None]
         observed = F.grid_sample(blurred, grid, mode="bilinear", padding_mode="border", align_corners=True)[0]
         # Short, directional camera motion; no integer-cell translations.
         if t % 3 == 1:
             motion_grid = grid.clone()
-            motion_grid[..., 0] += float(rng.uniform(-.7, .7)*severity/side)
+            # At most .9 jitter + .75 scanline skew + .25 motion = 1.9 pixels,
+            # below half the four-pixel cell; no full-cell label translations.
+            motion_grid[..., 0] += float(rng.uniform(-.5, .5)*severity/side)
             observed = (observed+F.grid_sample(blurred, motion_grid, padding_mode="border", align_corners=True)[0])/2
         phase = phase0 + t*velocity
         curved = 2*np.pi*(side/period*(x*np.cos(angle)+y*np.sin(angle)) + curve*x*y + chirp*y*y)
@@ -185,9 +248,10 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
                              for c in range(3)])
         observed = observed + amplitudes*bands
         observed = torch.einsum("cd,dhw->chw", color_mix, observed) * illumination
+        observed = observed*shutter_gains
         observed = apply_color_exposure(observed, lighting["whiteBalanceGains"][t],
                                          lighting["exposureStops"][t]).pow(gamma)
-        observed = apply_rectangle_shade(observed, lighting["shade"], t)
+        observed = apply_overlays(observed, lighting["overlays"], t)
         # Shot variance follows intensity; read noise is independent per capture.
         std = severity*(.008 + .025*observed.sqrt())
         noise = torch.from_numpy(rng.normal(size=clean.shape).astype(np.float32))
@@ -197,19 +261,22 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
 
 
 def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
-             max_output_mib=2**20, node="node", photometric: PhotometricConfig | None = None):
+             max_output_mib=2**20, node="node", photometric: PhotometricConfig | None = None,
+             bursts_per_target=1):
     if not isinstance(max_output_mib, int) or isinstance(max_output_mib, bool) or max_output_mib < 0:
         raise ValueError("max-output-mib must be a nonnegative integer; zero disables the estimate limit")
+    if type(bursts_per_target) is not int or not 1 <= bursts_per_target <= 2**20:
+        raise ValueError("bursts-per-target must be an integer in [1, 1048576]")
     photometric = photometric or PhotometricConfig()
     recipe = {"kind": CORRUPTION_KIND, "seed": seed, "severity": severity,
-              "frames": frames, "photometric": asdict(photometric)}
+              "frames": frames, "burstsPerTarget": bursts_per_target, "photometric": asdict(photometric)}
     recipe_hash = hashlib.sha256(json.dumps(recipe, sort_keys=True, allow_nan=False).encode()).hexdigest()
     dataset = Dataset(clean_directories)
     if any(sample.metadata["source"] != "synthetic" or "synthetic" in sample.metadata for sample in dataset.samples):
         raise ValueError("Generate corruptions from canonical synthetic clean datasets only; real captures remain unchanged")
     estimated = sum(sum(local_path(s.root, s.metadata[field]).stat().st_size
                         for field in ("input", "labels", "mask", "baseline", "expected"))
-                    for s in dataset.samples)*frames
+                    for s in dataset.samples)*frames*bursts_per_target
     if max_output_mib and estimated > max_output_mib*1024**2:
         raise ValueError("Requested synthetic dataset exceeds --max-output-mib; increase the budget or use 0 to disable this estimate limit")
     out = Path(out).resolve()
@@ -221,29 +288,34 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
         pixels, _, _ = sample.tensors()
         sample.read("baseline", "<f4")
         sample.read("expected", "u1")
-        derived = int.from_bytes(hashlib.sha256(f"{seed}/{sample.id}".encode()).digest()[:4], "little")
-        burst = corrupt_burst(pixels, derived, frames, severity, photometric=photometric)
-        for index, value in enumerate(burst):
-            identifier = hashlib.sha256(f"{sample.id}/{recipe_hash}/{index}".encode()).hexdigest()[:24]
-            directory = out / identifier
-            directory.mkdir()
-            record = {**sample.metadata, "id": identifier, "hashes": {},
-                      "source": "synthetic", "synthetic": {"seed": derived, "frame": index,
-                      "frames": frames, "severity": severity, "parentId": sample.id,
-                      "kind": CORRUPTION_KIND, "recipeSha256": recipe_hash},
-                      "baselineMode": "canonical-from-corrupted-input"}
-            for field in ("input", "labels", "mask", "baseline", "expected"):
-                suffix = {"input": "f32", "baseline": "f32", "expected": "bin"}.get(field, "u8")
-                path = directory / f"{field}.{suffix}"
-                if field == "input":
-                    path.write_bytes(np.ascontiguousarray(value, dtype="<f4").tobytes())
-                else:
-                    shutil.copyfile(local_path(sample.root, sample.metadata[field]), path)
-                record[field] = path.relative_to(out).as_posix()
-                record["hashes"][field] = digest(path)
-            # Other source-only file paths would point outside this new bundle.
-            record.pop("samples", None)
-            records.append(record)
+        for burst_index in range(bursts_per_target):
+            derived = int.from_bytes(hashlib.sha256(
+                f"{seed}/{sample.id}/{burst_index}".encode()).digest()[:4], "little")
+            burst = corrupt_burst(pixels, derived, frames, severity, photometric=photometric)
+            burst_id = hashlib.sha256(f"{sample.id}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
+            for index, value in enumerate(burst):
+                identifier = hashlib.sha256(f"{burst_id}/{index}".encode()).hexdigest()[:24]
+                directory = out / identifier
+                directory.mkdir()
+                record = {**sample.metadata, "id": identifier, "hashes": {},
+                          "source": "synthetic", "burstId": f"synthetic-{burst_id}",
+                          "synthetic": {"seed": derived, "frame": index, "burst": burst_index,
+                          "frames": frames, "severity": severity, "parentId": sample.id,
+                          "kind": CORRUPTION_KIND, "recipeSha256": recipe_hash},
+                          "baselineMode": "canonical-from-corrupted-input"}
+                for field in ("input", "labels", "mask", "baseline", "expected"):
+                    suffix = {"input": "f32", "baseline": "f32", "expected": "bin"}.get(field, "u8")
+                    path = directory / f"{field}.{suffix}"
+                    if field == "input":
+                        path.write_bytes(np.ascontiguousarray(value, dtype="<f4").tobytes())
+                    else:
+                        shutil.copyfile(local_path(sample.root, sample.metadata[field]), path)
+                    record[field] = path.relative_to(out).as_posix()
+                    record["hashes"][field] = digest(path)
+                # Other source-only file paths would point outside this new bundle.
+                record.pop("samples", None)
+                record.pop("original", None)
+                records.append(record)
     manifest = {"format": DATASET_FORMAT, "version": 1, "samples": records,
                 "generator": {**recipe, "recipeSha256": recipe_hash,
                               "sourceManifestSha256": dataset.manifest_hash,
@@ -265,15 +337,23 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--frames", type=int, default=7)
+    parser.add_argument("--bursts-per-target", type=int, default=1,
+                        help="independent corruption bursts per clean target (default: 1)")
     parser.add_argument("--severity", type=float, default=.65)
     parser.add_argument("--white-balance-stops", type=float, default=.6,
                         help="max residual per-channel log2 gain at severity 1 (default: .6); 0 disables")
     parser.add_argument("--exposure-stops", type=float, default=1.5,
                         help="max absolute exposure log2 gain at severity 1 (default: 1.5); 0 disables")
     parser.add_argument("--shade-opacity", type=float, default=.45,
-                        help="max translucent black/white rectangle opacity at severity 1 (default: .45); 0 disables")
+                        help="max soft shadow/reflection strength at severity 1 (default: .45); 0 disables")
     parser.add_argument("--shade-probability", type=float, default=.7,
-                        help="fraction of bursts with one 20–30%% area rectangle (default: .7)")
+                        help="fraction of bursts with rotated rectangles/ellipses (default: .7)")
+    parser.add_argument("--rolling-shutter-stops", type=float, default=.65,
+                        help="max scanline exposure log2 gain at severity 1 (default: .65); 0 disables banding")
+    parser.add_argument("--rolling-shutter-probability", type=float, default=.7,
+                        help="fraction of bursts with drifting scanline bands/skew (default: .7); 0 disables both")
+    parser.add_argument("--rolling-shutter-skew", type=float, default=.5,
+                        help="max residual scanline horizontal motion in dense pixels, 0–.75 (default: .5); 0 disables skew")
     parser.add_argument("--max-output-mib", type=int, default=2**20, help="estimated binary output budget in MiB (default: 1 TiB); 0 disables the limit")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--node", default="node")
@@ -283,10 +363,12 @@ def main():
     torch.set_num_threads(args.threads)
     try:
         photometric = PhotometricConfig(args.white_balance_stops, args.exposure_stops,
-                                         args.shade_opacity, args.shade_probability)
+                                         args.shade_opacity, args.shade_probability,
+                                         args.rolling_shutter_stops, args.rolling_shutter_probability,
+                                         args.rolling_shutter_skew)
         result = generate(args.clean, args.out, seed=args.seed, frames=args.frames,
                           severity=args.severity, max_output_mib=args.max_output_mib, node=args.node,
-                          photometric=photometric)
+                          photometric=photometric, bursts_per_target=args.bursts_per_target)
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f"Synthetic generation failed: {error}\n")
     print(f"Wrote {len(result['samples'])} correlated synthetic crops to {args.out.resolve()}")

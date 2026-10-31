@@ -107,7 +107,7 @@ class CheckpointExportTests(unittest.TestCase):
     def test_inherited_step_zero_baseline_loads_and_exports_exact_weights(self):
         model, value = self.checkpoint()
         value["training"].update({"steps": 0, "selectionStep": 0, "baselineSelection": True,
-                                  "recipe": "adapt", "selectionAggregation": "group-balanced-real",
+                                  "pairedTargets": True, "selectionAggregation": "group-balanced-real",
                                   "sessionGroupsSha256": "4"*64,
                                   "sessionGroupsPath": "/private/session-groups.json"})
         with tempfile.TemporaryDirectory() as temporary:
@@ -122,7 +122,7 @@ class CheckpointExportTests(unittest.TestCase):
             self.assertEqual(public["selectionStep"], 0)
             self.assertIs(public["baselineSelection"], True)
             self.assertEqual(public["initialCheckpointSha256"], "3"*64)
-            self.assertEqual(public["recipe"], "adapt")
+            self.assertIs(public["pairedTargets"], True)
             self.assertEqual(public["selectionAggregation"], "group-balanced-real")
             self.assertEqual(public["sessionGroupsSha256"], "4"*64)
             self.assertNotIn("sessionGroupsPath", public)
@@ -134,7 +134,7 @@ class CheckpointExportTests(unittest.TestCase):
         changes = ({"baselineSelection": False}, {"baselineSelection": 1},
                    {"steps": 1}, {"selectionStep": 1}, {"steps": False},
                    {"selectionStep": False}, {"initialCheckpointSha256": "bad"},
-                   {"recipe": "unknown"}, {"selectionAggregation": "unknown"},
+                   {"pairedTargets": 1}, {"selectionAggregation": "unknown"},
                    {"sessionGroupsSha256": "bad"})
         for change in changes:
             with self.subTest(change=change), self.assertRaises(ValueError):
@@ -144,10 +144,10 @@ class CheckpointExportTests(unittest.TestCase):
             with self.subTest(missing=missing), self.assertRaises(ValueError):
                 training_provenance(malformed)
         positive = {**value["training"], "baselineSelection": False,
-                    "recipe": "pilot", "selectionAggregation": "global"}
+                    "pairedTargets": False, "selectionAggregation": "global"}
         public = training_provenance(positive)
         self.assertIs(public["baselineSelection"], False)
-        self.assertEqual(public["recipe"], "pilot")
+        self.assertIs(public["pairedTargets"], False)
 
 
 if __name__ == "__main__":

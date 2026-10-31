@@ -24,7 +24,7 @@ if HAS_TORCH:
     from evaluate import canonical_recovery, masked_loss
     from model import OpticalDecoder
     from synthetic import CORRUPTION_KIND, PhotometricConfig, corrupt_burst, generate
-    from train import run_training, training_defaults
+    from train import run_training, training_defaults, training_loss
     torch.set_num_threads(1)
 
 
@@ -109,14 +109,10 @@ for (const count of [0, -1, 1.5, 2**20+1, 'x']) assert.throws(()=>generationCoun
         subprocess.run(["node", "--input-type=module", "-e", script], check=True, capture_output=True, text=True)
 
     @unittest.skipUnless(HAS_TORCH, "PyTorch needed for training defaults and batch selection")
-    def test_training_recipe_defaults(self):
+    def test_training_defaults(self):
         self.assertEqual(training_defaults(), (32_000, 1e-4))
         self.assertEqual(training_defaults("checkpoint.pt"), (32_000, 5e-5))
         self.assertEqual(training_defaults("checkpoint.pt", 64_000, 1e-5), (64_000, 1e-5))
-        self.assertEqual(training_defaults("checkpoint.pt", recipe="adapt"), (32_000, 1e-5))
-        self.assertEqual(training_defaults("checkpoint.pt", 9000, 2e-5, recipe="adapt"), (9000, 2e-5))
-        with self.assertRaises(ValueError):
-            training_defaults(recipe="unknown")
 
     @unittest.skipUnless(HAS_TORCH, "PyTorch needed for corruptions and learning")
     def test_correlated_corruptions_and_materialized_provenance(self):
@@ -164,8 +160,12 @@ for (const count of [0, -1, 1.5, 2**20+1, 'x']) assert.throws(()=>generationCoun
         logits = torch.zeros((1, 16, 2, 2), requires_grad=True)
         labels = torch.zeros((1, 2, 2), dtype=torch.long)
         mask = torch.tensor([[[True, False], [False, False]]])
-        loss = masked_loss(logits, labels, mask, 4)
+        loss, per_frame = training_loss(logits, labels, mask, 4)
+        torch.testing.assert_close(loss, masked_loss(logits, labels, mask, 4))
+        torch.testing.assert_close(per_frame, loss.reshape(1))
         self.assertAlmostEqual(float(loss.detach()), np.log(4), places=6)
+        with self.assertRaisesRegex(ValueError, "nonempty"):
+            training_loss(logits, labels, torch.zeros_like(mask), 4)
         loss.backward()
         self.assertTrue(torch.all(logits.grad[:, 4:] == 0))
         self.assertTrue(torch.all(logits.grad[:, :, 1:] == 0))

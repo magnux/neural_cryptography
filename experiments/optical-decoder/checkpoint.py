@@ -53,8 +53,11 @@ def training_provenance(training: dict) -> dict:
             if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
                 raise ValueError(f"Invalid checkpoint {key}")
             result[key] = value
-    for key, choices in (("recipe", ("pilot", "adapt")),
-                         ("selectionAggregation", ("global", "group-balanced-real"))):
+    if "pairedTargets" in training:
+        if not isinstance(training["pairedTargets"], bool):
+            raise ValueError("Invalid checkpoint pairedTargets")
+        result["pairedTargets"] = training["pairedTargets"]
+    for key, choices in (("selectionAggregation", ("global", "group-balanced-real")),):
         if key in training:
             if training[key] not in choices:
                 raise ValueError(f"Invalid checkpoint {key}")

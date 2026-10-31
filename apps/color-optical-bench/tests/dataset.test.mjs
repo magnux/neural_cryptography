@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import {mkdir,mkdtemp,rm,readFile,writeFile,symlink} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
+import {createHash} from 'node:crypto';
 import {createSender,senderFrames,base64ToBytes,bytesToBase64,floatBytes,floatsFromBytes} from '../dist/js/dataset/contract.js';
 import {captureFrame,CaptureBuffer,validateCapture} from '../dist/js/dataset/capture.js';
 import {renderFrame,FORMAT,parseHeader} from '../dist/js/format.js';
 import {gridLayout} from '../dist/js/grid.js';
-import {generate,joinCaptures,evaluate} from '../../../scripts/decoder-dataset.mjs';
+import {generate,joinCaptures,targets,evaluate} from '../../../scripts/decoder-dataset.mjs';
+import {extractLearnedInput} from '../dist/js/learned-input.js';
 
 const base=fileURLToPath(new URL('../../../validation/',import.meta.url));
 const sender=await createSender({seed:123,sessionId:'sender-test'});
@@ -96,3 +98,60 @@ test('float/base64 contract rejects malformed, oversized, and non-finite tensors
   assert.throws(()=>base64ToBytes('!!!='),/Invalid/);assert.throws(()=>base64ToBytes('AQID',2),/limit|oversized/);
   assert.throws(()=>floatBytes(Float32Array.of(NaN)),/Non-finite/);
 });
+
+test('target reconstruction deduplicates captures and restores sender colors without reading camera pixels',async()=>temp(async root=>{
+  const s=join(root,'sender.json'),r=join(root,'capture.json'),joined=join(root,'joined'),out=join(root,'targets');
+  const b=new CaptureBuffer();let timestamp=1000;
+  for(const phase of [1,3]) {
+    const captured=captureFrame(renderFrame(sender.frames[phase],1024),{timestamp});
+    b.add(captured);b.add({...captured,timestamp:timestamp+600});b.add({...captured,timestamp:timestamp+1200});timestamp+=2000;
+  }
+  await writeFile(s,JSON.stringify(sender.manifest));await writeFile(r,JSON.stringify(b.export({sessionId:'physical-target-session'})));
+  await joinCaptures({out:joined,senders:s,captures:r,split:'validation'});
+  const source=JSON.parse(await readFile(join(joined,'manifest.json'),'utf8'));
+  assert.equal(source.samples.length,4);
+  // The target path must depend on sender truth, never on a noisy input tensor.
+  for(const sample of source.samples)await rm(join(joined,sample.input));
+  const result=await targets({dataset:joined,out});
+  assert.equal(result.samples,2);assert.equal(result.deduplicated,2);
+  const clean=JSON.parse(await readFile(join(out,'manifest.json'),'utf8'));
+  for(const sample of clean.samples) {
+    const original=source.samples.find(x=>x.info.phase===sample.info.phase);
+    for(const field of ['sessionId','senderSessionId','payloadId','split','size','colors','info','burstId'])assert.deepEqual(sample[field],original[field]);
+    assert.equal(sample.source,'synthetic');assert.notEqual(sample.id,original.id);
+    for(const field of ['labels','mask','expected'])assert.equal(sample.hashes[field],original.hashes[field]);
+    const input=extractLearnedInput(renderFrame(sender.frames[sample.info.phase],1024),{transform:[4,0,0,0,4,0,0,0,1]}).input;
+    assert.deepEqual(await readFile(join(out,sample.input)),Buffer.from(floatBytes(input)));
+  }
+  const again=join(root,'again');await targets({dataset:joined,out:again});
+  const repeated=JSON.parse(await readFile(join(again,'manifest.json'),'utf8'));
+  assert.deepEqual(clean.samples.map(s=>[s.id,s.hashes]),repeated.samples.map(s=>[s.id,s.hashes]));
+}));
+
+test('target reconstruction preserves G128/4 phases and refuses split leakage or inconsistent canonical truth',async()=>temp(async root=>{
+  const source=join(root,'source'),out=join(root,'targets');
+  await generate({out:source,count:'1',size:'128',colors:'4',phases:'2',seed:'456',split:'train'});
+  const path=join(source,'manifest.json'),manifest=JSON.parse(await readFile(path,'utf8'));
+  for(const sample of manifest.samples){sample.source='real';sample.senderSessionId='sender-target-large';}
+  await writeFile(path,JSON.stringify(manifest));
+  await targets({dataset:source,out});
+  const clean=JSON.parse(await readFile(join(out,'manifest.json'),'utf8'));
+  assert.equal(clean.samples.length,2);
+  for(const sample of clean.samples) {
+    const original=manifest.samples.find(x=>x.info.phase===sample.info.phase);
+    assert.equal(sample.size,128);assert.equal(sample.colors,4);assert.equal(sample.split,'train');
+    assert.equal(sample.hashes.input,original.hashes.input);assert.deepEqual(sample.info,original.info);
+  }
+  const wrongSplit=copy(manifest),conflict=join(root,'conflict');await mkdir(conflict);
+  for(const sample of wrongSplit.samples){sample.id+='-other';sample.split='validation';}
+  await writeFile(join(conflict,'manifest.json'),JSON.stringify(wrongSplit));
+  await assert.rejects(targets({dataset:`${source},${conflict}`,out:join(root,'bad-split')}),/crosses dataset splits/);
+  const wrongHeader=copy(manifest);wrongHeader.samples[0].info.chunkCRC^=1;
+  await writeFile(path,JSON.stringify(wrongHeader));
+  await assert.rejects(targets({dataset:source,out:join(root,'bad-header')}),/header/);
+  await writeFile(path,JSON.stringify(manifest));
+  const sample=manifest.samples[0],labelPath=join(source,sample.labels),labels=await readFile(labelPath);labels[0]=(labels[0]+1)%4;
+  await writeFile(labelPath,labels);sample.hashes.labels=createHash('sha256').update(labels).digest('hex');
+  await writeFile(path,JSON.stringify(manifest));
+  await assert.rejects(targets({dataset:source,out:join(root,'bad-labels')}),/labels or mask/);
+}));

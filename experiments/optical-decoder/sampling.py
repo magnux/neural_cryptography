@@ -10,10 +10,29 @@ import json
 import math
 from pathlib import Path
 import random
+import re
 
 
 GROUP_FORMAT = "optical-decoder-session-groups"
 MAX_GROUP_BYTES = 1024 * 1024
+_SHA256 = re.compile(r"^[a-f0-9]{64}$")
+
+
+def _target_key(sample):
+    """Exact target identity, excluding capture time and corruption parameters."""
+    row = sample.metadata
+    return (row["sessionId"], row["payloadId"],
+            json.dumps(row["info"], sort_keys=True, separators=(",", ":"), allow_nan=False))
+
+
+def _target_content(sample):
+    row = sample.metadata
+    hashes = tuple(row.get("hashes", {}).get(field) for field in ("labels", "mask", "expected"))
+    if any(not isinstance(value, str) or not _SHA256.fullmatch(value) for value in hashes):
+        raise ValueError("Paired targets require SHA-256 hashes for labels, mask and expected bytes")
+    if row.get("split") not in ("train", "validation", "test"):
+        raise ValueError("Paired targets require an explicit dataset split")
+    return sample.shape, row.get("senderSessionId"), row["split"], hashes
 
 
 def _object(pairs):
@@ -159,13 +178,17 @@ class BalancedSampler:
     Hierarchical draws prevent a session with many stored frames from dominating.
     Repeated bursts are avoided until a group's distinct bursts are exhausted;
     exact samples are reused only after that group's samples are exhausted.
+    Paired mode draws one synthetic corruption of each chosen real target, with
+    the same header/phase and verified target hashes, per optimizer update.
     """
 
-    def __init__(self, samples, session_groups, seed=7, real_fraction=.5):
+    def __init__(self, samples, session_groups, seed=7, real_fraction=.5, *, paired_targets=False):
         if (type(seed) is not int or not 0 <= seed <= 0xffffffff
                 or isinstance(real_fraction, bool) or not math.isfinite(real_fraction)
                 or not 0 <= real_fraction <= 1):
             raise ValueError("Sampler requires a uint32 seed and real fraction in [0, 1]")
+        if type(paired_targets) is not bool or (paired_targets and real_fraction != .5):
+            raise ValueError("Paired targets require real-fraction .5")
         samples = list(samples)
         if not samples:
             raise ValueError("Sampler needs at least one sample")
@@ -194,6 +217,25 @@ class BalancedSampler:
         self.shapes = sorted(self.pools)
         self.rng = random.Random(seed)
         self.real_fraction = float(real_fraction)
+        self.paired_targets = paired_targets
+        self.paired_pools = {}
+        if paired_targets:
+            targets, synthetic = {}, {}
+            for sample in samples:
+                key, content = _target_key(sample), _target_content(sample)
+                previous = targets.setdefault(key, content)
+                if content != previous:
+                    raise ValueError("Paired target metadata or labels/mask/expected hashes disagree")
+                if sample.metadata["source"] == "synthetic":
+                    synthetic.setdefault(key, []).append(sample)
+            real_keys = {_target_key(sample) for sample in samples if sample.metadata["source"] == "real"}
+            if not real_keys:
+                raise ValueError("Paired targets require real captures and their synthetic counterparts")
+            if real_keys - synthetic.keys():
+                raise ValueError("Missing synthetic counterparts for real targets; regenerate targets and corruptions")
+            if synthetic.keys() - real_keys:
+                raise ValueError("Synthetic targets have no matching real captures; paired mode accepts only matched targets")
+            self.paired_pools = {key: _Pool(rows) for key, rows in synthetic.items()}
         self.last_counts = {}
 
     def draw_update(self, batch_size, accumulate):
@@ -201,9 +243,13 @@ class BalancedSampler:
                 or type(accumulate) is not int or not 1 <= accumulate <= 128):
             raise ValueError("Batch size and accumulation must be integers in [1, 128]")
         total = batch_size*accumulate
+        if self.paired_targets and (total < 2 or total % 2):
+            raise ValueError("Paired targets require an even effective update size of at least two")
         shape = self.rng.choice(self.shapes)
         pools = self.pools[shape]
-        if "real" not in pools:
+        if self.paired_targets:
+            real_count = total//2
+        elif "real" not in pools:
             real_count = 0
         elif "synthetic" not in pools:
             real_count = total
@@ -217,11 +263,12 @@ class BalancedSampler:
             base, remainder = divmod(real_count, len(groups))
             for index, group in enumerate(groups):
                 slots.extend([("real", group)]*(base+int(index < remainder)))
-        slots.extend([("synthetic", "source:synthetic")]*(total-real_count))
+        if not self.paired_targets:
+            slots.extend([("synthetic", "source:synthetic")]*(total-real_count))
         self.rng.shuffle(slots)
         usage = {}
         counts = {"real": 0, "synthetic": 0, "groups": {}, "repeatedBursts": 0,
-                  "repeatedSamples": 0, "shape": list(shape)}
+                  "repeatedSamples": 0, "pairedTargets": 0, "shape": list(shape)}
         chosen = []
         for source, group in slots:
             sample, repeated_burst, repeated_sample = pools[source][group].draw(
@@ -232,5 +279,16 @@ class BalancedSampler:
                 counts["groups"][group] = counts["groups"].get(group, 0)+1
             counts["repeatedBursts"] += int(repeated_burst)
             counts["repeatedSamples"] += int(repeated_sample)
+            if self.paired_targets:
+                key = _target_key(sample)
+                counterpart, repeated_burst, repeated_sample = self.paired_pools[key].draw(
+                    self.rng, usage.setdefault(("paired", key), ({}, set())))
+                chosen.append(counterpart)
+                counts["synthetic"] += 1
+                counts["pairedTargets"] += 1
+                counts["repeatedBursts"] += int(repeated_burst)
+                counts["repeatedSamples"] += int(repeated_sample)
+        if self.paired_targets:
+            self.rng.shuffle(chosen)
         self.last_counts = counts
         return [chosen[start:start+batch_size] for start in range(0, total, batch_size)]
