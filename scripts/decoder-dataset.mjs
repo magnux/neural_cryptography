@@ -226,32 +226,47 @@ export async function baselines(options) {
 export async function evaluate(options) {
   only(options,['dataset','predictions','split']);if(!options.dataset||!options.predictions)throw Error('evaluate requires --dataset DIRECTORY --predictions FILE.');
   const root=resolve(options.dataset),manifest=await jsonFile(join(root,'manifest.json')),predictionPath=resolve(options.predictions),predictions=await jsonFile(predictionPath);
-  if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||!Array.isArray(predictions.samples)||!predictions.samples.length)throw Error('Unsupported dataset/prediction manifest.');
+  if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||!Array.isArray(predictions.samples)||!predictions.samples.length||![1,4].includes(predictions.framesPerInput))throw Error('Unsupported dataset/prediction manifest.');
   if(new Set(manifest.samples.map(s=>s.id)).size!==manifest.samples.length)throw Error('Duplicate dataset sample ID.');
   if(options.split)splitName(options.split);
-  const eligible=manifest.samples.filter(s=>!options.split||s.split===options.split),eligibleIds=new Set(eligible.map(s=>s.id)),byId=new Map();
-  for(const prediction of predictions.samples){if(typeof prediction.id!=='string'||byId.has(prediction.id))throw Error('Duplicate/invalid prediction ID.');byId.set(prediction.id,prediction);}
-  for(const id of byId.keys())if(!eligibleIds.has(id))throw Error(`Prediction ID is absent from the selected dataset split: ${id}`);
-  const selected=eligible.filter(sample=>byId.has(sample.id));
-  if(!selected.length)throw Error('No predictions selected for recovery evaluation.');
+  const eligible=manifest.samples.filter(s=>!options.split||s.split===options.split),byId=new Map(eligible.map(s=>[s.id,s]));
+  const frames=predictions.framesPerInput,used=new Set(),anchors=new Set(),selected=[];
+  // Public capture identities define membership; no labels or successful decode
+  // choose a member. Distinct, nonoverlapping groups match the Python evaluator.
+  for(const prediction of predictions.samples) {
+    if(typeof prediction.id!=='string'||anchors.has(prediction.id))throw Error('Duplicate/invalid prediction ID.');
+    anchors.add(prediction.id);
+    if(!Array.isArray(prediction.memberIds)||prediction.memberIds.length!==frames||prediction.memberIds[0]!==prediction.id||new Set(prediction.memberIds).size!==frames)throw Error('Prediction requires distinct member IDs with its anchor first.');
+    const members=prediction.memberIds.map(id=>{
+      if(typeof id!=='string'||!byId.has(id))throw Error('Prediction member is absent from the selected dataset split.');
+      if(used.has(id))throw Error('Evaluation capture reused across candidates.');
+      used.add(id);return byId.get(id);
+    });
+    const sample=members[0],identity=row=>canonicalJSON([row.source,row.sessionId,row.senderSessionId??null,row.payloadId,row.split,row.size,row.colors,row.info,row.burstId??null]);
+    if(frames>1&&(!sample.burstId||members.some(row=>identity(row)!==identity(sample))))throw Error('Burst members must share source, session, payload, header/phase and burst identity.');
+    if(frames>1&&members.some(row=>['labels','mask','expected'].some(field=>row.hashes?.[field]!==sample.hashes?.[field])))throw Error('Burst target hashes disagree.');
+    selected.push({sample,members,prediction});
+  }
   const results=[];
-  for(const sample of selected) {
-    const prediction=byId.get(sample.id);if(!prediction)throw Error(`Missing prediction for ${sample.id}.`);
+  for(const {sample,members,prediction} of selected) {
     const info=sample.info,g=sample.size;
     if(![64,128].includes(g)||![4,16].includes(sample.colors)||info.size!==g||info.colors!==sample.colors)throw Error('Unsupported dataset shape.');
-    const input=floatsFromBytes(await readSampleFile(root,sample,'input',3*16*g*g*4),3*16*g*g),expected=await readSampleFile(root,sample,'expected',65536);
     const logitsPath=await safeReadPath(dirname(predictionPath),prediction.logits),logitLength=16*g*g*4;
     if((await stat(logitsPath)).size!==logitLength)throw Error('Wrong logits file length.');
     const logits=floatsFromBytes(new Uint8Array(await readFile(logitsPath)),16*g*g);
-    const count=gridLayout(g,info.colors,info.gridBlock).cells.length*info.colors;
-    const baseline=sample.source==='synthetic'?denseClassicalScores(input,info):floatsFromBytes(await readSampleFile(root,sample,'baseline',count*4),count);
-    const learnedScores=logitsToLogicalScores(logits,info);
+    const count=gridLayout(g,info.colors,info.gridBlock).cells.length*info.colors,baseline=new Float32Array(count);
+    for(const member of members) {
+      const input=floatsFromBytes(await readSampleFile(root,member,'input',3*16*g*g*4),3*16*g*g);
+      const scores=member.source==='synthetic'?denseClassicalScores(input,info):floatsFromBytes(await readSampleFile(root,member,'baseline',count*4),count);
+      for(let cell=0;cell<count;cell++)baseline[cell]+=scores[cell]/frames;
+    }
+    const learnedScores=logitsToLogicalScores(logits,info),expected=await readSampleFile(root,sample,'expected',65536);
     // Only compare expected bytes after independent CRC/RS acceptance.
-    results.push({id:sample.id,source:sample.source,size:g,colors:info.colors,classical:recoveryResult(info,baseline,expected),learned:recoveryResult(info,learnedScores,expected)});
+    results.push({id:sample.id,memberIds:prediction.memberIds,source:sample.source,size:g,colors:info.colors,classical:recoveryResult(info,baseline,expected),learned:recoveryResult(info,learnedScores,expected)});
   }
-  const summary={samples:results.length};
+  const summary={samples:results.length,inputCaptures:used.size,framesPerInput:frames};
   for(const method of ['classical','learned']) {summary[method]={};for(const field of ['rawCRC','hardCRC','accepted','exact','wrongAccepted'])summary[method][field]=results.filter(r=>r[method][field]).length;}
-  return {format:'optical-decoder-recovery-report',version:1,scope:'Single captured exposure per candidate; synthetic baseline reconstructed from the same calibrated crop; no temporal pooling.',summary,samples:results};
+  return {format:'optical-decoder-recovery-report',version:1,scope:`Each candidate uses the same ${frames} distinct exposures for both methods; classical logical scores are averaged, with nonoverlapping groups and no throughput claim.`,summary,samples:results};
 }
 
 async function main() {

@@ -309,3 +309,51 @@ Validation on this host:
 Canonical fixtures marked real exercise data/training branches only; they are
 not device measurements. No new full GPU training, optical recovery improvement or browser
 performance result is claimed, and no site is deployed by this change.
+
+
+## Four-frame decoder and integrated motion blur — 2026-10-31
+
+The submitted paired single-frame run selected step 22k: 68/768 exact captures,
+43.07% cell error and CE 2.1346. This improves on the discarded adaptation run's
+62 but does not beat the retained earlier 69. Phone→PC remained 0/256, with
+validation CE rising 1.847→4.934→6.495 at 3k/22k/32k while unaugmented training
+CE fell 1.745→.349→.182. Its last 32k model recovered 55/768. Those are correlated
+single-exposure validation measurements, not live transport results.
+
+The current wide four-frame model has 488,544 parameters (+1,440 over one frame).
+It stacks four independently corrected RGB crops into 12 channels, retaining the
+same backbone and output grid. Explicit warm start divides repeated RGB-facing
+weights by four; identical repeated inputs preserve the prior function. The
+strict checkpoint loader supports exact one/four-frame variants; export does
+not silently reshape models. Recording files remain unchanged.
+
+Training selects distinct same-burst/same-header/phase exposures at random and
+shuffles frame slots; it rejects undersized pools. Synthetic stacks never cross
+independent corruption bursts. Evaluation uses nonoverlapping chronological
+four-capture groups and classical mean-score fusion over those same captures.
+Reports expose framesPerInput, candidate counts, consumed captures and leftovers.
+Expected labels/bytes do not select observations or repair decoder output.
+
+Synthetic exposure integration replaces the tiny horizontal two-sample smear
+with arbitrary-direction linear, rotational and radial-zoom blur. Seven centered
+samples are averaged by default; a shared trajectory drifts across each burst.
+Gaussian blur, moiré, rolling-shutter bands/skew and photometric effects remain.
+
+The browser Decoder Lab validates 12-channel exports and can collect a bounded
+four-exposure same-phase camera stack, verifying media timestamps and
+presented-frame counters through video-frame callbacks. The live transport
+remains classical.
+A fresh untrained wide four-frame export passes ONNX graph checks and actual ONNX Runtime
+Web/WASM parity in Node at both G64/G128. Maximum absolute errors were 1.43e-6 and
+1.34e-6 respectively. Native Python ORT could not initialize on this restricted
+host; the export explicitly records that check as `not_run`. Node timings are not
+phone/browser latency measurements. No site was deployed, no full GPU training
+was performed here and no four-frame recovery improvement is claimed.
+
+Automated verification: **79 Python tests passed with one native ORT skip**
+(80 total). The suite includes actual four-frame optimization from a single-frame
+checkpoint, strict export/load checks, same-burst membership, distinct inputs,
+disjoint evaluation groups, equal-budget canonical recovery and integrated
+linear/rotational/radial-zoom artifact tests. **55 JavaScript tests passed**,
+including actual controller callback/cancellation behavior and same-budget
+classical fusion. Four-frame model/runtime preparation also completed locally.

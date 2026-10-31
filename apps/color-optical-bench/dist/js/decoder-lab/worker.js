@@ -1,9 +1,10 @@
 import {validateManifest, validateOptions, verifyArtifact, decodeFloat32, compareLogits, accumulateParity, summarizeTimings} from './runtime.js';
 import {extractLearnedInput} from '../learned-input.js';
+import {CameraBurst} from './burst.js';
 
 const assetRoot = new URL('../../models/optical-decoder/', import.meta.url);
 const vendorRoot = new URL('../../vendor/onnxruntime/', import.meta.url);
-let ort, cached = null, busy = false;
+let ort, cached = null, busy = false, cameraBurst=null;
 
 async function fetchBounded(url, maximum) {
   const response = await fetch(url, {cache: 'no-cache'});
@@ -73,6 +74,7 @@ async function load(options, progress) {
   return {...cached, loadMs: performance.now()-started, initMs, cacheReused: false};
 }
 async function inference(context, pixels) {
+  if (!(pixels instanceof Float32Array)||pixels.length!==context.entry.inputShape.reduce((a,b)=>a*b,1)||pixels.some(value=>!Number.isFinite(value))) throw Error("Input does not match the prepared frame-stack contract.");
   const tensor = new ort.Tensor('float32', pixels, context.entry.inputShape), started = performance.now();
   let outputs;
   try {
@@ -89,7 +91,7 @@ async function inference(context, pixels) {
 }
 function describe(context, options) {
   return {format: 'optical-decoder-report', version: 1, modelStatus: context.manifest.status,
-    checkpointSha256: context.manifest.checkpointSha256 ?? null, size: options.size,
+    checkpointSha256: context.manifest.checkpointSha256 ?? null, size: options.size, framesPerInput:context.manifest.framesPerInput,
     requestedBackend: options.backend, effectiveBackend: context.effectiveBackend, fallbackReason: context.fallbackReason,
     runtimeVersions: {...(ort.env.versions || {})}, exportVersions: context.manifest.versions,
     modelSha256: context.entry.model.sha256, modelBytes: context.entry.model.bytes, parameterCount: context.manifest.parameterCount,
@@ -100,6 +102,7 @@ function describe(context, options) {
       note: 'Known buffer sizes only; runtime working memory and GPU allocations are not measured.'}};
 }
 async function benchmark(options, progress) {
+  cameraBurst=null;
   const context = await load(options, progress);
   progress('Warming up the model (2 runs)…');
   for (let i = 0; i < 2; i++) await inference(context, context.input);
@@ -114,18 +117,27 @@ async function benchmark(options, progress) {
   return {...describe(context, options), operation: 'benchmark', warmups: 2, parity, timings: summarizeTimings(times), samplesMs: times,
     timingScope: 'session.run plus CPU output copy; excludes fixture comparison and camera preprocessing'};
 }
-async function capture(options, progress, image) {
+async function capture(options, progress, image, runId, mediaTime, presentedFrames) {
+  if (!Number.isSafeInteger(runId)||runId<1||!Number.isFinite(mediaTime)||mediaTime<0||!Number.isSafeInteger(presentedFrames)||presentedFrames<1) throw Error('Capture needs a fresh run and video frame identity.');
   progress('Validating the monochrome header and rectifying the current exposure…');
   const input = extractLearnedInput(image);
-  if (!input.ok) throw new Error(input.error || 'No supported 64/128-cell matrix was found.');
-  if (input.info.size !== options.size) throw new Error(`Camera sees ${input.info.size} cells; select that model size first.`);
-  const context = await load(options, progress);
-  progress('Running the selected model on this camera crop…');
-  const result = await inference(context, input.input);
-  if (result.values.some(value => !Number.isFinite(value))) throw new Error('Camera inference produced non-finite logits.');
-  return {...describe(context, options), operation: 'capture', inputStats: input.stats, inferenceMs: result.ms,
-    paletteColors: input.info.colors, logitsFinite: true,
-    note: 'Crop inference only. Assess symbol and payload recovery with the offline evaluation tools.'};
+  if (!input.ok) { cameraBurst=null; throw new Error(input.error || 'No supported 64/128-cell matrix was found.'); }
+  if (input.info.size !== options.size) { cameraBurst=null; throw new Error(`Camera sees ${input.info.size} cells; select that model size first.`); }
+  const context = await load(options, progress), frames=context.manifest.framesPerInput;
+  if (!cameraBurst||cameraBurst.frames!==frames) cameraBurst=new CameraBurst(frames);
+  const stacked=cameraBurst.add(input,{context:`${context.key}/${runId}`,mediaTime,presentedFrames});
+  if (!stacked.ready) {
+    progress(`Collected ${stacked.collected}/${frames} same-phase exposures. Keep the matrix steady.`);
+    return {operation:'capture',waiting:true,collected:stacked.collected,framesPerInput:frames};
+  }
+  progress(`Running the selected model on ${frames} camera exposure${frames===1?'':'s'}…`);
+  try {
+    const result = await inference(context, stacked.input);
+    if (result.values.some(value => !Number.isFinite(value))) throw new Error('Camera inference produced non-finite logits.');
+    return {...describe(context, options), operation: 'capture', inputStats:{...input.stats,preprocessMs:stacked.preprocessMs}, inferenceMs: result.ms,
+      paletteColors: input.info.colors, logitsFinite: true, inputCaptures:frames, mediaTimes:stacked.mediaTimes,presentedFrames:stacked.presentedFrames,
+      note: 'Same-phase crop inference only. Assess symbol and payload recovery with the offline evaluation tools.'};
+  } finally { cameraBurst=null; }
 }
 self.onmessage = async event => {
   const {id, operation, options = {}} = event.data || {};
@@ -136,9 +148,9 @@ self.onmessage = async event => {
     const validated = validateOptions(options);
     let result;
     if (operation === 'benchmark') result = await benchmark(validated, progress);
-    else if (operation === 'capture') result = await capture(validated, progress, options.image);
+    else if (operation === 'capture') result = await capture(validated, progress, options.image, options.runId, options.mediaTime, options.presentedFrames);
     else throw new Error('Unknown decoder operation.');
     self.postMessage({id, type: 'result', result});
-  } catch (error) { self.postMessage({id, type: 'error', error: error.message || String(error)}); }
+  } catch (error) { cameraBurst=null; self.postMessage({id, type: 'error', error: error.message || String(error)}); }
   finally { busy = false; }
 };

@@ -101,7 +101,7 @@ class GroupEvaluationTests(unittest.TestCase):
             predictions = {sample.id: root/"prediction.f32"}
             outcome = {"exact": True, "accepted": True, "wrongAccepted": False,
                        "rawCRC": False, "hardCRC": True}
-            response = {"samples": [{"id": sample.id, "learned": outcome, "classical": {**outcome, "exact": False}}]}
+            response = {"samples": [{"id": sample.id, "memberIds": [sample.id], "learned": outcome, "classical": {**outcome, "exact": False}}]}
             process = SimpleNamespace(returncode=0, stdout=json.dumps(response))
             with patch("evaluate.subprocess.run", return_value=process):
                 report = canonical_recovery(None, [sample], predictions, root,
@@ -111,7 +111,7 @@ class GroupEvaluationTests(unittest.TestCase):
                              ("session-one", 3, "phone_to_pc"))
             self.assertEqual(report["summary"]["learned"]["exactRate"], 1)
             sent = json.loads((root/"predictions-0.json").read_text())
-            self.assertEqual(sent, {"samples": [{"id": "sample-one", "logits": "prediction.f32"}]})
+            self.assertEqual(sent, {"framesPerInput": 1, "samples": [{"id": "sample-one", "memberIds": ["sample-one"], "logits": "prediction.f32"}]})
             process.stdout = json.dumps({"samples": response["samples"]*2})
             with patch("evaluate.subprocess.run", return_value=process), self.assertRaisesRegex(RuntimeError, "different sample set"):
                 canonical_recovery(None, [sample], predictions, root)

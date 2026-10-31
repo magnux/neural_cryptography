@@ -10,16 +10,19 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import random
 import time
 
 import numpy as np
 import torch
 
 from torch.nn import functional as F
+from bursts import BurstIndex
+from contract import FRAME_COUNTS
 from checkpoint import load_model_checkpoint
 from data import DATASET_FORMAT, Dataset, assert_disjoint, check_checkpoint_overlap, digest
 from evaluate import evaluate_model
-from model import MODEL_PROFILES, OpticalDecoder
+from model import MODEL_PROFILES, OpticalDecoder, initialize_frames
 from sampling import BalancedSampler, load_session_groups, validate_session_groups
 
 
@@ -29,10 +32,10 @@ def training_defaults(initialize=None, steps=None, learning_rate=None):
 
 
 def training_loss(logits, labels, mask, colors):
-    """Mean data-cell CE per frame, then equal weight for every batch member."""
+    """Mean data-cell CE per input example, then equal weight per batch member."""
     counts = mask.flatten(1).sum(1)
     if colors not in (4, 16) or not torch.all(counts > 0):
-        raise ValueError("A supported palette and nonempty data-cell mask per frame are required")
+        raise ValueError("A supported palette and nonempty data-cell mask per input example are required")
     cells = F.cross_entropy(logits[:, :colors], labels, reduction="none")
     per_frame = (cells*mask).flatten(1).sum(1)/counts
     return per_frame.mean(), per_frame
@@ -50,8 +53,10 @@ def save_checkpoint(path: Path, model, training: dict):
 def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, batch_size=4,
                  accumulate=4, learning_rate=None, device="cpu", seed=7, eval_every=1000,
                  validation_samples=0, real_fraction=.5, initialize=None, node="node", model_profile=None,
-                 session_groups=None, weight_decay=.01, paired_targets=False):
+                 session_groups=None, weight_decay=.01, paired_targets=False, frames=None):
     steps, learning_rate = training_defaults(initialize, steps, learning_rate)
+    if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
+        raise ValueError("Input frame count must be 1 or 4")
     integers = ((steps, 1, 1_000_000), (batch_size, 1, 128), (accumulate, 1, 128),
                 (seed, 0, 0xffffffff), (eval_every, 1, 1_000_000),
                 (validation_samples, 0, 1_000_000_000))
@@ -84,11 +89,16 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     torch.manual_seed(seed)
     previous = None
     if initialize is None:
-        model = OpticalDecoder(model_profile or "wide")
+        model = OpticalDecoder(model_profile or "wide", frames=frames or 1)
     else:
         model, previous = load_model_checkpoint(initialize)
         if model_profile is not None and model.profile != model_profile:
             raise ValueError("Requested --model differs from the initialized checkpoint profile; train that architecture from scratch")
+        if frames is not None:
+            model = initialize_frames(model, frames)
+    burst_index = BurstIndex(train.samples, model.frames)
+    burst_index.validate_training()
+    burst_rng = random.Random(seed ^ 0x42555253)
     train_sessions, train_payloads = set(train.session_ids), set(train.payload_ids)
     validation_sessions, validation_payloads = set(validation.session_ids), set(validation.payload_ids)
     if previous is not None:
@@ -107,12 +117,13 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     options = {"requestedSteps": steps, "batchSize": batch_size,
                "gradientAccumulation": accumulate, "initialLearningRate": learning_rate,
                "weightDecay": weight_decay, "realFraction": real_fraction,
-               "pairedTargets": paired_targets, "loss": "mean-masked-cross-entropy",
+               "pairedTargets": paired_targets, "framesPerInput": model.frames,
+               "loss": "mean-masked-cross-entropy",
                "evalEvery": eval_every, "validationSamples": validation_samples,
                "sampling": "paired-targets" if paired_targets else "source-group-session-payload-phase"}
     provenance = {"seed": seed, "samples": len(train.samples), "batchSize": batch_size,
                   "gradientAccumulation": accumulate, "device": str(device), "realFraction": real_fraction,
-                  "pairedTargets": paired_targets, "selection": "validation-exact", "datasetFormat": DATASET_FORMAT,
+                  "pairedTargets": paired_targets, "framesPerInput": model.frames, "selection": "validation-exact", "datasetFormat": DATASET_FORMAT,
                   "trainManifestSha256": train.manifest_hash, "validationManifestSha256": validation.manifest_hash,
                   "trainSessionIds": sorted(train_sessions), "trainPayloadIds": sorted(train_payloads),
                   "validationSessionIds": sorted(validation_sessions), "validationPayloadIds": sorted(validation_payloads),
@@ -152,9 +163,9 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                         "bestValidationExact": selection["exactRate"], "bestValidationLoss": selection["loss"]}
             save_checkpoint(out/"best.pt", model, training)
             (out/"validation.json").write_text(json.dumps(report, indent=2)+"\n")
-        source_metrics = {name: {"samples": values[1], "meanCE": values[0]/values[1]}
+        source_metrics = {name: {"samples": values[1], "inputCaptures": values[1]*model.frames, "meanCE": values[0]/values[1]}
                           for name, values in interval["sources"].items()}
-        group_metrics = {name: {"samples": values[1], "meanCE": values[0]/values[1]}
+        group_metrics = {name: {"samples": values[1], "inputCaptures": values[1]*model.frames, "meanCE": values[0]/values[1]}
                          for name, values in interval["groups"].items()}
         record = {"step": step, "trainLoss": interval["loss"]/interval["updates"] if interval["updates"] else None,
                   "trainSources": source_metrics, "trainGroups": group_metrics,
@@ -187,7 +198,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         optimizer.zero_grad(set_to_none=True)
         update_loss = 0.
         batches = sampler.draw_update(batch_size, accumulate)
-        for samples in batches:
+        for anchors in batches:
+            samples = [burst_index.train_sample(anchor, burst_rng) for anchor in anchors]
             triples = [sample.tensors() for sample in samples]
             pixels = torch.from_numpy(np.stack([row[0] for row in triples]))
             labels = torch.from_numpy(np.stack([row[1] for row in triples])).to(device)
@@ -234,6 +246,8 @@ def main():
     parser.add_argument("--accumulate", type=int, default=4, help="microbatches per update; default effective batch is 16")
     parser.add_argument("--lr", type=float, help="default: 1e-4 fresh weights, 5e-5 initialized weights")
     parser.add_argument("--weight-decay", type=float, default=.01, help="AdamW decay (default: .01)")
+    parser.add_argument("--frames", type=int, choices=FRAME_COUNTS,
+                        help="exposures per input: infer checkpoint or default 1; explicit 4 expands a single-frame initialization")
     parser.add_argument("--paired-targets", action="store_true",
                         help="pair real captures with synthetic examples of the same target; requires real-fraction .5")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")

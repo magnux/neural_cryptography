@@ -21,7 +21,7 @@ import numpy as np
 import onnx
 import torch
 
-from contract import (ATOL, CHANNELS, CLASSES, FORMAT, INPUT_NAME, OUTPUT_NAME,
+from contract import (ATOL, CHANNELS, CLASSES, FORMAT, FRAME_COUNTS, INPUT_NAME, OUTPUT_NAME,
                       PIXELS_PER_CELL, RTOL, SIZES, VERSION,
                       describe_file, fixture_input, shapes, write_f32)
 from model import MODEL_PROFILES, OpticalDecoder, parameter_count
@@ -70,7 +70,7 @@ print(json.dumps(checks))
 
 def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threads: int = 1,
                  check_ort: bool = True, checkpoint: Path | None = None,
-                 profile: str | None = None) -> dict:
+                 profile: str | None = None, frames: int | None = None) -> dict:
     """Export one initialized or checkpoint-loaded set of weights on CPU.
 
     Validate every graph and, unless explicitly disabled, two independent inputs
@@ -88,12 +88,16 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
         raise ValueError("Threads must be between 1 and 64")
     torch.set_num_threads(threads)
     torch.manual_seed(seed)
-    model = OpticalDecoder(profile or "wide").cpu().eval()
+    if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
+        raise ValueError("Choose one or four input frames")
+    model = OpticalDecoder(profile or "wide", frames=frames if frames is not None else 1).cpu().eval()
     provenance = {}
     if checkpoint is not None:
         model, loaded = load_model_checkpoint(checkpoint)
         if profile is not None and model.profile != profile:
             raise ValueError("Requested model profile differs from the checkpoint; export its own profile")
+        if frames is not None and model.frames != frames:
+            raise ValueError("Requested frame count differs from the checkpoint; export its own input shape")
         model.cpu().eval()
         provenance = {"checkpointSha256": hashlib.sha256(Path(checkpoint).read_bytes()).hexdigest(),
                       "training": training_provenance(loaded["training"])}
@@ -108,7 +112,8 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
             versions[name] = "not-installed"
     manifest = {
         "format": FORMAT, "version": VERSION, "status": "trained" if checkpoint is not None else "untrained", "seed": seed,
-        "modelProfile": model.profile, "parameterCount": count, "pixelsPerCell": PIXELS_PER_CELL, "channels": CHANNELS,
+        "modelProfile": model.profile, "parameterCount": count, "pixelsPerCell": PIXELS_PER_CELL,
+        "framesPerInput": model.frames, "channels": CHANNELS * model.frames,
         "classes": CLASSES, "inputName": INPUT_NAME, "outputName": OUTPUT_NAME, "opset": OPSET,
         "versions": versions,
         "dtype": "float32", "byteOrder": "little", "layout": "NCHW",
@@ -122,8 +127,8 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
     with tempfile.TemporaryDirectory(prefix=".optical-export-", dir=out.parent) as temporary:
         stage = Path(temporary)
         for size in sizes:
-            input_shape, output_shape = shapes(size)
-            pixels = fixture_input(size, seed)
+            input_shape, output_shape = shapes(size, model.frames)
+            pixels = fixture_input(size, seed, model.frames)
             with torch.inference_mode():
                 logits = model(torch.from_numpy(pixels)).numpy()
             if logits.shape != output_shape:
@@ -144,7 +149,7 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
             if check_ort:
                 pairs = {}
                 for index, fixture_seed in enumerate((seed, (seed + 1) & 0xFFFFFFFF)):
-                    check_pixels = fixture_input(size, fixture_seed)
+                    check_pixels = fixture_input(size, fixture_seed, model.frames)
                     with torch.inference_mode():
                         expected = model(torch.from_numpy(check_pixels)).numpy()
                     pairs.update({f"input{index}": check_pixels, f"expected{index}": expected,
@@ -177,13 +182,15 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--checkpoint", type=Path, help="export a checkpoint from the current training command")
     parser.add_argument("--model", choices=MODEL_PROFILES, help="untrained profile (default wide); checkpoints select their own profile")
+    parser.add_argument("--frames", type=int, choices=FRAME_COUNTS,
+                        help="untrained input frames (default 1); checkpoints select their own frame count")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--skip-ort-check", action="store_true",
                         help="explicitly skip Python ONNX Runtime parity; record not_run in manifest")
     args = parser.parse_args()
     try:
         manifest = export_smoke(args.out, args.seed, threads=args.threads, check_ort=not args.skip_ort_check,
-                                checkpoint=args.checkpoint, profile=args.model)
+                                checkpoint=args.checkpoint, profile=args.model, frames=args.frames)
     except (ValueError, RuntimeError, OSError, zipfile.BadZipFile) as error:
         parser.exit(1, f"Export failed: {error}\n")
     print(f"{manifest['status'].capitalize()} model: {manifest['parameterCount']:,} parameters; CPU export, opset {OPSET}.")

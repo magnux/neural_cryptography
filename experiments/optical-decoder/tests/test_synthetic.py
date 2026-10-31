@@ -13,7 +13,8 @@ HAS_TORCH = importlib.util.find_spec("torch") is not None
 if HAS_TORCH:
     import torch
     from synthetic import (PhotometricConfig, apply_color_exposure, apply_overlays,
-                           corrupt_burst, overlay_alpha, rolling_shutter_maps,
+                           apply_motion_blur, corrupt_burst, motion_blur_grids,
+                           overlay_alpha, rolling_shutter_maps, sample_motion_blur,
                            sample_photometric, sample_rolling_shutter)
     torch.set_num_threads(1)
 
@@ -120,7 +121,70 @@ class PhotometricTests(unittest.TestCase):
         maximum = sample_rolling_shutter(np.random.default_rng(7), 1,
                     PhotometricConfig(rolling_shutter_probability=1, rolling_shutter_skew=.75))
         _, offsets = rolling_shutter_maps(512, maximum, 3)
-        self.assertLess(float(offsets.abs().max())+.9+.25, 2.)
+        self.assertLess(float(offsets.abs().max())+.9, 2.)
+
+    @staticmethod
+    def motion(**changes):
+        return {"linearPixels": 0., "rotationDegrees": 0., "zoomFraction": 0.,
+                "angle": 0., "angleDrift": 0., "cx": .5, "cy": .5,
+                "phase": np.pi/2, "velocity": .3, "samples": 7, **changes}
+
+    @staticmethod
+    def spatial_moments(image):
+        y, x = torch.meshgrid(torch.arange(image.shape[-2]), torch.arange(image.shape[-1]), indexing="ij")
+        p = image[0]/image[0].sum()
+        x, y = x-(p*x).sum(), y-(p*y).sum()
+        return float((p*x*x).sum()), float((p*y*y).sum()), float((p*x*y).sum())
+
+    def test_integrated_linear_blur_follows_arbitrary_direction(self):
+        image = torch.zeros((3, 65, 65))
+        image[:, 32, 32] = 1
+        diagonal = apply_motion_blur(image, self.motion(linearPixels=6., angle=np.pi/4))
+        vx, vy, cov = self.spatial_moments(diagonal)
+        self.assertGreater(vx, 1)
+        self.assertAlmostEqual(vx, vy, places=4)
+        self.assertGreater(cov/np.sqrt(vx*vy), .8)
+        self.assertLess(float(diagonal.max()), 1)
+        self.assertIs(apply_motion_blur(image, None), image)
+
+    def test_rotation_and_radial_zoom_have_different_spatial_blur(self):
+        image = torch.zeros((3, 257, 257))
+        image[:, 128, 208] = 1
+        rotation = apply_motion_blur(image, self.motion(rotationDegrees=5.))
+        zoom = apply_motion_blur(image, self.motion(zoomFraction=.05))
+        rx, ry, _ = self.spatial_moments(rotation)
+        zx, zy, _ = self.spatial_moments(zoom)
+        self.assertGreater(ry, 10*rx+.1)  # tangential at a right-of-center impulse
+        self.assertGreater(zx, 10*zy+.1)  # radial at the same impulse
+        center = torch.zeros_like(image)
+        center[:, 128, 128] = 1
+        self.assertAlmostEqual(float(apply_motion_blur(center, self.motion(rotationDegrees=5.))[0, 128, 128]), 1., places=5)
+
+    def test_motion_trajectories_and_centered_grids_have_known_bounds(self):
+        config = PhotometricConfig(motion_probability=1)
+        saw = [False, False, False]
+        for seed in range(32):
+            motion = sample_motion_blur(np.random.default_rng(seed), .65, config)
+            self.assertEqual(motion, sample_motion_blur(np.random.default_rng(seed), .65, config))
+            for i, (name, bound) in enumerate((("linearPixels", 2.5), ("rotationDegrees", .35), ("zoomFraction", .006))):
+                self.assertLessEqual(abs(motion[name]), .65*bound)
+                saw[i] |= motion[name] != 0
+            grids = motion_blur_grids(65, motion, 0)
+            y, x = torch.meshgrid(torch.linspace(-1, 1, 65), torch.linspace(-1, 1, 65), indexing="ij")
+            reference = torch.stack((x, y), dim=-1)
+            torch.testing.assert_close(grids[3], reference, atol=2e-7, rtol=0)
+            radius = 64*np.hypot(max(motion["cx"], 1-motion["cx"]), max(motion["cy"], 1-motion["cy"]))
+            bound = motion["linearPixels"]/2 + 2*radius*np.sin(np.deg2rad(abs(motion["rotationDegrees"]))/4) + radius*abs(motion["zoomFraction"])/2
+            displacement = torch.linalg.vector_norm((grids-reference)*32, dim=-1)
+            self.assertLessEqual(float(displacement.max()), bound+1e-5)
+            self.assertFalse(torch.equal(grids, motion_blur_grids(65, motion, 2)))
+        self.assertTrue(all(saw))
+        sampled = [sample_motion_blur(np.random.default_rng(i), 1, PhotometricConfig()) for i in range(32)]
+        self.assertTrue(any(item is None for item in sampled))
+        self.assertTrue(any(item is not None for item in sampled))
+        for config in (PhotometricConfig(motion_probability=0),
+                       PhotometricConfig(linear_blur_pixels=0, rotation_blur_degrees=0, zoom_blur_fraction=0)):
+            self.assertIsNone(sample_motion_blur(np.random.default_rng(7), 1, config))
 
     def test_controls_disable_only_the_selected_artifact(self):
         config = PhotometricConfig(white_balance_stops=0, exposure_stops=0,
@@ -166,10 +230,15 @@ class PhotometricTests(unittest.TestCase):
         for name, maximum in (("white_balance_stops", 4), ("exposure_stops", 4),
                               ("shade_opacity", .95), ("shade_probability", 1),
                               ("rolling_shutter_stops", 3), ("rolling_shutter_probability", 1),
-                              ("rolling_shutter_skew", .75)):
+                              ("rolling_shutter_skew", .75), ("motion_probability", 1),
+                              ("linear_blur_pixels", 12), ("rotation_blur_degrees", 5),
+                              ("zoom_blur_fraction", .05)):
             for value in (-.1, maximum+.01, np.nan, np.inf, -np.inf, True):
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                     PhotometricConfig(**{name: value})
+        for value in (0, 2, 4, 16, 3.5, True, None):
+            with self.subTest(motion_samples=value), self.assertRaises(ValueError):
+                PhotometricConfig(motion_samples=value)
 
 
 if __name__ == "__main__":

@@ -8,8 +8,9 @@ G64/4 colors as a control. G128 remains supported for experiments, but the
 submitted M1 reports only establish inference feasibility at G64.
 
 The [design](OPTICAL_DECODER.md) and [roadmap](ROADMAP.md) describe how this feeds
-the Neural ZKBoo color-authentication POC. M2 evaluates single captures. Learned
-temporal fusion and authentication integration remain subsequent work.
+the Neural ZKBoo color-authentication POC. M2 now supports single captures and
+four-frame learned fusion. Live transport/authentication integration remains
+subsequent work; recording files remain unchanged.
 
 ## Collect real examples
 
@@ -224,6 +225,11 @@ enabled by default:
 | `--rolling-shutter-probability` | `.7` | Probability of correlated drifting rolling-shutter bands/skew. |
 | `--rolling-shutter-skew` | `.5` | Maximum row-dependent horizontal displacement in dense-crop pixels, before severity scaling. |
 | `--bursts-per-target` | `1` | Independently seeded corruption trajectories for each clean target. |
+| `--motion-probability` | `.7` | Fraction of bursts with integrated exposure motion. |
+| `--linear-blur-pixels` | `2.5` | Full arbitrary-direction exposure travel in dense-crop pixels, before severity scaling. |
+| `--rotation-blur-degrees` | `.35` | Full rotational sweep around a varying center, before severity scaling. |
+| `--zoom-blur-fraction` | `.006` | Full radial scale change during an exposure, before severity scaling. |
+| `--motion-samples` | `7` | Temporal samples averaged per simulated exposure. |
 
 Strengths are scaled by `--severity`; at `.65`, a `.65`-stop rolling-shutter
 limit becomes `.4225` stops. Zero strength disables its effect; set rolling-shutter
@@ -233,7 +239,8 @@ to disable overlays. `--severity 0` returns the clean crop unchanged.
 Rolling-shutter effects approximate exposure bands from a rolling readout and
 screen flicker: broad/narrow bands evolve over successive frames, with slight
 tilt and color variation. A small row-dependent skew is bounded together with
-registration jitter and motion blur to remain below half a four-pixel cell.
+registration jitter to remain below half a four-pixel cell. Exposure blur can
+spread neighboring-cell evidence while keeping the target grid centered.
 This does not simulate a transition between different displayed payloads; those
 mixed-label captures should still be excluded.
 
@@ -245,6 +252,12 @@ ellipses and edge clipping reduce the affected area. Neither corruption choice
 nor its parameters depend on payload symbols. Multiple independently seeded
 bursts provide different conditions for the same target, while frames within a
 burst remain correlated.
+
+Motion blur now integrates several centered exposure samples with arbitrary-
+direction linear travel, rotation around an off-center pivot and radial zoom.
+The old two-position horizontal smear is removed. Strength/direction evolve
+coherently within a burst; zero controls disable the respective effects. This
+models image evidence spread, not a changed class label or integer-cell shift.
 
 These are **calibrated-crop approximations**, not a full camera/display/readout
 simulation. They do not reproduce detection, recalibration, or header failures.
@@ -302,8 +315,14 @@ Capped evaluation uses a fixed session/profile-balanced subset and must include
 every mapped real group. Standalone `evaluate.py --max-samples 0` also evaluates
 all examples. Reports include per-session/group CE, error and recovery,
 confidence calibration, phase identities, raw/hard/erasure recovery, wrong
-accepted frames, and inference timing. These are single-exposure measurements,
-not temporal throughput measurements.
+accepted frames, and inference timing. Four-frame reports count complete stacks,
+not individual exposures: `inputCaptures` records consumed observations and
+`burstGrouping` reports discarded leftovers/insufficient groups. With 768 captures
+in phase pools divisible by four, evaluation has 192 candidates. Never compare
+that raw denominator directly with the earlier 768 single-exposure candidates.
+Classical recovery averages logical scores over exactly the same four observations;
+expected bytes are only checked after independent RS/CRC acceptance. Offline
+stack recovery is not live throughput.
 
 Whole-session and whole-payload split checks, including checkpoint ancestry,
 remain mandatory. Keep sender/receiver identities intact when generating paired
@@ -314,58 +333,63 @@ settings on validation.
 
 | Profile | Parameters | Structure |
 | --- | ---: | --- |
-| `compact` | 121,792 | Plain U-Net baseline |
-| `wide` | 487,104 | Doubled widths, feature-channel LayerNorm, and an unnormalized pooled-RGB readout alongside context logits |
+| `compact`, one frame | 121,792 | Plain U-Net baseline |
+| `wide`, one frame | 487,104 | Doubled widths, feature-channel LayerNorm, unnormalized pooled-RGB readout |
+| `wide`, four frames | **488,544** | Same backbone, 12-channel RGB inlet and local-color path |
 
-Both take `[N,3,4G,4G]` calibrated pixels and output `[N,16,G,G]` physical-color
-logits. LayerNorm does not normalize raw RGB or depend on batch statistics.
-`--initialize` keeps the checkpoint's exact architecture; it does not widen
-weights. An explicitly conflicting `--model` fails. The model and browser tensor
-contract are unchanged by paired training.
+Models take `[N,3T,4G,4G]` calibrated pixels, T=1 or 4, and output
+`[N,16,G,G]` physical-color logits. LayerNorm does not normalize raw RGB or depend on batch statistics.
+`--initialize` keeps the checkpoint's profile. Explicit `--frames 4` can warm-start
+from one-frame weights by repeating the two RGB-facing kernels across slots and
+dividing by four; all other weights/biases are copied. Identical repeated inputs
+preserve the initial function within floating-point tolerance. No implicit shape
+migration occurs when loading/exporting checkpoints. An incompatible profile or
+four→one conversion fails. Recording crops still have three channels each.
 
-The latest submitted evaluation compares the same 768 captures from six physical
-sessions. The discarded adaptation recipe did not beat the previous checkpoint:
+The submitted paired single-frame run selected step 22,000 on the same 768
+validation captures. It improves over the discarded adaptation run's 62 exact
+recoveries but does not beat the retained `wide-real` checkpoint:
 
-| Validation metric | `wide-real/best.pt` | Discarded adaptation run |
-| --- | ---: | ---: |
-| Exact recovered frames | 69/768 (8.98%) | 62/768 (8.07%) |
-| Overall cell error | 39.32% | 39.96% |
-| PC → phone cell error | 24.76% | 25.13% |
-| Phone → PC exact recovery | 0/256 | 0/256 |
+| Validation metric | `wide-real` | Paired selected | Paired final (32k) |
+| --- | ---: | ---: | ---: |
+| Exact recoveries | 69/768 | 68/768 | 55/768 |
+| Cell error | 39.32% | 43.07% | 44.18% |
+| CE | 1.1050 | 2.1346 | 2.7111 |
+| Phone→PC exact | 0/256 | 0/256 | 0/256 |
+| Phone→PC cell error | 68.43% | 79.14% | 80.35% |
 
-All 62 later successes were already successful before; neither run recovered any
-phone→PC frame. Keep `wide-real/best.pt` as the comparison baseline and
-`wide-pilot/best.pt` as the recommended initialization. The recordings are
-correlated captures, not 768 independent physical setups. Historical validation
-measurements are recorded in [VALIDATION.md](VALIDATION.md); the current next
-experiment is matched target content plus improved corruption generation.
+Phone→PC validation CE is 1.847 at step 3k, 4.934 at 22k and 6.495 at 32k,
+while its unaugmented interval training CE falls from 1.745 to .349 to .182.
+This supports overfitting to training sessions. Both selected models recover only
+the same two PC→phone sessions. Four observations offer new visual evidence, but
+are not by themselves a solution to this generalization failure. Keep `wide-real`
+and initialize the burst model from `wide-pilot`, rather than `wide-paired`.
 
 ## Recommended next training run
 
-**Reuse `wide-pilot/best.pt` and train on real captures paired with synthetics of
-the exact same target matrices.** Starting from scratch is possible by omitting
-`--initialize`, but is not required: the architecture and labels are unchanged,
+**Reuse `wide-pilot/best.pt` and train a four-frame model on real bursts paired
+with synthetic bursts of the exact same target matrices.** Starting from scratch is possible by omitting
+`--initialize`, but is not required: only the RGB-facing convolutions expand,
 and the pilot already learned useful color/spatial features. Keep the earlier
-`wide-real/best.pt` for a direct comparison rather than initializing from the
-failed adaptation run.
+`wide-real/best.pt` as the single-frame reference; use the equal-budget classical
+comparison in the burst report to assess the new model.
 
 ### Remove obsolete generated outputs
 
-Run from the repository root, after retaining any reports you still want. These
-commands delete the failed run and old *corrupted* synthetic corpora; they do not
-touch recordings, joined real data, clean corpora or the two useful checkpoints.
-Do not run cleanup while training/generation uses those directories. If you need
-the old synthetic test corpus for a pending comparison, leave that directory out.
+Run from the repository root, after retaining any reports you still want. This
+command deletes the previous paired *corrupted* synthetic corpus. It preserves
+recordings, joined real data, clean targets and checkpoints. Do not run cleanup
+while training/generation uses that directory. Keep the corpus if you still need
+a reproducible comparison against the previous corruption generator. The new output directory below is separate.
 
 ```sh
 # Explicit old output paths only; no broad checkpoint/data wildcards.
-rm -rf -- checkpoints/optical-decoder/wide-adapt
-rm -rf -- local-data/synthetic-train local-data/synthetic-validation local-data/synthetic-test
+rm -rf -- local-data/target-synthetic-train
 ```
 
 Preserve `checkpoints/optical-decoder/wide-pilot/`,
-`checkpoints/optical-decoder/wide-real/`, `local-data/real-*`,
-`local-data/clean-*`, and the original sender/receiver JSON files. The new run
+`checkpoints/optical-decoder/wide-real/`, `checkpoints/optical-decoder/wide-paired/`,
+`local-data/real-*`, `local-data/clean-*`, `local-data/target-clean-train/`, and the original sender/receiver JSON files. The new run
 uses different, empty output paths below. Check any additional old run's contents
 before deleting it; directory names alone do not establish that its weights are
 replaceable.
@@ -373,13 +397,14 @@ replaceable.
 ### Reconstruct clean targets and generate paired corruptions
 
 ```sh
+# Reuse target-clean-train if already generated; otherwise run:
 node scripts/decoder-dataset.mjs targets \
   --dataset local-data/real-train \
   --out local-data/target-clean-train
 
 python experiments/optical-decoder/synthetic.py \
   --clean local-data/target-clean-train \
-  --out local-data/target-synthetic-train \
+  --out local-data/target-synthetic-burst-train \
   --bursts-per-target 16 --frames 9 --severity .65 --seed 31
 ```
 
@@ -431,16 +456,16 @@ but the following run uses it to balance and report both directions.
 
 ```sh
 python experiments/optical-decoder/train.py \
-  --train local-data/real-train local-data/target-synthetic-train \
+  --train local-data/real-train local-data/target-synthetic-burst-train \
   --validation local-data/real-validation \
   --initialize checkpoints/optical-decoder/wide-pilot/best.pt \
   --session-groups local-data/session-groups.json \
-  --paired-targets --real-fraction .5 \
+  --frames 4 --paired-targets --real-fraction .5 \
   --lr .00005 --steps 32000 --eval-every 1000 --validation-samples 0 \
-  --device cuda --out checkpoints/optical-decoder/wide-paired
+  --device cuda --out checkpoints/optical-decoder/wide-burst4
 ```
 
-Each effective update pairs every chosen real capture with one synthetic of its
+Each effective update pairs every chosen real stack with one synthetic stack of its
 exact session, payload, frame and phase, with identical label/mask/expected-byte
 hashes. Pairing applies across the complete optimizer update, so shuffled
 microbatches still have equal real/synthetic totals. Missing targets, mismatched
@@ -449,10 +474,17 @@ rather than silently falling back to unrelated images. Use only the new paired
 synthetics for this run, not a random-payload corpus alongside them.
 
 With effective batch 16 and two mapped directions, an update contains four real
-PC→phone captures, four real phone→PC captures, and their eight matched synthetic
-counterparts. Real draws remain balanced by group/session/payload/phase; the
-sampler avoids duplicate bursts where possible. Both sides of a pair use the
-same ordinary classification objective. There is no consistency loss,
+PC→phone stacks, four real phone→PC stacks, and their eight matched synthetic
+counterparts: 16 model examples with 64 exposure inputs. Real draws remain
+balanced by group/session/payload/phase; the sampler avoids duplicate bursts where possible. Both sides of a pair use the
+same ordinary classification objective. Four distinct members are sampled within
+each selected burst without replacement and shuffled into RGB channel slots.
+Do not stack different phases, sessions, payloads or independent corruption
+bursts. Training rejects any burst with fewer than four observations; evaluation
+uses deterministic nonoverlapping chronological groups and reports leftovers.
+`synthetic.py --frames 9` means exposures generated per burst; `train.py --frames 4`
+means exposures consumed per model input. These controls have different purposes.
+There is no consistency loss,
 reconstruction head, online real augmentation or hidden recipe switch.
 
 The run writes `settings.json`, `history.json`, `baseline-validation.json`,
@@ -461,35 +493,30 @@ source/group CE, source counts, pairing counts, repeated captures, and validatio
 recovery. Inspect the best checkpoint's per-direction results, not only the
 final update. All model selection uses the unchanged real validation set.
 
-### Compare against the retained baseline
+### Evaluate with an equal observation budget
 
 ```sh
 python experiments/optical-decoder/evaluate.py \
   --dataset local-data/real-validation --split validation \
-  --checkpoint checkpoints/optical-decoder/wide-real/best.pt \
+  --checkpoint checkpoints/optical-decoder/wide-burst4/best.pt \
   --session-groups local-data/session-groups.json \
   --max-samples 0 --device cuda \
-  --out local-results/optical-decoder/wide-real-grouped-validation.json
-
-python experiments/optical-decoder/evaluate.py \
-  --dataset local-data/real-validation --split validation \
-  --checkpoint checkpoints/optical-decoder/wide-paired/best.pt \
-  --session-groups local-data/session-groups.json \
-  --max-samples 0 --device cuda \
-  --out local-results/optical-decoder/wide-paired-validation.json
+  --out local-results/optical-decoder/wide-burst4-validation.json
 ```
 
-Report the generation summaries, new `history.json`, and both full validation
-reports. The practical objective is better exact recovery in phone→PC without
-losing PC→phone performance, with zero wrong accepted frames. Validation is used
-for model selection; evaluate untouched real test sessions only after choosing
-the model. Synthetic accuracy alone does not establish device improvement.
+Compare learned and classical recovery within this report: both receive the
+same four observations. Compare `baseline-validation.json` with selected
+`validation.json` to measure learning beyond the initialized four-frame model.
+Send those reports, `history.json` and generation summaries. Earlier single-frame
+reports remain useful context but have a different observation budget. Keep
+untouched real test sessions for the selected model and settings. The goal remains
+better recovery in both directions with zero wrong accepted payloads.
 
 ## Export the selected checkpoint
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/wide-paired/best.pt \
+  --checkpoint checkpoints/optical-decoder/wide-burst4/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected
@@ -498,7 +525,8 @@ npm run test:decoder:wasm -- --artifacts experiments/optical-decoder/artifacts/s
 
 Export produces both G64 and G128 graphs using the selected weights, with fresh
 PyTorch numerical fixtures. The current `optical-decoder` manifest records
-`trained` status, checkpoint hash, and bounded public training provenance.
+`trained` status, checkpoint hash, required `framesPerInput`/channel dimensions,
+and bounded public training provenance.
 It omits local paths and session/payload lists; full split provenance remains
 inside the local checkpoint. Export without `--checkpoint` still creates an
 untrained feasibility bundle. Only the current format is accepted: regenerate

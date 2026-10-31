@@ -5,7 +5,7 @@ const $ = id => document.getElementById(id);
 const records = [];
 const client = new DecoderClient({onProgress: text => { $('labStatus').textContent = text; }});
 const supported = isSecureContext && typeof Worker === 'function' && Boolean(crypto?.subtle);
-let stream = null, cameraStarting = false, cameraEpoch = 0, busy = false, operation = 0, lastResult = null;
+let stream = null, cameraStarting = false, cameraEpoch = 0, busy = false, operation = 0, lastResult = null, activeKind=null, cancelFrameWait=null;
 
 function error(message) { $('labError').textContent = message; $('labError').hidden = !message; }
 function settings() { return validateOptions({size: Number($('modelSize').value), backend: $('backend').value, iterations: Number($('iterations').value)}); }
@@ -49,39 +49,79 @@ function showResult(result) {
   const metrics=document.createElement('dl'); metrics.className='decoder-metrics';
   const fields=result.operation === 'benchmark'
     ? [['Warm p50',`${result.timings.p50Ms.toFixed(1)} ms`],['Warm p95',`${result.timings.p95Ms.toFixed(1)} ms`],['Backend',result.effectiveBackend.toUpperCase()]]
-    : [['Preprocess',`${result.inputStats.preprocessMs.toFixed(1)} ms`],['Inference',`${result.inferenceMs.toFixed(1)} ms`],['Backend',result.effectiveBackend.toUpperCase()]];
+    : [['Preprocess total',`${result.inputStats.preprocessMs.toFixed(1)} ms`],['Inference',`${result.inferenceMs.toFixed(1)} ms`],['Backend',result.effectiveBackend.toUpperCase()]];
   for (const [label,value] of fields) { const item=document.createElement('div'), dt=document.createElement('dt'), dd=document.createElement('dd'); dt.textContent=label; dd.textContent=value; item.append(dt,dd); metrics.append(item); }
   box.append(metrics);
   const detail=document.createElement('p'); detail.className='muted';
   detail.textContent=result.operation === 'benchmark'
     ? `${result.parity.checked.toLocaleString()} logits checked · ${result.parity.failures} outside tolerance · maximum absolute error ${result.parity.maxAbsoluteError?.toExponential(2) ?? 'non-finite'}. Two warm-ups; ${result.timings.count} measured runs. Load ${result.loadMs.toFixed(0)} ms${result.cacheReused ? ' (cached session)' : `, including ${result.initMs.toFixed(0)} ms initialization`}.`
-    : `A ${result.size}×${result.size}, ${result.paletteColors}-color matrix supplied this crop. ${result.note}`;
+    : `A ${result.size}×${result.size}, ${result.paletteColors}-color matrix supplied ${result.framesPerInput} distinct exposure${result.framesPerInput===1?'':'s'}. ${result.note}`;
   box.append(detail);
   if (result.fallbackReason) { const fallback=document.createElement('p'); fallback.className='muted'; fallback.textContent=`Auto fallback: ${result.fallbackReason}`; box.append(fallback); }
   const responsive=document.createElement('p'); responsive.className='muted';
   responsive.textContent=`UI frame gaps: p95 ${result.ui?.frameGaps?.p95Ms.toFixed(1) ?? '—'} ms; ${result.ui?.gapsOver50Ms ?? 0} over 50 ms. Camera ${result.camera.active ? `${result.camera.width}×${result.camera.height}` : 'off'}.`;
   box.append(responsive);
 }
+function waitForCameraFrame(previous,token,epoch) {
+  const video=$('video');
+  if (typeof video.requestVideoFrameCallback!=='function'||typeof video.cancelVideoFrameCallback!=='function') {
+    return Promise.reject(Error('Camera burst tests require requestVideoFrameCallback. Use a current browser.'));
+  }
+  return new Promise((resolve,reject)=>{
+    let callbackId=null,settled=false;
+    const finish=(error,result)=>{
+      if(settled)return;settled=true;clearTimeout(timeout);
+      if(callbackId!==null)video.cancelVideoFrameCallback(callbackId);
+      if(cancelFrameWait===abort)cancelFrameWait=null;
+      if(error)reject(error);else resolve(result);
+    };
+    const abort=()=>finish(new DOMException('Camera burst canceled.','AbortError'));
+    const timeout=setTimeout(()=>finish(Error('No new camera exposure arrived. Restart the camera and try again.')),3000);
+    cancelFrameWait=abort;
+    const request=()=>{
+      if(token!==operation||epoch!==cameraEpoch||!stream){abort();return;}
+      callbackId=video.requestVideoFrameCallback((_now,metadata)=>{
+        callbackId=null;
+        if(token!==operation||epoch!==cameraEpoch||!stream){abort();return;}
+        if(!Number.isFinite(metadata?.mediaTime)||metadata.mediaTime<0||
+            !Number.isSafeInteger(metadata.presentedFrames)||metadata.presentedFrames<1){
+          finish(Error('The browser did not identify the presented camera frame.'));return;
+        }
+        if(metadata.presentedFrames<=previous){request();return;}
+        if(!video.videoWidth||video.readyState<2){finish(Error('Wait for a live camera image first.'));return;}
+        finish(null,{video,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames});
+      });
+    };
+    request();
+  });
+}
 async function run(kind) {
   if (busy) return;
   error(''); let options;
   try { options=settings(); } catch (e) { error(e.message); return; }
-  busy=true; const token=++operation; renderControls();
+  busy=true; activeKind=kind; const token=++operation, epoch=cameraEpoch; renderControls();
   $('labStatus').textContent='Starting the local decoder worker…';
   const stopMonitor=monitorUI(), camera=cameraInfo(), start=new Date().toISOString();
   try {
-    const transfer=[];
+    let result;
     if (kind === 'capture') {
-      const video=$('video');
-      if (!stream || !video.videoWidth || video.readyState < 2) throw new Error('Wait for a live camera image first.');
-      const scale=Math.min(1,Math.sqrt(2073600/(video.videoWidth*video.videoHeight)));
-      const canvas=document.createElement('canvas'); canvas.width=Math.max(1,Math.floor(video.videoWidth*scale)); canvas.height=Math.max(1,Math.floor(video.videoHeight*scale));
-      const context=canvas.getContext('2d',{willReadFrequently:true}); context.drawImage(video,0,0,canvas.width,canvas.height);
-      const image=context.getImageData(0,0,canvas.width,canvas.height);
-      options.image={width:image.width,height:image.height,data:image.data}; transfer.push(image.data.buffer);
-      camera.captureWidth=image.width; camera.captureHeight=image.height;
-    }
-    const result=await client.call(kind, options, transfer);
+      let previous=0;
+      // Bound attempts if the sender changes phase while gathering the stack.
+      for (let attempt=0;attempt<16;attempt++) {
+        const exposure=await waitForCameraFrame(previous,token,epoch),video=exposure.video;
+        previous=exposure.presentedFrames;
+        const scale=Math.min(1,Math.sqrt(2073600/(video.videoWidth*video.videoHeight)));
+        const canvas=document.createElement('canvas'); canvas.width=Math.max(1,Math.floor(video.videoWidth*scale)); canvas.height=Math.max(1,Math.floor(video.videoHeight*scale));
+        const context=canvas.getContext('2d',{willReadFrequently:true}); context.drawImage(video,0,0,canvas.width,canvas.height);
+        const image=context.getImageData(0,0,canvas.width,canvas.height);
+        camera.captureWidth=image.width; camera.captureHeight=image.height;
+        result=await client.call(kind,{...options,runId:token,mediaTime:exposure.mediaTime,presentedFrames:exposure.presentedFrames,
+          image:{width:image.width,height:image.height,data:image.data}},[image.data.buffer]);
+        if (!result.waiting) break;
+        $('labStatus').textContent=`Collected ${result.collected}/${result.framesPerInput} exposures. Keep the same matrix and palette phase visible.`;
+      }
+      if (result?.waiting) { client.cancel(); throw Error('The matrix or phase kept changing before a complete burst. Hold one phase steady and retry.'); }
+    } else result=await client.call(kind,options);
     if (token !== operation) return;
     lastResult={...result, ui:stopMonitor(), camera, start};
     record({ok:true,...lastResult}); showResult(lastResult);
@@ -95,7 +135,7 @@ async function run(kind) {
     if (token === operation) { error(e.message); $('labStatus').textContent=e.name === 'AbortError' ? 'Canceled. The worker model was released.' : 'Test failed. The failure is included in the report.'; }
   } finally {
     stopMonitor();
-    if (token === operation) { busy=false; renderControls(); }
+    if (token === operation) { busy=false; activeKind=null; renderControls(); }
   }
 }
 async function enumerateCameras() {
@@ -109,6 +149,7 @@ async function enumerateCameras() {
   } catch { /* Device names are optional until camera permission is granted. */ }
 }
 function stopCamera() {
+  if (busy&&activeKind==='capture') cancel();
   cameraEpoch++;
   if (stream) for (const track of stream.getTracks()) track.stop();
   stream=null; cameraStarting=false; $('video').srcObject=null;
@@ -132,8 +173,8 @@ async function startCamera() {
   } catch (e) { if (epoch === cameraEpoch) { stopCamera(); error(e.message); } }
   finally { if (epoch === cameraEpoch) { cameraStarting=false; renderControls(); } }
 }
-function cancel() { client.cancel(); }
-function shutdown() { client.cancel(); stopCamera(); }
+function cancel() { operation++; cancelFrameWait?.(); client.cancel(); busy=false; activeKind=null; renderControls(); $('labStatus').textContent='Canceled. The worker and pending camera burst were released.'; }
+function shutdown() { cancel(); stopCamera(); }
 $('runBenchmark').addEventListener('click',()=>run('benchmark'));
 $('runCapture').addEventListener('click',()=>run('capture'));
 $('cancel').addEventListener('click',cancel);

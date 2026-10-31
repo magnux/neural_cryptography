@@ -1,12 +1,14 @@
-"""Single-frame optical symbol classifiers with a shared browser tensor contract.
+"""One- or four-frame optical classifiers with a shared browser tensor contract.
 
-Both profiles accept calibrated RGB, [N,3,4G,4G], and predict physical palette
+Both profiles accept stacked RGB, [N,3*T,4G,4G], and predict physical palette
 logits, [N,16,G,G]. Neither receives keys, labels, or expected payload bytes.
 """
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+from contract import FRAME_COUNTS
 
 
 MODEL_PROFILES = ("compact", "wide")
@@ -50,14 +52,17 @@ class OpticalDecoder(nn.Module):
     and held-out device evaluation; capacity is not a claim of better recovery.
     """
 
-    def __init__(self, profile: str = "compact") -> None:
+    def __init__(self, profile: str = "compact", frames: int = 1) -> None:
         super().__init__()
         if profile not in MODEL_PROFILES:
             raise ValueError(f"Choose model profile from {MODEL_PROFILES}")
+        if type(frames) is not int or frames not in FRAME_COUNTS:
+            raise ValueError("Choose one or four input frames")
         self.profile = profile
+        self.frames = frames
         width = 16 if profile == "compact" else 32
         normalize = profile == "wide"
-        self.inlet = nn.Sequential(conv(3, width // 2, 2), conv(width // 2, width, 2))
+        self.inlet = nn.Sequential(conv(3 * frames, width // 2, 2), conv(width // 2, width, 2))
         self.e0 = nn.Sequential(conv(width, width, normalize=normalize), conv(width, width, normalize=normalize))
         self.e1 = nn.Sequential(conv(width, 2 * width, 2, normalize), conv(2 * width, 2 * width, normalize=normalize))
         self.bottleneck = nn.Sequential(conv(2 * width, 4 * width, 2, normalize), conv(4 * width, 4 * width, normalize=normalize))
@@ -65,7 +70,7 @@ class OpticalDecoder(nn.Module):
         self.d0 = nn.Sequential(conv(3 * width, width, normalize=normalize), conv(width, width, normalize=normalize))
         self.head = nn.Conv2d(width, 16, 1, bias=True)
         if profile == "wide":
-            self.local_color = nn.Sequential(nn.Conv2d(3, 16, 1), nn.ReLU(), nn.Conv2d(16, 16, 1))
+            self.local_color = nn.Sequential(nn.Conv2d(3 * frames, 16, 1), nn.ReLU(), nn.Conv2d(16, 16, 1))
 
     def forward(self, pixels: torch.Tensor) -> torch.Tensor:
         e0 = self.e0(self.inlet(pixels))
@@ -82,8 +87,8 @@ class OpticalDecoder(nn.Module):
 def profile_from_state(state: dict) -> str:
     """Identify one supported architecture; the checkpoint loader checks every tensor.
 
-    Profiles share the same current checkpoint representation. No state is
-    reshaped, renamed, partially loaded, or migrated between architectures.
+    Profiles share the current checkpoint representation. Loading is exact;
+    intentional single-frame warm starts use initialize_frames separately.
     """
     if not isinstance(state, dict) or not isinstance(state.get("head.weight"), torch.Tensor):
         raise ValueError("Checkpoint has no valid decoder head")
@@ -93,6 +98,43 @@ def profile_from_state(state: dict) -> str:
     if shape == (16, 32, 1, 1):
         return "wide"
     raise ValueError("Checkpoint model does not match a supported decoder profile")
+
+
+def frames_from_state(state: dict) -> int:
+    """Read the input width; remaining tensor shapes are checked by the loader."""
+    weight = state.get("inlet.0.0.weight") if isinstance(state, dict) else None
+    if not isinstance(weight, torch.Tensor) or weight.ndim != 4 or weight.shape[1] not in (3, 12):
+        raise ValueError("Checkpoint does not have a supported input frame count")
+    return int(weight.shape[1] // 3)
+
+
+def initialize_frames(model: OpticalDecoder, frames: int) -> OpticalDecoder:
+    """Explicitly initialize a four-frame model from a trained single-frame model.
+
+    Only the two RGB-facing convolutions change: every frame gets one quarter
+    of the original weights. Repeating an identical input across all four slots
+    therefore preserves the initial function, apart from floating-point rounding.
+    All other parameters, including biases, are copied exactly. This is an
+    intentional training initialization, never a permissive checkpoint reader.
+    """
+    if type(frames) is not int or frames not in FRAME_COUNTS:
+        raise ValueError("Choose one or four input frames")
+    if model.frames == frames:
+        return model
+    if model.frames != 1 or frames != 4:
+        raise ValueError("Only a one-to-four-frame warm start is supported")
+    parameter = next(model.parameters())
+    expanded = OpticalDecoder(model.profile, frames=frames).to(
+        device=parameter.device, dtype=parameter.dtype)
+    state = {name: value.detach().clone() for name, value in model.state_dict().items()}
+    keys = ["inlet.0.0.weight"]
+    if model.profile == "wide":
+        keys.append("local_color.0.weight")
+    for name in keys:
+        state[name] = state[name].repeat(1, frames, 1, 1) / frames
+    expanded.load_state_dict(state, strict=True)
+    expanded.train(model.training)
+    return expanded
 
 
 def parameter_count(model: nn.Module) -> int:

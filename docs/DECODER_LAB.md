@@ -53,7 +53,7 @@ the Python fixture. The browser requires finite logits and elementwise
    if relevant to the device's actual receiving configuration.
 4. On the other device, display a **64×64/16-color** matrix in Optical Bench,
    with grid-8 references. Select size 64 in Decoder Lab, align the entire marker,
-   and press **Test one matrix crop**. Repeat at 128 and with the 4-color control.
+   and press **Test matrix burst**. Repeat at 128 and with the 4-color control.
    Reverse devices so both PC→phone and phone→PC captures are exercised.
 5. Try **Cancel**, then run again. Stop the camera when finished. Hidden pages
    stop camera capture and terminate pending worker work.
@@ -61,7 +61,15 @@ the Python fixture. The browser requires finite logits and elementwise
    endpoints, including failures. Save before leaving the page; reports are
    kept only in memory, capped at 50 tests.
 
-The camera probe revalidates geometry/header and samples the current exposure's
+The camera probe uses the prepared model's `framesPerInput` (one or four).
+For four-frame models it automatically collects four distinct video exposures
+of the same complete header/phase, verified by `requestVideoFrameCallback`
+media timestamps and presented-frame counters, rectifies and color-corrects each separately,
+and stacks their RGB channels. A changed identity clears the partial stack;
+geometry failure, cancel, camera restart or a new run discards it. Use a current browser with video-frame callbacks; the playback clock alone
+is not accepted as evidence of a new frame. Collection has bounded retries and does not duplicate an exposure to fill missing slots.
+
+The camera probe revalidates geometry/header and samples each exposure's
 palette, even if payload CRC would fail. It reports preprocessing and inference
 cost; numerical checks alone cannot establish symbol accuracy. A wrong grid selection,
 unsupported palette, or invalid header produces a failure record. The lab does
@@ -69,7 +77,7 @@ not feed these outputs into live recovery or report decoded content.
 
 Report fields include model and fixture hashes, package versions, requested and
 effective backend, fallback reasons, full-output parity, warm p50/p95, load and
-initialization time, camera resolution, and UI animation-frame gaps. Known
+initialization time, camera resolution, frame-stack size, exposure timestamps and UI animation-frame gaps. Known
 buffer sizes and optional main-page JS heap readings are **partial memory
 accounting**, not total process/GPU/worker memory. Use browser/OS diagnostics if
 available to investigate memory pressure. No camera frames, payload bytes, or
@@ -86,7 +94,8 @@ G64. Training begins after we establish a usable receiving profile on each side.
 | --- | --- |
 | Compact/wide U-Nets and fixed-shape ONNX graphs | [`experiments/optical-decoder/`](../experiments/optical-decoder/README.md) |
 | Validated dense physical crop, including references | `vision.js` → `extractDensePayload()` |
-| Current color correction and `[1,3,4G,4G]` float32 tensor | `learned-input.js` → `extractLearnedInput()` |
+| Per-exposure correction and `[1,3,4G,4G]` crop | `learned-input.js` → `extractLearnedInput()` |
+| One/four-exposure `[1,3T,4G,4G]` input assembly | `js/decoder-lab/burst.js` → `CameraBurst` |
 | Palette mask, phase inversion, reference exclusion | `learned-input.js` → `logitsToLogicalScores()` |
 | Bounded inference, asset hashing, backend selection | `js/decoder-lab/worker.js` and `runtime.js` |
 | Worker lifecycle and independent lab UI | `js/decoder-lab/client.js`, `lab.js`, `decoder.html` |
@@ -104,6 +113,11 @@ npm run test:decoder
 python -m unittest discover -s experiments/optical-decoder/tests -v
 npm run test:decoder:wasm
 ```
+
+Current exports declare required `framesPerInput` and matching channel counts;
+regenerate local bundles after updating. A four-frame G128 input is 12 MiB of
+float32 pixels before runtime working memory. Both input sizes use the same
+488,544-parameter wide weights.
 
 The last command requires the exported/prepared assets and runs the same ONNX
 Runtime Web bundle's WASM backend in **Node** against the Python fixtures. It is

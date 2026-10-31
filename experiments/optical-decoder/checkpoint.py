@@ -8,7 +8,7 @@ import zipfile
 import numpy as np
 import torch
 
-from model import OpticalDecoder, profile_from_state
+from model import OpticalDecoder, profile_from_state, frames_from_state
 
 
 MAX_CHECKPOINT_BYTES = 512 * 1024 * 1024
@@ -53,6 +53,11 @@ def training_provenance(training: dict) -> dict:
             if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
                 raise ValueError(f"Invalid checkpoint {key}")
             result[key] = value
+    if "framesPerInput" in training:
+        value = training["framesPerInput"]
+        if type(value) is not int or value not in (1, 4):
+            raise ValueError("Invalid checkpoint framesPerInput")
+        result["framesPerInput"] = value
     if "pairedTargets" in training:
         if not isinstance(training["pairedTargets"], bool):
             raise ValueError("Invalid checkpoint pairedTargets")
@@ -124,7 +129,7 @@ def load_checkpoint(path: Path, model: OpticalDecoder | None = None) -> dict:
             type(checkpoint.get("version")) is not int or checkpoint["version"] != 1 or checkpoint.get("status") != "trained":
         raise ValueError("Unsupported decoder checkpoint; use the current training command")
     state = checkpoint.get("modelState")
-    model = OpticalDecoder(profile_from_state(state)) if model is None else model
+    model = OpticalDecoder(profile_from_state(state), frames=frames_from_state(state)) if model is None else model
     expected = model.state_dict()
     if not isinstance(state, dict) or set(state) != set(expected):
         raise ValueError("Checkpoint model parameters do not match the decoder")
@@ -133,6 +138,8 @@ def load_checkpoint(path: Path, model: OpticalDecoder | None = None) -> dict:
                 tuple(value.shape) != tuple(expected[name].shape) or not bool(torch.isfinite(value).all()):
             raise ValueError(f"Invalid checkpoint tensor: {name}")
     training_provenance(checkpoint.get("training"))
+    if checkpoint["training"].get("framesPerInput", model.frames) != model.frames:
+        raise ValueError("Checkpoint frame metadata disagrees with model parameters")
     validate_split_provenance(checkpoint["training"])
     model.load_state_dict(state, strict=True)
     return checkpoint
@@ -141,6 +148,7 @@ def load_checkpoint(path: Path, model: OpticalDecoder | None = None) -> dict:
 def load_model_checkpoint(path: Path) -> tuple[OpticalDecoder, dict]:
     """Instantiate the exact supported profile represented by a validated state."""
     checkpoint = load_checkpoint(path)
-    model = OpticalDecoder(profile_from_state(checkpoint["modelState"]))
+    model = OpticalDecoder(profile_from_state(checkpoint["modelState"]),
+                           frames=frames_from_state(checkpoint["modelState"]))
     model.load_state_dict(checkpoint["modelState"], strict=True)
     return model, checkpoint

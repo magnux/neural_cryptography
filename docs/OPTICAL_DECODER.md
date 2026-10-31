@@ -1,6 +1,6 @@
 # Learned color-matrix decoder: design and training plan
 
-Status: **G64 device feasibility established; M2 capture/training software implemented**, 2026-10-22.
+Status: **G64 device feasibility established; M2 capture/training software implemented**, 2026-10-31.
 The submitted reports establish phone WebGPU and PC WASM parity and speed at G64. PC crop acquisition and G128 device
 measurements remain open. Use [the M2 guide](OPTICAL_DECODER_TRAINING.md) for capture, synthetic generation, training,
 and held-out evaluation, and [Decoder Lab](DECODER_LAB.md) for checkpoint parity/device timing. Real-data model
@@ -76,15 +76,27 @@ readout to the logits. Raw camera RGB and the inlet are not normalized by these
 layers. Compact remains the baseline and loads its existing checkpoints unchanged.
 Both share the current capture/tensor formats; wide requires new training and
 held-out real recovery plus phone performance checks. See the
-[updated training guide](OPTICAL_DECODER_TRAINING.md#model-profiles-and-the-first-training-result).
+[updated training guide](OPTICAL_DECODER_TRAINING.md#model-profiles-and-the-latest-training-result).
 
-Train a single-frame model first. If needed, a second model stacks five registered RGB captures as 15 input channels;
-only the first convolution changes (+864 parameters). Use five distinct captures of the **same sequence, logical frame,
-phase, and profile**, within a bounded age. Each gets its own current-exposure correction. Reset on transitions or
-geometry loss; do not stack different palette phases. Train with measured subcell alignment errors and focus/exposure
-changes. Fall back to the single-frame model when five suitable captures are unavailable. Do not count overlapping
-five-frame windows as independent evidence; use disjoint bursts initially. Extra capture delay must earn a net goodput
-improvement.
+Four-frame input is now implemented as 12 stacked channels, retaining the wide
+backbone and expanding only its two RGB-facing convolutions. The result is
+**488,544 parameters** (+1,440), under 500k. G64 inputs remain 256×256 pixels;
+G128 inputs remain 512×512. No Conv3D, recurrent layers, attention or extra image
+resolution is needed. Channels are grouped RGB for each exposure.
+
+Training draws four distinct captures at random within one burst/session/target/
+phase and randomizes their slot order. Each exposure already has its own geometry
+and color correction. Synthetic members come from one independently generated
+corruption burst. Evaluation uses disjoint chronological groups of four and
+classical fusion over the exact same observations; leftovers are reported. Short
+training bursts fail explicitly; there is no duplication or single-frame fallback.
+The browser lab collects four distinct current video exposures, resets on identity
+changes and bounds collection time/memory. Live learned transport remains pending.
+
+An explicit single→four-frame warm start repeats the original inlet and local-RGB
+weights across the four slots and divides by four, retaining the trained backbone.
+Start from `wide-pilot`. Loading/exporting a checkpoint always uses its exact
+validated input width; changing architecture is an intentional training step.
 
 ## Integrating probabilities with the existing receiver
 
@@ -168,8 +180,9 @@ frames inside each burst:
 
 - Render screen pixels/subpixels at higher resolution, then blur and sample to
   approximate aliasing; add curved/chirped channel-dependent moiré.
-- Evolve texture, subcell motion and focus across frames. Include short motion
-  blur, illumination gradients, affine color mixing, gamma, clipping, shot/read
+- Evolve texture, subcell motion and focus across frames. Integrate centered
+  exposure samples with arbitrary-direction linear, rotational and radial-zoom
+  motion blur; include illumination gradients, affine color mixing, gamma, clipping, shot/read
   noise, and residual exposure/white-balance changes.
 - Approximate rolling-shutter/screen-flicker interaction using row-dependent,
   drifting exposure/color bands and a small bounded row-wise skew. Do not label
@@ -193,7 +206,7 @@ Keep useful source/group metrics and initialized-checkpoint baseline protection.
 
 For the next experiment, reuse `wide-pilot/best.pt`, generate 16 independent
 nine-frame corruption bursts per recorded training target, and enable
-`--paired-targets`. Each real draw receives a synthetic counterpart of the exact
+`--frames 4 --paired-targets`. Each real stack receives a synthetic stack of the exact
 same session/payload/frame/phase and target hashes. The 50:50 source quota applies
 to each complete optimizer update; an optional session sidecar balances real
 acquisition directions. Full real validation every 1,000 updates selects by exact
@@ -204,7 +217,7 @@ for generation, cleanup and training commands.
 
 Mask reference cells and inactive palette classes from the objective. Batch
 G64/G128 profiles separately by shape. The architecture still predicts physical
-palette classes from a single calibrated crop; no reconstruction head or
+palette classes from one or four calibrated crops; no reconstruction head or
 consistency loss is needed for this paired-data experiment. Measure cell confusion
 and calibration as diagnostics, and validate exact CRC recovery at equal capture
 budgets. A selected checkpoint must pass PyTorch/ONNX/browser parity before live
@@ -222,7 +235,7 @@ prepared locally rather than committed. The live optical receiver still uses the
 | `scripts/prepare-decoder.mjs` | Implemented: validate and prepare local assets without downloading or deploying |
 | `apps/color-optical-bench/dist/decoder.html`, `js/decoder-lab/` | Implemented: isolated worker inference, numerical comparison, timings, camera crop probe, reports |
 | `apps/color-optical-bench/dist/js/{vision,learned-input}.js` | Implemented: dense physical crop and current-exposure correction, NCHW input, physical-logit to logical-score adapter |
-| `experiments/optical-decoder/{data,synthetic,sampling,train,evaluate,checkpoint}.py` | Implemented M2: dataset checks, independent corruption bursts, paired sampling, training, held-out evaluation, and checkpoint validation |
+| `experiments/optical-decoder/{data,bursts,synthetic,sampling,train,evaluate,checkpoint}.py` | Implemented M2: dataset checks, independent corruption bursts, paired sampling, training, held-out evaluation, and checkpoint validation |
 | `apps/color-optical-bench/dist/capture.html`, `js/dataset/` | Implemented: static sender, bounded receiver capture, independent exports, and diagnostic originals |
 | `scripts/decoder-dataset.mjs` | Implemented: clean random/recorded target rendering, offline label joins, corrupted-input baselines, and exact CRC/RS comparison |
 | Existing `decoder-worker.js`, `temporal.js` | Planned integration: learned evidence entry point; classical live path unchanged |
@@ -231,9 +244,9 @@ The reusable authentication boundary is the session/envelope API in
 `apps/qr-neural-key/dist/js/auth/{session,envelope}.js`; its `link.js` adapter owns QR-specific transport behavior.
 M3 will preserve session and proof semantics while providing a color-link adapter. M1 does not duplicate that engine.
 
-Milestones follow [the POC plan](ROADMAP.md): M1 browser smoke and interfaces, then M2 capture/generator/single-frame
-training alongside M3 optical authentication integration, followed by M4 first color authentication. Optional five-frame
-training belongs to M5 refinement if a measured limitation remains. At each decoder comparison, report
+Milestones follow [the POC plan](ROADMAP.md): M1 browser smoke and interfaces, then M2 capture/generator/burst
+training alongside M3 optical authentication integration, followed by M4 first color authentication. Four-frame
+learning now belongs to M2 because single-frame training has not solved the hard direction. At each decoder comparison, report
 cell error rate/confusions, raw CRC and RS/erasure-assisted exact passes, accepted wrong payloads, phases/captures/time
 to recovery, p50/p95 latency, memory, and failures. Use identical recorded bursts and equal elapsed optical budgets for
 A/B tests.

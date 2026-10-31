@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -217,6 +218,47 @@ class TrainingWorkflowTests(unittest.TestCase):
             step.assert_not_called()
         self.assertTrue((self.root/"wrong-accepted/validation-failed.json").is_file())
         self.assertFalse((self.root/"wrong-accepted/best.pt").exists())
+        self.assertEqual(digest(self.initial), self.initial_hash)
+
+    def test_four_frame_cli_warmstart_runs_optimizer_and_preserves_recordings(self):
+        for split in ("train", "validation"):
+            destination = self.root/f"burst-{split}"
+            shutil.copytree(self.root/split, destination)
+            path = destination/"manifest.json"
+            manifest = json.loads(path.read_text())
+            # Distinct recorded identities with canonical pixels exercise burst
+            # stacking and the actual optimizer; these remain synthetic fixtures.
+            exposures = []
+            for row in manifest["samples"]:
+                for frame in range(4):
+                    item = copy.deepcopy(row)
+                    item["id"] = f"{row['id']}-exposure-{frame}"
+                    item["timestamp"] = frame*100
+                    exposures.append(item)
+            manifest["samples"] = exposures
+            path.write_text(json.dumps(manifest))
+        sidecar = self.root/"burst-session-groups.json"
+        sidecar.write_text(json.dumps({"format": "optical-decoder-session-groups",
+                                      "version": 1, "sessions": self.mapping}))
+        out = self.root/"cli-burst"
+        process = subprocess.run([sys.executable, str(EXPERIMENT/"train.py"),
+            "--train", str(self.root/"burst-train"), "--validation", str(self.root/"burst-validation"),
+            "--initialize", str(self.initial), "--session-groups", str(sidecar),
+            "--frames", "4", "--paired-targets", "--steps", "1", "--batch-size", "4",
+            "--accumulate", "1", "--device", "cpu", "--eval-every", "1", "--out", str(out)],
+            capture_output=True, text=True, timeout=90)
+        self.assertEqual(process.returncode, 0, process.stderr[-3000:])
+        history = json.loads((out/"history.json").read_text())
+        self.assertEqual(history["completedSteps"], 1)
+        self.assertEqual(history["settings"]["framesPerInput"], 4)
+        update = history["history"][-1]
+        self.assertEqual(update["trainSources"]["real"]["samples"], 2)
+        self.assertEqual(update["trainSources"]["real"]["inputCaptures"], 8)
+        self.assertEqual(update["trainSources"]["synthetic"]["inputCaptures"], 8)
+        model, checkpoint = load_model_checkpoint(out/"best.pt")
+        self.assertEqual(model.frames, 4)
+        self.assertEqual(checkpoint["training"]["framesPerInput"], 4)
+        self.assertEqual(checkpoint["training"]["initialCheckpointSha256"], self.initial_hash)
         self.assertEqual(digest(self.initial), self.initial_hash)
 
 

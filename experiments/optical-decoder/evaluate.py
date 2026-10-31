@@ -3,7 +3,7 @@
 
 Predicted logits never receive expected bytes. Those bytes are compared only
 after the canonical decoder accepts/rejects a candidate. Both methods observe
-the same single capture; this report does not measure temporal throughput.
+the same one or four distinct captures; this report does not measure throughput.
 """
 
 import argparse
@@ -20,6 +20,7 @@ import torch
 from torch.nn import functional as F
 
 from data import Dataset, check_checkpoint_overlap
+from bursts import BurstIndex
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -33,10 +34,16 @@ def masked_loss(logits, labels, mask, colors: int):
 
 def canonical_recovery(dataset, selected, predictions, work_dir: Path, node="node", *, session_groups=None):
     rows = []
+    members = {sample.id: tuple(getattr(sample, "members", (sample,))) for sample in selected}
+    counts = {len(group) for group in members.values()}
+    if len(counts) != 1 or not counts <= {1, 4}:
+        raise ValueError("Recovery candidates must all contain one or four captures")
+    frames = counts.pop()
     for index, manifest in enumerate(sorted({sample.manifest for sample in selected})):
         wanted = [sample for sample in selected if sample.manifest == manifest]
         prediction_file = work_dir / f"predictions-{index}.json"
-        prediction_file.write_text(json.dumps({"samples": [{"id": sample.id,
+        prediction_file.write_text(json.dumps({"framesPerInput": frames, "samples": [{"id": sample.id,
+            "memberIds": [member.id for member in members[sample.id]],
             "logits": predictions[sample.id].relative_to(work_dir).as_posix()} for sample in wanted]}))
         process = subprocess.run([node, str(ROOT/"scripts/decoder-dataset.mjs"), "evaluate",
                                   "--dataset", str(manifest.parent), "--predictions", str(prediction_file)],
@@ -48,6 +55,8 @@ def canonical_recovery(dataset, selected, predictions, work_dir: Path, node="nod
         if (not isinstance(values, list) or len(values) != len(wanted)
                 or {row.get("id") for row in values} != {sample.id for sample in wanted}):
             raise RuntimeError("Canonical recovery returned a different sample set")
+        if any(row.get("memberIds") != [member.id for member in members[row["id"]]] for row in values):
+            raise RuntimeError("Canonical recovery returned different capture groups")
         # Attach reporting identities only after independent canonical decoding.
         # They never enter the prediction file or the decoder's evidence.
         by_id = {sample.id: sample for sample in wanted}
@@ -70,7 +79,10 @@ def canonical_recovery(dataset, selected, predictions, work_dir: Path, node="nod
             "wrongAcceptedFrames": sum(bool(row.get("wrongAccepted")) for row in values)}
         summary[name]["exactRate"] = summary[name]["exactFrames"] / len(values)
     return {"summary": summary, "samples": rows,
-            "observationBudget": "One identical input capture per method; no temporal fusion or throughput claim."}
+            "framesPerInput": frames, "inputCaptures": len(rows)*frames,
+            "observationBudget": (f"The same set of {frames} distinct captures per method and candidate; "
+                                  "classical scores are averaged over those captures. "
+                                  "Candidates are nonoverlapping; no throughput claim.")}
 
 
 def select_samples(samples, maximum=0):
@@ -150,14 +162,18 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
                    work_dir=None, session_groups=None):
     if max_samples < 0:
         raise ValueError("max_samples must be nonnegative")
-    selected = select_samples(dataset.samples, max_samples)
+    frames = getattr(model, "frames", 1)
+    candidates, burst_stats = BurstIndex(dataset.samples, frames).eval_samples()
+    if not candidates:
+        raise ValueError(f"No complete {frames}-frame evaluation groups; collect more same-phase captures")
+    selected = select_samples(candidates, max_samples)
     if session_groups is not None:
         from sampling import validate_session_groups
         available_groups = validate_session_groups(dataset.samples, session_groups)
         selected_groups = validate_session_groups(selected, session_groups)
         omitted_groups = available_groups-selected_groups
         if omitted_groups:
-            raise ValueError(f"Capped evaluation omits real groups {sorted(omitted_groups)}; increase max_samples or use 0")
+            raise ValueError(f"Evaluation omits real groups {sorted(omitted_groups)}; collect complete bursts and increase max_samples or use 0")
     directory = Path(work_dir or Path.cwd()/"local-results/optical-decoder").resolve()
     directory.mkdir(parents=True, exist_ok=True)
     previous_mode = model.training
@@ -241,12 +257,15 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
     ece = np.sum(np.abs(bins[nonempty, 1]-bins[nonempty, 2])) / cells
     ordered = sorted(timings)
     return {"format": "optical-decoder-evaluation", "version": 1,
-            "samples": len(selected), "availableSamples": len(dataset.samples),
+            "samples": len(selected), "availableSamples": len(candidates),
+            "framesPerInput": frames, "inputCaptures": len(selected)*frames,
+            "availableInputCaptures": len(dataset.samples), "burstGrouping": burst_stats,
             "manifestSha256": dataset.manifest_hash, "profiles": profile_counts,
-            "selection": {"method": "session-profile-round-robin", "maximum": max_samples,
+            "selection": {"method": "nonoverlapping-bursts/session-profile-round-robin", "maximum": max_samples,
                 "availableSessions": len(available_sessions), "selectedSessions": len(per_session),
                 "omittedSessions": sorted(available_sessions-set(per_session)),
-                "note": "A capped evaluation is a subset; use --max-samples 0 for all held-out samples."},
+                "note": "Each sample is one complete, nonoverlapping capture group. "
+                        "Remainders are reported, never duplicated; use --max-samples 0 for all complete groups."},
             "sessions": per_session, **summaries,
             "dataCells": cells, "loss": loss_sum/cells,
             "cellErrorRate": 1-float(np.trace(confusion))/cells,
@@ -266,7 +285,7 @@ def main():
     parser.add_argument("--split", choices=("validation", "test"), default="test")
     parser.add_argument("--device", choices=("cpu", "cuda", "auto"), default="auto")
     parser.add_argument("--threads", type=int, default=1)
-    parser.add_argument("--max-samples", type=int, default=0)
+    parser.add_argument("--max-samples", type=int, default=0, help="maximum complete input groups; 0 evaluates all")
     parser.add_argument("--session-groups", type=Path, help="explicit receiver-session groups for balanced real-direction metrics")
     parser.add_argument("--node", default="node")
     parser.add_argument("--out", type=Path, default=Path("local-results/optical-decoder/evaluation.json"))
@@ -293,7 +312,8 @@ def main():
         args.out.write_text(json.dumps(result, indent=2)+"\n")
     except (OSError, ValueError, RuntimeError) as error:
         parser.exit(1, f"Evaluation failed: {error}\n")
-    print(json.dumps({"samples": result["samples"], "cellErrorRate": result["cellErrorRate"],
+    print(json.dumps({"samples": result["samples"], "framesPerInput": result["framesPerInput"],
+                      "inputCaptures": result["inputCaptures"], "cellErrorRate": result["cellErrorRate"],
                       "loss": result["loss"], "recovery": result["recovery"]["summary"],
                       "groups": result["groups"], "selectionScore": result["selectionScore"],
                       "report": str(args.out.resolve())}, indent=2))

@@ -9,7 +9,8 @@ import {captureFrame,CaptureBuffer,validateCapture} from '../dist/js/dataset/cap
 import {renderFrame,FORMAT,parseHeader} from '../dist/js/format.js';
 import {gridLayout} from '../dist/js/grid.js';
 import {generate,joinCaptures,targets,evaluate} from '../../../scripts/decoder-dataset.mjs';
-import {extractLearnedInput} from '../dist/js/learned-input.js';
+import {extractLearnedInput,logitsToLogicalScores} from '../dist/js/learned-input.js';
+import {decodeScores} from '../dist/js/vision.js';
 
 const base=fileURLToPath(new URL('../../../validation/',import.meta.url));
 const sender=await createSender({seed:123,sessionId:'sender-test'});
@@ -84,7 +85,7 @@ test('clean generation yields distinct dataset IDs and exact canonical recovery 
   const sample=a.samples[0],labels=new Uint8Array(await readFile(join(train,sample.labels))),logits=new Float32Array(16*64*64).fill(-20);
   labels.forEach((color,cell)=>{logits[color*64*64+cell]=20;});
   await writeFile(join(root,'prediction.f32'),floatBytes(logits));const prediction=join(root,'prediction.json');
-  await writeFile(prediction,JSON.stringify({samples:[{id:sample.id,logits:'prediction.f32'}]}));
+  await writeFile(prediction,JSON.stringify({framesPerInput:1,samples:[{id:sample.id,memberIds:[sample.id],logits:'prediction.f32'}]}));
   const result=await evaluate({dataset:train,predictions:prediction});
   assert.equal(result.summary.classical.exact,1);assert.equal(result.summary.learned.exact,1);assert.equal(result.summary.learned.wrongAccepted,0);
   await assert.rejects(generate({out:train,count:'1'}),/empty/);
@@ -154,4 +155,57 @@ test('target reconstruction preserves G128/4 phases and refuses split leakage or
   await writeFile(labelPath,labels);sample.hashes.labels=createHash('sha256').update(labels).digest('hex');
   await writeFile(path,JSON.stringify(manifest));
   await assert.rejects(targets({dataset:source,out:join(root,'bad-labels')}),/labels or mask/);
+}));
+
+
+test('burst evaluation fuses exactly four observations and rejects identity mixing or reuse',async()=>temp(async root=>{
+  const directory=join(root,'burst');
+  await generate({out:directory,count:'1',size:'64',colors:'4',phases:'1',seed:'765',split:'validation'});
+  const path=join(directory,'manifest.json'),manifest=JSON.parse(await readFile(path,'utf8')),original=manifest.samples[0];
+  const labels=new Uint8Array(await readFile(join(directory,original.labels))),logits=new Float32Array(16*64*64).fill(-20);
+  labels.forEach((color,cell)=>{logits[color*64*64+cell]=20;});
+  const correct=logitsToLogicalScores(logits,original.info),wrong=correct.slice();
+  for(let cell=0;cell<wrong.length;cell+=4)for(let color=0;color<4;color++)wrong[cell+color]=correct[cell+(color+1)%4];
+  assert.equal(decodeScores(original.info,wrong,{}, {recovery:'erasures'}).ok,false);
+  manifest.samples=Array.from({length:4},(_,index)=>({...copy(original),id:`burst-${index}`,source:'real',
+    sessionId:'real-fixture-session',senderSessionId:'sender-fixture-session',burstId:'one-burst',timestamp:index*100,
+    baseline:`baseline-${index}.f32`}));
+  for(const [index,row] of manifest.samples.entries()) {
+    const bytes=floatBytes(index===0?wrong:correct);await writeFile(join(directory,row.baseline),bytes);
+    row.hashes.baseline=createHash('sha256').update(bytes).digest('hex');
+  }
+  await writeFile(path,JSON.stringify(manifest));
+  await writeFile(join(root,'prediction.f32'),floatBytes(logits));
+  const predictionPath=join(root,'prediction.json'),prediction={framesPerInput:4,samples:[{
+    id:'burst-0',memberIds:manifest.samples.map(row=>row.id),logits:'prediction.f32'}]};
+  await writeFile(predictionPath,JSON.stringify(prediction));
+  const result=await evaluate({dataset:directory,predictions:predictionPath});
+  assert.equal(result.summary.samples,1);assert.equal(result.summary.inputCaptures,4);
+  assert.equal(result.summary.classical.exact,1,'three agreeing captures overcome the wrong first capture');
+  assert.equal(result.summary.learned.exact,1);
+  for(const mutation of [row=>row.source='synthetic',row=>row.sessionId='other-session',
+    row=>row.info.phase=1,row=>row.burstId='independent-synthetic-burst',row=>row.split='test']) {
+    const mixed=copy(manifest);mutation(mixed.samples[3]);await writeFile(path,JSON.stringify(mixed));
+    await assert.rejects(evaluate({dataset:directory,predictions:predictionPath}),/Burst members/);
+  }
+  await writeFile(path,JSON.stringify(manifest));
+  const duplicated=copy(prediction);duplicated.samples[0].memberIds[3]='burst-0';
+  await writeFile(predictionPath,JSON.stringify(duplicated));
+  await assert.rejects(evaluate({dataset:directory,predictions:predictionPath}),/distinct member/);
+  const reused=copy(prediction);reused.samples.push({...reused.samples[0],id:'burst-1',memberIds:['burst-1','burst-0','burst-2','burst-3']});
+  await writeFile(predictionPath,JSON.stringify(reused));
+  await assert.rejects(evaluate({dataset:directory,predictions:predictionPath}),/reused across candidates/);
+  await writeFile(predictionPath,JSON.stringify(prediction));
+  // Ground truth affects the after-decode comparison only. Incorrect expected
+  // bytes cannot be substituted into a successfully decoded observed payload.
+  const expected=await readFile(join(directory,original.expected));expected[0]^=1;
+  await writeFile(join(directory,original.expected),expected);
+  for(const row of manifest.samples)row.hashes.expected=createHash('sha256').update(expected).digest('hex');
+  await writeFile(path,JSON.stringify(manifest));
+  const wrongTruth=await evaluate({dataset:directory,predictions:predictionPath});
+  for(const method of ['classical','learned']) {
+    assert.equal(wrongTruth.summary[method].accepted,1);
+    assert.equal(wrongTruth.summary[method].exact,0);
+    assert.equal(wrongTruth.summary[method].wrongAccepted,1);
+  }
 }));

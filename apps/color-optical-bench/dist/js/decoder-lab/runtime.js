@@ -3,19 +3,19 @@ export const MODEL_FORMAT = 'optical-decoder';
 export const MAX_MODEL_BYTES = 4 * 1024 * 1024;
 export const PARITY_TOLERANCE = Object.freeze({atol: 1e-4, rtol: 1e-3});
 const shapeEqual = (a, b) => Array.isArray(a) && a.length === b.length && a.every((v, i) => v === b[i]);
-export const MODEL_PROFILES = Object.freeze({compact:121792,wide:487104});
+export const MODEL_PROFILES = Object.freeze({compact:Object.freeze({1:121792,4:122440}),wide:Object.freeze({1:487104,4:488544})});
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
 
 export function validateManifest(manifest) {
   if (!plain(manifest) || manifest.format !== MODEL_FORMAT || manifest.version !== 1 ||
-      !['untrained', 'trained'].includes(manifest.status) || ![121792,487104].includes(manifest.parameterCount) || manifest.pixelsPerCell !== 4 ||
-      manifest.channels !== 3 || manifest.classes !== 16 || manifest.inputName !== 'pixels' || manifest.outputName !== 'logits' ||
+      !['untrained', 'trained'].includes(manifest.status) || ![1,4].includes(manifest.framesPerInput) || manifest.pixelsPerCell !== 4 ||
+      manifest.channels !== 3*manifest.framesPerInput || manifest.classes !== 16 || manifest.inputName !== 'pixels' || manifest.outputName !== 'logits' ||
       !Number.isSafeInteger(manifest.seed) || !Number.isSafeInteger(manifest.opset) || manifest.opset < 13 || manifest.opset > 25 ||
       !plain(manifest.versions) || !Array.isArray(manifest.cases) || manifest.cases.length !== 2) {
     throw new Error('Unsupported decoder manifest. Regenerate the current model and fixtures.');
   }
-  const profile=manifest.modelProfile??(manifest.parameterCount===MODEL_PROFILES.compact?'compact':null);
-  if (!Object.hasOwn(MODEL_PROFILES,profile)||MODEL_PROFILES[profile]!==manifest.parameterCount) throw new Error('Invalid decoder model profile/count.');
+  const profile=manifest.modelProfile;
+  if (!Object.hasOwn(MODEL_PROFILES,profile)||MODEL_PROFILES[profile][manifest.framesPerInput]!==manifest.parameterCount) throw new Error('Invalid decoder model profile/count.');
   if (manifest.status === 'trained' && (!/^[a-f0-9]{64}$/.test(manifest.checkpointSha256) || !plain(manifest.training))) {
     throw new Error('Trained exports require checkpoint provenance.');
   }
@@ -24,12 +24,12 @@ export function validateManifest(manifest) {
     if (!plain(entry) || ![64, 128].includes(entry.size) || sizes.has(entry.size)) throw new Error('Invalid decoder grid cases.');
     sizes.add(entry.size);
     const g = entry.size;
-    if (!shapeEqual(entry.inputShape, [1, 3, 4*g, 4*g]) || !shapeEqual(entry.outputShape, [1, 16, g, g])) throw new Error('Invalid decoder tensor shapes.');
-    for (const [name, bytes] of [['model', null], ['input', 3*16*g*g*4], ['expected', 16*g*g*4]]) {
+    if (!shapeEqual(entry.inputShape, [1, manifest.channels, 4*g, 4*g]) || !shapeEqual(entry.outputShape, [1, 16, g, g])) throw new Error('Invalid decoder tensor shapes.');
+    for (const [name, bytes] of [['model', null], ['input', manifest.channels*16*g*g*4], ['expected', 16*g*g*4]]) {
       const artifact = entry[name];
       if (!plain(artifact) || typeof artifact.file !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(artifact.file) ||
           artifact.file.includes('..') || files.has(artifact.file) || !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
-          !Number.isSafeInteger(artifact.bytes) || artifact.bytes < 1 || artifact.bytes > MAX_MODEL_BYTES ||
+          !Number.isSafeInteger(artifact.bytes) || artifact.bytes < 1 || artifact.bytes > (name==='model'?MAX_MODEL_BYTES:12*512*512*4) ||
           (bytes !== null && artifact.bytes !== bytes)) throw new Error(`Invalid ${name} artifact in decoder manifest.`);
       files.add(artifact.file);
     }

@@ -2,8 +2,9 @@
 
 This implements M1 feasibility and the M2 capture/training pipeline from the
 [optical decoder plan](../../docs/OPTICAL_DECODER.md). The
-**compact (121,792 parameters)** and **wide (487,104 parameters)** U-Nets have fixed browser profiles for physical grid sizes
-64 and 128. The submitted device reports support starting at G64. See the
+**compact** and **wide** U-Nets support one or four RGB exposures, with fixed
+browser profiles for physical grid sizes 64 and 128. Wide has **487,104 parameters
+for one frame and 488,544 for four frames**, below the 500k ceiling. The submitted device reports support starting at G64. See the
 [capture and training guide](../../docs/OPTICAL_DECODER_TRAINING.md) for the full
 workflow, from browser captures through synthetic generation and RTX 4090 training.
 
@@ -18,9 +19,12 @@ channel LayerNorm after learned feature convolutions, and a separate unnormalize
 cell-RGB readout. `--model compact` is the existing active baseline. Existing
 compact checkpoints still load in their exact architecture; `--initialize` and
 `--checkpoint` infer the supported profile from validated parameter shapes.
-The recording format and tensor contract are unchanged. Existing wide pilots
-can initialize the current paired training experiment; a new model architecture
-or fresh pilot is not required.
+Recording files remain unchanged: each stores one RGB crop. `--frames 4` stacks
+four distinct same-phase exposures along the channel axis. Explicitly initializing
+from a single-frame pilot expands only the RGB-facing convolution weights, repeats
+them four times and divides by four; biases and the backbone are preserved.
+Identical repeated exposures reproduce the original model function at initialization.
+Checkpoint loading itself remains strict; export never silently changes frame count.
 
 There is one plain masked-cross-entropy training path, with 32,000 updates by
 default, AdamW weight decay `.01`, and learning rate `1e-4` for fresh weights or
@@ -33,11 +37,14 @@ The [recommended next run](../../docs/OPTICAL_DECODER_TRAINING.md#recommended-ne
 reuses `wide-pilot/best.pt`, reconstructs clean matrices from the sender-derived
 targets in `real-train`, and generates multiple independent corruption bursts
 for each. `--paired-targets` trains each real capture alongside a synthetic of
-that exact session/payload/frame/phase, with matching target hashes. Target
+that exact session/payload/frame/phase, with matching target hashes. For the new
+four-frame run, each side uses four distinct exposures from its own burst;
+independent synthetic corruption bursts and palette phases are never mixed. Target
 content is aligned between sources; optical nuisance distributions still need
 to be tested on held-out real captures. No clean target is used during inference.
 
-Synthetic generation includes curved moiré, blur/noise, white-balance and
+Synthetic generation includes curved moiré, integrated arbitrary-direction linear,
+rotational and radial-zoom motion blur, Gaussian blur/noise, white-balance and
 exposure shifts, drifting rolling-shutter bands and bounded row-wise skew, plus
 soft, rotated rectangle/ellipse shadows and reflections. `--bursts-per-target`
 controls independent corruption trajectories; `--frames` controls correlated
@@ -52,11 +59,13 @@ row cap; generation defaults to seven frames, one burst, and a configurable
 Browser capture limits are independent. Original recordings and joined real
 corpora retain their existing formats and identities.
 
-The current retained baseline recovers 69/768 full-validation frames, all from
-two PC→phone sessions, versus zero classical recoveries. The discarded recipe
-recovered 62/768 and did not solve phone→PC. Keep `wide-real/best.pt` for comparison;
-paired training is a new experiment, not an established improvement. Validation
-recovery and runtime parity do not establish test-set or live-throughput results.
+The retained single-frame baseline recovered 69/768 captures. Paired single-frame
+training recovered 68/768 at step 22k, with phone→PC still at zero and worse
+validation loss despite falling training loss. Keep `wide-real` as a historical
+reference and initialize the burst model from `wide-pilot`, not the overfit paired
+checkpoint. Four-frame evaluation uses disjoint stacks and compares classical
+fusion over the exact same exposures; its denominator differs from a single-frame
+report. No trained burst-model recovery or live throughput improvement is claimed.
 
 ## Setup and export
 
@@ -72,7 +81,7 @@ For a selected trained checkpoint:
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/real/best.pt \
+  --checkpoint checkpoints/optical-decoder/wide-burst4/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected
@@ -125,7 +134,8 @@ build/test tools, not a service used during an authentication attempt.
 ## Tensor and bundle contract
 
 The current manifest has `format: "optical-decoder"`, `version: 1`, and
-`status: "untrained"` or `"trained"`. Trained exports require `checkpointSha256`
+`status: "untrained"` or `"trained"`, plus required `framesPerInput: 1` or `4`
+and `channels: 3 * framesPerInput`. Trained exports require `checkpointSha256`
 and public `training` metadata. Regenerate old local exports after updating;
 there is no earlier-format reader. Each case contains a SHA-256 digest and byte count for:
 
@@ -135,7 +145,9 @@ there is no earlier-format reader. Each case contains a SHA-256 digest and byte 
 | `input-64.f32` / `input-128.f32` | Diagnostic tensor, little-endian float32, contiguous NCHW |
 | `expected-64.f32` / `expected-128.f32` | PyTorch logits, same numeric encoding |
 
-The input is named `pixels`, shape `[1,3,4G,4G]`; output is named `logits`, shape
+The input is named `pixels`, shape `[1,3T,4G,4G]` for T=1 or 4; channels are
+`R0,G0,B0,R1,G1,B1,...`. A G64 four-frame input is `[1,12,256,256]`.
+The output is named `logits`, shape
 `[1,16,G,G]`. The grid includes reference cells. The head predicts **physical**
 palette classes and performs no softmax. The receiver masks inactive classes,
 maps palette phases back into logical symbol order, and excludes reference
@@ -170,7 +182,7 @@ load time, backend, model hash, and UI responsiveness.
 
 ## Files and acceptance
 
-- `model.py`: compact and wide single-frame U-Nets; wide adds feature-channel
+- `model.py`: compact and wide one/four-frame U-Nets; wide adds feature-channel
   LayerNorm and an unnormalized cell-RGB readout.
 - `contract.py`: shape constants, RGB normalization, fixture generation, numeric
   parity, and little-endian serialization.
@@ -180,6 +192,8 @@ load time, backend, model hash, and UI responsiveness.
   graph shape checks, and actual runtime parity.
 - `checkpoint.py`: one bounded checkpoint loader for training, evaluation, and export.
 - `data.py`: hashed local datasets and whole-session/payload split checks.
+- `bursts.py`: distinct same-burst training subsets and deterministic disjoint
+  evaluation stacks, without rewriting recorded samples.
 - `synthetic.py`: independently seeded corruption bursts with moiré, blur/noise,
   exposure/WB, rolling-shutter bands/skew, and soft shadows/reflections.
 - `train.py`: plain masked CE, paired-target option, source/group metrics,
@@ -189,7 +203,8 @@ load time, backend, model hash, and UI responsiveness.
 - `session_groups.py`: explicit capture-direction sidecars validated against joined
   datasets, without changing recording formats.
 - `evaluate.py`: held-out cell/confidence, session/group and balanced-selection
-  metrics, plus exact recovery through the canonical JS decoder.
+  metrics, plus exact recovery and equal-observation classical fusion through the
+  canonical JS decoder.
 - `../../scripts/decoder-dataset.mjs`: canonical clean random/recorded targets,
   offline joins, baseline refresh, and CRC/RS evaluation.
 - `tests/test_training.py`, `tests/test_export_checkpoint.py`: training/decoder integration, split isolation, masking, and checkpoint export checks.

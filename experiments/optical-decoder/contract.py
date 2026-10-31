@@ -11,6 +11,7 @@ VERSION = 1
 SIZES = (64, 128)
 PIXELS_PER_CELL = 4
 CHANNELS = 3
+FRAME_COUNTS = (1, 4)
 CLASSES = 16
 # Compact is an active ablation. Wide exports record their actual parameter count.
 PARAMETER_COUNT = 121_792
@@ -22,10 +23,12 @@ ATOL = 2e-5
 RTOL = 2e-4
 
 
-def shapes(size: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
+def shapes(size: int, frames: int = 1) -> tuple[tuple[int, ...], tuple[int, ...]]:
     if isinstance(size, bool) or not isinstance(size, int) or size not in SIZES:
         raise ValueError("The decoder supports physical grid sizes 64 and 128 only")
-    return (1, CHANNELS, size * PIXELS_PER_CELL, size * PIXELS_PER_CELL), (1, CLASSES, size, size)
+    if type(frames) is not int or frames not in FRAME_COUNTS:
+        raise ValueError("The decoder supports one or four input frames")
+    return (1, CHANNELS * frames, size * PIXELS_PER_CELL, size * PIXELS_PER_CELL), (1, CLASSES, size, size)
 
 
 def normalize_rgb(calibrated_hwc: np.ndarray) -> np.ndarray:
@@ -49,22 +52,25 @@ def normalize_rgb(calibrated_hwc: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(normalized.transpose(2, 0, 1)[None], dtype=np.float32)
 
 
-def fixture_input(size: int, seed: int) -> np.ndarray:
+def fixture_input(size: int, seed: int, frames: int = 1) -> np.ndarray:
     """Public diagnostic input with variation in space and all RGB channels.
 
     This input has no transmitted payload or symbol labels. It tests numerical
     inference agreement only; it cannot measure a decoder's recovery accuracy.
     """
-    input_shape, _ = shapes(size)
+    input_shape, _ = shapes(size, frames)
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 0xFFFFFFFF:
         raise ValueError("Seed must be an unsigned 32-bit integer")
     rng = np.random.default_rng(np.random.SeedSequence([seed, size]))
     side = input_shape[2]
     y, x = np.mgrid[:side, :side]
-    texture = rng.uniform(-45.0, 45.0, (side, side, CHANNELS))
-    rgb = texture + np.stack((255.0 * x / (side - 1), 255.0 * y / (side - 1),
-                              127.5 + 100.0 * np.sin((x + y) / 11.0)), axis=-1)
-    return normalize_rgb(rgb)
+    values = []
+    for index in range(frames):
+        texture = rng.uniform(-45.0, 45.0, (side, side, CHANNELS))
+        rgb = texture + np.stack((255.0 * x / (side - 1), 255.0 * y / (side - 1),
+                                  127.5 + 100.0 * np.sin((x + y) / 11.0 + index*.2)), axis=-1)
+        values.append(normalize_rgb(rgb))
+    return np.ascontiguousarray(np.concatenate(values, axis=1), dtype=np.float32)
 
 
 def write_f32(path: Path, tensor: np.ndarray) -> dict:

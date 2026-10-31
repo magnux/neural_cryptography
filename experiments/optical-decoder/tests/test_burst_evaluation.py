@@ -1,0 +1,118 @@
+"""Equal-observation burst evaluation on canonical fixtures, not camera metrics."""
+
+import copy
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+from types import SimpleNamespace
+import unittest
+
+import numpy as np
+
+EXPERIMENT = Path(__file__).resolve().parents[1]
+ROOT = EXPERIMENT.parents[1]
+sys.path.insert(0, str(EXPERIMENT))
+HAS_TORCH = importlib.util.find_spec("torch") is not None
+if HAS_TORCH:
+    import torch
+    from data import Dataset, Sample
+    from evaluate import evaluate_model
+    torch.set_num_threads(1)
+
+
+@unittest.skipUnless(HAS_TORCH, "PyTorch needed for burst evaluation")
+class BurstEvaluationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        base = ROOT/"validation/tmp"
+        base.mkdir(parents=True, exist_ok=True)
+        cls.temporary = tempfile.TemporaryDirectory(dir=base)
+        cls.root = Path(cls.temporary.name)
+        cls.dataset_root = cls.root/"data"
+        subprocess.run(["node", str(ROOT/"scripts/decoder-dataset.mjs"), "generate",
+                        "--out", str(cls.dataset_root), "--count", "1", "--size", "64",
+                        "--colors", "4", "--phases", "1", "--split", "validation", "--seed", "12045"],
+                       check=True, capture_output=True, text=True)
+        path = cls.dataset_root/"manifest.json"
+        manifest = json.loads(path.read_text())
+        original = manifest["samples"][0]
+        # Copies exercise burst accounting and canonical recovery. They are not
+        # independent camera observations or an optical-accuracy benchmark.
+        manifest["samples"] = [{**copy.deepcopy(original), "id": f"exposure-{index}",
+            "source": "real", "sessionId": "fixture-session", "burstId": "fixture-burst",
+            "timestamp": index*100} for index in range(9)]
+        path.write_text(json.dumps(manifest))
+        cls.dataset = Dataset([cls.dataset_root], "validation")
+        labels = cls.dataset.samples[0].tensors()[1]
+        logits = np.full((1, 16, 64, 64), -20., np.float32)
+        y, x = np.indices(labels.shape)
+        logits[0, labels, y, x] = 20
+
+        class FixedFixtureModel(torch.nn.Module):
+            frames = 4
+
+            def __init__(self):
+                super().__init__()
+                self.register_buffer("fixture_logits", torch.from_numpy(logits))
+                self.shapes = []
+
+            def forward(self, pixels):
+                self.shapes.append(tuple(pixels.shape))
+                if pixels.shape[1] != 12:
+                    raise ValueError("Expected four RGB inputs")
+                return self.fixture_logits.expand(len(pixels), -1, -1, -1)
+
+        cls.model_class = FixedFixtureModel
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temporary.cleanup()
+
+    def test_exact_four_capture_budget_nonoverlap_and_remainder(self):
+        model = self.model_class().train()
+        result = evaluate_model(model, self.dataset, work_dir=self.root/"evaluation",
+                                session_groups={"fixture-session": "phone-to-pc"})
+        self.assertTrue(model.training)
+        self.assertEqual(model.shapes, [(1, 12, 256, 256)]*2)
+        self.assertEqual(result["samples"], 2)
+        self.assertEqual(result["availableSamples"], 2)
+        self.assertEqual(result["inputCaptures"], 8)
+        self.assertEqual(result["availableInputCaptures"], 9)
+        self.assertEqual(result["burstGrouping"]["discardedCaptures"], 1)
+        self.assertEqual(result["framesPerInput"], 4)
+        recovered = result["recovery"]
+        self.assertEqual(recovered["inputCaptures"], 8)
+        for method in ("classical", "learned"):
+            self.assertEqual(recovered["summary"][method]["exactFrames"], 2)
+            self.assertEqual(recovered["summary"][method]["wrongAcceptedFrames"], 0)
+        members = [row["memberIds"] for row in recovered["samples"]]
+        self.assertEqual(members, [[f"exposure-{i}" for i in range(4)],
+                                   [f"exposure-{i}" for i in range(4, 8)]])
+        self.assertEqual(len(set(sum(members, []))), 8)
+        repeated = evaluate_model(model, self.dataset, work_dir=self.root/"repeat")
+        self.assertEqual([row["memberIds"] for row in repeated["recovery"]["samples"]], members)
+        capped = evaluate_model(model, self.dataset, work_dir=self.root/"capped", max_samples=1)
+        self.assertEqual(capped["samples"], 1)
+        self.assertEqual(capped["inputCaptures"], 4)
+        self.assertEqual(capped["availableSamples"], 2)
+
+    def test_empty_bursts_or_missing_real_direction_fail_explicitly(self):
+        short = SimpleNamespace(samples=self.dataset.samples[:3], manifest_hash=self.dataset.manifest_hash)
+        with self.assertRaisesRegex(ValueError, "No complete 4-frame"):
+            evaluate_model(self.model_class(), short, exact=False, work_dir=self.root/"short")
+        rows = []
+        for index, sample in enumerate(self.dataset.samples[:7]):
+            metadata = copy.deepcopy(sample.metadata)
+            metadata["sessionId"] = "complete" if index < 4 else "short"
+            rows.append(Sample(sample.root, sample.manifest, metadata))
+        mixed = SimpleNamespace(samples=rows, manifest_hash=self.dataset.manifest_hash)
+        with self.assertRaisesRegex(ValueError, "omits real groups"):
+            evaluate_model(self.model_class(), mixed, exact=False, work_dir=self.root/"mixed",
+                           session_groups={"complete": "pc-to-phone", "short": "phone-to-pc"})
+
+
+if __name__ == "__main__":
+    unittest.main()

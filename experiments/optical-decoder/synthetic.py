@@ -21,7 +21,7 @@ from torch.nn import functional as F
 from data import DATASET_FORMAT, Dataset, digest, local_path
 
 
-CORRUPTION_KIND = "correlated-calibrated-crop-v3"
+CORRUPTION_KIND = "correlated-calibrated-crop-v4"
 
 
 @dataclass(frozen=True)
@@ -35,15 +35,24 @@ class PhotometricConfig:
     rolling_shutter_stops: float = .65
     rolling_shutter_probability: float = .7
     rolling_shutter_skew: float = .5
+    motion_probability: float = .7
+    linear_blur_pixels: float = 2.5
+    rotation_blur_degrees: float = .35
+    zoom_blur_fraction: float = .006
+    motion_samples: int = 7
 
     def __post_init__(self):
         for name, limit in (("white_balance_stops", 4), ("exposure_stops", 4),
                             ("shade_opacity", .95), ("shade_probability", 1),
                             ("rolling_shutter_stops", 3), ("rolling_shutter_probability", 1),
-                            ("rolling_shutter_skew", .75)):
+                            ("rolling_shutter_skew", .75), ("motion_probability", 1),
+                            ("linear_blur_pixels", 12), ("rotation_blur_degrees", 5),
+                            ("zoom_blur_fraction", .05)):
             value = getattr(self, name)
             if isinstance(value, bool) or not np.isfinite(value) or not 0 <= value <= limit:
                 raise ValueError(f"{name.replace('_', '-')} must be finite and in [0, {limit}]")
+        if type(self.motion_samples) is not int or self.motion_samples not in (3, 5, 7, 9, 11, 13, 15):
+            raise ValueError("motion-samples must be an odd integer from 3 to 15")
 
 
 def sample_photometric(rng, frames, severity, config):
@@ -147,7 +156,8 @@ def rolling_shutter_maps(side, shutter, frame):
     """Return RGB exposure gains and horizontal offsets in dense-input pixels.
 
     Offset magnitude never exceeds configured skew (at most .75 dense pixels).
-    Together with existing jitter/motion this stays below half a four-pixel cell.
+    Together with registration jitter this stays below half a four-pixel cell.
+    Centered exposure blur can mix neighboring cells without moving the target.
     """
     if shutter is None:
         return torch.ones((3, side, side)), torch.zeros((side, side))
@@ -162,6 +172,63 @@ def rolling_shutter_maps(side, shutter, frame):
     gains = torch.exp2(shutter["stops"]*color*bands)
     offsets = shutter["skew"]*(.65*y+.35*torch.sin(np.pi*y+phase))
     return gains, offsets
+
+
+def sample_motion_blur(rng, severity, config):
+    """Draw one camera-motion trajectory, with correlated exposure-to-exposure drift.
+
+    Strengths describe the full centered exposure sweep, not displacement of the
+    labeled matrix. Rotational blur is tangential about a pivot; zoom blur is
+    radial. They can occur independently or together with linear camera motion.
+    """
+    strengths = (config.linear_blur_pixels, config.rotation_blur_degrees, config.zoom_blur_fraction)
+    if severity == 0 or not any(strengths) or rng.random() >= config.motion_probability:
+        return None
+    enabled = rng.random(3) < np.array([.8, .65, .35])
+    if not any(enabled[i] and strengths[i] for i in range(3)):
+        enabled[int(rng.choice(np.flatnonzero(strengths)))] = True
+    amplitudes = [float(severity*strength*rng.uniform(.25, 1)*active)
+                  for strength, active in zip(strengths, enabled)]
+    return {"linearPixels": amplitudes[0], "rotationDegrees": amplitudes[1]*int(rng.choice([-1, 1])),
+            "zoomFraction": amplitudes[2]*int(rng.choice([-1, 1])),
+            "angle": float(rng.uniform(0, 2*np.pi)), "angleDrift": float(rng.uniform(-.2, .2)),
+            "cx": float(rng.uniform(.25, .75)), "cy": float(rng.uniform(.25, .75)),
+            "phase": float(rng.uniform(0, 2*np.pi)), "velocity": float(rng.uniform(.2, .5)),
+            "samples": config.motion_samples}
+
+
+def motion_blur_grids(side, motion, frame, *, device=None, dtype=torch.float32):
+    """Centered exposure grids [S,H,W,2], in grid_sample normalized coordinates.
+
+    Linear travel is in dense-crop pixels, rotation in degrees and zoom as a
+    fractional scale sweep. A symmetric sample interval keeps the middle pose
+    registered; the blur intentionally integrates evidence from adjacent cells.
+    """
+    axis = torch.linspace(-1, 1, side, device=device, dtype=dtype)
+    y, x = torch.meshgrid(axis, axis, indexing="ij")
+    times = torch.linspace(-.5, .5, motion["samples"], device=device, dtype=dtype)[:, None, None]
+    phase = motion["phase"]+frame*motion["velocity"]
+    strength = .85+.15*np.sin(phase)
+    angle = motion["angle"]+motion["angleDrift"]*np.sin(phase)
+    theta = times*float(np.deg2rad(motion["rotationDegrees"])*strength)
+    scale = 1+times*float(motion["zoomFraction"]*strength)
+    cx, cy = 2*motion["cx"]-1, 2*motion["cy"]-1
+    u, v = x-cx, y-cy
+    sine, cosine = torch.sin(theta), torch.cos(theta)
+    translation = times*float(2*motion["linearPixels"]*strength/(side-1))
+    gx = cx+scale*(cosine*u-sine*v)+translation*float(np.cos(angle))
+    gy = cy+scale*(sine*u+cosine*v)+translation*float(np.sin(angle))
+    return torch.stack((gx, gy), dim=-1)
+
+
+def apply_motion_blur(image, motion, frame=0):
+    """Integrate a short linear/rotational/zoom exposure, using border extension."""
+    if motion is None:
+        return image
+    grids = motion_blur_grids(image.shape[-1], motion, frame, device=image.device, dtype=image.dtype)
+    observed = F.grid_sample(image[None].expand(grids.shape[0], -1, -1, -1), grids,
+                             mode="bilinear", padding_mode="border", align_corners=True)
+    return observed.mean(dim=0)
 
 
 def gaussian_blur(image: torch.Tensor, sigma: float) -> torch.Tensor:
@@ -183,7 +250,8 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
     """Return [T,3,H,W]; a shared texture evolves under small motion/focus shifts.
 
     Labels are unaffected by less than half-cell registration jitter. Spatial
-    aliasing, curved multi-channel bands, rolling-shutter exposure/skew, blur,
+    aliasing, curved multi-channel bands, rolling-shutter exposure/skew,
+    integrated linear/rotational/radial-zoom exposure blur,
     white balance, signed exposure, soft tinted shade/reflections, and shot/read
     noise vary independently of payload symbols. Seed is public augmentation data.
     """
@@ -226,6 +294,8 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
     lighting = sample_photometric(lighting_rng, frames, severity, photometric)
     shutter_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x53485554]))
     shutter = sample_rolling_shutter(shutter_rng, severity, photometric)
+    motion_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x4d4f544e]))
+    motion = sample_motion_blur(motion_rng, severity, photometric)
     outputs = []
     for t in range(frames):
         blurred = gaussian_blur(high, base_sigma + severity*.15*np.sin(t*.6+phase0))
@@ -234,19 +304,13 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
         grid = torch.stack((x+2*(float(shift[0])+row_offsets)/side,
                             y+2*float(shift[1])/side), dim=-1)[None]
         observed = F.grid_sample(blurred, grid, mode="bilinear", padding_mode="border", align_corners=True)[0]
-        # Short, directional camera motion; no integer-cell translations.
-        if t % 3 == 1:
-            motion_grid = grid.clone()
-            # At most .9 jitter + .75 scanline skew + .25 motion = 1.9 pixels,
-            # below half the four-pixel cell; no full-cell label translations.
-            motion_grid[..., 0] += float(rng.uniform(-.5, .5)*severity/side)
-            observed = (observed+F.grid_sample(blurred, motion_grid, padding_mode="border", align_corners=True)[0])/2
         phase = phase0 + t*velocity
         curved = 2*np.pi*(side/period*(x*np.cos(angle)+y*np.sin(angle)) + curve*x*y + chirp*y*y)
         secondary = 2*np.pi*side/period2*(x*np.cos(angle2)+y*np.sin(angle2))
         bands = torch.stack([torch.sin(curved+phase+c*.63) + .35*torch.sin(secondary-phase*.7+c)
                              for c in range(3)])
         observed = observed + amplitudes*bands
+        observed = apply_motion_blur(observed, motion, t)
         observed = torch.einsum("cd,dhw->chw", color_mix, observed) * illumination
         observed = observed*shutter_gains
         observed = apply_color_exposure(observed, lighting["whiteBalanceGains"][t],
@@ -354,6 +418,16 @@ def main():
                         help="fraction of bursts with drifting scanline bands/skew (default: .7); 0 disables both")
     parser.add_argument("--rolling-shutter-skew", type=float, default=.5,
                         help="max residual scanline horizontal motion in dense pixels, 0–.75 (default: .5); 0 disables skew")
+    parser.add_argument("--motion-probability", type=float, default=.7,
+                        help="fraction of bursts with integrated exposure motion blur (default: .7); 0 disables")
+    parser.add_argument("--linear-blur-pixels", type=float, default=2.5,
+                        help="max full linear exposure travel in dense-crop pixels at severity 1 (default: 2.5)")
+    parser.add_argument("--rotation-blur-degrees", type=float, default=.35,
+                        help="max full rotational exposure sweep at severity 1 (default: .35 degrees)")
+    parser.add_argument("--zoom-blur-fraction", type=float, default=.006,
+                        help="max full radial zoom scale sweep at severity 1 (default: .006)")
+    parser.add_argument("--motion-samples", type=int, default=7,
+                        help="odd exposure integration samples, 3–15 (default: 7)")
     parser.add_argument("--max-output-mib", type=int, default=2**20, help="estimated binary output budget in MiB (default: 1 TiB); 0 disables the limit")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--node", default="node")
@@ -365,7 +439,9 @@ def main():
         photometric = PhotometricConfig(args.white_balance_stops, args.exposure_stops,
                                          args.shade_opacity, args.shade_probability,
                                          args.rolling_shutter_stops, args.rolling_shutter_probability,
-                                         args.rolling_shutter_skew)
+                                         args.rolling_shutter_skew, args.motion_probability,
+                                         args.linear_blur_pixels, args.rotation_blur_degrees,
+                                         args.zoom_blur_fraction, args.motion_samples)
         result = generate(args.clean, args.out, seed=args.seed, frames=args.frames,
                           severity=args.severity, max_output_mib=args.max_output_mib, node=args.node,
                           photometric=photometric, bursts_per_target=args.bursts_per_target)
