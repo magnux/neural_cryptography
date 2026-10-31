@@ -22,6 +22,10 @@ manifest and receiver captures separately. Collection keeps per-phase pools
 (default 32 samples), continuously replaces redundant captures with a randomized
 distance heuristic, and shows within-phase RGB distance and replacement counters
 above the camera. Recording file formats are unchanged.
+**Mirror preview** flips the visible camera image and its alignment overlay
+together; capture tensors and optional original PNGs retain the camera's original
+orientation. This display preference persists while changing roles or restarting
+the camera within the page.
 No model installation is needed to collect data. Follow the
 [capture and training guide](../../docs/OPTICAL_DECODER_TRAINING.md) for offline
 label joining, train/validation/test splits, and checkpoint evaluation.

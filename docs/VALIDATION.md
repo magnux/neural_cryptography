@@ -239,3 +239,31 @@ recording or dataset formats, supervision, or session/payload split ownership.
 
 These checks establish generator correctness, not improved learned recovery.
 No full training or held-out real-device evaluation was performed for this change.
+
+## Training-run analysis and preview mirroring — 2026-10-31
+
+The submitted wide-model log contains 100 pilot evaluations (20k updates) and
+160 real fine-tuning evaluations (32k). The pilot selects step 16,000 with 125/128
+exact frames versus classical 68/128. Real fine-tuning selects step 5,200 with
+7/128 exact frames, 40.50% cell error and CE 1.14159; the final step has 1/128,
+46.75% error and CE 2.20347. These fixed-subset validation measurements support
+overfitting after early adaptation, not convergence at the final update. No full
+real validation/test report or capture tensors were attached. The attachment
+SHA-256 is `4b989acb551924588d277931eeb4733dcd9c1fded20c7109385b153c43aac906`.
+
+Both fresh and initialized runs now default to 32k updates; learning rates stay
+1e-4/5e-5. The training guide records the dataset counts, sampling implications,
+and proposed controlled experiments. New losses, sampling strategies, automatic
+early stopping and confidence fitting are proposals, not enabled behavior.
+
+The capture page adds a corner mirror toggle for video and alignment overlay.
+Detection, worker pixels, stored tensors, originals and recording formats are
+unchanged. The preview preference persists through camera restarts within a page.
+
+- **42 JavaScript tests passed** (`npm run test:decoder`), including asymmetric
+  source-pixel, drawImage, overlay CSS, toggle, restart and recording checks in
+  the page-controller harness.
+- **Eight affected Python training/data tests passed**, including defaults and
+  explicit overrides, optimizer/checkpoint wiring and split safeguards.
+
+No physical-device mirror/layout check, full training, or deployment was performed.

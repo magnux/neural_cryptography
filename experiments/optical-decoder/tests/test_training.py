@@ -111,9 +111,9 @@ for (const count of [0, -1, 1.5, 2**20+1, 'x']) assert.throws(()=>generationCoun
     @unittest.skipUnless(HAS_TORCH, "PyTorch needed for training defaults and batch selection")
     def test_training_defaults_and_prepared_source_pools(self):
         import random
-        self.assertEqual(training_defaults(), (20_000, 1e-4))
+        self.assertEqual(training_defaults(), (32_000, 1e-4))
         self.assertEqual(training_defaults("checkpoint.pt"), (32_000, 5e-5))
-        self.assertEqual(training_defaults("checkpoint.pt", 320_000, 1e-5), (320_000, 1e-5))
+        self.assertEqual(training_defaults("checkpoint.pt", 64_000, 1e-5), (64_000, 1e-5))
         class Example:
             def __init__(self, source, marker):
                 self.metadata = {"source": source}

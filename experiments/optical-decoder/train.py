@@ -22,8 +22,8 @@ from model import MODEL_PROFILES, OpticalDecoder
 
 
 def training_defaults(initialize=None, steps=None, learning_rate=None):
-    """Use the measured pilot/fine-tuning budgets unless explicitly overridden."""
-    return (steps if steps is not None else (32_000 if initialize is not None else 20_000),
+    """Use a common update budget and phase-specific learning rate by default."""
+    return (steps if steps is not None else 32_000,
             learning_rate if learning_rate is not None else (5e-5 if initialize is not None else 1e-4))
 
 
@@ -158,7 +158,7 @@ def main():
     parser.add_argument("--train", type=Path, nargs="+", required=True)
     parser.add_argument("--validation", type=Path, nargs="+", required=True)
     parser.add_argument("--out", type=Path, default=Path("checkpoints/optical-decoder/pilot"))
-    parser.add_argument("--steps", type=int, help="optimizer updates (default: 20,000 pilot; 32,000 with --initialize)")
+    parser.add_argument("--steps", type=int, help="optimizer updates (default: 32,000 for pilot and initialized runs)")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--accumulate", type=int, default=4, help="microbatches per update; default effective batch is 16")
     parser.add_argument("--lr", type=float, help="learning rate (default: 1e-4 pilot; 5e-5 with --initialize)")

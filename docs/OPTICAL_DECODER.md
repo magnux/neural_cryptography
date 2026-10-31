@@ -175,7 +175,7 @@ and disturbance ranges; synthetic success alone cannot pass the device milestone
 
 Train on the user's RTX 4090 with plain PyTorch, NumPy, and a small image I/O dependency if needed; no Hugging Face or
 training framework. Provide CPU smoke mode and configurable device/batch/steps. Default to AdamW at 1e-4, effective batch 16,
-and 20,000 synthetic pilot updates. Fine-tuning defaults to 32,000 mixed real/synthetic updates at 5e-5; stop on held-out exact-frame recovery, and keep training-time
+and 32,000 synthetic pilot updates. Fine-tuning defaults to 32,000 mixed real/synthetic updates at 5e-5; select by held-out exact-frame recovery, and keep training-time
 measurements. These budgets are starting configurations, not promised convergence or duration.
 
 Use cross-entropy on data-cell physical labels, masking reference cells from the main loss so easy pilots cannot

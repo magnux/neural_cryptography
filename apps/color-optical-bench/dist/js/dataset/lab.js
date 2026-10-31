@@ -8,6 +8,7 @@ const supported=isSecureContext&&typeof Worker==='function'&&Boolean(globalThis.
 const session=prefix=>`${prefix}-${globalThis.crypto?.randomUUID?.()??'unavailable'}`;
 let senderSession=session('sender'),receiverSession=session('receiver'),sender=null,phase=0,role='sender';
 let busy=false,epoch=0,stream=null,cameraStarting=false,cameraEpoch=0;
+let previewMirrored=false;
 let lastMediaTime=-1,collecting=false,budgetFull=false,receiverEpoch=0,activeKey=null,activeInfo=null;
 const distances=new Map(),originalAttempts=new Set(),phaseActivity=new Map();
 let previousMaximum=32;
@@ -40,6 +41,8 @@ function refresh(){
   $('startCamera').disabled=!supported||cameraStarting||Boolean(stream)||busy;
   $('stopCamera').disabled=!stream&&!cameraStarting;
   $('camera').disabled=Boolean(stream)||cameraStarting;$('resolution').disabled=Boolean(stream)||cameraStarting;
+  $('cameraPreview').setAttribute('data-mirrored',String(previewMirrored));
+  $('mirrorPreview').setAttribute('aria-pressed',String(previewMirrored));
   const phaseCount=buffer.phaseRecords(activeKey).length;
   $('collectBurst').disabled=!stream||collecting||budgetFull;
   $('cancelBurst').disabled=!collecting;
@@ -249,6 +252,9 @@ document.addEventListener('keydown',event=>{
 $('downloadSender').addEventListener('click',()=>{if(sender)saveJSON(sender.manifest,`decoder-sender-${sender.manifest.sequenceId}.json`);});
 $('newSenderSession').addEventListener('click',()=>{senderSession=session('sender');sender=null;phase=0;$('senderCanvasWrap').hidden=true;$('senderStatus').textContent='New physical session. Create and save a fresh sequence.';refresh();});
 $('startCamera').addEventListener('click',startCamera);$('stopCamera').addEventListener('click',stopCamera);
+// CSS mirrors the displayed video and alignment overlay together. The camera
+// source, currentImage() canvas, worker inputs, and exported pixels stay intact.
+$('mirrorPreview').addEventListener('click',()=>{previewMirrored=!previewMirrored;refresh();});
 $('collectBurst').addEventListener('click',collectBurst);$('cancelBurst').addEventListener('click',cancel);
 $('phaseMaximum').addEventListener('change',changePoolSize);
 $('scanInterval').addEventListener('change',()=>{if(stream)restartScanner();});

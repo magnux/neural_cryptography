@@ -19,9 +19,10 @@ cell-RGB readout. `--model compact` is the existing active baseline. Existing
 compact checkpoints still load in their exact architecture; `--initialize` and
 `--checkpoint` infer the supported profile from validated parameter shapes.
 The recording format and tensor contract are unchanged. Wide needs a fresh pilot,
-then held-out real evaluation; it has no measured recovery advantage yet.
+then held-out real evaluation. The latest combined model/data iteration improves
+the submitted validation result, but does not isolate architecture's contribution.
 
-Pilot defaults: 20,000 updates at 1e-4. With `--initialize`: 32,000 updates at
+Pilot defaults: 32,000 updates at 1e-4. With `--initialize`: 32,000 updates at
 5e-5. Source pools are partitioned once for large corpora. Offline manifests allow
 256 MiB without a fixed row cap; synthetic generation defaults to seven frames
 and a configurable 1 TiB estimated output budget (`--max-output-mib 0` disables

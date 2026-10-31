@@ -35,6 +35,10 @@ does not need PyTorch, model files, or ONNX Runtime. Use the existing
    There is only one in-flight worker task; slow processing lowers the actual
    scan rate. The translucent green rectangle fills the detected matrix area.
    An unreadable header clears the fill. The overlay is never part of saved pixels.
+   **Mirror preview** in the camera corner flips the video and alignment overlay
+   together. It affects only the display; recorded pixels, detection, labels and
+   optional originals retain their original orientation. The choice persists
+   across camera restarts within the page.
 4. The camera, scan interval, recording buttons, and live counters sit above
    the camera in one compact viewport. Set **Pool per phase** to **32** and press
    **Record**. Each new matrix/phase needs consecutive identical valid headers
@@ -239,11 +243,10 @@ real baselines use the independently captured current-exposure samples.
 
 ## Train and evaluate
 
-The default fresh pilot uses **wide**, AdamW at **1e-4**, **20,000** optimizer
+The default fresh pilot uses **wide**, AdamW at **1e-4**, **32,000** optimizer
 updates, microbatches of 4, and accumulation of 4 (effective batch 16).
-With `--initialize`, defaults become **5e-5** and **32,000** updates, matching the
-completed attached run. `--steps 320000` remains an explicit option; the submitted
-log ended at 32,000 despite 320,000 in the copied command. Microbatches share a grid size and
+With `--initialize`, defaults are **5e-5** and **32,000** updates. Use `--steps`
+to override either phase's budget. Microbatches share a grid size and
 palette; inactive color classes are masked before cross-entropy.
 
 ```sh
@@ -298,7 +301,7 @@ counts, and inference timing. Both methods receive one exposure per candidate.
 This does not compare temporal windows or measure live goodput; those comparisons
 follow when connecting the selected model to the receiver.
 
-## Model profiles and the first training result
+## Model profiles and the latest training result
 
 | Profile | Parameters | Changes |
 | --- | ---: | --- |
@@ -307,8 +310,9 @@ follow when connecting the selected model to the receiver.
 
 Both take `[N,3,4G,4G]` calibrated pixels and output `[N,16,G,G]` physical-color
 logits. LayerNorm does not normalize raw RGB or depend on batch statistics. The
-separate color readout preserves absolute color evidence. This is an architectural
-experiment, not a demonstrated improvement on real data. Wider browser inference
+separate color readout preserves absolute color evidence. The latest combined
+model/data iteration improves submitted validation recovery; it does not isolate
+the architecture's contribution. Wider browser inference
 needs fresh device latency measurements; fixed G64/G128 export and WASM parity
 are checked separately from recovery quality.
 
@@ -318,23 +322,111 @@ conflicting `--model` fails. To test wide, train a new pilot from your existing
 datasets, then fine-tune that pilot. Both are active profiles in the same current
 checkpoint representation; weights are validated exactly, never partially loaded.
 
-The supplied log selected compact's synthetic checkpoint at step 19,400:
-117/128 exact frames (91.41%) versus classical 124/128 (96.88%). Real validation
-selected step 30,600 by loss, with 48.33% cell error and zero exact frames for
-both methods. These are capped validation results, not full test-set results.
-The real run finishes at 32,000 steps. Mixed real/synthetic training loss is not
-directly comparable with real-only validation loss.
+The 2026-10-31 log contains 1,536 joined real training captures and 768 real
+validation captures, with no exclusions. The 12 training and six validation
+capture bundles are correlated collections, not 2,304 independent device setups.
+The 1,200/600 diagnostic entries are bounded acquisition event records, not counts
+of rejected training samples. Synthetic counts are consistent: 2,048/256/256
+payloads × four phases × nine frames = 73,728/9,216/9,216 examples.
 
-The code review found no obvious phase-label/channel-order error, but the log
-cannot establish the quality of the recorded examples or split coverage. The
-synthetic generator used for that run mostly produced easier captures than these
-real examples. The added white-balance, exposure, and rectangle effects have not
-yet been evaluated on the devices. Synthetic crops still clip to the nominal RGB
-range while real affine-calibrated tensors can overshoot to [-1.5,1.5]. More
-training steps alone need not close that gap.
-Inspect representative rectified crops and labels offline, expand independent
-sessions/payloads in both directions, and compare per-session validation results.
-Do not reuse training sessions for validation when doubling the collection.
+| Run / checkpoint | Step | Exact frames | Data-cell error | Validation CE |
+| --- | ---: | ---: | ---: | ---: |
+| Synthetic selected | 16,000 | 125/128 (97.66%) | 0.455% | 0.01347 |
+| Synthetic final | 20,000 | 121/128 (94.53%) | 0.529% | 0.01484 |
+| Real selected | 5,200 | 7/128 (5.47%) | 40.50% | 1.14159 |
+| Real final | 32,000 | 1/128 (0.78%) | 46.75% | 2.20347 |
+
+Classical recovery is 68/128 (53.125%) on the synthetic subset and zero on the
+real subset. These are fixed 128-capture validation measurements, not full-corpus
+or untouched test results. `wide-real/best.pt` correctly retains step 5,200.
+The large later increase in real validation loss and deterioration in accuracy
+support overfitting in addition to a synthetic/real distribution gap. The new
+architecture, augmentations, burst length, and real collection changed together;
+their separate contributions cannot be established from these runs.
+
+The source mixture is already explicit: `--real-fraction .5` gives approximately
+half the draws to real data when both sources share a profile, despite only about
+2% of stored training examples being real. With effective batch 16, 32k updates
+draw each real crop about 167 times on average (about 27 by step 5,200). There is
+currently no online augmentation of those real crops. `trainLoss` is the most
+recent update's mixed-source mean, not an averaged real-only training loss, so its
+absolute value cannot be compared directly with real validation CE.
+
+Review found no obvious physical-color/phase, mask, or loss aggregation bug.
+Actual alignment and label quality still require inspecting capture tensors.
+Synthetic crops clip to nominal RGB while real affine-calibrated inputs can
+overshoot to [-1.5,1.5]. Camera processing and interference may differ in other
+ways. The log does not identify which mismatch matters most.
+
+## Next training experiments
+
+These are planned, controlled experiments, not newly enabled loss/sampler options.
+Keep the wide architecture fixed and compare each change from the same pilot,
+with the same splits, source ratio, seeds, and validation budget.
+
+1. **Diagnose the selected model first.** Evaluate all 768 real validation
+   captures; inspect session-level error/recovery, the confusion matrix, and
+   confidence calibration. Check whether the seven recoveries come from just one
+   session. Examine raw rectified inputs beside physical labels and inspect phase,
+   clipping, and geometry failure patterns. Add separate rolling real/synthetic
+   training metrics and a fixed real-training diagnostic subset before inferring
+   failure to fit real data. Keep test sessions untouched.
+2. **Control adaptation before increasing capacity.** Add validation-driven LR
+   reduction and early stopping, retaining 32k as the maximum budget. Monitor
+   exact recovery with CE as the tie-break; save the selected model. Compare a
+   lower initial fine-tuning LR (1e-5) with the current 5e-5. The current trainer
+   saves the best checkpoint but does not automatically stop or decay LR.
+3. **Diversify real updates.** Sample device direction, then session, payload,
+   phase, and frame, while avoiding repeated bursts within an update. Directions
+   inferred from the pasted paths are 8:4 PC→phone:phone→PC in training and 4:2 in
+   validation; verify this against session notes before using direction labels.
+   Each bundle currently contributes 128 captures, so session balance alone will
+   not change this run's weighting much. Keep 50:50 real/synthetic initially;
+   test 75% real separately, since extra repetition can also increase overfitting.
+4. **Augment real captures mildly online.** Small residual exposure/color/noise
+   variations can preserve measured moiré while increasing variation. Geometric
+   augmentation must preserve cell alignment and transform labels/masks together.
+   Avoid strong extra moiré or opaque masks on already difficult captures. More
+   independent payloads and sessions remain more informative than longer bursts.
+
+For a full validation report using the existing evaluator:
+
+```sh
+python experiments/optical-decoder/evaluate.py \
+  --dataset local-data/real-validation --split validation \
+  --checkpoint checkpoints/optical-decoder/wide-real/best.pt \
+  --max-samples 0 --device cuda \
+  --out local-results/optical-decoder/wide-real-validation.json
+```
+
+After those controls, compare these objective/regularization ablations:
+
+| Candidate | Purpose | Initial experiment and limitation |
+| --- | --- | --- |
+| Mean CE + modest hard-cell CE | Give remaining difficult data cells more influence | Per frame, `0.8 × mean CE + 0.2 × mean CE of the hardest 25% of valid cells`; retain ordinary CE validation. The limited contribution prevents hard examples from receiving the entire objective, but cannot fix wrong labels or destroyed colors. |
+| Mild focal loss | Downweight already well-classified cells | Test gamma 1 as an alternative to the hard-cell term, not simultaneously. It can also emphasize unrecoverable captures, so check held-out recovery and confidence. |
+| Confidence regularization | Reduce confidently wrong predictions that disrupt erasure ranking | Compare small label smoothing (e.g. 0.02) or a small Brier-score term separately; tune on held-out validation. Check top-class error as well as confidence. |
+| Weight regularization | Limit memorization of a small real corpus | AdamW already uses its default weight decay (0.01). Compare stronger decay or a small penalty toward pilot weights; too much anchoring may prevent useful adaptation. |
+| Same-phase burst consistency | Encourage stable predictions across captures of the same physical symbols | Keep supervised CE, weight consistency lightly, and exclude mismatched phases/motion failures; shared wrong predictions are not evidence of correctness. |
+| RS-aware auxiliary loss, later | Reduce byte errors per actual codeword rather than just mean cell errors | Use the canonical phase mapping, cell packing and interleaving; penalize soft error estimates above the correction budget. This is a surrogate, not a differentiable CRC or a replacement for exact recovery evaluation. |
+
+Start with one objective change. Random payload colors are approximately balanced
+by design; arbitrary inverse-frequency class weights or Dice/TV smoothness losses
+are not justified without measured imbalance, and neighboring symbols should not
+be encouraged to match. Group reweighting should address observed session or
+direction failures and retain regularization, not blindly chase the hardest group.
+
+Temperature scaling is a cheap later calibration experiment using held-out
+validation: it can change confidence-based erasure choices, but cannot change
+the per-cell argmax or repair the current 40.5% mean cell error by itself. The
+JS logits converter already accepts a temperature; training/evaluation currently
+use 1 and do not fit it automatically. Single-frame evaluation should eventually
+be followed by equal-budget multi-frame recovery, matching the intended receiver.
+
+Relevant methods: [focal loss](https://arxiv.org/abs/1708.02002),
+[regularization under group shifts](https://arxiv.org/abs/1911.08731), and
+[temperature scaling](https://arxiv.org/abs/1706.04599). Their published results
+motivate these experiments; they do not establish an optical-decoder benefit.
 
 ## Export the selected checkpoint
 

@@ -45,7 +45,7 @@
             <div class="capture-actions capture-live-actions"><button class="small-button" id="startCamera">Start camera</button><button class="small-button" id="stopCamera" disabled>Stop camera</button><button class="button primary" id="collectBurst" disabled>Record</button><button class="small-button" id="cancelBurst" disabled>Pause</button></div>
             <dl class="capture-live-metrics"><div><dt>Retained</dt><dd id="phaseCount">0 / 32</dd></div><div><dt>Seen</dt><dd id="seenCount">0</dd></div><div><dt>Replaced</dt><dd id="replacementCount">0</dd></div><div><dt>Mean distance</dt><dd id="meanDistance">—</dd></div></dl>
           </div>
-          <div class="capture-camera"><video id="video" autoplay muted playsinline></video><canvas id="alignmentOverlay" aria-hidden="true"></canvas><span id="cameraPlaceholder">Camera is off</span></div>
+          <div id="cameraPreview" class="capture-camera" data-mirrored="false"><video id="video" autoplay muted playsinline></video><canvas id="alignmentOverlay" aria-hidden="true"></canvas><span id="cameraPlaceholder">Camera is off</span><button id="mirrorPreview" class="small-button capture-mirror" type="button" aria-pressed="false" title="Mirror the preview only. Recorded images keep their original orientation.">Mirror preview</button></div>
           <p class="capture-status" id="receiverStatus" role="status" aria-live="polite">Start the camera for automatic alignment.</p>
           <p class="muted" id="activePhase">No matrix detected yet</p>
         </div>

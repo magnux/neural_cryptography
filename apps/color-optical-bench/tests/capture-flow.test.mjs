@@ -9,16 +9,18 @@ import {renderFrame} from '../dist/js/format.js';
 
 test('page keeps sampling full pools, applies selection, isolates phases, and pauses without losing records',async()=>{
   const html=await readFile(new URL('../dist/capture.html',import.meta.url),'utf8');
+  const css=await readFile(new URL('../dist/js/dataset/style.css',import.meta.url),'utf8');
   const sender=await createSender({seed:90,sessionId:'flow'});
   const record=captureFrame(renderFrame(sender.frames[0],1024),{signature:true});
   let phase=0,clock=1000,media=1,stopped=0,filled=0,replacementChoice=null,holdSelection=false,lateSelection=null,download=null;
-  const timers=new Map();let timerId=0;const operations=[];
-  const context={clearRect(){},drawImage(){},getImageData:()=>({width:32,height:32,data:new Uint8ClampedArray(4096)}),
+  const timers=new Map();let timerId=0;const operations=[],cameraInputs=[],draws=[];
+  const rawPixels=Uint8ClampedArray.from({length:4096},(_,i)=>(i*17+Math.floor(i/128))%256);
+  const context={clearRect(){},drawImage(...args){draws.push(args);},getImageData:()=>({width:32,height:32,data:rawPixels.slice()}),
     beginPath(){},moveTo(){},lineTo(){},closePath(){},stroke(){},fill(){filled++;}};
   class Element{
-    constructor(id){this.id=id;this.value='';this.disabled=false;this.hidden=false;this.handlers={};this.options=[];this.width=32;this.height=32;}
+    constructor(id){this.id=id;this.value='';this.disabled=false;this.hidden=false;this.handlers={};this.attributes={};this.options=[];this.width=32;this.height=32;}
     addEventListener(type,handler){this.handlers[type]=handler;}
-    setAttribute(){}removeAttribute(){}getContext(){return context;}click(){}
+    setAttribute(name,value){this.attributes[name]=value;}getAttribute(name){return this.attributes[name];}removeAttribute(name){delete this.attributes[name];}getContext(){return context;}click(){}
     replaceChildren(...children){this.options=children;}add(child){this.options.push(child);}
     async fire(type='click'){if(type==='click')assert.equal(this.disabled,false,`${this.id} is enabled`);await this.handlers[type]?.();}
   }
@@ -28,6 +30,8 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
   assert.equal(elements.has('keepCount'),false);assert.equal(elements.has('thinCaptures'),false);
   assert.ok(html.indexOf('id="collectBurst"')<html.indexOf('id="video"'));
   assert.ok(html.indexOf('id="phaseCount"')<html.indexOf('id="video"'));
+  assert.match(css,/\.capture-camera\[data-mirrored=true\]>video,\.capture-camera\[data-mirrored=true\]>canvas\{transform:scaleX\(-1\)\}/,
+    'the same CSS transform covers the video and overlay, not the button or capture canvas');
   Object.assign(get('video'),{readyState:2,videoWidth:32,videoHeight:32,play:async()=>{}});
   Object.defineProperty(get('video'),'currentTime',{get:()=>media++});
   const track={stop:()=>stopped++,getSettings:()=>({width:32,height:32,frameRate:30})};
@@ -35,6 +39,7 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
   class Worker{
     postMessage({id,operation,options}){
       operations.push(operation);const info={...record.info,phase},key=captureKey(info);
+      if(options.image)cameraInputs.push(options.image.data.slice());
       const result=operation==='select'?{replaceIndex:replacementChoice,reason:'test selection'}:operation==='compare'?meanCaptureDistance(options.signatures):operation==='probe'
         ?{ok:true,probe:true,info,key,transform:record.transform,stats:record.stats}
         :{...record,info,key,timestamp:options.timestamp};
@@ -56,9 +61,20 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
   try{
     for(const [k,value] of Object.entries(replacements))Object.defineProperty(globalThis,k,{value,configurable:true,writable:true});
     await import('../dist/js/dataset/lab.js');
+    assert.equal(get('mirrorPreview').getAttribute('aria-pressed'),'false');
+    // The display preference can be set before starting the camera.
+    await get('mirrorPreview').fire();
+    assert.equal(get('cameraPreview').getAttribute('data-mirrored'),'true');
+    assert.equal(get('mirrorPreview').getAttribute('aria-pressed'),'true');
     await get('receiverRole').fire();await get('startCamera').fire();await flush();
     assert.ok(operations.includes('probe'));assert.ok(filled>0,'matrix overlay fills its area');
     assert.equal(get('sampleCount').textContent,'0 / 128');
+    await get('mirrorPreview').fire();await tick();
+    assert.equal(get('cameraPreview').getAttribute('data-mirrored'),'false');
+    assert.equal(get('mirrorPreview').getAttribute('aria-pressed'),'false');
+    await get('mirrorPreview').fire();await tick();
+    for(const pixels of cameraInputs)assert.deepEqual(pixels,rawPixels,'preview mirroring never flips worker pixels');
+    for(const args of draws)assert.deepEqual(args,[get('video'),0,0,32,32],'capture uses the untransformed video source');
     await get('collectBurst').fire();await flush();
     for(let i=0;i<32;i++)await tick();
     assert.equal(get('phaseCount').textContent,'32 / 32');assert.equal(get('meanDistance').textContent,'0.00%');
@@ -77,7 +93,9 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     await get('cancelBurst').fire();await flush();const count=get('sampleCount').textContent;
     await tick();assert.equal(get('sampleCount').textContent,count);assert.equal(get('downloadCaptures').disabled,false);
     await get('stopCamera').fire();await flush();assert.equal(timers.size,0);assert.equal(stopped,1);
+    assert.equal(get('cameraPreview').getAttribute('data-mirrored'),'true','camera stop preserves the preview preference');
     await get('startCamera').fire();await flush();document.hidden=true;documentEvents.visibilitychange();await flush();
+    assert.equal(get('mirrorPreview').getAttribute('aria-pressed'),'true');
     assert.equal(timers.size,0);assert.equal(stopped,2);assert.equal(get('sampleCount').textContent,count);
     await get('downloadCaptures').fire();
     const exported=JSON.parse(await download.text());
@@ -85,6 +103,8 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     assert.equal(exported.records.length,33);assert.equal(exported.collection.keepRandom,0);
     assert.deepEqual(Object.keys(exported.collection).sort(),['distances','keepRandom','maxPerPhase','scanIntervalMs']);
     assert.ok(exported.records.every(row=>row.inputBase64&&row.samplesBase64&&row.stability&&!('signature' in row)));
+    assert.ok(exported.records.every(row=>row.inputBase64===record.inputBase64&&row.samplesBase64===record.samplesBase64),
+      'mirroring does not change recorded tensors or decoder samples');
     assert.ok(Array.isArray(exported.selection.recentThinning));
     timers.clear();
   }finally{
