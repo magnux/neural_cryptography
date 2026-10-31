@@ -22,8 +22,15 @@ The recording format and tensor contract are unchanged. Wide needs a fresh pilot
 then held-out real evaluation. The latest combined model/data iteration improves
 the submitted validation result, but does not isolate architecture's contribution.
 
-Pilot defaults: 32,000 updates at 1e-4. With `--initialize`: 32,000 updates at
-5e-5. Source pools are partitioned once for large corpora. Offline manifests allow
+Both recipes default to a maximum of 32,000 updates. A fresh `pilot` uses 1e-4;
+an explicitly initialized `pilot` uses 5e-5. Initialized training with real data
+automatically selects `adapt` at 1e-5 and requires an explicit session-group
+sidecar. The [recommended next run](../../docs/OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
+reuses the existing wide pilot and datasets, balances acquisition directions,
+adds mild online real augmentation and a small hard-cell CE term, and reduces LR
+or stops on validation plateaus. The sidecar helper leaves recordings unchanged.
+
+Source pools are indexed once for large corpora. Offline manifests allow
 256 MiB without a fixed row cap; synthetic generation defaults to seven frames
 and a configurable 1 TiB estimated output budget (`--max-output-mib 0` disables
 that estimate). Browser capture limits remain independent.
@@ -37,6 +44,14 @@ regenerate corrupted synthetic corpora into empty output directories before
 training. See the [training guide](../../docs/OPTICAL_DECODER_TRAINING.md#generate-the-synthetic-pilot)
 for ranges and provenance. These are residual calibrated-RGB approximations;
 held-out real recovery must establish their value.
+
+The submitted full real validation contains 69/768 exact learned recoveries versus
+zero classical recoveries. All successes are in two of six sessions; inferred
+direction results are 69/512 PC→phone and 0/256 phone→PC. This motivates the new
+adaptation recipe, whose benefit still requires the next training run. Its
+direction-balanced selection metrics supplement the global and per-session
+evaluation results; neither a validation gain nor runtime parity is a test-set
+or live-throughput result.
 
 ## Setup and export
 
@@ -64,6 +79,11 @@ float32 parameter shapes, and validates dataset split provenance. Public model
 metadata includes checkpoint hashes and bounded scalar training settings; local
 session identities and filesystem paths stay in the checkpoint. Training uses
 `best.pt`, selected by validation exact-frame recovery with loss as the tie-break.
+With explicit real groups, those selection metrics are averaged equally across
+groups. Initialized runs evaluate and preserve their starting checkpoint at
+step zero, so worse adaptation cannot replace that baseline. Recipe settings,
+session mappings and their hash remain in the local run/checkpoint; exports keep
+only the understood public scalar/hash provenance.
 
 CPU execution is sufficient for export and small pipeline checks. If installing
 PyTorch separately, choose the CPU or CUDA build appropriate for the machine;
@@ -157,8 +177,16 @@ load time, backend, model hash, and UI responsiveness.
 - `data.py`: hashed local datasets and whole-session/payload split checks.
 - `synthetic.py`: correlated moiré, blur, sampling, white-balance/exposure,
   translucent shading, and noise corruptions.
-- `train.py`: shape/palette-grouped AdamW training, real/synthetic mixtures, and validation selection.
-- `evaluate.py`: held-out cell/confidence metrics and exact recovery through the canonical JS decoder.
+- `train.py`: pilot/adaptation recipes, source/group metrics, validation selection,
+  baseline protection and plateau control.
+- `sampling.py`: indexed source/group/session/payload/phase sampling, with quotas
+  across complete optimizer updates and repeated-burst avoidance.
+- `session_groups.py`: explicit capture-direction sidecars validated against joined
+  datasets, without changing recording formats.
+- `adaptation.py`: mild real-only online augmentation, mean/hard-cell CE and
+  meaningful-progress LR/stop control.
+- `evaluate.py`: held-out cell/confidence, session/group and balanced-selection
+  metrics, plus exact recovery through the canonical JS decoder.
 - `../../scripts/decoder-dataset.mjs`: canonical clean examples, offline joins, baseline refresh, and CRC/RS evaluation.
 - `tests/test_training.py`, `tests/test_export_checkpoint.py`: training/decoder integration, split isolation, masking, and checkpoint export checks.
 

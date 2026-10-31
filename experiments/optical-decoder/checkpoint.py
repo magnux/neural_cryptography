@@ -26,10 +26,19 @@ def training_provenance(training: dict) -> dict:
     if len(metadata.encode("utf-8")) > MAX_METADATA_BYTES:
         raise ValueError("Checkpoint training metadata exceeds 256 MiB")
     result = {}
-    for key, minimum, maximum in (("steps", 1, 10_000_000), ("seed", 0, 0xFFFFFFFF),
+    baseline = training.get("baselineSelection", False)
+    if "baselineSelection" in training:
+        if not isinstance(baseline, bool):
+            raise ValueError("Invalid checkpoint baselineSelection")
+        result["baselineSelection"] = baseline
+    if baseline and (training.get("steps") != 0 or training.get("selectionStep") != 0
+                     or "initialCheckpointSha256" not in training):
+        raise ValueError("A baseline selection requires zero steps/selectionStep and an initial checkpoint hash")
+    minimum_step = 0 if baseline else 1
+    for key, minimum, maximum in (("steps", minimum_step, 10_000_000), ("seed", 0, 0xFFFFFFFF),
                                    ("samples", 1, 1_000_000_000), ("batchSize", 1, 65536),
                                    ("gradientAccumulation", 1, 65536),
-                                   ("selectionStep", 1, 10_000_000)):
+                                   ("selectionStep", minimum_step, 10_000_000)):
         if key not in training:
             if key in ("steps", "seed"):
                 raise ValueError(f"Checkpoint training metadata requires {key}")
@@ -38,12 +47,18 @@ def training_provenance(training: dict) -> dict:
         if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
             raise ValueError(f"Invalid checkpoint training {key}")
         result[key] = value
-    for key in ("trainManifestSha256", "validationManifestSha256", "initialCheckpointSha256"):
+    for key in ("trainManifestSha256", "validationManifestSha256", "initialCheckpointSha256", "sessionGroupsSha256"):
         if key in training:
             value = training[key]
             if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
                 raise ValueError(f"Invalid checkpoint {key}")
             result[key] = value
+    for key, choices in (("recipe", ("pilot", "adapt")),
+                         ("selectionAggregation", ("global", "group-balanced-real"))):
+        if key in training:
+            if training[key] not in choices:
+                raise ValueError(f"Invalid checkpoint {key}")
+            result[key] = training[key]
     if "selection" in training:
         if training["selection"] not in ("last-step", "validation-exact"):
             raise ValueError("Unsupported checkpoint selection method")

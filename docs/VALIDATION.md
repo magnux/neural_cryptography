@@ -267,3 +267,46 @@ unchanged. The preview preference persists through camera restarts within a page
   explicit overrides, optimizer/checkpoint wiring and split safeguards.
 
 No physical-device mirror/layout check, full training, or deployment was performed.
+
+## Combined real-data adaptation recipe — 2026-10-31
+
+Implemented the selected blend without changing capture, dataset, tensor, model
+or checkpoint format versions. An explicit session-group sidecar assigns camera
+directions. Offline update sampling balances sources and real groups, then draws
+by session/payload/phase while avoiding repeated bursts when available. Real-only
+online color/exposure/noise augmentation preserves geometry and saved inputs.
+The objective is 90% per-frame mean CE plus 10% hardest-quarter CE; validation
+remains ordinary CE with canonical RS/CRC recovery.
+
+Adaptation defaults to LR 1e-5, AdamW decay 0.05, a 32k maximum, full validation
+every 1,000 updates, LR cuts after four stagnant checks, and stopping after twelve.
+Checkpoint selection averages real directions equally and breaks exact-recovery
+ties by CE. Meaningful-progress patience ignores relative CE changes of 0.1% or
+less. An initialized step-zero baseline can remain the selected checkpoint; it
+must carry its initial checkpoint hash and an explicit baseline flag. Fresh
+random weights never become a trained step-zero checkpoint. Split ancestry and
+wrong-acceptance checks remain enforced.
+
+The submitted full report covers 768 captures: 69 exact learned recoveries versus
+zero classical, 39.32% cell error, ECE 3.11 percentage points. Mapping session IDs
+to the supplied acquisition paths gives PC→phone 69/512 with 24.76% cell error and
+phone→PC 0/256 with 68.43% error. These validation observations motivate the recipe;
+the recipe itself has not yet been trained/evaluated on the user's recordings.
+
+Validation on this host:
+
+- **63 Python tests passed and one native ONNX Runtime test skipped** because
+  its CPU initialization remains unavailable. The full suite had 63 tests;
+  the subsequently added training-CLI smoke and its four integration companions
+  also passed, bringing the distinct total to 64.
+- Tests cover exact update quotas, unbalanced pools, repeated-burst handling,
+  deterministic augmentation and untouched synthetic inputs, masked gradients,
+  group-weighted metrics, LR/stop patience, inherited baseline checkpoint export,
+  split rejection, and unchanged recordings. Small canonical renderings marked
+  as real solely for branch coverage exercise actual optimizer/JS-recovery wiring;
+  they are not claimed as device data or recovery benchmarks.
+- The actual adaptation CLI completes a one-step CPU fixture run and emits
+  validated settings/history/checkpoints. Controlled degrading-validation tests
+  preserve the original weights while reducing LR and stopping early.
+- **42 JavaScript decoder/capture tests passed.** No site was deployed, and no
+  full GPU training, new phone test, or optical recovery improvement is claimed.

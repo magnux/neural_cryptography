@@ -24,7 +24,7 @@ if HAS_TORCH:
     from evaluate import canonical_recovery, masked_loss
     from model import OpticalDecoder
     from synthetic import CORRUPTION_KIND, PhotometricConfig, corrupt_burst, generate
-    from train import run_training, training_defaults, prepare_batch_groups, choose_batch
+    from train import run_training, training_defaults
     torch.set_num_threads(1)
 
 
@@ -109,25 +109,14 @@ for (const count of [0, -1, 1.5, 2**20+1, 'x']) assert.throws(()=>generationCoun
         subprocess.run(["node", "--input-type=module", "-e", script], check=True, capture_output=True, text=True)
 
     @unittest.skipUnless(HAS_TORCH, "PyTorch needed for training defaults and batch selection")
-    def test_training_defaults_and_prepared_source_pools(self):
-        import random
+    def test_training_recipe_defaults(self):
         self.assertEqual(training_defaults(), (32_000, 1e-4))
         self.assertEqual(training_defaults("checkpoint.pt"), (32_000, 5e-5))
         self.assertEqual(training_defaults("checkpoint.pt", 64_000, 1e-5), (64_000, 1e-5))
-        class Example:
-            def __init__(self, source, marker):
-                self.metadata = {"source": source}
-                self.marker = marker
-            def tensors(self):
-                return np.full((3, 4, 4), self.marker, np.float32), np.zeros((1, 1), np.int64), np.ones((1, 1), bool)
-        real, synthetic = Example("real", 1), Example("synthetic", 0)
-        prepared = prepare_batch_groups({(64, 4): [real, synthetic]})
-        self.assertEqual(prepared[(64, 4)]["real"], [real])
-        self.assertEqual(prepared[(64, 4)]["synthetic"], [synthetic])
-        # choose_batch no longer walks sample metadata, even in a large corpus.
-        real.metadata = synthetic.metadata = None
-        self.assertTrue(torch.all(choose_batch(prepared, random.Random(1), 4, 1)[0] == 1))
-        self.assertTrue(torch.all(choose_batch(prepared, random.Random(1), 4, 0)[0] == 0))
+        self.assertEqual(training_defaults("checkpoint.pt", recipe="adapt"), (32_000, 1e-5))
+        self.assertEqual(training_defaults("checkpoint.pt", 9000, 2e-5, recipe="adapt"), (9000, 2e-5))
+        with self.assertRaises(ValueError):
+            training_defaults(recipe="unknown")
 
     @unittest.skipUnless(HAS_TORCH, "PyTorch needed for corruptions and learning")
     def test_correlated_corruptions_and_materialized_provenance(self):

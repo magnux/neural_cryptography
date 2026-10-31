@@ -175,11 +175,19 @@ and disturbance ranges; synthetic success alone cannot pass the device milestone
 
 Train on the user's RTX 4090 with plain PyTorch, NumPy, and a small image I/O dependency if needed; no Hugging Face or
 training framework. Provide CPU smoke mode and configurable device/batch/steps. Default to AdamW at 1e-4, effective batch 16,
-and 32,000 synthetic pilot updates. Fine-tuning defaults to 32,000 mixed real/synthetic updates at 5e-5; select by held-out exact-frame recovery, and keep training-time
-measurements. These budgets are starting configurations, not promised convergence or duration.
+and 32,000 synthetic pilot updates. The implemented `adapt` recipe reuses the pilot,
+uses LR 1e-5 and AdamW decay 0.05, and caps updates at 32,000 with validation-driven
+LR reduction and early stopping. It balances real acquisition directions within
+the 50:50 real/synthetic mixture and mildly augments real inputs online. Full real
+validation selects checkpoints by direction-balanced exact recovery, then CE;
+the initial checkpoint remains eligible if adaptation never improves it. See the
+[training guide](OPTICAL_DECODER_TRAINING.md#recommended-next-training-run) for the
+session sidecar and command. These budgets are starting configurations, not
+promised convergence or duration.
 
 Use cross-entropy on data-cell physical labels, masking reference cells from the main loss so easy pilots cannot
-dominate. Train mixed G=64/128 batches separately by shape; mask inactive classes for each palette. Do not use
+dominate. Adaptation uses 90% mean CE plus 10% hardest-quarter CE within each frame;
+validation retains ordinary CE. Train mixed G=64/128 batches separately by shape; mask inactive classes for each palette. Do not use
 perceptual losses, GANs, or an RGB reconstruction head initially. Measure cell confusion and confidence calibration, but
 select checkpoints using exact CRC recovery and time-to-recovery under equal observation budgets. After every chosen
 checkpoint, verify PyTorch/ONNX/browser outputs and the resulting transport decisions.

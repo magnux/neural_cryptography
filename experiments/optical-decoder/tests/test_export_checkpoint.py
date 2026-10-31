@@ -16,6 +16,7 @@ if HAS_EXPORT:
     import torch
     from model import OpticalDecoder
     from export import export_smoke, load_checkpoint
+    from checkpoint import training_provenance
     torch.set_num_threads(1)
 
 
@@ -102,6 +103,51 @@ class CheckpointExportTests(unittest.TestCase):
             path.write_text("not a checkpoint")
             with self.assertRaises(ValueError):
                 load_checkpoint(path, model)
+
+    def test_inherited_step_zero_baseline_loads_and_exports_exact_weights(self):
+        model, value = self.checkpoint()
+        value["training"].update({"steps": 0, "selectionStep": 0, "baselineSelection": True,
+                                  "recipe": "adapt", "selectionAggregation": "group-balanced-real",
+                                  "sessionGroupsSha256": "4"*64,
+                                  "sessionGroupsPath": "/private/session-groups.json"})
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/"baseline.pt"
+            torch.save(value, path)
+            loaded = load_checkpoint(path, OpticalDecoder())
+            for name, expected in model.state_dict().items():
+                torch.testing.assert_close(loaded["modelState"][name], expected, rtol=0, atol=0)
+            manifest = export_smoke(Path(temporary)/"bundle", sizes=(64,), check_ort=False, checkpoint=path)
+            public = manifest["training"]
+            self.assertEqual(public["steps"], 0)
+            self.assertEqual(public["selectionStep"], 0)
+            self.assertIs(public["baselineSelection"], True)
+            self.assertEqual(public["initialCheckpointSha256"], "3"*64)
+            self.assertEqual(public["recipe"], "adapt")
+            self.assertEqual(public["selectionAggregation"], "group-balanced-real")
+            self.assertEqual(public["sessionGroupsSha256"], "4"*64)
+            self.assertNotIn("sessionGroupsPath", public)
+            self.assertNotIn("trainSessionIds", public)
+
+    def test_step_zero_requires_explicit_inherited_baseline_provenance(self):
+        _, value = self.checkpoint()
+        baseline = {**value["training"], "steps": 0, "selectionStep": 0, "baselineSelection": True}
+        changes = ({"baselineSelection": False}, {"baselineSelection": 1},
+                   {"steps": 1}, {"selectionStep": 1}, {"steps": False},
+                   {"selectionStep": False}, {"initialCheckpointSha256": "bad"},
+                   {"recipe": "unknown"}, {"selectionAggregation": "unknown"},
+                   {"sessionGroupsSha256": "bad"})
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                training_provenance({**baseline, **change})
+        for missing in ("baselineSelection", "initialCheckpointSha256", "selectionStep"):
+            malformed = {key: item for key, item in baseline.items() if key != missing}
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                training_provenance(malformed)
+        positive = {**value["training"], "baselineSelection": False,
+                    "recipe": "pilot", "selectionAggregation": "global"}
+        public = training_provenance(positive)
+        self.assertIs(public["baselineSelection"], False)
+        self.assertEqual(public["recipe"], "pilot")
 
 
 if __name__ == "__main__":

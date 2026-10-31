@@ -243,63 +243,59 @@ real baselines use the independently captured current-exposure samples.
 
 ## Train and evaluate
 
-The default fresh pilot uses **wide**, AdamW at **1e-4**, **32,000** optimizer
-updates, microbatches of 4, and accumulation of 4 (effective batch 16).
-With `--initialize`, defaults are **5e-5** and **32,000** updates. Use `--steps`
-to override either phase's budget. Microbatches share a grid size and
-palette; inactive color classes are masked before cross-entropy.
+Both recipes use plain PyTorch/AdamW, float32, microbatches of 4 and accumulation
+of 4 (effective batch 16). The maximum budget defaults to **32,000 updates**.
+Use `--steps` to override it. Microbatches share a grid size and palette; reference
+cells and inactive palette classes are excluded from the data-cell objective.
+
+| Recipe | Default selection | Learning rate | Objective | Validation |
+| --- | --- | ---: | --- | --- |
+| `pilot` | Fresh runs, or initialized runs without real training data | 1e-4 fresh; 5e-5 initialized | Ordinary per-frame mean CE | 128 captures every 200 updates |
+| `adapt` | Initialized runs containing real training captures | 1e-5 | 90% mean CE + 10% hardest-quarter CE | All captures every 1,000 updates |
+
+Use `--recipe pilot` explicitly for the plain-CE baseline. The adaptation recipe
+requires `--initialize`, real training data, and an explicit `--session-groups`
+sidecar covering every real receiver session in training and validation. Both
+splits must represent the same real groups. The recommended combined run is
+[below](#recommended-next-training-run); an existing trained wide pilot can be reused.
 
 ```sh
 python experiments/optical-decoder/train.py \
-  --train local-data/synthetic-train \
+  --recipe pilot --train local-data/synthetic-train \
   --validation local-data/synthetic-validation \
   --model wide --device cuda --out checkpoints/optical-decoder/wide-pilot
 ```
 
 For a quick CPU pipeline check, use `--device cpu --steps 10 --batch-size 1
---accumulate 1 --eval-every 5 --validation-samples 4`, with a small generated
-corpus and a fresh run directory. A short smoke run need not recover a payload.
+--accumulate 1 --eval-every 5 --validation-samples 4`, with a small corpus and an
+empty run directory. A short smoke run need not recover a payload.
 
-At each evaluation interval, the trainer chooses `best.pt` by validation exact
-frame recovery, then by lower data-cell loss to break ties. Exact recovery uses
-the existing JS palette mapping, reliability ranking, RS, and CRC, comparing
-accepted bytes with truth afterward. Selection can improve loss while exact
-recovery remains zero; a saved checkpoint is not automatically a usable decoder.
-`history.json` and `validation.json` record these outcomes. An accepted incorrect
-payload stops training for investigation.
+Validation always uses unaugmented inputs and ordinary data-cell CE, even when
+the training objective includes hard cells. Exact recovery uses the current JS
+palette mapping, reliability ranking, RS and CRC; accepted bytes are compared
+with expected bytes afterward. An accepted incorrect payload stops training for
+investigation. Expected payload bytes never enter model inference or repair.
 
-Fine-tune with real captures and synthetic examples at a lower learning rate:
+The trainer evaluates at step zero. An initialized model is eligible for
+`best.pt` immediately, so an unsuccessful adaptation cannot overwrite its starting
+performance with a worse model. A fresh pilot's step-zero random weights are
+only diagnostic, not a trained checkpoint. With group metadata, checkpoint
+selection uses the mean exact-recovery rate across real groups, then their mean
+CE as the tie-break. Without real group metadata it uses the global metrics.
 
-```sh
-python experiments/optical-decoder/train.py \
-  --train local-data/real-train local-data/synthetic-train \
-  --validation local-data/real-validation \
-  --initialize checkpoints/optical-decoder/wide-pilot/best.pt \
-  --real-fraction .5 --device cuda \
-  --out checkpoints/optical-decoder/wide-real
+Pilot validation uses a fixed session/profile-balanced subset by default.
+`--validation-samples 0` evaluates the entire validation corpus; it is the
+adaptation default. Capped evaluation must still include every mapped real group.
+Standalone `evaluate.py --max-samples 0` also evaluates all examples. Reports
+include per-session and per-group CE/error/recovery, confidence calibration,
+phase identities, raw/hard/erasure recovery, wrong accepted frames, and inference
+timing. Both methods receive one exposure per candidate; these are not temporal
+throughput measurements.
 
-python experiments/optical-decoder/evaluate.py \
-  --dataset local-data/real-test \
-  --checkpoint checkpoints/optical-decoder/wide-real/best.pt --split test \
-  --device cuda --out local-results/optical-decoder/real-test.json
-```
-
-Training validation defaults to 128 captures, selected deterministically with
-round-robin coverage across receiver sessions, sources, and grid/palette profiles.
-Increase `--validation-samples` to cover the intended held-out corpus. Evaluation
-reports available/selected/omitted sessions and per-session cell error, phase
-counts, and exact recovery, so a poor camera direction cannot be hidden in a total.
-Standalone `evaluate.py --max-samples 0` evaluates all examples; there is no
-4,096-frame offline ceiling. Subset results are not full-corpus results.
-After model selection, evaluate untouched real test sessions once. The loader
-rejects overlapping sender sessions, receiver sessions, and payloads, including
-checkpoint ancestry. Keep original session IDs intact when moving or joining files.
-
-Reports include cell confusion/error, confidence calibration, raw CRC passes,
-ordinary RS and total acceptance, exact frames, wrong accepted frames, profile
-counts, and inference timing. Both methods receive one exposure per candidate.
-This does not compare temporal windows or measure live goodput; those comparisons
-follow when connecting the selected model to the receiver.
+Whole-session and payload split checks, including checkpoint ancestry, remain
+mandatory. Keep original sender/receiver session IDs intact when moving or
+joining files. Use untouched test sessions only after selecting the model and
+receiver settings on validation.
 
 ## Model profiles and the latest training result
 
@@ -346,11 +342,11 @@ their separate contributions cannot be established from these runs.
 
 The source mixture is already explicit: `--real-fraction .5` gives approximately
 half the draws to real data when both sources share a profile, despite only about
-2% of stored training examples being real. With effective batch 16, 32k updates
-draw each real crop about 167 times on average (about 27 by step 5,200). There is
-currently no online augmentation of those real crops. `trainLoss` is the most
-recent update's mixed-source mean, not an averaged real-only training loss, so its
-absolute value cannot be compared directly with real validation CE.
+2% of stored training examples being real. In that submitted run, effective batch
+16 and 32k updates drew each real crop about 167 times on average (about 27 by
+step 5,200), without online real augmentation. Its `trainLoss` was the latest
+update's mixed-source mean, not an averaged real-only training loss. The current
+adaptation recipe adds augmentation and interval-averaged source/group metrics.
 
 Review found no obvious physical-color/phase, mask, or loss aggregation bug.
 Actual alignment and label quality still require inspecting capture tensors.
@@ -358,81 +354,163 @@ Synthetic crops clip to nominal RGB while real affine-calibrated inputs can
 overshoot to [-1.5,1.5]. Camera processing and interference may differ in other
 ways. The log does not identify which mismatch matters most.
 
-## Next training experiments
+The subsequent full evaluation of that same selected checkpoint covers all 768
+real validation captures: **69 exact recoveries (8.98%)**, 39.32% cell error and
+CE 1.10503; classical recovery is zero. All 69 accepted outputs are correct and
+require ordinary hard-decision RS correction. There are no raw CRC passes or
+additional erasure-assisted recoveries. The higher rate than 7/128 reflects a
+larger evaluation of the same model, not another model improvement.
 
-These are planned, controlled experiments, not newly enabled loss/sampler options.
-Keep the wide architecture fixed and compare each change from the same pilot,
-with the same splits, source ratio, seeds, and validation budget.
+Matching receiver sessions to the supplied capture paths gives:
 
-1. **Diagnose the selected model first.** Evaluate all 768 real validation
-   captures; inspect session-level error/recovery, the confusion matrix, and
-   confidence calibration. Check whether the seven recoveries come from just one
-   session. Examine raw rectified inputs beside physical labels and inspect phase,
-   clipping, and geometry failure patterns. Add separate rolling real/synthetic
-   training metrics and a fixed real-training diagnostic subset before inferring
-   failure to fit real data. Keep test sessions untouched.
-2. **Control adaptation before increasing capacity.** Add validation-driven LR
-   reduction and early stopping, retaining 32k as the maximum budget. Monitor
-   exact recovery with CE as the tie-break; save the selected model. Compare a
-   lower initial fine-tuning LR (1e-5) with the current 5e-5. The current trainer
-   saves the best checkpoint but does not automatically stop or decay LR.
-3. **Diversify real updates.** Sample device direction, then session, payload,
-   phase, and frame, while avoiding repeated bursts within an update. Directions
-   inferred from the pasted paths are 8:4 PC→phone:phone→PC in training and 4:2 in
-   validation; verify this against session notes before using direction labels.
-   Each bundle currently contributes 128 captures, so session balance alone will
-   not change this run's weighting much. Keep 50:50 real/synthetic initially;
-   test 75% real separately, since extra repetition can also increase overfitting.
-4. **Augment real captures mildly online.** Small residual exposure/color/noise
-   variations can preserve measured moiré while increasing variation. Geometric
-   augmentation must preserve cell alignment and transform labels/masks together.
-   Avoid strong extra moiré or opaque masks on already difficult captures. More
-   independent payloads and sessions remain more informative than longer bursts.
+| Direction | Exact recovery | Cell error |
+| --- | ---: | ---: |
+| PC screen → phone camera | 69/512 (13.48%) | 24.76% |
+| Phone screen → PC camera | 0/256 | 68.43% |
 
-For a full validation report using the existing evaluator:
+All successes come from two of six sessions (46 and 23 frames). The four other
+sessions recover nothing. Each session contributes 128 captures with 32 per phase.
+Class frequencies are nearly balanced (6.11–6.34% each). Aggregate expected
+calibration error is 3.11 percentage points; the highest-confidence quarter of
+cells is 99.15% correct at 97.90% average confidence. Group-specific calibration
+may differ, but these measurements prioritize acquisition-domain generalization
+and overfitting over global confidence adjustment or class-frequency weighting.
+
+## Recommended next training run
+
+Run the implemented **combined adaptation recipe once**, keeping the wide
+architecture and the trained `wide-pilot/best.pt`. Reuse the current real and
+synthetic datasets: neither recording again, regenerating synthetics, nor
+retraining the pilot is required for this experiment.
+
+First create a local direction sidecar. The example below follows the supplied
+folder organization: `local-data/phone/` contains captures recorded **on the phone**
+(PC→phone), and `local-data/pc/` contains captures recorded **on the PC** (phone→PC).
+Verify that this describes the files being passed. Flags assign direction;
+filenames, camera names and UUIDs are never used to infer it.
+
+```sh
+python experiments/optical-decoder/session_groups.py \
+  --pc-to-phone local-data/phone/*decoder-captures*.json \
+  --phone-to-pc local-data/pc/*decoder-captures*.json \
+  --datasets local-data/real-train local-data/real-validation \
+  --out local-data/session-groups.json
+
+python experiments/optical-decoder/train.py \
+  --recipe adapt \
+  --train local-data/real-train local-data/synthetic-train \
+  --validation local-data/real-validation \
+  --initialize checkpoints/optical-decoder/wide-pilot/best.pt \
+  --session-groups local-data/session-groups.json \
+  --device cuda --out checkpoints/optical-decoder/wide-adapt
+```
+
+The sidecar command reads actual receiver session IDs from current capture
+exports, rejects conflicting assignments, and verifies coverage against the
+joined datasets before writing. Extra mappings are allowed; missing real-session
+mappings fail. It refuses to overwrite an existing sidecar. Choose an empty run
+directory too. No recording, tensor, dataset or checkpoint format migration is
+needed; session mappings stay in a separate file.
+
+| Setting | Adaptation default |
+| --- | --- |
+| Source allocation | 50% synthetic / 50% real, controlled by `--real-fraction` |
+| Real allocation | Equal quotas per mapped direction, then session → payload → phase → frame |
+| Objective | `0.9 × mean CE + 0.1 × mean CE of the hardest 25% of valid cells`, computed per frame |
+| Online real-only augmentation | Exposure ±0.15 stops, per-channel WB ±0.1 stops, RGB noise standard deviation 0.005 |
+| Optimizer | AdamW, LR 1e-5, weight decay 0.05; gradient norm capped at 5 |
+| Validation | All validation captures every 1,000 updates, plus the step-zero baseline |
+| LR control | Halve after four checks without meaningful selection improvement; floor 2e-6 |
+| Stopping | Stop after twelve checks without meaningful selection improvement; maximum 32k updates |
+
+Source/direction quotas apply to the **whole optimizer update**, not independently
+to its microbatches. With one common profile, two directions, and the default
+batch/accumulation settings, each update contains eight synthetic, four PC→phone,
+and four phone→PC captures. For other batch sizes, fractional source counts use
+seeded stochastic rounding and group remainders are randomized. The sampler
+avoids repeating bursts within an update while distinct bursts are available,
+and avoids repeating exact samples until the relevant pool is exhausted. It
+indexes once rather than scanning the corpus on every update. Every represented
+real grid/palette profile must contain all real groups, preventing a profile from
+silently dropping the difficult direction.
+
+Quotas apply within the profile selected for that update. If additional 4-color
+or G128 profiles contain only synthetic examples, those updates are entirely
+synthetic and the overall real fraction falls below 50%. Check the recorded
+`trainSources` draw counts for the realized mixture; the eight/four/four allocation
+above describes the current shared G64/16 profile, not every heterogeneous corpus.
+
+Augmentation is mild and online: labels/masks and geometry are unchanged,
+synthetic samples pass through unchanged, and measured real moiré is retained.
+The final tensor keeps the calibrated `[-1.5,1.5]` contract without first clipping
+to nominal RGB. The noise standard deviation is specified in RGB 0–1 units
+(0.01 in normalized units). No additional strong moiré, opaque shading or spatial
+smoothing is added. The sampler and augmentation use separate seeded generators.
+
+Checkpoint saving and plateau patience have distinct purposes. `best.pt` accepts
+any strict improvement in direction-balanced exact recovery, then lower ordinary
+CE. Patience resets on a higher balanced exact rate, or, when that rate ties, a
+**relative CE decrease greater than 0.001 (0.1%)** from the meaningful-progress
+anchor. This prevents tiny CE fluctuations from extending training indefinitely.
+LR reductions do not reset the stopping count. With the defaults, four checks
+mean 4,000 updates and twelve mean 12,000 updates. Use `--lr-patience 0` or
+`--stop-patience 0` to disable the respective control; the explicit `pilot` recipe
+disables both by default and keeps plain CE/zero online augmentation.
+
+The run writes `settings.json`, `history.json`, `baseline-validation.json`,
+`final-validation.json`, selected `validation.json` and `best.pt`. History records
+interval-averaged objective, separate real/synthetic CE and draw counts,
+per-direction CE and counts, repeated-burst/sample counts, validation groups,
+selection metrics and LR changes. These training values are measured on the
+actual training inputs, including real augmentation, rather than being directly
+comparable to unaugmented validation loss. The exact group mapping is copied to
+the local run/checkpoint and hashed; public exports expose only the validated
+scalar/hash provenance, not session identities or local paths.
+
+Compare the existing real checkpoint and the new adaptation checkpoint on the
+**same full validation corpus and grouping**:
 
 ```sh
 python experiments/optical-decoder/evaluate.py \
   --dataset local-data/real-validation --split validation \
   --checkpoint checkpoints/optical-decoder/wide-real/best.pt \
+  --session-groups local-data/session-groups.json \
   --max-samples 0 --device cuda \
-  --out local-results/optical-decoder/wide-real-validation.json
+  --out local-results/optical-decoder/wide-real-grouped-validation.json
+
+python experiments/optical-decoder/evaluate.py \
+  --dataset local-data/real-validation --split validation \
+  --checkpoint checkpoints/optical-decoder/wide-adapt/best.pt \
+  --session-groups local-data/session-groups.json \
+  --max-samples 0 --device cuda \
+  --out local-results/optical-decoder/wide-adapt-validation.json
 ```
 
-After those controls, compare these objective/regularization ablations:
+Send both evaluation reports and the adaptation run's `history.json`. The main
+question is whether phone→PC improves while PC→phone is preserved or improves;
+a gain confined to the two already successful sessions leaves the main failure
+unresolved. Check that reported source/group draw counts match the intended
+allocation and whether stopping selected the starting model or a later step.
+Validation remains model-selection data, with correlated captures; after choosing
+the model, evaluate untouched test sessions separately. Add their receiver IDs
+to a new sidecar using their capture exports if group coverage is needed, without
+moving them into training or validation.
 
-| Candidate | Purpose | Initial experiment and limitation |
-| --- | --- | --- |
-| Mean CE + modest hard-cell CE | Give remaining difficult data cells more influence | Per frame, `0.8 × mean CE + 0.2 × mean CE of the hardest 25% of valid cells`; retain ordinary CE validation. The limited contribution prevents hard examples from receiving the entire objective, but cannot fix wrong labels or destroyed colors. |
-| Mild focal loss | Downweight already well-classified cells | Test gamma 1 as an alternative to the hard-cell term, not simultaneously. It can also emphasize unrecoverable captures, so check held-out recovery and confidence. |
-| Confidence regularization | Reduce confidently wrong predictions that disrupt erasure ranking | Compare small label smoothing (e.g. 0.02) or a small Brier-score term separately; tune on held-out validation. Check top-class error as well as confidence. |
-| Weight regularization | Limit memorization of a small real corpus | AdamW already uses its default weight decay (0.01). Compare stronger decay or a small penalty toward pilot weights; too much anchoring may prevent useful adaptation. |
-| Same-phase burst consistency | Encourage stable predictions across captures of the same physical symbols | Keep supervised CE, weight consistency lightly, and exclude mismatched phases/motion failures; shared wrong predictions are not evidence of correctness. |
-| RS-aware auxiliary loss, later | Reduce byte errors per actual codeword rather than just mean cell errors | Use the canonical phase mapping, cell packing and interleaving; penalize soft error estimates above the correction budget. This is a surrogate, not a differentiable CRC or a replacement for exact recovery evaluation. |
-
-Start with one objective change. Random payload colors are approximately balanced
-by design; arbitrary inverse-frequency class weights or Dice/TV smoothness losses
-are not justified without measured imbalance, and neighboring symbols should not
-be encouraged to match. Group reweighting should address observed session or
-direction failures and retain regularization, not blindly chase the hardest group.
-
-Temperature scaling is a cheap later calibration experiment using held-out
-validation: it can change confidence-based erasure choices, but cannot change
-the per-cell argmax or repair the current 40.5% mean cell error by itself. The
-JS logits converter already accepts a temperature; training/evaluation currently
-use 1 and do not fit it automatically. Single-frame evaluation should eventually
-be followed by equal-budget multi-frame recovery, matching the intended receiver.
-
-Relevant methods: [focal loss](https://arxiv.org/abs/1708.02002),
-[regularization under group shifts](https://arxiv.org/abs/1911.08731), and
-[temperature scaling](https://arxiv.org/abs/1706.04599). Their published results
-motivate these experiments; they do not establish an optical-decoder benefit.
+The combined recipe deliberately leaves focal loss, label smoothing, Brier loss,
+temperature fitting and class-frequency weighting out of this run. Same-phase
+consistency and RS-aware auxiliary objectives remain deferred, along with a
+comparison of temporal fusion under equal observation budgets. The present
+experiment tests the practical combined improvement rather than running a long
+ablation sequence. Relevant background includes
+[regularization under group shifts](https://arxiv.org/abs/1911.08731) and
+[confidence calibration](https://arxiv.org/abs/1706.04599); those publications do
+not establish a recovery gain for this optical decoder.
 
 ## Export the selected checkpoint
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/wide-real/best.pt \
+  --checkpoint checkpoints/optical-decoder/wide-adapt/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected

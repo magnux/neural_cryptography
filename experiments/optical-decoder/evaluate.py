@@ -31,7 +31,7 @@ def masked_loss(logits, labels, mask, colors: int):
     return loss[mask].mean()
 
 
-def canonical_recovery(dataset, selected, predictions, work_dir: Path, node="node"):
+def canonical_recovery(dataset, selected, predictions, work_dir: Path, node="node", *, session_groups=None):
     rows = []
     for index, manifest in enumerate(sorted({sample.manifest for sample in selected})):
         wanted = [sample for sample in selected if sample.manifest == manifest]
@@ -45,8 +45,19 @@ def canonical_recovery(dataset, selected, predictions, work_dir: Path, node="nod
             raise RuntimeError(f"Canonical recovery bridge failed: {process.stderr[-2000:]}")
         result = json.loads(process.stdout)
         values = result.get("samples")
-        if not isinstance(values, list) or {row.get("id") for row in values} != {sample.id for sample in wanted}:
+        if (not isinstance(values, list) or len(values) != len(wanted)
+                or {row.get("id") for row in values} != {sample.id for sample in wanted}):
             raise RuntimeError("Canonical recovery returned a different sample set")
+        # Attach reporting identities only after independent canonical decoding.
+        # They never enter the prediction file or the decoder's evidence.
+        by_id = {sample.id: sample for sample in wanted}
+        for row in values:
+            metadata = by_id[row["id"]].metadata
+            row["sessionId"] = metadata["sessionId"]
+            row["phase"] = metadata["info"].get("phase", 0)
+            row["group"] = (session_groups[metadata["sessionId"]]
+                if session_groups is not None and metadata["source"] == "real"
+                else f"source:{metadata['source']}")
         rows.extend(values)
     summary = {}
     for name in ("classical", "learned"):
@@ -90,11 +101,63 @@ def select_samples(samples, maximum=0):
     return selected
 
 
+def summarize_groups(per_session, session_groups=None, *, exact=True):
+    """Aggregate session measurements, retaining macro group selection separately.
+
+    Each group's CE/error is cell weighted and its recovery is frame weighted.
+    Adaptation selection then gives each real group equal weight, regardless of
+    its number of frames; synthetic rows never dilute that selection objective.
+    """
+    grouped, sourced = defaultdict(list), defaultdict(list)
+    for session_id, row in per_session.items():
+        source = row["source"]
+        name = (session_groups[session_id] if session_groups is not None and source == "real"
+                else f"source:{source}")
+        grouped[name].append(row)
+        sourced[source].append(row)
+
+    def combine(rows):
+        samples = sum(row["samples"] for row in rows)
+        cells = sum(row["dataCells"] for row in rows)
+        wrong = sum(row["wrongCells"] for row in rows)
+        result = {"samples": samples, "dataCells": cells, "wrongCells": wrong,
+                  "loss": sum(row["loss"]*row["dataCells"] for row in rows)/cells,
+                  "cellErrorRate": wrong/cells}
+        for name in ("learned", "classical"):
+            frames = sum(row[name+"ExactFrames"] for row in rows) if exact else None
+            result[name+"ExactFrames"] = frames
+            result[name+"ExactRate"] = frames/samples if exact else None
+        return result
+
+    groups = {name: combine(rows) for name, rows in sorted(grouped.items())}
+    sources = {name: combine(rows) for name, rows in sorted(sourced.items())}
+    real_groups = sorted({session_groups[session_id] for session_id, row in per_session.items()
+                          if row["source"] == "real"}) if session_groups is not None else []
+    if real_groups:
+        count = len(real_groups)
+        score = {"method": "group-balanced-real", "groups": real_groups,
+                 "exactRate": sum(groups[name]["learnedExactRate"] for name in real_groups)/count if exact else None,
+                 "loss": sum(groups[name]["loss"] for name in real_groups)/count,
+                 "cellErrorRate": sum(groups[name]["cellErrorRate"] for name in real_groups)/count}
+    else:
+        all_rows = combine(list(per_session.values()))
+        score = {"method": "global", "groups": [], "exactRate": all_rows["learnedExactRate"],
+                 "loss": all_rows["loss"], "cellErrorRate": all_rows["cellErrorRate"]}
+    return {"groups": groups, "sources": sources, "selectionScore": score}
+
+
 def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node="node", exact=True,
-                   work_dir=None):
+                   work_dir=None, session_groups=None):
     if max_samples < 0:
         raise ValueError("max_samples must be nonnegative")
     selected = select_samples(dataset.samples, max_samples)
+    if session_groups is not None:
+        from sampling import validate_session_groups
+        available_groups = validate_session_groups(dataset.samples, session_groups)
+        selected_groups = validate_session_groups(selected, session_groups)
+        omitted_groups = available_groups-selected_groups
+        if omitted_groups:
+            raise ValueError(f"Capped evaluation omits real groups {sorted(omitted_groups)}; increase max_samples or use 0")
     directory = Path(work_dir or Path.cwd()/"local-results/optical-decoder").resolve()
     directory.mkdir(parents=True, exist_ok=True)
     previous_mode = model.training
@@ -126,7 +189,8 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
                     target = torch.from_numpy(labels[None]).to(device)
                     valid = torch.from_numpy(mask[None]).to(device)
                     count = int(mask.sum())
-                    loss_sum += float(masked_loss(output, target, valid, colors))*count
+                    sample_loss = float(masked_loss(output, target, valid, colors))
+                    loss_sum += sample_loss*count
                     cells += count
                     probabilities = torch.softmax(logits, dim=1)[0].cpu().numpy()
                     chosen = probabilities.argmax(axis=0)[mask]
@@ -134,10 +198,15 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
                     confidence = probabilities.max(axis=0)[mask]
                     session_id = sample.metadata["sessionId"]
                     group = per_session.setdefault(session_id, {"samples": 0, "dataCells": 0, "wrongCells": 0,
-                        "phases": {}, "learnedExactFrames": 0, "classicalExactFrames": 0})
+                        "source": sample.metadata["source"], "lossSum": 0.,
+                        "phases": {}, "learnedExactFrames": 0 if exact else None,
+                        "classicalExactFrames": 0 if exact else None})
+                    if group["source"] != sample.metadata["source"]:
+                        raise ValueError("A receiver session cannot mix real and synthetic sources")
                     group["samples"] += 1
                     group["dataCells"] += count
                     group["wrongCells"] += int(np.count_nonzero(chosen != truth))
+                    group["lossSum"] += sample_loss*count
                     phase = str(sample.metadata["info"].get("phase", 0))
                     group["phases"][phase] = group["phases"].get(phase, 0)+1
                     np.add.at(confusion, (truth, chosen), 1)
@@ -151,7 +220,8 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
                         path = temp/f"prediction-{index}.f32"
                         path.write_bytes(np.ascontiguousarray(values, dtype="<f4").tobytes())
                         predictions[sample.id] = path
-            recovery = canonical_recovery(dataset, selected, predictions, temp, node) if exact else None
+            recovery = canonical_recovery(dataset, selected, predictions, temp, node,
+                                          session_groups=session_groups) if exact else None
     finally:
         model.train(previous_mode)
     selected_by_id = {sample.id: sample for sample in selected}
@@ -162,6 +232,10 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
             group["classicalExactFrames"] += int(row["classical"]["exact"])
     for group in per_session.values():
         group["cellErrorRate"] = group["wrongCells"]/group["dataCells"]
+        group["loss"] = group.pop("lossSum")/group["dataCells"]
+        for name in ("learned", "classical"):
+            group[name+"ExactRate"] = group[name+"ExactFrames"]/group["samples"] if exact else None
+    summaries = summarize_groups(per_session, session_groups, exact=exact)
     available_sessions = {sample.metadata["sessionId"] for sample in dataset.samples}
     nonempty = bins[:, 0] > 0
     ece = np.sum(np.abs(bins[nonempty, 1]-bins[nonempty, 2])) / cells
@@ -173,7 +247,7 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
                 "availableSessions": len(available_sessions), "selectedSessions": len(per_session),
                 "omittedSessions": sorted(available_sessions-set(per_session)),
                 "note": "A capped evaluation is a subset; use --max-samples 0 for all held-out samples."},
-            "sessions": per_session,
+            "sessions": per_session, **summaries,
             "dataCells": cells, "loss": loss_sum/cells,
             "cellErrorRate": 1-float(np.trace(confusion))/cells,
             "confusion": confusion.tolist(), "expectedCalibrationError": float(ece),
@@ -193,6 +267,7 @@ def main():
     parser.add_argument("--device", choices=("cpu", "cuda", "auto"), default="auto")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--max-samples", type=int, default=0)
+    parser.add_argument("--session-groups", type=Path, help="explicit receiver-session groups for balanced real-direction metrics")
     parser.add_argument("--node", default="node")
     parser.add_argument("--out", type=Path, default=Path("local-results/optical-decoder/evaluation.json"))
     args = parser.parse_args()
@@ -203,10 +278,14 @@ def main():
     try:
         from checkpoint import load_model_checkpoint
         dataset = Dataset(args.dataset, args.split)
+        session_groups = None
+        if args.session_groups:
+            from sampling import load_session_groups
+            session_groups = load_session_groups(args.session_groups)
         model, checkpoint = load_model_checkpoint(args.checkpoint)
         check_checkpoint_overlap(checkpoint, dataset, args.split)
         result = evaluate_model(model, dataset, device=device, max_samples=args.max_samples,
-                                node=args.node, work_dir=args.out.resolve().parent)
+                                node=args.node, work_dir=args.out.resolve().parent, session_groups=session_groups)
         result["modelProfile"] = model.profile
         result["split"] = args.split
         result["checkpoint"] = str(args.checkpoint.resolve())
@@ -216,6 +295,7 @@ def main():
         parser.exit(1, f"Evaluation failed: {error}\n")
     print(json.dumps({"samples": result["samples"], "cellErrorRate": result["cellErrorRate"],
                       "loss": result["loss"], "recovery": result["recovery"]["summary"],
+                      "groups": result["groups"], "selectionScore": result["selectionScore"],
                       "report": str(args.out.resolve())}, indent=2))
 
 
