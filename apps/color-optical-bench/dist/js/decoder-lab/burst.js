@@ -1,14 +1,15 @@
 import {canonicalJSON} from '../dataset/contract.js';
+import {validFrameCount, MAX_INPUT_FRAMES} from './runtime.js';
 
 /** A bounded inference-only stack of distinct, already rectified exposures.
  * Header identity comes from each exposure; no sender labels or payload truth.
  */
 export class CameraBurst {
   constructor(frames) {
-    if (![1,4].includes(frames)) throw Error('Camera burst requires one or four frames.');
+    if (!validFrameCount(frames)) throw Error(`Camera burst requires 1–${MAX_INPUT_FRAMES} frames.`);
     this.frames=frames; this.reset();
   }
-  reset() { this.context=null; this.header=null; this.rows=[]; this.lastTime=-Infinity; this.lastFrame=0; }
+  reset() { this.context=null; this.header=null; this.rows=[]; this.input=null; this.lastTime=-Infinity; this.lastFrame=0; }
   add(crop,{context,mediaTime,presentedFrames}={}) {
     const g=crop?.info?.size, length=3*(4*g)**2;
     if (typeof context!=='string'||!context||context.length>256||!Number.isFinite(mediaTime)||mediaTime<0 ||
@@ -24,16 +25,17 @@ export class CameraBurst {
     if (mediaTime<=this.lastTime||presentedFrames<=this.lastFrame) throw Error('A camera burst requires distinct increasing video frames.');
     this.lastTime=mediaTime;this.lastFrame=presentedFrames;
     const header=canonicalJSON(crop.info);
-    if (header!==this.header) { this.rows=[]; this.header=header; }
-    if (this.rows.length>=this.frames) throw Error('Camera burst is complete; reset before collecting another.');
-    this.rows.push({input:crop.input,mediaTime,presentedFrames,stats:crop.stats??{}});
-    const ready=this.rows.length===this.frames;
-    let input=null;
-    if (ready) {
-      input=new Float32Array(this.frames*length);
-      this.rows.forEach((row,index)=>input.set(row.input,index*length));
+    if (header!==this.header) {
+      this.rows=[]; this.header=header;
+      // Assemble directly into one bounded tensor rather than retaining every
+      // crop and then allocating a second full stack when collection completes.
+      if (this.input?.length!==this.frames*length) this.input=new Float32Array(this.frames*length);
     }
-    return {ready,collected:this.rows.length,required:this.frames,input,
+    if (this.rows.length>=this.frames) throw Error('Camera burst is complete; reset before collecting another.');
+    this.input.set(crop.input,this.rows.length*length);
+    this.rows.push({mediaTime,presentedFrames,stats:crop.stats??{}});
+    const ready=this.rows.length===this.frames;
+    return {ready,collected:this.rows.length,required:this.frames,input:ready?this.input:null,
       mediaTimes:this.rows.map(row=>row.mediaTime),presentedFrames:this.rows.map(row=>row.presentedFrames),
       preprocessMs:this.rows.reduce((sum,row)=>sum+(Number(row.stats.preprocessMs)||0),0)};
   }

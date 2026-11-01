@@ -61,13 +61,15 @@ the Python fixture. The browser requires finite logits and elementwise
    endpoints, including failures. Save before leaving the page; reports are
    kept only in memory, capped at 50 tests.
 
-The camera probe uses the prepared model's `framesPerInput` (one or four).
-For four-frame models it automatically collects four distinct video exposures
+The camera probe uses the prepared model's `framesPerInput` (integer 1–64).
+It automatically collects that many distinct video exposures
 of the same complete header/phase, verified by `requestVideoFrameCallback`
 media timestamps and presented-frame counters, rectifies and color-corrects each separately,
 and stacks their RGB channels. A changed identity clears the partial stack;
 geometry failure, cancel, camera restart or a new run discards it. Use a current browser with video-frame callbacks; the playback clock alone
-is not accepted as evidence of a new frame. Collection has bounded retries and does not duplicate an exposure to fill missing slots.
+is not accepted as evidence of a new frame. Collection targets 100 ms start-to-start sampling, bounds retries in proportion to
+T, and never duplicates an exposure to fill missing slots. Processing and inference
+add latency; this is a cadence target, not a guaranteed end-to-end rate.
 
 The camera probe revalidates geometry/header and samples each exposure's
 palette, even if payload CRC would fail. It reports preprocessing and inference
@@ -95,7 +97,7 @@ G64. Training begins after we establish a usable receiving profile on each side.
 | Compact/wide U-Nets and fixed-shape ONNX graphs | [`experiments/optical-decoder/`](../experiments/optical-decoder/README.md) |
 | Validated dense physical crop, including references | `vision.js` → `extractDensePayload()` |
 | Per-exposure correction and `[1,3,4G,4G]` crop | `learned-input.js` → `extractLearnedInput()` |
-| One/four-exposure `[1,3T,4G,4G]` input assembly | `js/decoder-lab/burst.js` → `CameraBurst` |
+| 1–64-exposure `[1,3T,4G,4G]` input assembly | `js/decoder-lab/burst.js` → `CameraBurst` |
 | Palette mask, phase inversion, reference exclusion | `learned-input.js` → `logitsToLogicalScores()` |
 | Bounded inference, asset hashing, backend selection | `js/decoder-lab/worker.js` and `runtime.js` |
 | Worker lifecycle and independent lab UI | `js/decoder-lab/client.js`, `lab.js`, `decoder.html` |
@@ -115,9 +117,10 @@ npm run test:decoder:wasm
 ```
 
 Current exports declare required `framesPerInput` and matching channel counts;
-regenerate local bundles after updating. A four-frame G128 input is 12 MiB of
-float32 pixels before runtime working memory. Both input sizes use the same
-488,544-parameter wide weights.
+regenerate local bundles after updating. A five-frame G128 input is 15 MiB of
+float32 pixels before runtime working memory (192 MiB at 64 frames). Both grid
+sizes use the same weights: wide has 489,024 parameters at five frames. The
+frame count is fixed in an export; the lab follows that model rather than reshaping it.
 
 The last command requires the exported/prepared assets and runs the same ONNX
 Runtime Web bundle's WASM backend in **Node** against the Python fixtures. It is

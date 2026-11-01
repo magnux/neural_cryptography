@@ -158,7 +158,7 @@ test('target reconstruction preserves G128/4 phases and refuses split leakage or
 }));
 
 
-test('burst evaluation fuses exactly four observations and rejects identity mixing or reuse',async()=>temp(async root=>{
+for(const frames of [4,5])test(`burst evaluation fuses exactly ${frames} observations and rejects identity mixing or reuse`,async()=>temp(async root=>{
   const directory=join(root,'burst');
   await generate({out:directory,count:'1',size:'64',colors:'4',phases:'1',seed:'765',split:'validation'});
   const path=join(directory,'manifest.json'),manifest=JSON.parse(await readFile(path,'utf8')),original=manifest.samples[0];
@@ -167,7 +167,7 @@ test('burst evaluation fuses exactly four observations and rejects identity mixi
   const correct=logitsToLogicalScores(logits,original.info),wrong=correct.slice();
   for(let cell=0;cell<wrong.length;cell+=4)for(let color=0;color<4;color++)wrong[cell+color]=correct[cell+(color+1)%4];
   assert.equal(decodeScores(original.info,wrong,{}, {recovery:'erasures'}).ok,false);
-  manifest.samples=Array.from({length:4},(_,index)=>({...copy(original),id:`burst-${index}`,source:'real',
+  manifest.samples=Array.from({length:frames},(_,index)=>({...copy(original),id:`burst-${index}`,source:'real',
     sessionId:'real-fixture-session',senderSessionId:'sender-fixture-session',burstId:'one-burst',timestamp:index*100,
     baseline:`baseline-${index}.f32`}));
   for(const [index,row] of manifest.samples.entries()) {
@@ -176,13 +176,18 @@ test('burst evaluation fuses exactly four observations and rejects identity mixi
   }
   await writeFile(path,JSON.stringify(manifest));
   await writeFile(join(root,'prediction.f32'),floatBytes(logits));
-  const predictionPath=join(root,'prediction.json'),prediction={framesPerInput:4,samples:[{
+  const predictionPath=join(root,'prediction.json'),prediction={framesPerInput:frames,samples:[{
     id:'burst-0',memberIds:manifest.samples.map(row=>row.id),logits:'prediction.f32'}]};
   await writeFile(predictionPath,JSON.stringify(prediction));
   const result=await evaluate({dataset:directory,predictions:predictionPath});
-  assert.equal(result.summary.samples,1);assert.equal(result.summary.inputCaptures,4);
-  assert.equal(result.summary.classical.exact,1,'three agreeing captures overcome the wrong first capture');
+  assert.equal(result.summary.samples,1);assert.equal(result.summary.inputCaptures,frames);
+  assert.equal(result.summary.classical.exact,1,'agreeing captures overcome the wrong first capture');
   assert.equal(result.summary.learned.exact,1);
+  for(const invalid of [0,65,2.5,'5']) {
+    await writeFile(predictionPath,JSON.stringify({...prediction,framesPerInput:invalid}));
+    await assert.rejects(evaluate({dataset:directory,predictions:predictionPath}),/Unsupported dataset\/prediction/);
+  }
+  await writeFile(predictionPath,JSON.stringify(prediction));
   for(const mutation of [row=>row.source='synthetic',row=>row.sessionId='other-session',
     row=>row.info.phase=1,row=>row.burstId='independent-synthetic-burst',row=>row.split='test']) {
     const mixed=copy(manifest);mutation(mixed.samples[3]);await writeFile(path,JSON.stringify(mixed));
@@ -192,7 +197,7 @@ test('burst evaluation fuses exactly four observations and rejects identity mixi
   const duplicated=copy(prediction);duplicated.samples[0].memberIds[3]='burst-0';
   await writeFile(predictionPath,JSON.stringify(duplicated));
   await assert.rejects(evaluate({dataset:directory,predictions:predictionPath}),/distinct member/);
-  const reused=copy(prediction);reused.samples.push({...reused.samples[0],id:'burst-1',memberIds:['burst-1','burst-0','burst-2','burst-3']});
+  const reused=copy(prediction);reused.samples.push({...reused.samples[0],id:'burst-1',memberIds:['burst-1','burst-0',...prediction.samples[0].memberIds.slice(2)]});
   await writeFile(predictionPath,JSON.stringify(reused));
   await assert.rejects(evaluate({dataset:directory,predictions:predictionPath}),/reused across candidates/);
   await writeFile(predictionPath,JSON.stringify(prediction));

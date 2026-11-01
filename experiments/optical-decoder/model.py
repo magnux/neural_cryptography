@@ -1,4 +1,4 @@
-"""One- or four-frame optical classifiers with a shared browser tensor contract.
+"""Multiframe optical classifiers with a shared browser tensor contract.
 
 Both profiles accept stacked RGB, [N,3*T,4G,4G], and predict physical palette
 logits, [N,16,G,G]. Neither receives keys, labels, or expected payload bytes.
@@ -8,7 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from contract import FRAME_COUNTS
+from contract import CHANNELS, FRAME_COUNTS, MAX_FRAMES
 
 
 MODEL_PROFILES = ("compact", "wide")
@@ -57,7 +57,7 @@ class OpticalDecoder(nn.Module):
         if profile not in MODEL_PROFILES:
             raise ValueError(f"Choose model profile from {MODEL_PROFILES}")
         if type(frames) is not int or frames not in FRAME_COUNTS:
-            raise ValueError("Choose one or four input frames")
+            raise ValueError(f"Choose 1 to {MAX_FRAMES} input frames")
         self.profile = profile
         self.frames = frames
         width = 16 if profile == "compact" else 32
@@ -103,26 +103,28 @@ def profile_from_state(state: dict) -> str:
 def frames_from_state(state: dict) -> int:
     """Read the input width; remaining tensor shapes are checked by the loader."""
     weight = state.get("inlet.0.0.weight") if isinstance(state, dict) else None
-    if not isinstance(weight, torch.Tensor) or weight.ndim != 4 or weight.shape[1] not in (3, 12):
+    if (not isinstance(weight, torch.Tensor) or weight.ndim != 4
+            or weight.shape[1] % CHANNELS != 0 or weight.shape[1] // CHANNELS not in FRAME_COUNTS):
         raise ValueError("Checkpoint does not have a supported input frame count")
-    return int(weight.shape[1] // 3)
+    return int(weight.shape[1] // CHANNELS)
 
 
 def initialize_frames(model: OpticalDecoder, frames: int) -> OpticalDecoder:
-    """Explicitly initialize a four-frame model from a trained single-frame model.
+    """Explicitly initialize a multiframe model from a trained single-frame model.
 
-    Only the two RGB-facing convolutions change: every frame gets one quarter
-    of the original weights. Repeating an identical input across all four slots
+    Only the two RGB-facing convolutions change: every frame gets 1/T of
+    the original weights. Repeating an identical input across all T slots
     therefore preserves the initial function, apart from floating-point rounding.
     All other parameters, including biases, are copied exactly. This is an
     intentional training initialization, never a permissive checkpoint reader.
     """
     if type(frames) is not int or frames not in FRAME_COUNTS:
-        raise ValueError("Choose one or four input frames")
+        raise ValueError(f"Choose 1 to {MAX_FRAMES} input frames")
     if model.frames == frames:
         return model
-    if model.frames != 1 or frames != 4:
-        raise ValueError("Only a one-to-four-frame warm start is supported")
+    if model.frames != 1:
+        raise ValueError("Changing the frame count requires a single-frame source checkpoint; "
+                         "use the original pilot or keep the checkpoint's frame count")
     parameter = next(model.parameters())
     expanded = OpticalDecoder(model.profile, frames=frames).to(
         device=parameter.device, dtype=parameter.dtype)

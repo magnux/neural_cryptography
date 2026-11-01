@@ -21,7 +21,7 @@ import numpy as np
 import onnx
 import torch
 
-from contract import (ATOL, CHANNELS, CLASSES, FORMAT, FRAME_COUNTS, INPUT_NAME, OUTPUT_NAME,
+from contract import (ATOL, CHANNELS, CLASSES, FORMAT, FRAME_COUNTS, MAX_FRAMES, INPUT_NAME, OUTPUT_NAME,
                       PIXELS_PER_CELL, RTOL, SIZES, VERSION,
                       describe_file, fixture_input, shapes, write_f32)
 from model import MODEL_PROFILES, OpticalDecoder, parameter_count
@@ -89,7 +89,7 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
     torch.set_num_threads(threads)
     torch.manual_seed(seed)
     if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
-        raise ValueError("Choose one or four input frames")
+        raise ValueError(f"Choose 1 to {MAX_FRAMES} input frames")
     model = OpticalDecoder(profile or "wide", frames=frames if frames is not None else 1).cpu().eval()
     provenance = {}
     if checkpoint is not None:
@@ -182,7 +182,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--checkpoint", type=Path, help="export a checkpoint from the current training command")
     parser.add_argument("--model", choices=MODEL_PROFILES, help="untrained profile (default wide); checkpoints select their own profile")
-    parser.add_argument("--frames", type=int, choices=FRAME_COUNTS,
+    parser.add_argument("--frames", type=int, choices=FRAME_COUNTS, metavar=f"1..{MAX_FRAMES}",
                         help="untrained input frames (default 1); checkpoints select their own frame count")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--skip-ort-check", action="store_true",

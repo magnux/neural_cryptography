@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateManifest, validateOptions, compareLogits, accumulateParity, summarizeTimings, decodeFloat32, verifyArtifact} from '../dist/js/decoder-lab/runtime.js';
+import {validateManifest, validateOptions, compareLogits, accumulateParity, summarizeTimings, decodeFloat32, verifyArtifact, MAX_INPUT_FRAMES, MAX_INPUT_BYTES} from '../dist/js/decoder-lab/runtime.js';
 import {CameraBurst} from '../dist/js/decoder-lab/burst.js';
 import {DecoderClient} from '../dist/js/decoder-lab/client.js';
 
 function manifest(frames=1,profile='compact') {
   const entry=(file,bytes)=>({file,bytes,sha256:'a'.repeat(64)});
-  const count={compact:{1:121792,4:122440},wide:{1:487104,4:488544}}[profile][frames];
+  const count=profile==='compact'?121576+216*frames:486624+480*frames;
   return {format:'optical-decoder',version:1,status:'untrained',modelProfile:profile,framesPerInput:frames,parameterCount:count,pixelsPerCell:4,channels:3*frames,classes:16,
     inputName:'pixels',outputName:'logits',seed:7,opset:17,versions:{torch:'test'},cases:[64,128].map(size=>({size,
       inputShape:[1,3*frames,4*size,4*size],outputShape:[1,16,size,size],model:entry(`model-${size}.onnx`,500000),
@@ -98,31 +98,38 @@ test('active model profiles validate exact parameter counts without changing ten
 });
 
 
-test('four-frame artifacts require exact channels/counts and allow bounded G128 stacks',()=>{
-  for (const profile of ['compact','wide']) {
-    const value=manifest(4,profile);
+test('arbitrary frame stacks require exact channels/counts through the G128/64-frame bound',()=>{
+  assert.equal(MAX_INPUT_FRAMES,64);assert.equal(MAX_INPUT_BYTES,192*1024*1024);
+  for (const profile of ['compact','wide']) for (const frames of [1,4,5,32,64]) {
+    const value=manifest(frames,profile);
     assert.equal(validateManifest(value),value);
-    assert.equal(value.cases[1].input.bytes,12*512*512*4);
-    for (const mutate of [m=>delete m.framesPerInput,m=>m.framesPerInput=2,m=>m.channels=3,
-      m=>m.cases[0].inputShape[1]=3,m=>m.cases[1].input.bytes++,m=>m.parameterCount=500001]) {
-      const bad=manifest(4,profile);mutate(bad);assert.throws(()=>validateManifest(bad));
+    assert.equal(value.cases[1].input.bytes,3*frames*512*512*4);
+    for (const mutate of [m=>delete m.framesPerInput,m=>m.framesPerInput=0,m=>m.framesPerInput=65,
+      m=>m.framesPerInput=2.5,m=>m.framesPerInput='5',m=>m.channels++,
+      m=>m.cases[0].inputShape[1]++,m=>m.cases[1].input.bytes++,m=>m.parameterCount++]) {
+      const bad=manifest(frames,profile);mutate(bad);assert.throws(()=>validateManifest(bad));
     }
   }
+  assert.equal(manifest(5,'wide').parameterCount,489024);
+  assert.equal(manifest(64,'wide').parameterCount,517344);
+  assert.equal(manifest(64,'compact').parameterCount,135400);
+  assert.equal(manifest(64).cases[1].input.bytes,MAX_INPUT_BYTES);
 });
 function cameraCrop(value=0,overrides={}) {
   return {input:new Float32Array(3*256*256).fill(value),info:{size:64,colors:16,
     id:'0000000000000001',phase:0,phases:4,index:0,count:1,...overrides},stats:{preprocessMs:2}};
 }
-test('camera burst stacks four distinct exposures in RGB channel order',()=>{
-  const burst=new CameraBurst(4);let result;
-  for(let i=0;i<4;i++) {
+test('camera burst stacks five distinct exposures in RGB channel order without a duplicate stack',()=>{
+  const burst=new CameraBurst(5);let result;
+  for(let i=0;i<5;i++) {
     result=burst.add(cameraCrop(i*.25),{context:'model/run1',mediaTime:i/30,presentedFrames:i+1});
-    assert.equal(result.ready,i===3);assert.equal(result.collected,i+1);
-    if(i<3)assert.equal(result.input,null);
+    assert.equal(result.ready,i===4);assert.equal(result.collected,i+1);
+    if(i<4)assert.equal(result.input,null);
+    assert.equal(burst.rows[i].input,undefined);
   }
-  assert.equal(result.input.length,12*256*256);assert.equal(result.preprocessMs,8);
-  for(let i=0;i<4;i++)assert.ok(result.input.subarray(i*3*256*256,(i+1)*3*256*256).every(x=>x===i*.25));
-  assert.deepEqual(result.mediaTimes,[0,1/30,2/30,3/30]);
+  assert.equal(result.input,burst.input);assert.equal(result.input.length,15*256*256);assert.equal(result.preprocessMs,10);
+  for(let i=0;i<5;i++)assert.ok(result.input.subarray(i*3*256*256,(i+1)*3*256*256).every(x=>x===i*.25));
+  assert.deepEqual(result.mediaTimes,[0,1/30,2/30,3/30,4/30]);
   assert.throws(()=>burst.add(cameraCrop(),{context:'model/run1',mediaTime:1,presentedFrames:10}),/complete/);
 });
 test('camera burst discards mixed headers/phases and resets on run/model/camera changes',()=>{
@@ -143,7 +150,8 @@ test('camera burst rejects duplicate timestamps and malformed inputs without fab
   const bad=cameraCrop();bad.input[2]=NaN;
   assert.throws(()=>burst.add(bad,{context:'run',mediaTime:2,presentedFrames:20}),/Invalid/);
   assert.equal(burst.rows.length,0);
-  assert.throws(()=>new CameraBurst(2));
+  for(const frames of [0,-1,65,2.5,NaN,Infinity,'5',undefined])assert.throws(()=>new CameraBurst(frames));
+  const largest=new CameraBurst(64);assert.equal(largest.frames,64);assert.equal(largest.input,null);
   assert.throws(()=>burst.add({...crop,input:new Float32Array(12)},{context:'run',mediaTime:3,presentedFrames:30}),/Invalid/);
   const single=new CameraBurst(1).add(crop,{context:'single',mediaTime:1,presentedFrames:10});
   assert.equal(single.ready,true);assert.equal(single.input.length,crop.input.length);

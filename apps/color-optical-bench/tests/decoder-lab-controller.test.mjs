@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
-import {validateOptions,summarizeTimings} from '../dist/js/decoder-lab/runtime.js';
+import {validateOptions,summarizeTimings,validFrameCount,MAX_INPUT_FRAMES} from '../dist/js/decoder-lab/runtime.js';
 
-async function harness({advance=true,alwaysWaiting=false,duplicateFrame=false}={}) {
-  const nodes=new Map(),calls=[],clients=[],pendingFrames=new Map();let stopped=0,requestedFrames=0,canceledFrames=0,presented=0;
+async function harness({advance=true,alwaysWaiting=false,duplicateFrame=false,frames=4,frameInterval=100}={}) {
+  const nodes=new Map(),calls=[],clients=[],pendingFrames=new Map();let stopped=0,requestedFrames=0,canceledFrames=0,presented=0,clock=0;
   class Element {
     constructor(id='') {this.id=id;this.value='';this.hidden=false;this.disabled=false;this.dataset={};this.children=[];this.listeners={};}
     addEventListener(name,fn) {this.listeners[name]=fn;}
@@ -21,9 +21,9 @@ async function harness({advance=true,alwaysWaiting=false,duplicateFrame=false}={
     const id=++requestedFrames;pendingFrames.set(id,callback);
     if(advance||id===1)queueMicrotask(()=>{
       if(!pendingFrames.has(id))return;
-      pendingFrames.delete(id);video.currentTime+=.1;
+      pendingFrames.delete(id);video.currentTime+=.1;clock+=frameInterval;
       if(!(duplicateFrame&&id===2))presented++;
-      callback(performance.now(),{mediaTime:presented/30,presentedFrames:presented});
+      callback(clock,{mediaTime:presented/30,presentedFrames:presented});
     });
     return id;
   };
@@ -33,19 +33,19 @@ async function harness({advance=true,alwaysWaiting=false,duplicateFrame=false}={
   class FakeClient {
     constructor() {this.canceled=0;clients.push(this);}
     async call(operation,options,transfer) {
-      calls.push({operation,options,transfer});
+      calls.push({operation,options,transfer,captureStartedMs:clock});
       // The playback clock may advance independently of presented frames.
       video.currentTime+=.01;
-      if(alwaysWaiting||calls.length%4!==0)return {waiting:true,collected:calls.length%4||1,framesPerInput:4,operation:'capture'};
-      return {operation:'capture',modelStatus:'trained',size:64,paletteColors:16,framesPerInput:4,inputCaptures:4,
+      if(alwaysWaiting||calls.length%frames!==0)return {waiting:true,collected:calls.length%frames||1,framesPerInput:frames,operation:'capture'};
+      return {operation:'capture',modelStatus:'trained',size:64,paletteColors:16,framesPerInput:frames,inputCaptures:frames,
         inputStats:{preprocessMs:8},inferenceMs:1,effectiveBackend:'wasm',logitsFinite:true,note:'fixture'};
     }
     cancel() {this.canceled++;}
   }
   const document={getElementById:element,createElement:tag=>new Element(tag),addEventListener(){},hidden:false};
-  const context=vm.createContext({DecoderClient:FakeClient,validateOptions,summarizeTimings,document,
+  const context=vm.createContext({DecoderClient:FakeClient,validateOptions,summarizeTimings,validFrameCount,MAX_INPUT_FRAMES,document,
     window:{addEventListener(){}},navigator:{mediaDevices:{getUserMedia:async()=>stream,enumerateDevices:async()=>[]}},
-    isSecureContext:true,Worker:function(){},crypto:globalThis.crypto,performance,DOMException,Date,
+    isSecureContext:true,Worker:function(){},crypto:globalThis.crypto,performance:{now:()=>clock},DOMException,Date,
     Uint8ClampedArray,Option:class{},requestAnimationFrame:()=>1,cancelAnimationFrame(){},setTimeout:(fn,ms)=>setTimeout(fn,ms===3000?30:ms),clearTimeout});
   const source=(await readFile(new URL('../dist/js/decoder-lab/lab.js',import.meta.url),'utf8')).replace(/^import .*;\n/gm,'');
   vm.runInContext(source+'\nglobalThis.testLab={run,startCamera,stopCamera,cancel,get records(){return records},get busy(){return busy}};',context);
@@ -82,11 +82,22 @@ test('camera stop cancels a burst waiting for a new exposure; restart uses a new
 });
 
 test('camera collection stops after a bounded number of phase resets',async()=>{
-  const h=await harness({alwaysWaiting:true});await h.lab.run('capture');
-  assert.equal(h.calls.length,16);assert.equal(h.clients[0].canceled,1);
-  assert.equal(h.lab.records[0].ok,false);
-  assert.match(h.lab.records[0].error,/phase kept changing/);
-  assert.equal(h.lab.busy,false);
+  for(const frames of [4,5,64]) {
+    const h=await harness({alwaysWaiting:true,frames});await h.lab.run('capture');
+    assert.equal(h.calls.length,4*frames);assert.equal(h.clients[0].canceled,1);
+    assert.equal(h.lab.records[0].ok,false);
+    assert.match(h.lab.records[0].error,/phase kept changing/);
+    assert.equal(h.lab.busy,false);
+  }
+});
+
+test('five-frame camera model samples distinct exposures at 100 ms start-to-start',async()=>{
+  const h=await harness({frames:5,frameInterval:25});await h.lab.run('capture');
+  assert.equal(h.calls.length,5);
+  assert.deepEqual(h.calls.map(c=>c.captureStartedMs),[25,125,225,325,425]);
+  assert.deepEqual(h.calls.map(c=>c.options.presentedFrames),[1,5,9,13,17]);
+  assert.equal(h.lab.records[0].inputCaptures,5);
+  assert.equal(h.lab.records[0].camera.requestedSampleIntervalMs,100);
 });
 
 

@@ -78,23 +78,25 @@ Both share the current capture/tensor formats; wide requires new training and
 held-out real recovery plus phone performance checks. See the
 [updated training guide](OPTICAL_DECODER_TRAINING.md#model-profiles-and-the-latest-training-result).
 
-Four-frame input is now implemented as 12 stacked channels, retaining the wide
-backbone and expanding only its two RGB-facing convolutions. The result is
-**488,544 parameters** (+1,440), under 500k. G64 inputs remain 256×256 pixels;
+Input supports any integer **1–64 exposures**, stacked as 3T channels, retaining
+the wide backbone and expanding only its two RGB-facing convolutions. Five
+frames use **489,024 parameters**, under 500k. Wide uses `486624 + 480T`
+parameters (501,984 at 32; 517,344 at 64); compact uses `121576 + 216T`
+(135,400 at 64) for a strict sub-500k budget. G64 inputs remain 256×256 pixels;
 G128 inputs remain 512×512. No Conv3D, recurrent layers, attention or extra image
 resolution is needed. Channels are grouped RGB for each exposure.
 
-Training draws four distinct captures at random within one burst/session/target/
+Training draws T distinct captures at random within one burst/session/target/
 phase and randomizes their slot order. Each exposure already has its own geometry
 and color correction. Synthetic members come from one independently generated
-corruption burst. Evaluation uses disjoint chronological groups of four and
+corruption burst. Evaluation uses disjoint chronological groups of T and
 classical fusion over the exact same observations; leftovers are reported. Short
 training bursts fail explicitly; there is no duplication or single-frame fallback.
-The browser lab collects four distinct current video exposures, resets on identity
+The browser lab collects T distinct current video exposures, resets on identity
 changes and bounds collection time/memory. Live learned transport remains pending.
 
-An explicit single→four-frame warm start repeats the original inlet and local-RGB
-weights across the four slots and divides by four, retaining the trained backbone.
+An explicit single→T-frame warm start repeats the original inlet and local-RGB
+weights across T slots and divides by T, retaining the trained backbone.
 Start from `wide-pilot`. Loading/exporting a checkpoint always uses its exact
 validated input width; changing architecture is an intentional training step.
 
@@ -206,7 +208,7 @@ Keep useful source/group metrics and initialized-checkpoint baseline protection.
 
 For the next experiment, reuse `wide-pilot/best.pt`, generate 16 independent
 nine-frame corruption bursts per recorded training target, and enable
-`--frames 4 --paired-targets`. Each real stack receives a synthetic stack of the exact
+`--frames 5 --paired-targets`. Each real stack receives a synthetic stack of the exact
 same session/payload/frame/phase and target hashes. The 50:50 source quota applies
 to each complete optimizer update; an optional session sidecar balances real
 acquisition directions. Full real validation every 1,000 updates selects by exact
@@ -217,7 +219,7 @@ for generation, cleanup and training commands.
 
 Mask reference cells and inactive palette classes from the objective. Batch
 G64/G128 profiles separately by shape. The architecture still predicts physical
-palette classes from one or four calibrated crops; no reconstruction head or
+palette classes from T calibrated crops; no reconstruction head or
 consistency loss is needed for this paired-data experiment. Measure cell confusion
 and calibration as diagnostics, and validate exact CRC recovery at equal capture
 budgets. A selected checkpoint must pass PyTorch/ONNX/browser parity before live

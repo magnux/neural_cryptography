@@ -12,7 +12,7 @@ import re
 
 import numpy as np
 
-from contract import FRAME_COUNTS
+from contract import FRAME_COUNTS, MAX_FRAMES
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
 
 
@@ -20,7 +20,7 @@ def _burst_key(sample):
     row = sample.metadata
     burst = row.get("burstId")
     if not isinstance(burst, str) or not burst:
-        raise ValueError("Four-frame input requires a recorded burstId; regenerate missing synthetic burst metadata")
+        raise ValueError("Multiframe input requires a recorded burstId; regenerate missing synthetic burst metadata")
     return (str(sample.manifest), row["source"], row["sessionId"],
             row.get("senderSessionId"), row["payloadId"], row["split"],
             json.dumps(row["info"], sort_keys=True, separators=(",", ":"), allow_nan=False), burst)
@@ -87,7 +87,7 @@ class BurstIndex:
 
     def __init__(self, samples, frames=1):
         if type(frames) is not int or frames not in FRAME_COUNTS:
-            raise ValueError("Input frame count must be 1 or 4")
+            raise ValueError(f"Input frame count must be 1 to {MAX_FRAMES}")
         self.samples = tuple(samples)
         if not self.samples:
             raise ValueError("Burst input requires recorded exposures")

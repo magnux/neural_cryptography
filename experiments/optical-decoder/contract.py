@@ -11,7 +11,8 @@ VERSION = 1
 SIZES = (64, 128)
 PIXELS_PER_CELL = 4
 CHANNELS = 3
-FRAME_COUNTS = (1, 4)
+MAX_FRAMES = 64
+FRAME_COUNTS = tuple(range(1, MAX_FRAMES + 1))
 CLASSES = 16
 # Compact is an active ablation. Wide exports record their actual parameter count.
 PARAMETER_COUNT = 121_792
@@ -27,7 +28,7 @@ def shapes(size: int, frames: int = 1) -> tuple[tuple[int, ...], tuple[int, ...]
     if isinstance(size, bool) or not isinstance(size, int) or size not in SIZES:
         raise ValueError("The decoder supports physical grid sizes 64 and 128 only")
     if type(frames) is not int or frames not in FRAME_COUNTS:
-        raise ValueError("The decoder supports one or four input frames")
+        raise ValueError(f"The decoder supports 1 to {MAX_FRAMES} input frames")
     return (1, CHANNELS * frames, size * PIXELS_PER_CELL, size * PIXELS_PER_CELL), (1, CLASSES, size, size)
 
 

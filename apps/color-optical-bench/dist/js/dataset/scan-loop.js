@@ -1,6 +1,6 @@
 /** One worker job at a time. Stop invalidates results before canceling the worker. */
 export class ScanLoop {
-  constructor({sample,receive,onError=()=>{},cancel=()=>{},interval=()=>500,
+  constructor({sample,receive,onError=()=>{},cancel=()=>{},interval=()=>100,
     schedule=(fn,ms)=>setTimeout(fn,ms),unschedule=id=>clearTimeout(id)}){
     Object.assign(this,{sample,receive,onError,cancel,interval,schedule,unschedule});
     this.generation=0;this.running=false;this.timer=null;

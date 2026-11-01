@@ -8,6 +8,7 @@ import zipfile
 import numpy as np
 import torch
 
+from contract import FRAME_COUNTS
 from model import OpticalDecoder, profile_from_state, frames_from_state
 
 
@@ -55,7 +56,7 @@ def training_provenance(training: dict) -> dict:
             result[key] = value
     if "framesPerInput" in training:
         value = training["framesPerInput"]
-        if type(value) is not int or value not in (1, 4):
+        if type(value) is not int or value not in FRAME_COUNTS:
             raise ValueError("Invalid checkpoint framesPerInput")
         result["framesPerInput"] = value
     if "pairedTargets" in training:

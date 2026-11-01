@@ -103,9 +103,25 @@ class BurstTests(unittest.TestCase):
             BurstIndex(rows+[rows[0]], 4)
         with self.assertRaisesRegex(ValueError, "fewer than 4"):
             BurstIndex(rows[:3], 4).train_sample(rows[0], random.Random(1))
-        for value in (0, 2, 8, True, 4.):
-            with self.assertRaisesRegex(ValueError, "1 or 4"):
+        for value in (0, 65, True, False, 4.):
+            with self.assertRaisesRegex(ValueError, "1 to 64"):
                 BurstIndex(rows, value)
+
+    def test_five_and_large_frame_counts_use_distinct_complete_groups(self):
+        for frames in (5, 32, 64):
+            with self.subTest(frames=frames):
+                rows = [Exposure(i) for i in range(2*frames+1)]
+                index = BurstIndex(rows, frames)
+                index.validate_training()
+                sample = index.train_sample(rows[2], random.Random(7))
+                self.assertEqual(len({member.id for member in sample.members}), frames)
+                if frames == 5:
+                    self.assertEqual(sample.tensors()[0].shape, (15, 256, 256))
+                windows, stats = index.eval_samples()
+                self.assertEqual(len(windows), 2)
+                self.assertEqual(stats["usedCaptures"], 2*frames)
+                self.assertEqual(stats["discardedCaptures"], 1)
+                self.assertEqual(len({member.id for window in windows for member in window.members}), 2*frames)
 
     def test_single_frame_keeps_capture_identity_and_shape(self):
         rows = [Exposure(i) for i in range(3)]

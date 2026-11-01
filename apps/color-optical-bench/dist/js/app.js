@@ -257,7 +257,7 @@ async function startCamera(){
       ctx.drawImage(video,0,0,scratch.width,scratch.height);const raw=ctx.getImageData(0,0,scratch.width,scratch.height);
       const expected=state.frames[0]?{id:state.frames[0].id,payload:state.payload}:null;
       try{await decode(live,{width:raw.width,height:raw.height,data:raw.data},expected);}catch(error){status(live,'Capture interrupted',error.message,'error');}
-    },250);
+    },100);
   }catch(error){stopCamera();status(live,'Camera unavailable',cameraError(error),'error');}
   finally{state.cameraOpening=false;for(const id of ['cameraButton','cameraSelect','cameraResolution'])$(id).disabled=false;}
 }

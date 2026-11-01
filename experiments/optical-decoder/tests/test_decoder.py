@@ -15,7 +15,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from contract import (ATOL, PARAMETER_COUNT, fixture_input, normalize_rgb,
+from contract import (ATOL, MAX_FRAMES, PARAMETER_COUNT, fixture_input, normalize_rgb,
                       parity_metrics, shapes, write_f32)
 
 HAS_TORCH = importlib.util.find_spec("torch") is not None
@@ -58,15 +58,17 @@ class ContractTests(unittest.TestCase):
             self.assertGreaterEqual(float(value.min()), -1.5)
             self.assertLessEqual(float(value.max()), 1.5)
 
-    def test_four_frame_fixture_has_distinct_rgb_slots_and_rejects_bad_counts(self):
-        for size in (64, 128):
-            value = fixture_input(size, 7, frames=4)
-            self.assertEqual(value.shape, (1, 12, 4*size, 4*size))
+    def test_multiframe_fixture_has_distinct_rgb_slots_and_rejects_bad_counts(self):
+        for size, frames in ((64, 4), (128, 4), (64, 5)):
+            value = fixture_input(size, 7, frames=frames)
+            self.assertEqual(value.shape, (1, 3*frames, 4*size, 4*size))
             self.assertTrue(value.flags.c_contiguous)
-            np.testing.assert_array_equal(value, fixture_input(size, 7, frames=4))
-            for slot in range(1, 4):
+            np.testing.assert_array_equal(value, fixture_input(size, 7, frames=frames))
+            for slot in range(1, frames):
                 self.assertFalse(np.array_equal(value[:, :3], value[:, 3*slot:3*(slot+1)]))
-        for frames in (0, 2, 3, 5, True, 4.0):
+        for frames in (2, 3, 5, 32, MAX_FRAMES):
+            self.assertEqual(shapes(128, frames), ((1, 3*frames, 512, 512), (1, 16, 128, 128)))
+        for frames in (0, MAX_FRAMES+1, True, False, 4.0):
             with self.subTest(frames=frames), self.assertRaises(ValueError):
                 shapes(64, frames)
 
@@ -101,45 +103,69 @@ class ModelTests(unittest.TestCase):
                 self.assertTrue(torch.isfinite(a).all())
                 self.assertGreater(float(torch.max(torch.abs(a - b))), 1e-7)
 
-    def test_four_frame_wide_stays_small_and_each_slot_affects_logits(self):
+    def test_five_frame_wide_stays_small_and_each_slot_affects_logits(self):
         torch.manual_seed(7)
-        model = OpticalDecoder("wide", frames=4).eval()
-        self.assertEqual(parameter_count(model), 488_544)
+        model = OpticalDecoder("wide", frames=5).eval()
+        self.assertEqual(parameter_count(model), 489_024)
         self.assertLess(parameter_count(model), 500_000)
-        self.assertEqual(frames_from_state(model.state_dict()), 4)
+        self.assertEqual(frames_from_state(model.state_dict()), 5)
         for size in (64, 128):
             with torch.inference_mode():
-                pixels = torch.from_numpy(fixture_input(size, 7, frames=4))
+                pixels = torch.from_numpy(fixture_input(size, 7, frames=5))
                 expected = model(pixels)
-                self.assertEqual(tuple(expected.shape), shapes(size, 4)[1])
+                self.assertEqual(tuple(expected.shape), shapes(size, 5)[1])
                 self.assertTrue(torch.isfinite(expected).all())
-                for slot in range(4):
+                for slot in range(5):
                     changed = pixels.clone()
                     changed[:, slot*3:(slot+1)*3] = 0
                     self.assertGreater(float((model(changed)-expected).abs().max()), 1e-6)
 
-    def test_explicit_four_frame_warm_start_preserves_repeated_input_function(self):
+    def test_explicit_five_frame_warm_start_preserves_repeated_input_function(self):
         for profile in ("compact", "wide"):
             torch.manual_seed(31)
             original = OpticalDecoder(profile).eval()
             before = {name: value.clone() for name, value in original.state_dict().items()}
-            expanded = initialize_frames(original, 4)
-            self.assertEqual(expanded.frames, 4)
+            expanded = initialize_frames(original, 5)
+            self.assertEqual(expanded.frames, 5)
             self.assertFalse(expanded.training)
             with torch.inference_mode():
                 pixels = torch.from_numpy(fixture_input(64, 9))
-                torch.testing.assert_close(expanded(pixels.repeat(1, 4, 1, 1)), original(pixels),
+                torch.testing.assert_close(expanded(pixels.repeat(1, 5, 1, 1)), original(pixels),
                                            rtol=2e-5, atol=2e-6)
             for name, value in original.state_dict().items():
                 torch.testing.assert_close(value, before[name], rtol=0, atol=0)
                 if name not in ("inlet.0.0.weight", "local_color.0.weight"):
                     torch.testing.assert_close(expanded.state_dict()[name], before[name], rtol=0, atol=0)
-            self.assertIs(initialize_frames(expanded, 4), expanded)
-            with self.assertRaisesRegex(ValueError, "one-to-four"):
-                initialize_frames(expanded, 1)
-        for frames in (False, 0, 2, 4.0):
-            with self.assertRaises(ValueError):
+            self.assertIs(initialize_frames(expanded, 5), expanded)
+            for frames in (1, 4, 32):
+                with self.assertRaisesRegex(ValueError, "single-frame source"):
+                    initialize_frames(expanded, frames)
+        for frames in (False, True, 0, MAX_FRAMES+1, 4.0):
+            with self.subTest(frames=frames), self.assertRaises(ValueError):
                 OpticalDecoder("wide", frames)
+            with self.subTest(initialization=frames), self.assertRaises(ValueError):
+                initialize_frames(original, frames)
+
+    def test_larger_frame_counts_expand_only_input_weights(self):
+        for profile, baseline, per_frame in (("compact", 121_792, 216), ("wide", 487_104, 480)):
+            original = OpticalDecoder(profile).eval()
+            for frames in (2, 3, 32, MAX_FRAMES):
+                with self.subTest(profile=profile, frames=frames):
+                    expanded = initialize_frames(original, frames)
+                    self.assertEqual(frames_from_state(expanded.state_dict()), frames)
+                    self.assertEqual(parameter_count(expanded), baseline+per_frame*(frames-1))
+                    self.assertEqual(expanded.inlet[0][0].in_channels, 3*frames)
+                    self.assertEqual(expanded.head.in_channels, original.head.in_channels)
+                    torch.testing.assert_close(expanded.inlet[0][0].weight,
+                        original.inlet[0][0].weight.repeat(1, frames, 1, 1)/frames, rtol=0, atol=0)
+
+    def test_checkpoint_frame_inference_rejects_non_rgb_or_out_of_range_widths(self):
+        for width in (0, 1, 4, 191, 193, 195):
+            with self.subTest(width=width), self.assertRaises(ValueError):
+                frames_from_state({"inlet.0.0.weight": torch.empty((8, width, 3, 3))})
+        for value in ({}, {"inlet.0.0.weight": torch.empty((8, 3, 3))}, None):
+            with self.assertRaises(ValueError):
+                frames_from_state(value)
 
 
 
@@ -184,22 +210,22 @@ class ExportTests(unittest.TestCase):
             for name in weights[0]:
                 np.testing.assert_array_equal(weights[0][name], weights[1][name])
 
-    def test_four_frame_export_has_fixed_twelve_channel_graph_and_exact_fixture(self):
+    def test_five_frame_export_has_fixed_fifteen_channel_graph_and_exact_fixture(self):
         import onnx
         from export import export_smoke
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)/"burst"
-            manifest = export_smoke(directory, frames=4, sizes=(64,), check_ort=False, profile="wide")
-            self.assertEqual(manifest["framesPerInput"], 4)
-            self.assertEqual(manifest["channels"], 12)
-            self.assertEqual(manifest["parameterCount"], 488_544)
+            manifest = export_smoke(directory, frames=5, sizes=(64,), check_ort=False, profile="wide")
+            self.assertEqual(manifest["framesPerInput"], 5)
+            self.assertEqual(manifest["channels"], 15)
+            self.assertEqual(manifest["parameterCount"], 489_024)
             case = manifest["cases"][0]
-            self.assertEqual(case["inputShape"], [1, 12, 256, 256])
+            self.assertEqual(case["inputShape"], [1, 15, 256, 256])
             graph = onnx.load(directory/case["model"]["file"])
             self.assertEqual([dim.dim_value for dim in graph.graph.input[0].type.tensor_type.shape.dim],
                              case["inputShape"])
             torch.manual_seed(7)
-            model = OpticalDecoder("wide", frames=4).eval()
+            model = OpticalDecoder("wide", frames=5).eval()
             pixels = np.fromfile(directory/case["input"]["file"], dtype="<f4").reshape(case["inputShape"])
             expected = np.fromfile(directory/case["expected"]["file"], dtype="<f4").reshape(case["outputShape"])
             with torch.inference_mode():

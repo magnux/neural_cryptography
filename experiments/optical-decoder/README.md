@@ -2,9 +2,10 @@
 
 This implements M1 feasibility and the M2 capture/training pipeline from the
 [optical decoder plan](../../docs/OPTICAL_DECODER.md). The
-**compact** and **wide** U-Nets support one or four RGB exposures, with fixed
+**compact** and **wide** U-Nets support 1–64 RGB exposures, with fixed
 browser profiles for physical grid sizes 64 and 128. Wide has **487,104 parameters
-for one frame and 488,544 for four frames**, below the 500k ceiling. The submitted device reports support starting at G64. See the
+for one frame and 489,024 for five frames**. Widths stay fixed as frame count grows;
+wide stays below 500k through 27 frames, while compact stays below 500k through 64. The submitted device reports support starting at G64. See the
 [capture and training guide](../../docs/OPTICAL_DECODER_TRAINING.md) for the full
 workflow, from browser captures through synthetic generation and RTX 4090 training.
 
@@ -19,26 +20,32 @@ channel LayerNorm after learned feature convolutions, and a separate unnormalize
 cell-RGB readout. `--model compact` is the existing active baseline. Existing
 compact checkpoints still load in their exact architecture; `--initialize` and
 `--checkpoint` infer the supported profile from validated parameter shapes.
-Recording files remain unchanged: each stores one RGB crop. `--frames 4` stacks
-four distinct same-phase exposures along the channel axis. Explicitly initializing
+Recording files remain unchanged: each stores one RGB crop. `--frames 5` stacks
+five distinct same-phase exposures along the channel axis. Explicitly initializing
 from a single-frame pilot expands only the RGB-facing convolution weights, repeats
-them four times and divides by four; biases and the backbone are preserved.
+them T times and divides by T; biases and the backbone are preserved.
 Identical repeated exposures reproduce the original model function at initialization.
 Checkpoint loading itself remains strict; export never silently changes frame count.
+To change an existing multiframe model's count, initialize again from the single-frame
+pilot. Each training burst must contain at least T distinct captures.
 
 There is one plain masked-cross-entropy training path, with 32,000 updates by
 default, AdamW weight decay `.01`, and learning rate `1e-4` for fresh weights or
 `5e-5` for an initialized model. Full validation runs every 1,000 updates. The
 unsuccessful adaptation recipe and its extra loss/augmentation/scheduler options
 have been removed. Source/group metrics, baseline protection, and the optional
-session-direction sidecar remain useful general tools.
+session-direction sidecar remain useful general tools. A throttled tqdm bar shows
+training CE, learning rate and latest validation CER/exact recovery. Validation
+summaries stay short; `history.json` retains full records at each evaluation,
+including interval source/group metrics. Use `--no-progress` to hide the bar;
+redirected output automatically uses concise text without terminal control codes.
 
 The [recommended next run](../../docs/OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
 reuses `wide-pilot/best.pt`, reconstructs clean matrices from the sender-derived
 targets in `real-train`, and generates multiple independent corruption bursts
 for each. `--paired-targets` trains each real capture alongside a synthetic of
 that exact session/payload/frame/phase, with matching target hashes. For the new
-four-frame run, each side uses four distinct exposures from its own burst;
+five-frame run, each side uses five distinct exposures from its own burst;
 independent synthetic corruption bursts and palette phases are never mixed. Target
 content is aligned between sources; optical nuisance distributions still need
 to be tested on held-out real captures. No clean target is used during inference.
@@ -63,7 +70,7 @@ The retained single-frame baseline recovered 69/768 captures. Paired single-fram
 training recovered 68/768 at step 22k, with phone→PC still at zero and worse
 validation loss despite falling training loss. Keep `wide-real` as a historical
 reference and initialize the burst model from `wide-pilot`, not the overfit paired
-checkpoint. Four-frame evaluation uses disjoint stacks and compares classical
+checkpoint. Multiframe evaluation uses disjoint stacks and compares classical
 fusion over the exact same exposures; its denominator differs from a single-frame
 report. No trained burst-model recovery or live throughput improvement is claimed.
 
@@ -81,7 +88,7 @@ For a selected trained checkpoint:
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/wide-burst4/best.pt \
+  --checkpoint checkpoints/optical-decoder/wide-burst5/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected
@@ -134,7 +141,7 @@ build/test tools, not a service used during an authentication attempt.
 ## Tensor and bundle contract
 
 The current manifest has `format: "optical-decoder"`, `version: 1`, and
-`status: "untrained"` or `"trained"`, plus required `framesPerInput: 1` or `4`
+`status: "untrained"` or `"trained"`, plus required integer `framesPerInput` from 1 through 64
 and `channels: 3 * framesPerInput`. Trained exports require `checkpointSha256`
 and public `training` metadata. Regenerate old local exports after updating;
 there is no earlier-format reader. Each case contains a SHA-256 digest and byte count for:
@@ -145,8 +152,11 @@ there is no earlier-format reader. Each case contains a SHA-256 digest and byte 
 | `input-64.f32` / `input-128.f32` | Diagnostic tensor, little-endian float32, contiguous NCHW |
 | `expected-64.f32` / `expected-128.f32` | PyTorch logits, same numeric encoding |
 
-The input is named `pixels`, shape `[1,3T,4G,4G]` for T=1 or 4; channels are
-`R0,G0,B0,R1,G1,B1,...`. A G64 four-frame input is `[1,12,256,256]`.
+The input is named `pixels`, shape `[1,3T,4G,4G]` for integer T=1…64; channels are
+`R0,G0,B0,R1,G1,B1,...`. A G64 five-frame input is `[1,15,256,256]`.
+Raw float input memory is `0.75 × T` MiB at G64 and `3 × T` MiB at G128,
+before batches, activations and runtime copies. Exported graphs have a fixed T;
+changing the capture count requires a corresponding trained/exported model.
 The output is named `logits`, shape
 `[1,16,G,G]`. The grid includes reference cells. The head predicts **physical**
 palette classes and performs no softmax. The receiver masks inactive classes,
@@ -182,7 +192,7 @@ load time, backend, model hash, and UI responsiveness.
 
 ## Files and acceptance
 
-- `model.py`: compact and wide one/four-frame U-Nets; wide adds feature-channel
+- `model.py`: compact and wide multiframe U-Nets; wide adds feature-channel
   LayerNorm and an unnormalized cell-RGB readout.
 - `contract.py`: shape constants, RGB normalization, fixture generation, numeric
   parity, and little-endian serialization.

@@ -100,9 +100,14 @@ class TrainingWorkflowTests(unittest.TestCase):
             result = evaluate_model(model, dataset, **kwargs)
             validation_calls.append(result)
             return result
+        console = io.StringIO()
         with patch("train.evaluate_model", side_effect=observed_evaluation), \
-                contextlib.redirect_stdout(io.StringIO()):
+                patch.object(console, "isatty", return_value=True), contextlib.redirect_stdout(console):
             result = run_training(self.train, self.validation, **self.options("actual"))
+        self.assertIn("Training", console.getvalue())
+        self.assertIn("2/2", console.getvalue())
+        self.assertIn("| lr", console.getvalue())
+        self.assertIn("| val CER", console.getvalue())
         self.assertEqual(result["steps"], 2)
         self.assertEqual(len(validation_calls), 3)  # baseline plus both updates
         self.assertFalse(torch.equal(states[0], states[-1]), "optimizer must update real model weights")
@@ -138,7 +143,8 @@ class TrainingWorkflowTests(unittest.TestCase):
                                "exactRate": exact, "loss": loss, "cellErrorRate": .4},
             "groups": {"pc_to_phone": {"loss": loss, "learnedExactRate": exact},
                        "phone_to_pc": {"loss": loss, "learnedExactRate": exact}},
-            "recovery": {"summary": {"learned": {"wrongAcceptedFrames": wrong, "exactRate": exact},
+            "recovery": {"summary": {"learned": {"wrongAcceptedFrames": wrong, "exactRate": exact,
+                                                  "frames": 10, "exactFrames": round(10*exact)},
                                      "classical": {"exactRate": 0.}}}}
 
     def test_degrading_updates_preserve_loadable_step_zero(self):
@@ -190,10 +196,18 @@ class TrainingWorkflowTests(unittest.TestCase):
             "--device", "cpu", "--validation-samples", "0", "--eval-every", "1",
             "--out", str(out)], capture_output=True, text=True, timeout=90)
         self.assertEqual(process.returncode, 0, process.stderr[-3000:])
-        self.assertIn('"stopReason": "budget"', process.stdout)
+        self.assertIn("Step 0/1", process.stdout)
+        self.assertIn("Step 1/1 | train CE", process.stdout)
+        self.assertIn("| val CE", process.stdout)
+        self.assertIn("| CER", process.stdout)
+        self.assertIn("| exact", process.stdout)
+        self.assertIn("Finished 1/1 updates", process.stdout)
+        self.assertNotIn('"trainSources"', process.stdout)
+        self.assertNotIn("\r", process.stdout)  # Noninteractive output has no redraws.
         history = json.loads((out/"history.json").read_text())
         settings = json.loads((out/"settings.json").read_text())
         self.assertEqual((history["completedSteps"], history["requestedSteps"]), (1, 1))
+        self.assertEqual(history["stopReason"], "budget")
         self.assertIs(settings["pairedTargets"], True)
         self.assertEqual(settings["validationSamples"], 0)
         self.assertEqual(settings["initialLearningRate"], 5e-5)
@@ -220,7 +234,20 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertFalse((self.root/"wrong-accepted/best.pt").exists())
         self.assertEqual(digest(self.initial), self.initial_hash)
 
-    def test_four_frame_cli_warmstart_runs_optimizer_and_preserves_recordings(self):
+    def test_interrupt_retains_completed_validation_history(self):
+        with patch("train.evaluate_model", return_value=self.report(.5, 1.)), \
+                patch("train.BalancedSampler.draw_update", side_effect=KeyboardInterrupt), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(KeyboardInterrupt):
+                run_training(self.train, self.validation, **self.options("interrupted"))
+        history = json.loads((self.root/"interrupted/history.json").read_text())
+        self.assertEqual(history["stopReason"], "interrupted")
+        self.assertEqual(history["completedSteps"], 0)
+        self.assertEqual([row["step"] for row in history["history"]], [0])
+        self.assertEqual(history["selectedStep"], 0)
+        load_model_checkpoint(self.root/"interrupted/best.pt")
+
+    def test_five_frame_cli_warmstart_runs_optimizer_and_preserves_recordings(self):
         for split in ("train", "validation"):
             destination = self.root/f"burst-{split}"
             shutil.copytree(self.root/split, destination)
@@ -230,7 +257,7 @@ class TrainingWorkflowTests(unittest.TestCase):
             # stacking and the actual optimizer; these remain synthetic fixtures.
             exposures = []
             for row in manifest["samples"]:
-                for frame in range(4):
+                for frame in range(5):
                     item = copy.deepcopy(row)
                     item["id"] = f"{row['id']}-exposure-{frame}"
                     item["timestamp"] = frame*100
@@ -244,20 +271,20 @@ class TrainingWorkflowTests(unittest.TestCase):
         process = subprocess.run([sys.executable, str(EXPERIMENT/"train.py"),
             "--train", str(self.root/"burst-train"), "--validation", str(self.root/"burst-validation"),
             "--initialize", str(self.initial), "--session-groups", str(sidecar),
-            "--frames", "4", "--paired-targets", "--steps", "1", "--batch-size", "4",
-            "--accumulate", "1", "--device", "cpu", "--eval-every", "1", "--out", str(out)],
+            "--frames", "5", "--paired-targets", "--steps", "1", "--batch-size", "4",
+            "--accumulate", "1", "--device", "cpu", "--eval-every", "1", "--no-progress", "--out", str(out)],
             capture_output=True, text=True, timeout=90)
         self.assertEqual(process.returncode, 0, process.stderr[-3000:])
         history = json.loads((out/"history.json").read_text())
         self.assertEqual(history["completedSteps"], 1)
-        self.assertEqual(history["settings"]["framesPerInput"], 4)
+        self.assertEqual(history["settings"]["framesPerInput"], 5)
         update = history["history"][-1]
         self.assertEqual(update["trainSources"]["real"]["samples"], 2)
-        self.assertEqual(update["trainSources"]["real"]["inputCaptures"], 8)
-        self.assertEqual(update["trainSources"]["synthetic"]["inputCaptures"], 8)
+        self.assertEqual(update["trainSources"]["real"]["inputCaptures"], 10)
+        self.assertEqual(update["trainSources"]["synthetic"]["inputCaptures"], 10)
         model, checkpoint = load_model_checkpoint(out/"best.pt")
-        self.assertEqual(model.frames, 4)
-        self.assertEqual(checkpoint["training"]["framesPerInput"], 4)
+        self.assertEqual(model.frames, 5)
+        self.assertEqual(checkpoint["training"]["framesPerInput"], 5)
         self.assertEqual(checkpoint["training"]["initialCheckpointSha256"], self.initial_hash)
         self.assertEqual(digest(self.initial), self.initial_hash)
 

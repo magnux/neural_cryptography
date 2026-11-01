@@ -26,7 +26,10 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
   }
   const elements=new Map([...html.matchAll(/id="([^"]+)"/g)].map(m=>[m[1],new Element(m[1])]));
   const get=id=>{assert.ok(elements.has(id),`real HTML contains #${id}`);return elements.get(id);};
-  for(const [id,value] of Object.entries({phaseMaximum:'32',scanInterval:'500',resolution:'720'}))get(id).value=value;
+  const intervalOptions=html.match(/<select id="scanInterval">(.*?)<\/select>/s)[1];
+  assert.deepEqual([...intervalOptions.matchAll(/value="(\d+)"/g)].map(match=>Number(match[1])),[100,250,500,1000,2000]);
+  assert.match(intervalOptions,/<option value="100" selected>/);
+  for(const [id,value] of Object.entries({phaseMaximum:'32',scanInterval:'100',resolution:'720'}))get(id).value=value;
   assert.equal(elements.has('keepCount'),false);assert.equal(elements.has('thinCaptures'),false);
   assert.ok(html.indexOf('id="collectBurst"')<html.indexOf('id="video"'));
   assert.ok(html.indexOf('id="phaseCount"')<html.indexOf('id="video"'));
@@ -101,6 +104,7 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     const exported=JSON.parse(await download.text());
     assert.equal(exported.format,'optical-decoder-captures');assert.equal(exported.version,1);
     assert.equal(exported.records.length,33);assert.equal(exported.collection.keepRandom,0);
+    assert.equal(exported.collection.scanIntervalMs,100);
     assert.deepEqual(Object.keys(exported.collection).sort(),['distances','keepRandom','maxPerPhase','scanIntervalMs']);
     assert.ok(exported.records.every(row=>row.inputBase64&&row.samplesBase64&&row.stability&&!('signature' in row)));
     assert.ok(exported.records.every(row=>row.inputBase64===record.inputBase64&&row.samplesBase64===record.samplesBase64),

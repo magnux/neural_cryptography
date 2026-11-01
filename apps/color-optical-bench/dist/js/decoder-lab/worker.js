@@ -134,7 +134,10 @@ async function capture(options, progress, image, runId, mediaTime, presentedFram
   try {
     const result = await inference(context, stacked.input);
     if (result.values.some(value => !Number.isFinite(value))) throw new Error('Camera inference produced non-finite logits.');
-    return {...describe(context, options), operation: 'capture', inputStats:{...input.stats,preprocessMs:stacked.preprocessMs}, inferenceMs: result.ms,
+    const description=describe(context, options);
+    return {...description, operation: 'capture', inputStats:{...input.stats,preprocessMs:stacked.preprocessMs}, inferenceMs: result.ms,
+      memory:{...description.memory,cameraStackBytes:stacked.input.byteLength,
+        note:'The camera stack is additional to cached numerical fixtures. These are known buffer sizes, not peak memory; camera preprocessing, runtime working memory and GPU allocations are not measured.'},
       paletteColors: input.info.colors, logitsFinite: true, inputCaptures:frames, mediaTimes:stacked.mediaTimes,presentedFrames:stacked.presentedFrames,
       note: 'Same-phase crop inference only. Assess symbol and payload recovery with the offline evaluation tools.'};
   } finally { cameraBurst=null; }

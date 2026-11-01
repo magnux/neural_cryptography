@@ -1,8 +1,9 @@
 import {DecoderClient} from './client.js';
-import {validateOptions, summarizeTimings} from './runtime.js';
+import {validateOptions, summarizeTimings, validFrameCount, MAX_INPUT_FRAMES} from './runtime.js';
 
 const $ = id => document.getElementById(id);
 const records = [];
+const CAMERA_INTERVAL_MS = 100;
 const client = new DecoderClient({onProgress: text => { $('labStatus').textContent = text; }});
 const supported = isSecureContext && typeof Worker === 'function' && Boolean(crypto?.subtle);
 let stream = null, cameraStarting = false, cameraEpoch = 0, busy = false, operation = 0, lastResult = null, activeKind=null, cancelFrameWait=null;
@@ -62,7 +63,7 @@ function showResult(result) {
   responsive.textContent=`UI frame gaps: p95 ${result.ui?.frameGaps?.p95Ms.toFixed(1) ?? '—'} ms; ${result.ui?.gapsOver50Ms ?? 0} over 50 ms. Camera ${result.camera.active ? `${result.camera.width}×${result.camera.height}` : 'off'}.`;
   box.append(responsive);
 }
-function waitForCameraFrame(previous,token,epoch) {
+function waitForCameraFrame(previous,token,epoch,notBefore=-Infinity) {
   const video=$('video');
   if (typeof video.requestVideoFrameCallback!=='function'||typeof video.cancelVideoFrameCallback!=='function') {
     return Promise.reject(Error('Camera burst tests require requestVideoFrameCallback. Use a current browser.'));
@@ -80,16 +81,16 @@ function waitForCameraFrame(previous,token,epoch) {
     cancelFrameWait=abort;
     const request=()=>{
       if(token!==operation||epoch!==cameraEpoch||!stream){abort();return;}
-      callbackId=video.requestVideoFrameCallback((_now,metadata)=>{
+      callbackId=video.requestVideoFrameCallback((now,metadata)=>{
         callbackId=null;
         if(token!==operation||epoch!==cameraEpoch||!stream){abort();return;}
         if(!Number.isFinite(metadata?.mediaTime)||metadata.mediaTime<0||
             !Number.isSafeInteger(metadata.presentedFrames)||metadata.presentedFrames<1){
           finish(Error('The browser did not identify the presented camera frame.'));return;
         }
-        if(metadata.presentedFrames<=previous){request();return;}
+        if(metadata.presentedFrames<=previous||now<notBefore){request();return;}
         if(!video.videoWidth||video.readyState<2){finish(Error('Wait for a live camera image first.'));return;}
-        finish(null,{video,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames});
+        finish(null,{video,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames,captureStartedMs:now});
       });
     };
     request();
@@ -105,11 +106,13 @@ async function run(kind) {
   try {
     let result;
     if (kind === 'capture') {
-      let previous=0;
+      let previous=0,notBefore=-Infinity,maxAttempts=4*MAX_INPUT_FRAMES;
+      camera.requestedSampleIntervalMs=CAMERA_INTERVAL_MS;
       // Bound attempts if the sender changes phase while gathering the stack.
-      for (let attempt=0;attempt<16;attempt++) {
-        const exposure=await waitForCameraFrame(previous,token,epoch),video=exposure.video;
+      for (let attempt=0;attempt<maxAttempts;attempt++) {
+        const exposure=await waitForCameraFrame(previous,token,epoch,notBefore),video=exposure.video;
         previous=exposure.presentedFrames;
+        notBefore=exposure.captureStartedMs+CAMERA_INTERVAL_MS;
         const scale=Math.min(1,Math.sqrt(2073600/(video.videoWidth*video.videoHeight)));
         const canvas=document.createElement('canvas'); canvas.width=Math.max(1,Math.floor(video.videoWidth*scale)); canvas.height=Math.max(1,Math.floor(video.videoHeight*scale));
         const context=canvas.getContext('2d',{willReadFrequently:true}); context.drawImage(video,0,0,canvas.width,canvas.height);
@@ -117,6 +120,8 @@ async function run(kind) {
         camera.captureWidth=image.width; camera.captureHeight=image.height;
         result=await client.call(kind,{...options,runId:token,mediaTime:exposure.mediaTime,presentedFrames:exposure.presentedFrames,
           image:{width:image.width,height:image.height,data:image.data}},[image.data.buffer]);
+        if (!validFrameCount(result.framesPerInput)) throw Error('Worker returned an invalid camera frame count.');
+        maxAttempts=4*result.framesPerInput;
         if (!result.waiting) break;
         $('labStatus').textContent=`Collected ${result.collected}/${result.framesPerInput} exposures. Keep the same matrix and palette phase visible.`;
       }

@@ -70,21 +70,21 @@ class CheckpointExportTests(unittest.TestCase):
                 expected = model(torch.from_numpy(pixels)).numpy()
             np.testing.assert_array_equal(exported, expected)
 
-    def test_four_frame_checkpoint_loads_exactly_and_export_rejects_wrong_frames(self):
+    def test_five_frame_checkpoint_loads_exactly_and_export_rejects_wrong_frames(self):
         _, value = self.checkpoint()
-        model = OpticalDecoder("wide", frames=4).eval()
+        model = OpticalDecoder("wide", frames=5).eval()
         value["modelState"] = model.state_dict()
-        value["training"]["framesPerInput"] = 4
+        value["training"]["framesPerInput"] = 5
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)/"burst.pt"
             torch.save(value, path)
             loaded, _ = load_model_checkpoint(path)
-            self.assertEqual((loaded.profile, loaded.frames), ("wide", 4))
+            self.assertEqual((loaded.profile, loaded.frames), ("wide", 5))
             for name, tensor in loaded.state_dict().items():
                 torch.testing.assert_close(tensor, model.state_dict()[name], rtol=0, atol=0)
             manifest = export_smoke(Path(temporary)/"bundle", sizes=(64,), check_ort=False, checkpoint=path)
-            self.assertEqual(manifest["framesPerInput"], 4)
-            self.assertEqual(manifest["training"]["framesPerInput"], 4)
+            self.assertEqual(manifest["framesPerInput"], 5)
+            self.assertEqual(manifest["training"]["framesPerInput"], 5)
             with self.assertRaisesRegex(ValueError, "frame count differs"):
                 export_smoke(Path(temporary)/"bad", sizes=(64,), check_ort=False, checkpoint=path, frames=1)
             with self.assertRaises(ValueError):
@@ -93,6 +93,21 @@ class CheckpointExportTests(unittest.TestCase):
             torch.save(value, path)
             with self.assertRaisesRegex(ValueError, "frame metadata disagrees"):
                 load_model_checkpoint(path)
+
+    def test_sixty_four_frame_checkpoint_loads_without_shape_adaptation(self):
+        model = OpticalDecoder("wide", frames=64).eval()
+        _, value = self.checkpoint()
+        value["modelState"] = model.state_dict()
+        value["training"]["framesPerInput"] = 64
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/"burst.pt"
+            torch.save(value, path)
+            loaded, _ = load_model_checkpoint(path)
+            self.assertEqual(loaded.frames, 64)
+            for name, tensor in loaded.state_dict().items():
+                torch.testing.assert_close(tensor, model.state_dict()[name], rtol=0, atol=0)
+            with self.assertRaisesRegex(ValueError, "Invalid checkpoint tensor"):
+                load_checkpoint(path, OpticalDecoder("wide", frames=32))
 
     def test_wrong_shape_dtype_nonfinite_keys_and_metadata_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -158,7 +173,7 @@ class CheckpointExportTests(unittest.TestCase):
         changes = ({"baselineSelection": False}, {"baselineSelection": 1},
                    {"steps": 1}, {"selectionStep": 1}, {"steps": False},
                    {"selectionStep": False}, {"initialCheckpointSha256": "bad"},
-                   {"pairedTargets": 1}, {"framesPerInput": 2}, {"framesPerInput": True},
+                   {"pairedTargets": 1}, {"framesPerInput": 0}, {"framesPerInput": 65}, {"framesPerInput": True},
                    {"selectionAggregation": "unknown"},
                    {"sessionGroupsSha256": "bad"})
         for change in changes:

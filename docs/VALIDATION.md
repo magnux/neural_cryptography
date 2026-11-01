@@ -320,7 +320,7 @@ validation CE rising 1.847→4.934→6.495 at 3k/22k/32k while unaugmented train
 CE fell 1.745→.349→.182. Its last 32k model recovered 55/768. Those are correlated
 single-exposure validation measurements, not live transport results.
 
-The current wide four-frame model has 488,544 parameters (+1,440 over one frame).
+The initial wide four-frame model has 488,544 parameters (+1,440 over one frame).
 It stacks four independently corrected RGB crops into 12 channels, retaining the
 same backbone and output grid. Explicit warm start divides repeated RGB-facing
 weights by four; identical repeated inputs preserve the prior function. The
@@ -357,3 +357,38 @@ disjoint evaluation groups, equal-budget canonical recovery and integrated
 linear/rotational/radial-zoom artifact tests. **55 JavaScript tests passed**,
 including actual controller callback/cancellation behavior and same-budget
 classical fusion. Four-frame model/runtime preparation also completed locally.
+
+
+## Configurable burst width, faster capture, and concise training — 2026-11-01
+
+The current model, checkpoint/export contract, evaluator and browser lab accept
+any integer frame count from 1 through 64. Wide keeps its 32/64/128 feature
+widths and has 489,024 parameters at five frames, 501,984 at 32, and 517,344
+at 64. Compact remains below 500k throughout the supported range. Only the
+RGB-facing kernels expand; explicit single-frame→T initialization preserves the
+repeated-input function. Loading/exporting remains strict. Source bursts must
+have at least T distinct members; recording formats and synthetic generation
+controls are unchanged.
+
+Capture collection defaults to 100 ms start-to-start, with the existing 500 ms
+stable-header guard. The classical live reader polls at 100 ms with its existing
+busy/new-frame guards. The Decoder Lab targets 100 ms between distinct presented
+exposures and scales its retry budget with T. These cadences do not guarantee
+0.5-second complete inference: settling, processing, phase changes and inference
+add latency. Camera stack assembly uses one preallocated tensor; at G128/T64 its
+192 MiB is additional to fixtures and runtime working memory.
+
+Training uses a throttled tqdm bar and concise evaluation lines. Full evaluation
+records and interval source/group summaries remain in history.json at the
+existing evaluation cadence; interrupted/failed runs preserve completed records.
+Tests cover terminal/nonterminal output and interruption handling.
+
+Verification: **84 Python tests passed, one native ORT check skipped** (85 total),
+and **59 JavaScript tests passed**. This includes an actual five-frame optimizer
+run from a single-frame checkpoint, equal-budget canonical recovery, five-frame
+ONNX export, 32/64 parameter/checkpoint shapes, metadata boundaries, and capture
+cadence/cancellation. The native Python ONNX Runtime remains unavailable on this
+host. A fresh untrained wide five-frame export passed actual ONNX Runtime Web
+WASM parity in Node at G64 and G128, with maximum absolute errors **2.20e-6** and
+**3.01e-6**. These are numerical agreement checks, not recovery or device speed
+measurements. No full GPU training or site deployment was performed.

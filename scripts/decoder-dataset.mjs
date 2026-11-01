@@ -10,6 +10,7 @@ import {renderFrame,parseHeader,encodeSequence,phaseFrames,PALETTE,sameBytes} fr
 import {gridLayout} from '../apps/color-optical-bench/dist/js/grid.js';
 import {extractLearnedInput,logitsToLogicalScores} from '../apps/color-optical-bench/dist/js/learned-input.js';
 import {classifySamples,decodeScores} from '../apps/color-optical-bench/dist/js/vision.js';
+import {validFrameCount} from '../apps/color-optical-bench/dist/js/decoder-lab/runtime.js';
 
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 // Offline corpora and browser capture bundles have different resource budgets.
@@ -226,7 +227,7 @@ export async function baselines(options) {
 export async function evaluate(options) {
   only(options,['dataset','predictions','split']);if(!options.dataset||!options.predictions)throw Error('evaluate requires --dataset DIRECTORY --predictions FILE.');
   const root=resolve(options.dataset),manifest=await jsonFile(join(root,'manifest.json')),predictionPath=resolve(options.predictions),predictions=await jsonFile(predictionPath);
-  if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||!Array.isArray(predictions.samples)||!predictions.samples.length||![1,4].includes(predictions.framesPerInput))throw Error('Unsupported dataset/prediction manifest.');
+  if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||!Array.isArray(predictions.samples)||!predictions.samples.length||!validFrameCount(predictions.framesPerInput))throw Error('Unsupported dataset/prediction manifest.');
   if(new Set(manifest.samples.map(s=>s.id)).size!==manifest.samples.length)throw Error('Duplicate dataset sample ID.');
   if(options.split)splitName(options.split);
   const eligible=manifest.samples.filter(s=>!options.split||s.split===options.split),byId=new Map(eligible.map(s=>[s.id,s]));

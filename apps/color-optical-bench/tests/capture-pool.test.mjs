@@ -95,6 +95,34 @@ test('distance measures same-coordinate RGB differences, with explicit insuffici
 });
 
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
+test('100 ms scanner cadence accounts for processing time without queued or overlapping work',async t=>{
+  let clock=0,resolveSample,resolveReceive,started=0;const scheduled=[],received=[];
+  t.mock.method(performance,'now',()=>clock);
+  const loop=new ScanLoop({sample:()=>{started++;return new Promise(resolve=>resolveSample=resolve);},
+    receive:result=>{received.push(result);return new Promise(resolve=>resolveReceive=resolve);},
+    schedule:(fn,ms)=>{const timer={fn,ms};scheduled.push(timer);return timer;},
+    unschedule:timer=>{const index=scheduled.indexOf(timer);if(index>=0)scheduled.splice(index,1);}});
+  loop.start();assert.equal(started,1);assert.equal(scheduled.length,0);
+  clock=30;resolveSample('first');await flush();assert.equal(scheduled.length,0,'receive work is part of the same tick');
+  clock=45;resolveReceive();await flush();assert.equal(scheduled[0].ms,55,'100 ms start-to-start includes processing time');
+  clock=100;scheduled.shift().fn();assert.equal(started,2);
+  clock=270;resolveSample('slow');await flush();assert.equal(scheduled.length,0,'slow work never queues another capture');
+  clock=290;resolveReceive();await flush();assert.equal(scheduled[0].ms,0,'overrun resumes only when the current tick completes');
+  assert.deepEqual(received,['first','slow']);loop.stop();assert.equal(scheduled.length,0);
+});
+test('100 ms captures preserve the 500 ms stable-header guard before saving frames',()=>{
+  const buffer=new CaptureBuffer();
+  for(let timestamp=1000;timestamp<1500;timestamp+=100){
+    assert.equal(buffer.add({...sample,timestamp},{alreadyValidated:true}).stage,'settling');
+    assert.equal(buffer.records.length,0);
+  }
+  for(let timestamp=1500;timestamp<=1900;timestamp+=100)
+    assert.equal(buffer.add({...sample,timestamp},{alreadyValidated:true}).accepted,true);
+  assert.equal(buffer.records.length,5);
+  assert.equal(buffer.records[0].stability.durationMs,500);
+  assert.equal(buffer.records[0].stability.guardMs,500);
+  assert.equal(buffer.records[0].stability.observations,6);
+});
 test('automatic scanner starts immediately, serializes work and drops late results after stop',async()=>{
   let resolve,started=0,canceled=0;const received=[],scheduled=[];
   const loop=new ScanLoop({sample:()=>{started++;return new Promise(r=>resolve=r);},receive:r=>received.push(r),

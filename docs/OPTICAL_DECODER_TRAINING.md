@@ -9,7 +9,7 @@ submitted M1 reports only establish inference feasibility at G64.
 
 The [design](OPTICAL_DECODER.md) and [roadmap](ROADMAP.md) describe how this feeds
 the Neural ZKBoo color-authentication POC. M2 now supports single captures and
-four-frame learned fusion. Live transport/authentication integration remains
+multiframe learned fusion. Live transport/authentication integration remains
 subsequent work; recording files remain unchanged.
 
 ## Collect real examples
@@ -32,7 +32,7 @@ does not need PyTorch, model files, or ONNX Runtime. Use the existing
    stays static. Close focus to change phase after the receiver finishes.
 3. On the receiver, choose **Collect camera samples**, select the camera and
    **720p**, and press **Start camera**. Alignment scans start automatically at
-   the selected interval (500 ms by default; 250/500/1000/2000 ms available).
+   the selected interval (100 ms by default; 100/250/500/1000/2000 ms available).
    There is only one in-flight worker task; slow processing lowers the actual
    scan rate. The translucent green rectangle fills the detected matrix area.
    An unreadable header clears the fill. The overlay is never part of saved pixels.
@@ -43,7 +43,10 @@ does not need PyTorch, model files, or ONNX Runtime. Use the existing
 4. The camera, scan interval, recording buttons, and live counters sit above
    the camera in one compact viewport. Set **Pool per phase** to **32** and press
    **Record**. Each new matrix/phase needs consecutive identical valid headers
-   over at least 500 ms before saving. Missing headers reset the guard. Payload
+   over at least 500 ms before saving. Missing headers reset the guard. At 100 ms,
+   five accepted captures span about 400 ms after settling: roughly 900 ms from
+   initial detection if every scan succeeds. Slower processing stretches this
+   cadence; no concurrent scan jobs or queued frames are created. Payload
    CRC failures remain useful examples.
 5. The first 32 captures fill the pool. Recording then continues automatically:
    a randomized, sampled-distance heuristic compares each new capture to the
@@ -315,12 +318,13 @@ Capped evaluation uses a fixed session/profile-balanced subset and must include
 every mapped real group. Standalone `evaluate.py --max-samples 0` also evaluates
 all examples. Reports include per-session/group CE, error and recovery,
 confidence calibration, phase identities, raw/hard/erasure recovery, wrong
-accepted frames, and inference timing. Four-frame reports count complete stacks,
+accepted frames, and inference timing. Multiframe reports count complete stacks,
 not individual exposures: `inputCaptures` records consumed observations and
-`burstGrouping` reports discarded leftovers/insufficient groups. With 768 captures
-in phase pools divisible by four, evaluation has 192 candidates. Never compare
-that raw denominator directly with the earlier 768 single-exposure candidates.
-Classical recovery averages logical scores over exactly the same four observations;
+`burstGrouping` reports discarded leftovers/insufficient groups. For example, 768 captures in 24 phase pools of 32 give 144 five-frame
+candidates, consuming 720 captures and leaving 48 unused. Actual grouping depends
+on burst boundaries. Never compare the raw candidate denominator directly with
+768 single-exposure candidates. Classical recovery averages logical scores over
+exactly the same T observations;
 expected bytes are only checked after independent RS/CRC acceptance. Offline
 stack recovery is not live throughput.
 
@@ -335,16 +339,33 @@ settings on validation.
 | --- | ---: | --- |
 | `compact`, one frame | 121,792 | Plain U-Net baseline |
 | `wide`, one frame | 487,104 | Doubled widths, feature-channel LayerNorm, unnormalized pooled-RGB readout |
-| `wide`, four frames | **488,544** | Same backbone, 12-channel RGB inlet and local-color path |
+| `wide`, five frames | **489,024** | Same backbone, 15-channel RGB inlet and local-color path |
+| `wide`, 32 / 64 frames | 501,984 / 517,344 | Fixed widths; input weights grow linearly |
+| `compact`, 64 frames | 135,400 | Fixed compact widths |
 
-Models take `[N,3T,4G,4G]` calibrated pixels, T=1 or 4, and output
+Models take `[N,3T,4G,4G]` calibrated pixels, integer T=1…64, and output
 `[N,16,G,G]` physical-color logits. LayerNorm does not normalize raw RGB or depend on batch statistics.
-`--initialize` keeps the checkpoint's profile. Explicit `--frames 4` can warm-start
+`--initialize` keeps the checkpoint's profile. Explicit `--frames T` can warm-start
 from one-frame weights by repeating the two RGB-facing kernels across slots and
-dividing by four; all other weights/biases are copied. Identical repeated inputs
+dividing by T; all other weights/biases are copied. Identical repeated inputs
 preserve the initial function within floating-point tolerance. No implicit shape
 migration occurs when loading/exporting checkpoints. An incompatible profile or
-four→one conversion fails. Recording crops still have three channels each.
+multiframe→different-count conversion fails: use the original single-frame pilot
+for a new T, or keep the checkpoint's existing count. Omitting `--frames` infers
+the checkpoint count, or defaults to one for a fresh model. Recording crops
+still have three channels each.
+
+Wide uses a `3T→16→32` inlet, `32/64/128` feature encoder, `64→32`
+decoder and a `3T→16→16` local-color path. Compact uses a `3T→8→16`
+inlet and `16/32/64` features. Parameter counts are `486624 + 480T` for
+wide and `121576 + 216T` for compact. Wide is below 500k through T=27;
+choose compact if that budget must hold at larger counts.
+
+Raw float32 input memory per example is `0.75 × T` MiB at G64 and `3 × T`
+MiB at G128. At 64 frames that is 48/192 MiB before batches, activations and
+runtime copies. Increasing T changes the inlet channels automatically; it does
+not widen the backbone. Reduce batch size if necessary and increase accumulation
+to preserve the effective batch.
 
 The submitted paired single-frame run selected step 22,000 on the same 768
 validation captures. It improves over the discarded adaptation run's 62 exact
@@ -361,13 +382,13 @@ recoveries but does not beat the retained `wide-real` checkpoint:
 Phone→PC validation CE is 1.847 at step 3k, 4.934 at 22k and 6.495 at 32k,
 while its unaugmented interval training CE falls from 1.745 to .349 to .182.
 This supports overfitting to training sessions. Both selected models recover only
-the same two PC→phone sessions. Four observations offer new visual evidence, but
+the same two PC→phone sessions. Multiple observations offer new visual evidence, but
 are not by themselves a solution to this generalization failure. Keep `wide-real`
 and initialize the burst model from `wide-pilot`, rather than `wide-paired`.
 
 ## Recommended next training run
 
-**Reuse `wide-pilot/best.pt` and train a four-frame model on real bursts paired
+**Reuse `wide-pilot/best.pt` and train a five-frame model on real bursts paired
 with synthetic bursts of the exact same target matrices.** Starting from scratch is possible by omitting
 `--initialize`, but is not required: only the RGB-facing convolutions expand,
 and the pilot already learned useful color/spatial features. Keep the earlier
@@ -460,9 +481,9 @@ python experiments/optical-decoder/train.py \
   --validation local-data/real-validation \
   --initialize checkpoints/optical-decoder/wide-pilot/best.pt \
   --session-groups local-data/session-groups.json \
-  --frames 4 --paired-targets --real-fraction .5 \
+  --frames 5 --paired-targets --real-fraction .5 \
   --lr .00005 --steps 32000 --eval-every 1000 --validation-samples 0 \
-  --device cuda --out checkpoints/optical-decoder/wide-burst4
+  --device cuda --out checkpoints/optical-decoder/wide-burst5
 ```
 
 Each effective update pairs every chosen real stack with one synthetic stack of its
@@ -475,22 +496,31 @@ synthetics for this run, not a random-payload corpus alongside them.
 
 With effective batch 16 and two mapped directions, an update contains four real
 PC→phone stacks, four real phone→PC stacks, and their eight matched synthetic
-counterparts: 16 model examples with 64 exposure inputs. Real draws remain
+counterparts: 16 model examples with 80 exposure inputs. Real draws remain
 balanced by group/session/payload/phase; the sampler avoids duplicate bursts where possible. Both sides of a pair use the
-same ordinary classification objective. Four distinct members are sampled within
+same ordinary classification objective. Five distinct members are sampled within
 each selected burst without replacement and shuffled into RGB channel slots.
 Do not stack different phases, sessions, payloads or independent corruption
-bursts. Training rejects any burst with fewer than four observations; evaluation
+bursts. Training rejects any burst with fewer than five observations; evaluation
 uses deterministic nonoverlapping chronological groups and reports leftovers.
-`synthetic.py --frames 9` means exposures generated per burst; `train.py --frames 4`
-means exposures consumed per model input. These controls have different purposes.
+`synthetic.py --frames 9` means exposures generated per burst; `train.py --frames 5`
+means exposures consumed per model input. These controls have different purposes. Existing nine-exposure v4 synthetic bursts
+can be reused for five-frame training without regeneration. The synthetic
+generator is unchanged and currently accepts 1–16 exposures per burst; higher
+training counts require sufficiently long recorded bursts. Every training burst
+must contain at least T distinct members: no padding or cross-burst mixing.
 There is no consistency loss,
 reconstruction head, online real augmentation or hidden recipe switch.
 
 The run writes `settings.json`, `history.json`, `baseline-validation.json`,
 `final-validation.json`, selected `validation.json` and `best.pt`. History records
 source/group CE, source counts, pairing counts, repeated captures, and validation
-recovery. Inspect the best checkpoint's per-direction results, not only the
+recovery at each evaluation (step zero, every `--eval-every`, and the final step).
+Interval training metrics summarize all updates since the previous evaluation;
+this is not a per-optimizer-step JSON log. A tqdm bar shows training CE, learning
+rate and the latest validation CER/exact recovery, with concise validation
+summaries. `--no-progress` hides the bar; redirected output disables it automatically.
+Update dependencies with `python -m pip install -r experiments/optical-decoder/requirements.txt`. Inspect the best checkpoint's per-direction results, not only the
 final update. All model selection uses the unchanged real validation set.
 
 ### Evaluate with an equal observation budget
@@ -498,15 +528,15 @@ final update. All model selection uses the unchanged real validation set.
 ```sh
 python experiments/optical-decoder/evaluate.py \
   --dataset local-data/real-validation --split validation \
-  --checkpoint checkpoints/optical-decoder/wide-burst4/best.pt \
+  --checkpoint checkpoints/optical-decoder/wide-burst5/best.pt \
   --session-groups local-data/session-groups.json \
   --max-samples 0 --device cuda \
-  --out local-results/optical-decoder/wide-burst4-validation.json
+  --out local-results/optical-decoder/wide-burst5-validation.json
 ```
 
 Compare learned and classical recovery within this report: both receive the
-same four observations. Compare `baseline-validation.json` with selected
-`validation.json` to measure learning beyond the initialized four-frame model.
+same five observations. Compare `baseline-validation.json` with selected
+`validation.json` to measure learning beyond the initialized five-frame model.
 Send those reports, `history.json` and generation summaries. Earlier single-frame
 reports remain useful context but have a different observation budget. Keep
 untouched real test sessions for the selected model and settings. The goal remains
@@ -516,7 +546,7 @@ better recovery in both directions with zero wrong accepted payloads.
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/wide-burst4/best.pt \
+  --checkpoint checkpoints/optical-decoder/wide-burst5/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected

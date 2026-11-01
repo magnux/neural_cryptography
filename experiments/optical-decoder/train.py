@@ -11,10 +11,12 @@ import hashlib
 import json
 from pathlib import Path
 import random
+import sys
 import time
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from torch.nn import functional as F
 from bursts import BurstIndex
@@ -53,10 +55,10 @@ def save_checkpoint(path: Path, model, training: dict):
 def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, batch_size=4,
                  accumulate=4, learning_rate=None, device="cpu", seed=7, eval_every=1000,
                  validation_samples=0, real_fraction=.5, initialize=None, node="node", model_profile=None,
-                 session_groups=None, weight_decay=.01, paired_targets=False, frames=None):
+                 session_groups=None, weight_decay=.01, paired_targets=False, frames=None, no_progress=False):
     steps, learning_rate = training_defaults(initialize, steps, learning_rate)
     if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
-        raise ValueError("Input frame count must be 1 or 4")
+        raise ValueError("Input frame count must be an integer from 1 through 64")
     integers = ((steps, 1, 1_000_000), (batch_size, 1, 128), (accumulate, 1, 128),
                 (seed, 0, 0xffffffff), (eval_every, 1, 1_000_000),
                 (validation_samples, 0, 1_000_000_000))
@@ -177,7 +179,15 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                   "selected": selected, "learningRate": current_lr,
                   "elapsedSeconds": time.perf_counter()-started}
         history.append(record)
-        print(json.dumps(record), flush=True)
+        learned = summary["learned"]
+        train_text = f" | train CE {record['trainLoss']:.4f}" if record["trainLoss"] is not None else ""
+        sources_text = " ".join(f"{name} {values['meanCE']:.4f}" for name, values in source_metrics.items())
+        if sources_text:
+            train_text += f" ({sources_text})"
+        tqdm.write(f"Step {step}/{steps}{train_text} | val CE {report['loss']:.4f}"
+                   f" | CER {report['cellErrorRate']:.2%}"
+                   f" | exact {learned['exactFrames']}/{learned['frames']} ({learned['exactRate']:.2%})"
+                   f"{' | best' if selected else ''}", file=sys.stdout)
         target = "baseline-validation.json" if step == 0 else "final-validation.json"
         (out/target).write_text(json.dumps(report, indent=2)+"\n")
 
@@ -191,45 +201,66 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             "stopReason": stop_reason, "device": str(device), "settings": options, "history": history,
             "note": "Validation selects checkpoints; untouched real test sessions establish generalization."}, indent=2)+"\n")
 
-    evaluate(0, empty_interval())
-    write_history()
-    interval = empty_interval()
-    for step in range(1, steps+1):
-        optimizer.zero_grad(set_to_none=True)
-        update_loss = 0.
-        batches = sampler.draw_update(batch_size, accumulate)
-        for anchors in batches:
-            samples = [burst_index.train_sample(anchor, burst_rng) for anchor in anchors]
-            triples = [sample.tensors() for sample in samples]
-            pixels = torch.from_numpy(np.stack([row[0] for row in triples]))
-            labels = torch.from_numpy(np.stack([row[1] for row in triples])).to(device)
-            mask = torch.from_numpy(np.stack([row[2] for row in triples])).to(device)
-            output = model(pixels.to(device))
-            loss, ce = training_loss(output, labels, mask, samples[0].shape[1])
-            if not torch.isfinite(loss):
-                raise RuntimeError("Non-finite training loss")
-            (loss/accumulate).backward()
-            update_loss += float(loss.detach())/accumulate
-            for sample, value in zip(samples, ce.detach().cpu().tolist()):
-                source = sample.metadata["source"]
-                counters = [interval["sources"].setdefault(source, [0., 0])]
-                if source == "real":
-                    name = sampler_groups[sample.metadata["sessionId"]]
-                    counters.append(interval["groups"].setdefault(name, [0., 0]))
-                for counter in counters:
-                    counter[0] += value
-                    counter[1] += 1
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
-        optimizer.step()
-        interval["loss"] += update_loss
-        interval["updates"] += 1
-        for name in interval["sampling"]:
-            interval["sampling"][name] += sampler.last_counts.get(name, 0)
-        completed = step
-        if step % eval_every == 0 or step == steps:
-            evaluate(step, interval)
+    def update_progress(progress, interval, refresh=False):
+        last = history[-1]
+        progress.set_postfix_str(
+            f"CE {interval['loss']/interval['updates']:.4f} | lr {optimizer.param_groups[0]['lr']:.2g}"
+            f" | val CER {last['validationCellErrorRate']:.2%}"
+            f" | exact {last['validationExact']:.2%}", refresh=refresh)
+
+    try:
+        with tqdm(total=steps, desc="Training", unit="update", dynamic_ncols=True,
+                  mininterval=.5, file=sys.stdout, disable=no_progress or not sys.stdout.isatty()) as progress:
+            evaluate(0, empty_interval())
             write_history()
             interval = empty_interval()
+            for step in range(1, steps+1):
+                optimizer.zero_grad(set_to_none=True)
+                update_loss = 0.
+                batches = sampler.draw_update(batch_size, accumulate)
+                for anchors in batches:
+                    samples = [burst_index.train_sample(anchor, burst_rng) for anchor in anchors]
+                    triples = [sample.tensors() for sample in samples]
+                    pixels = torch.from_numpy(np.stack([row[0] for row in triples]))
+                    labels = torch.from_numpy(np.stack([row[1] for row in triples])).to(device)
+                    mask = torch.from_numpy(np.stack([row[2] for row in triples])).to(device)
+                    output = model(pixels.to(device))
+                    loss, ce = training_loss(output, labels, mask, samples[0].shape[1])
+                    if not torch.isfinite(loss):
+                        raise RuntimeError("Non-finite training loss")
+                    (loss/accumulate).backward()
+                    update_loss += float(loss.detach())/accumulate
+                    for sample, value in zip(samples, ce.detach().cpu().tolist()):
+                        source = sample.metadata["source"]
+                        counters = [interval["sources"].setdefault(source, [0., 0])]
+                        if source == "real":
+                            name = sampler_groups[sample.metadata["sessionId"]]
+                            counters.append(interval["groups"].setdefault(name, [0., 0]))
+                        for counter in counters:
+                            counter[0] += value
+                            counter[1] += 1
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
+                optimizer.step()
+                interval["loss"] += update_loss
+                interval["updates"] += 1
+                for name in interval["sampling"]:
+                    interval["sampling"][name] += sampler.last_counts.get(name, 0)
+                completed = step
+                update_progress(progress, interval)
+                progress.update(1)
+                if step % eval_every == 0 or step == steps:
+                    evaluate(step, interval)
+                    write_history()
+                    update_progress(progress, interval, refresh=True)
+                    interval = empty_interval()
+    except KeyboardInterrupt:
+        stop_reason = "interrupted"
+        write_history()
+        raise
+    except Exception:
+        stop_reason = "failed"
+        write_history()
+        raise
     return {"checkpoint": str(out/"best.pt"), "steps": completed, "requestedSteps": steps,
             "selectedStep": selected_step, "selectedExactRate": best[0], "stopReason": stop_reason,
             "elapsedSeconds": time.perf_counter()-started, "history": history}
@@ -247,7 +278,7 @@ def main():
     parser.add_argument("--lr", type=float, help="default: 1e-4 fresh weights, 5e-5 initialized weights")
     parser.add_argument("--weight-decay", type=float, default=.01, help="AdamW decay (default: .01)")
     parser.add_argument("--frames", type=int, choices=FRAME_COUNTS,
-                        help="exposures per input: infer checkpoint or default 1; explicit 4 expands a single-frame initialization")
+                        metavar="1..64", help="exposures per input: infer checkpoint or default 1; expands a single-frame initialization to the requested count")
     parser.add_argument("--paired-targets", action="store_true",
                         help="pair real captures with synthetic examples of the same target; requires real-fraction .5")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -259,6 +290,7 @@ def main():
     parser.add_argument("--model", choices=MODEL_PROFILES, help="default: wide fresh, otherwise checkpoint profile")
     parser.add_argument("--initialize", type=Path, help="initialize validated weights; optimizer starts fresh")
     parser.add_argument("--node", default="node")
+    parser.add_argument("--no-progress", action="store_true", help="hide the live bar; keep concise validation summaries")
     args = parser.parse_args()
     if not 1 <= args.threads <= 64:
         parser.error("threads must be 1–64")
@@ -278,7 +310,12 @@ def main():
         result = run_training(train, validation, **options)
     except (OSError, ValueError, RuntimeError) as error:
         parser.exit(1, f"Training failed: {error}\n")
-    print(json.dumps({key: value for key, value in result.items() if key != "history"}, indent=2))
+    except KeyboardInterrupt:
+        parser.exit(130, "Training interrupted. Completed validation records remain in the run directory.\n")
+    print(f"Finished {result['steps']}/{result['requestedSteps']} updates in {result['elapsedSeconds']:.1f}s. "
+          f"Best step {result['selectedStep']}: exact {result['selectedExactRate']:.2%}.")
+    print(f"Checkpoint: {result['checkpoint']}")
+    print(f"Full metrics: {Path(args.out).resolve()/'history.json'}")
 
 
 if __name__ == "__main__":

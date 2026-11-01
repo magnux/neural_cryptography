@@ -3,7 +3,7 @@
 
 Predicted logits never receive expected bytes. Those bytes are compared only
 after the canonical decoder accepts/rejects a candidate. Both methods observe
-the same one or four distinct captures; this report does not measure throughput.
+the same number of distinct captures; this report does not measure throughput.
 """
 
 import argparse
@@ -21,6 +21,7 @@ from torch.nn import functional as F
 
 from data import Dataset, check_checkpoint_overlap
 from bursts import BurstIndex
+from contract import FRAME_COUNTS, MAX_FRAMES
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -36,8 +37,8 @@ def canonical_recovery(dataset, selected, predictions, work_dir: Path, node="nod
     rows = []
     members = {sample.id: tuple(getattr(sample, "members", (sample,))) for sample in selected}
     counts = {len(group) for group in members.values()}
-    if len(counts) != 1 or not counts <= {1, 4}:
-        raise ValueError("Recovery candidates must all contain one or four captures")
+    if len(counts) != 1 or any(count not in FRAME_COUNTS for count in counts):
+        raise ValueError(f"Recovery candidates must all contain the same 1 to {MAX_FRAMES} captures")
     frames = counts.pop()
     for index, manifest in enumerate(sorted({sample.manifest for sample in selected})):
         wanted = [sample for sample in selected if sample.manifest == manifest]
