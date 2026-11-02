@@ -1,6 +1,6 @@
 # Learned color-matrix decoder: design and training plan
 
-Status: **G64 device feasibility established; normalized decoder evaluated; paired synthetic capture-resolution simulation added alongside glare and mild real augmentation**, 2026-11-02.
+Status: **G64 device feasibility established; normalized decoder evaluated; constant-width normalized tube added as an optional architecture experiment**, 2026-11-02.
 The submitted reports establish phone WebGPU and PC WASM parity and speed at G64. PC crop acquisition and G128 device
 measurements remain open. Use [the M2 guide](OPTICAL_DECODER_TRAINING.md) for capture, synthetic generation, training,
 and held-out evaluation, and [Decoder Lab](DECODER_LAB.md) for checkpoint parity/device timing. Real-data model
@@ -156,6 +156,48 @@ The input calibration and reference grid remain available to learned convolution
 Changing the internal widths needs a fresh model; wide weights cannot be loaded
 unchanged. This model uses no per-frame encoder, attention or additional training objective.
 
+### Normalized tube — optional allocation experiment
+
+`--model normalized-tube` keeps the normalized compact model's spatial scales,
+two-convolution blocks, skip topology, twelve hidden LayerNorm/ReLU stages and
+input clamp. Its inlet and every backbone stage use **32 channels**. It has no
+direct RGB readout. Skip concatenation briefly produces 64 channels before the
+decoder returns to 32. `normalized-compact` remains the default.
+
+```mermaid
+flowchart TD
+  I["5 RGB crops · 15×256×256"] --> C["Final input clip: -1 to 1"]
+  C --> S["Conv + LN + ReLU twice · 32×128×128 → 32×64×64"]
+  S --> E0["E0 · 32×64×64"]
+  E0 --> E1["E1 · 32×32×32"]
+  E1 --> B["Bottleneck · 32×16×16"]
+  B --> D1["Upsample + concat 64 → D1 · 32×32×32"]
+  E1 -->|normalized feature skip| D1
+  D1 --> D0["Upsample + concat 64 → D0 · 32×64×64"]
+  E0 -->|normalized feature skip| D0
+  D0 --> H["1×1 head · 16×64×64 logits"]
+```
+
+| Property | `normalized-compact` | `normalized-tube` |
+| --- | ---: | ---: |
+| Inlet channels | 3T→16→16 | 3T→32→32 |
+| E0 / E1 / bottleneck widths | 16 / 32 / 64 | 32 / 32 / 32 |
+| D1 / D0 widths | 32 / 16 | 32 / 32 |
+| Parameters, T=5 | 125,600 | 125,808 |
+| Parameter formula | 123440 + 432T | 121488 + 864T |
+| Parameters, T=64 | 151,088 | 176,784 |
+| Convolution MACs, G64/T=5 | 168,558,592 | 351,272,960 |
+
+This tests **where the parameters are allocated**, not a reduction in total
+capacity. The wider inlet and cell-resolution stages may retain more local color
+evidence; the narrower bottleneck allocates fewer weights to coarse context. That
+is a hypothesis, not a cure for the real/synthetic or session gap. Convolution
+multiply-accumulates rise about **2.08×** at G64/T=5 because more channels operate
+at larger spatial sizes. These counts exclude normalization, activation, resizing
+and memory movement; they are not browser latency measurements. Both models stay
+below 500k parameters through 64 frames. Internal shapes differ, so train tube
+from scratch; a normalized-compact checkpoint cannot initialize it.
+
 ### Burst sampling and evaluation
 
 Training draws T distinct captures at random within one burst/session/target/
@@ -185,7 +227,7 @@ semantics are unchanged.
 
 ### Remaining generalization hypotheses
 
-The submitted five-frame run lowers validation CE to .917 at 3k, then raises it
+The earlier wide five-frame run lowers validation CE to .917 at 3k, then raises it
 to 3.160 at 32k while real-training CE falls .946→.071. Chronological grouping
 was a mismatched evaluation condition; rerun the existing checkpoint with the
 corrected grouping before attributing a precise amount of loss to overfitting.
@@ -201,7 +243,7 @@ Two further concrete design observations motivate the smaller model:
   processing, fixing this input-range mismatch while preserving the recordings.
   Artifact distributions can still differ: synthetic generation approximates
   residual calibrated distortions rather than refitting a camera calibration
-  per generated exposure. The generator itself is unchanged.
+  per generated exposure. Common input clipping alone does not close that gap.
 
 Paired synthetics add nuisance variation without adding new payload content.
 Limited recorded sessions/targets remain another plausible generalization limit;
@@ -209,6 +251,19 @@ random combinations cannot create new physical capture conditions. The sampling
 audit found no RNG reset, missing frame-slot coverage, cross-phase pairing or
 optimizer/loss arithmetic error. A narrowly reproducible unused-capture selection
 bias was fixed, but the supplied run did not exercise that reuse path.
+
+The newer fresh normalized-compact history reaches 20,000 updates: validation
+CE 1.0514, cell error 32.759%, and 8/144 exact groups. At the same 20k point, the
+original normalized run had CE 1.1657, cell error 32.995%, and the same 8/144 exact
+groups. The new overall CE minimum is .96655 at 14k and its lowest cell error is
+32.416% at 19k. Phone→PC remains the clear gap: its validation CE rises from
+1.6223 at 7k to 2.1400 at 20k while training CE falls 1.4106→.8879; validation
+cell error rises 60.10%→63.42%, with zero exact recovery. This supports a
+direction-specific generalization problem even though the overall loss improves.
+Only the supplied 20k history is available for this update; there is no new
+completed-run or tube result. The tube experiment changes feature allocation
+while reusing the current data and objective; additional physical sessions remain
+necessary to test generalization beyond the existing capture conditions.
 
 ## Integrating probabilities with the existing receiver
 
@@ -336,25 +391,22 @@ three explicit controls. The augmentation keeps calibration overshoot until the
 model input clamp and leaves files, synthetic inputs and validation unchanged.
 Keep useful source/group metrics and initialized-checkpoint baseline protection.
 
-For the next experiment, continue `normalized-burst5/best.pt` at `3e-5` for 32,000
-updates using the unchanged real datasets and a new paired corpus of 32 independent
-bursts × 12 frames per target. Keep severity .45–.9, glare probability/strength
-.7/.65, white balance .8 stops, exposure 1.75 stops, shade .55 and rolling shutter
-.8 stops. Add `--capture-probability .75 --capture-min-scale .25
---capture-max-scale 1 --capture-blur-sigma .35`, retaining `--frames 5 --paired-targets`.
-Write `target-synthetic-resolution-train` and `normalized-burst5-resolution`;
-reuse the clean targets, direction sidecar and seed 41 from the earlier glare
-recipe. Keep any glare-run outputs as an earlier experiment; this is a new
-recommendation, not a measured improvement. Initialization loads weights with
-a fresh optimizer. Each real stack receives a synthetic stack of the exact
+For the next experiment, train **`normalized-tube` from scratch** at `1e-4` for
+32,000 updates, with `--frames 5 --paired-targets`. Reuse `real-train`,
+`real-validation`, `target-synthetic-resolution-train` and the existing direction
+sidecar; no synthetic regeneration is required. Keep mild real augmentation and
+write to `normalized-tube5`. Do not pass `--initialize`: the internal widths
+differ from normalized-compact. The earlier resolution/glare generation settings
+remain documented as a corpus reference, not an additional run to perform.
+Each real stack receives a synthetic stack of the exact
 same session/payload/frame/phase and target hashes. The 50:50 source quota applies
 to each complete optimizer update; an optional session sidecar balances real
 acquisition directions. Full real validation every 1,000 updates selects by exact
 recovery, then ordinary CE. Per-direction results remain essential when one
-direction recovers nothing. Compare against the initialized normalized model on
-the same fixed-random validation groups.
+direction recovers nothing. Compare models on the same fixed-random validation
+groups and at matched training stages; no tube improvement is established yet.
 See the [training guide](OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
-for generation and continuation commands.
+for training/evaluation commands and the retained corpus recipe.
 
 Mask reference cells and inactive palette classes from the objective. Batch
 G64/G128 profiles separately by shape. The architecture still predicts physical

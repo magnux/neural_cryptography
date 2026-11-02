@@ -171,10 +171,11 @@ independent decoding to measure whether accepted output is exact.
 
 Use the experiment's pinned dependencies in a virtual environment. Select an
 appropriate PyTorch CUDA build for the 4090; CPU works for small smoke runs.
-**For the recommended continuation run, skip this optional pilot generation
+**For the recommended tube run, skip this optional pilot generation
 and use the [target-paired run below](#recommended-next-training-run).** That
-run initializes the existing `normalized-burst5/best.pt`; old wide checkpoints
-cannot initialize its different internal architecture.
+run starts fresh `normalized-tube` weights using the existing paired dataset;
+neither wide nor normalized-compact checkpoints can initialize its different
+internal architecture.
 
 For a fresh pilot, reuse existing clean corpora or generate them below. Generate
 corrupted corpora into empty directories. Real recordings and joined datasets
@@ -395,6 +396,8 @@ settings on validation.
 | Profile | Parameters | Structure |
 | --- | ---: | --- |
 | `normalized-compact`, five frames | **125,600** | 16→16 inlet, 16/32/64 features, all hidden convolutions normalized, no RGB readout |
+| `normalized-tube`, five frames | **125,808** | 32→32 inlet, 32/32/32 features and decoder, same normalization, no RGB readout |
+| `normalized-tube`, 64 frames | 176,784 | Same constant-width backbone; wider multiframe input only |
 | `compact`, one frame | 121,792 | Plain U-Net baseline |
 | `wide`, one frame | 487,104 | Doubled widths, feature-channel LayerNorm, unnormalized pooled-RGB readout |
 | `wide`, five frames | **489,024** | Same backbone, 15-channel RGB inlet and local-color path |
@@ -417,7 +420,12 @@ Wide uses a `3T→16→32` inlet, `32/64/128` feature encoder, `64→32`
 decoder and a `3T→16→16` local-color path. Compact uses a `3T→8→16`
 inlet and `16/32/64` features. Parameter counts are `486624 + 480T` for
 wide and `121576 + 216T` for compact. Wide is below 500k through T=27;
-both compact and normalized-compact stay below that budget through 64 frames.
+compact, normalized-compact and normalized-tube stay below that budget through
+64 frames. Tube has `121488 + 864T` parameters. At G64/T=5 its convolution MAC
+count is 351,272,960 versus 168,558,592 for normalized-compact (about 2.08×).
+This is a redistribution toward higher-resolution features, not a reduction in
+parameter count or a measured speedup. See the
+[tube diagram and comparison](OPTICAL_DECODER.md#normalized-tube--optional-allocation-experiment).
 
 Raw float32 input memory per example is `0.75 × T` MiB at G64 and `3 × T`
 MiB at G128. At 64 frames that is 48/192 MiB before batches, activations and
@@ -461,30 +469,34 @@ These results motivate harder paired synthetics and mild real augmentation;
 they do not establish reliable transport. Earlier wide results used different
 grouping/input clipping, so they are not a controlled architecture comparison.
 
-## Recommended next training run
+The newly supplied fresh normalized-compact history ends at **20,000 updates**.
+At that point, validation CE is **1.0514**, cell error **32.759%**, and exact
+recovery **8/144**. The original normalized run at the same 20k point had CE
+1.1657, cell error 32.995%, and 8/144 exact groups. The new run reaches its lowest
+overall CE (.96655) at 14k and lowest cell error (32.416%) at 19k.
 
-**Continue from `normalized-burst5/best.pt` with paired synthetics that include
-low native capture resolution and the existing harder glare recipe.** Keep mild
-augmentation of real inputs, the five-frame architecture
-(125,600 parameters) and existing real training/validation sets unchanged. Use
-`3e-5` for 32,000 additional updates. This is weight initialization with a **fresh
-optimizer**, not an exact optimizer-state resume. The initial checkpoint is
-evaluated at step zero and retained as best if no subsequent checkpoint improves.
+Phone→PC still recovers no groups. From 7k to 20k its validation CE rises
+1.6223→2.1400 and cell error rises 60.10%→63.42%, while its interval training CE
+falls 1.4106→.8879. The harder data has not removed this direction's
+generalization gap. These are partial-run observations, not final 32k results;
+only the available history is used here. The tube proposal tests feature-width
+allocation at approximately the same parameter count, without claiming it will
+solve the gap.
 
-Reuse `target-clean-train` and `session-groups.json`; generate the new synthetic
-corpus into the empty `target-synthetic-resolution-train` directory. The new run
-uses the empty `normalized-burst5-resolution` output directory, preserving the
-parent run. No checkpoint or real-data cleanup is required.
+## Paired synthetic corpus reference
 
-The earlier glare recommendation used `target-synthetic-glare-train` and
-`normalized-burst5-refine`, with 32 bursts × 12 exposures, severity .45–.9 and the
-photometric controls below. Keep any existing outputs as that experiment's record.
-The current recommendation adds capture resolution, keeps seed 41 and initializes
-the original normalized checkpoint. The resolution stage has its own RNG, so its
-addition leaves the earlier artifact draws unchanged. No new validation results
-are implied by this update.
+The following is the existing resolution/glare corpus recipe. **Reuse
+`target-synthetic-resolution-train` for the next tube run; no regeneration is
+required.** The earlier recommendation initialized normalized-compact from
+`normalized-burst5/best.pt` at `3e-5` for 32k updates into
+`normalized-burst5-resolution`. Keep any existing outputs as that experiment's
+record. The current recommendation below trains the different tube architecture
+from scratch.
 
-### Reconstruct clean targets and generate paired corruptions
+### Reconstruct clean targets and generate paired corruptions, if needed
+
+Skip these commands when the clean and resolution-synthetic corpora already
+exist. The generator requires an empty output directory.
 
 ```sh
 # Reuse target-clean-train if already generated; otherwise run:
@@ -540,7 +552,15 @@ identical or prove domain alignment; the new corruptions and held-out real
 results test that hypothesis. The clean references are offline supervision,
 not an additional model input or a browser decoding oracle.
 
-### Continue the paired model
+## Recommended next training run
+
+**Train `normalized-tube` from scratch**, with five frames, at `1e-4` for 32,000
+updates. Reuse `real-train`, `real-validation`, `target-synthetic-resolution-train`
+and the direction sidecar. Keep the existing mild real augmentation and ordinary
+masked cross-entropy. The new output directory is `normalized-tube5`; preserve the
+earlier runs for comparison. `normalized-compact` remains the default, so select
+tube explicitly. Do not pass `--initialize`: these internal widths differ from
+the existing normalized-compact checkpoints.
 
 Reuse the existing direction sidecar. If it does not exist, create it once:
 
@@ -562,12 +582,12 @@ but the following run uses it to balance and report both directions.
 python experiments/optical-decoder/train.py \
   --train local-data/real-train local-data/target-synthetic-resolution-train \
   --validation local-data/real-validation \
-  --initialize checkpoints/optical-decoder/normalized-burst5/best.pt \
+  --model normalized-tube \
   --session-groups local-data/session-groups.json \
   --frames 5 --paired-targets --real-fraction .5 \
   --real-noise-std .008 --real-tint-stops .06 --real-exposure-stops .08 \
-  --lr .00003 --steps 32000 --eval-every 1000 --validation-samples 0 \
-  --device cuda --out checkpoints/optical-decoder/normalized-burst5-resolution
+  --lr .0001 --steps 32000 --eval-every 1000 --validation-samples 0 \
+  --device cuda --out checkpoints/optical-decoder/normalized-tube5
 ```
 
 Each effective update pairs every chosen real stack with one synthetic stack of its
@@ -575,7 +595,7 @@ exact session, payload, frame and phase, with identical label/mask/expected-byte
 hashes. Pairing applies across the complete optimizer update, so shuffled
 microbatches still have equal real/synthetic totals. Missing targets, mismatched
 labels, unrelated synthetic targets and incompatible split identities fail
-rather than silently falling back to unrelated images. Use only the new paired
+rather than silently falling back to unrelated images. Use only the existing paired
 synthetics for this run, not a random-payload corpus alongside them.
 
 With effective batch 16 and two mapped directions, an update contains four real
@@ -613,17 +633,18 @@ final update. All model selection uses the unchanged real validation set.
 ```sh
 python experiments/optical-decoder/evaluate.py \
   --dataset local-data/real-validation --split validation \
-  --checkpoint checkpoints/optical-decoder/normalized-burst5-resolution/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-tube5/best.pt \
   --session-groups local-data/session-groups.json \
   --max-samples 0 --device cuda \
-  --out local-results/optical-decoder/normalized-burst5-resolution-validation.json
+  --out local-results/optical-decoder/normalized-tube5-validation.json
 ```
 
 Compare learned and classical recovery within this report: both receive the
-same five observations. Compare `baseline-validation.json` with selected
-`validation.json` to measure learning beyond the initialized model's baseline.
-The baseline contains the parent checkpoint and is eligible for checkpoint selection.
-Send those reports, `history.json` and generation summaries. Earlier single-frame
+same five observations. For this fresh run, `baseline-validation.json` records
+random step-zero weights and is diagnostic; it does not contain a parent
+checkpoint. Compare selected `validation.json` and matched points in `history.json`
+with the normalized-compact results, keeping the same validation draw. Send those
+reports and `history.json`; reuse the existing generation summary. Earlier single-frame
 reports remain useful context but have a different observation budget. Keep
 untouched real test sessions for the selected model and settings. The goal remains
 better recovery in both directions with zero wrong accepted payloads.
@@ -632,7 +653,7 @@ better recovery in both directions with zero wrong accepted payloads.
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/normalized-burst5-resolution/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-tube5/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected

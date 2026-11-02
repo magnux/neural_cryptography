@@ -11,7 +11,7 @@ from torch.nn import functional as F
 from contract import CHANNELS, FRAME_COUNTS, MAX_FRAMES, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 
 
-MODEL_PROFILES = ("compact", "wide", "normalized-compact")
+MODEL_PROFILES = ("compact", "wide", "normalized-compact", "normalized-tube")
 DEFAULT_MODEL_PROFILE = "normalized-compact"
 
 
@@ -44,10 +44,12 @@ def conv(in_channels: int, out_channels: int, stride: int = 1,
 
 
 class OpticalDecoder(nn.Module):
-    """Baseline, wide, or fully feature-normalized compact U-Net.
+    """Baseline, wide, and fully feature-normalized compact/tubular U-Nets.
 
     Normalized-compact uses a 16-channel inlet, a 16/32/64 backbone, and channel
     LayerNorm after every hidden convolution, with no RGB-to-logits branch.
+    Normalized-tube keeps all hidden stage outputs at 32 channels; skip
+    concatenations are reduced from 64 to 32 by their next convolution.
     Compact and wide remain explicit experimental profiles. The constructor's
     compact default identifies the original baseline; fresh training/export use
     DEFAULT_MODEL_PROFILE. All profiles clip input only at the model boundary.
@@ -61,17 +63,19 @@ class OpticalDecoder(nn.Module):
             raise ValueError(f"Choose 1 to {MAX_FRAMES} input frames")
         self.profile = profile
         self.frames = frames
-        width = 32 if profile == "wide" else 16
-        inlet_width = 8 if profile == "compact" else 16
+        width = 32 if profile in ("wide", "normalized-tube") else 16
+        inlet_width = 32 if profile == "normalized-tube" else (8 if profile == "compact" else 16)
+        middle_width = width if profile == "normalized-tube" else 2 * width
+        context_width = width if profile == "normalized-tube" else 4 * width
         normalize = profile != "compact"
-        normalize_inlet = profile == "normalized-compact"
+        normalize_inlet = profile in ("normalized-compact", "normalized-tube")
         self.inlet = nn.Sequential(conv(3 * frames, inlet_width, 2, normalize_inlet),
                                    conv(inlet_width, width, 2, normalize_inlet))
         self.e0 = nn.Sequential(conv(width, width, normalize=normalize), conv(width, width, normalize=normalize))
-        self.e1 = nn.Sequential(conv(width, 2 * width, 2, normalize), conv(2 * width, 2 * width, normalize=normalize))
-        self.bottleneck = nn.Sequential(conv(2 * width, 4 * width, 2, normalize), conv(4 * width, 4 * width, normalize=normalize))
-        self.d1 = nn.Sequential(conv(6 * width, 2 * width, normalize=normalize), conv(2 * width, 2 * width, normalize=normalize))
-        self.d0 = nn.Sequential(conv(3 * width, width, normalize=normalize), conv(width, width, normalize=normalize))
+        self.e1 = nn.Sequential(conv(width, middle_width, 2, normalize), conv(middle_width, middle_width, normalize=normalize))
+        self.bottleneck = nn.Sequential(conv(middle_width, context_width, 2, normalize), conv(context_width, context_width, normalize=normalize))
+        self.d1 = nn.Sequential(conv(context_width + middle_width, middle_width, normalize=normalize), conv(middle_width, middle_width, normalize=normalize))
+        self.d0 = nn.Sequential(conv(middle_width + width, width, normalize=normalize), conv(width, width, normalize=normalize))
         self.head = nn.Conv2d(width, 16, 1, bias=True)
         if profile == "wide":
             self.local_color = nn.Sequential(nn.Conv2d(3 * frames, 16, 1), nn.ReLU(), nn.Conv2d(16, 16, 1))
@@ -112,6 +116,8 @@ def profile_from_state(state: dict) -> str:
         return "wide"
     if signature == ((16, 16, 1, 1), 16, True, True, False):
         return "normalized-compact"
+    if signature == ((16, 32, 1, 1), 32, True, True, False):
+        return "normalized-tube"
     raise ValueError("Checkpoint model does not match a supported decoder profile")
 
 

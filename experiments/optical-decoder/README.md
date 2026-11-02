@@ -2,7 +2,7 @@
 
 This implements M1 feasibility and the M2 capture/training pipeline from the
 [optical decoder plan](../../docs/OPTICAL_DECODER.md). The
-**normalized-compact** default and the **compact/wide** comparison profiles support
+**normalized-compact** default and the **normalized-tube/compact/wide** comparison profiles support
 1–64 RGB exposures, with fixed browser grids 64 and 128. The default has
 **125,600 parameters at five frames**, with a 16→16 inlet, 16/32/64 features,
 channel LayerNorm after every hidden convolution, and no direct RGB readout.
@@ -16,10 +16,19 @@ trained weights and their provenance. The existing classical decoder remains
 responsible for live transport until held-out recovery validates a candidate.
 Numerical parity measures runtime agreement, not optical accuracy.
 
-Fresh training and export default to `normalized-compact`. `--model compact`
-and `--model wide` remain explicit comparison profiles. Profile inference and
+Fresh training and export default to `normalized-compact`. `--model normalized-tube`,
+`--model compact` and `--model wide` are explicit comparison profiles. Profile inference and
 checkpoint loading validate all parameter shapes; changing internal width needs
-fresh weights. Do not initialize this model from `wide-pilot` or `wide-burst5`.
+fresh weights. Do not initialize tube from a normalized-compact or wide checkpoint.
+
+The optional **normalized-tube** has a 3T→32→32 inlet, constant 32-channel
+encoder/bottleneck/decoder stages, 64-channel skip concatenations, and a 32→16
+head. It keeps all twelve hidden LayerNorm/ReLU stages and has no direct RGB
+path. Its `121488 + 864T` parameters give **125,808 at T=5** and **176,784 at T=64**.
+This tests feature allocation rather than reducing capacity. At G64/T=5,
+convolution MACs rise from 168,558,592 to 351,272,960 (about 2.08×); that is an
+operation count, not measured browser latency. See the
+[tube diagram and comparison](../../docs/OPTICAL_DECODER.md#normalized-tube--optional-allocation-experiment).
 
 Capture calibration preserves overshoot: `x_capture = clip(c/127.5 - 1, -1.5, 1.5)`.
 Every model begins with `x_network = clip(x_capture, -1, 1)` **before any learned
@@ -52,13 +61,12 @@ including interval source/group metrics. Use `--no-progress` to hide the bar;
 redirected output automatically uses concise text without terminal control codes.
 
 The [recommended next run](../../docs/OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
-continues `normalized-burst5/best.pt` at `3e-5` for 32,000 updates, with a larger,
-harder matched synthetic corpus, low native capture resolution and mild real
-augmentation. The new outputs are `target-synthetic-resolution-train` and
-`normalized-burst5-resolution`; reuse the existing clean targets, real datasets
-and direction sidecar. Keep any previous glare-run outputs as their own experiment.
-`--initialize` loads
-weights with a fresh optimizer and preserves the starting validation baseline.
+trains **`--model normalized-tube --frames 5` from scratch** at `1e-4` for 32,000
+updates into `normalized-tube5`. Reuse `target-synthetic-resolution-train`, the
+existing real train/validation datasets, and direction sidecar; no synthetic
+regeneration is required. Keep mild real augmentation and do not pass
+`--initialize`, since the internal widths differ. The previous resolution/glare
+recipe remains a corpus reference, and existing run outputs remain available.
 `--paired-targets` places each real stack alongside a
 synthetic stack of that exact session/payload/frame/phase, with matching target
 hashes. Each side uses five distinct exposures from its own burst; independent
@@ -91,7 +99,7 @@ uses its own RNG; seed 41 retains the earlier glare recipe's other artifact draw
 Use `--capture-probability`, `--capture-min-scale`, `--capture-max-scale` and
 `--capture-blur-sigma` to control it; zero probability bypasses it completely.
 See the [training guide](../../docs/OPTICAL_DECODER_TRAINING.md#generate-the-synthetic-pilot)
-for controls and cleanup commands.
+for controls and the retained corpus-generation recipe.
 
 Source pools are indexed once. Offline manifests allow 256 MiB without a fixed
 row cap; generation defaults to seven frames, one burst, and a configurable
@@ -105,6 +113,12 @@ validation loss despite falling training loss. The normalized five-frame run
 recovered **19/144 (13.19%)** fixed-random validation groups at step 31,000, with
 32.43% cell error and no wrong acceptances. PC→phone recovered 19/96; phone→PC
 remained 0/48. Classical fusion recovered 0/144 with the same observations.
+The newer fresh normalized-compact history reaches 20k with CE 1.0514, cell error
+32.759%, and 8/144 exact groups; the original run at 20k had CE 1.1657, cell error
+32.995%, and the same 8/144. Phone→PC still recovers nothing, with validation CE
+rising while its training CE falls. This is a remaining direction-specific
+generalization gap. Only that partial history is available; no final-run or tube
+result is claimed. The tube changes feature allocation, not the data split or loss.
 Multiframe evaluation applies a fixed seed-7 random permutation within each burst
 before making disjoint stacks, and compares classical fusion over the exact same exposures; its denominator differs from a single-frame
 report. Existing checkpoints can be reevaluated under the corrected grouping
@@ -126,7 +140,7 @@ For a selected trained checkpoint:
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/normalized-burst5-resolution/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-tube5/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected
@@ -232,7 +246,7 @@ load time, backend, model hash, and UI responsiveness.
 
 ## Files and acceptance
 
-- `model.py`: normalized-compact default plus compact/wide comparison U-Nets;
+- `model.py`: normalized-compact default plus normalized-tube/compact/wide comparison U-Nets;
   all graphs apply final input clipping before learned layers.
 - `contract.py`: shape constants, RGB normalization, fixture generation, numeric
   parity, and little-endian serialization.

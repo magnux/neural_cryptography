@@ -327,6 +327,32 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertEqual(checkpoint["training"]["initialCheckpointSha256"], self.initial_hash)
         self.assertEqual(digest(self.initial), self.initial_hash)
 
+    def test_tube_five_frame_cli_trains_and_loads_its_own_profile(self):
+        directories = self.burst_directories("tube", overshoot=True)
+        sidecar = self.root/"tube-session-groups.json"
+        sidecar.write_text(json.dumps({"format": "optical-decoder-session-groups",
+                                      "version": 1, "sessions": self.mapping}))
+        out = self.root/"cli-tube"
+        process = subprocess.run([sys.executable, str(EXPERIMENT/"train.py"),
+            "--train", str(directories["train"]), "--validation", str(directories["validation"]),
+            "--model", "normalized-tube", "--frames", "5", "--paired-targets",
+            "--session-groups", str(sidecar), "--steps", "1", "--lr", ".0001",
+            "--batch-size", "4", "--accumulate", "1", "--device", "cpu",
+            "--eval-every", "1", "--no-progress", "--out", str(out)],
+            capture_output=True, text=True, timeout=90)
+        self.assertEqual(process.returncode, 0, process.stderr[-3000:])
+        history = json.loads((out/"history.json").read_text())
+        self.assertEqual(history["completedSteps"], 1)
+        self.assertEqual(history["settings"]["modelProfile"], "normalized-tube")
+        self.assertGreater(history["history"][-1]["trainLoss"], 0.)
+        model, checkpoint = load_model_checkpoint(out/"best.pt")
+        self.assertEqual((model.profile, model.frames), ("normalized-tube", 5))
+        self.assertEqual(parameter_count(model), 125808)
+        self.assertNotIn("initialCheckpointSha256", checkpoint["training"])
+        torch.manual_seed(7)
+        initial = OpticalDecoder("normalized-tube", frames=5)
+        self.assertFalse(torch.equal(initial.head.weight, model.head.weight))
+
     def test_fresh_five_frame_default_trains_normalized_model_without_rewriting_crops(self):
         directories = self.burst_directories("normalized", overshoot=True)
         recorded = {path: digest(path) for directory in directories.values()

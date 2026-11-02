@@ -80,6 +80,11 @@ class ProfileTests(unittest.TestCase):
                 self.assertEqual(checkpoint["version"], 1)
                 for name, tensor in original.state_dict().items():
                     torch.testing.assert_close(loaded.state_dict()[name], tensor, rtol=0, atol=0)
+                value["training"]["modelProfile"] = "wide" if profile != "wide" else "compact"
+                torch.save(value, path)
+                with self.assertRaisesRegex(ValueError, "profile metadata disagrees"):
+                    load_model_checkpoint(path)
+                value["training"]["modelProfile"] = profile
                 value["modelState"]["head.weight"] = torch.zeros(16, 17, 1, 1)
                 torch.save(value, path)
                 with self.assertRaisesRegex(ValueError, "supported decoder profile"):

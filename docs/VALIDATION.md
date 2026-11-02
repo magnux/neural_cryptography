@@ -546,3 +546,54 @@ five-frame architecture, adding the capture-resolution mixture. It initializes
 the original `normalized-burst5/best.pt` at `3e-5` for 32,000 updates in a new run
 directory. One native pixel per cell is a deliberately difficult endpoint, not
 a reliable-recovery guarantee. No new training gain or device result is claimed.
+
+## Direction-specific generalization and the tubular profile — 2026-11-02
+
+The available new history is a fresh normalized-compact five-frame run through
+20,000 updates at `1e-4`. A second same-named upload was unavailable, so the
+reported initialized attempt was not analyzed numerically. The history records
+training settings but not the synthetic generator recipe; the resolution corpus
+is identified by the user's description, not independently verified in this log.
+
+At 20k the new run has validation CE **1.0514**, cell error **32.759%** and **8/144
+exact groups**, compared with **1.1657**, **32.995%** and **8/144** for the original
+normalized run at the same update count. Overall CE bottoms at **.96655 at 14k**;
+cell error bottoms at **32.416% at 19k**. Phone→PC diverges earlier: from 7k to
+20k, its validation CE rises **1.6223→2.1400** and cell error **60.10%→63.42%**,
+while real training CE falls **1.4106→.8879**. It recovers no groups. PC→phone
+continues improving and recovers 8/96 at 20k. This supports direction-specific
+generalization failure; aggregate progress partly hides it. These logs do not
+establish whether data diversity, information loss or residual domain differences
+are the primary cause.
+
+The optional **normalized-tube** profile implements the proposed constant-width
+architecture: both inlet outputs and all hidden backbone outputs are 32 channels,
+with ChannelLayerNorm/ReLU after all twelve hidden convolutions. Skip
+concatenations have 64 channels before reduction to 32; the final head maps
+32→16 logits. There is no direct RGB branch. The existing input clip, spatial
+strides, learned-feature skips, frame-count range and default profile remain.
+
+The five-frame model has **125,808 parameters**, versus **125,600** for normalized
+compact. Its formula is **121488 + 864T**, reaching 176,784 at 64 frames. This
+redistributes capacity toward finer features; it is not parameter-count
+regularization. Convolution MACs at G64/T5 are **351,272,960 versus 168,558,592**,
+about **2.08×**, excluding normalization/interpolation and memory work. These are
+operation counts, not phone latency measurements. The inlet still downsamples
+256→128→64 and introduces no additional full-resolution skip.
+
+The new profile is supported by strict checkpoint loading, CLI training/export
+and browser manifest validation. An untrained five-frame export passed ONNX
+Runtime Web WASM checks at G64 and G128, with maximum absolute errors against
+PyTorch **1.51e-6 and 1.37e-6**. Overshoot and explicitly clipped fixtures produced
+exactly identical logits. No full GPU training, real recovery gain or site
+deployment is claimed. The next run trains tube from scratch on the existing
+datasets; normalized-compact weights cannot initialize the different internal
+shapes.
+
+**107 Python tests passed, one native ONNX Runtime check skipped** (108 total),
+and **61 JavaScript tests passed**. Coverage includes both grid shapes, channel
+widths/normalization, input clipping, gradients, strict profile identity, frame
+expansion through 64 inputs, ONNX fixtures and exact browser parameter-count
+validation. An actual fresh five-frame tube CLI training run updated weights,
+saved a correctly identified checkpoint and evaluated through canonical recovery.
+Model preparation and whitespace checks passed.

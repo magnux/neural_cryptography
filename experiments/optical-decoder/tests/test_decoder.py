@@ -121,24 +121,33 @@ class ModelTests(unittest.TestCase):
                     changed[:, slot*3:(slot+1)*3] = 0
                     self.assertGreater(float((model(changed)-expected).abs().max()), 1e-6)
 
-    def test_normalized_compact_preserves_resolution_with_no_rgb_readout(self):
-        torch.manual_seed(7)
-        model = OpticalDecoder("normalized-compact", frames=5).eval()
-        self.assertEqual(parameter_count(model), 125_600)
-        self.assertEqual(model.inlet[0][0].out_channels, 16)
-        self.assertEqual(model.inlet[1][0].out_channels, 16)
-        self.assertEqual(sum(isinstance(layer, ChannelLayerNorm) for layer in model.modules()), 12)
-        self.assertFalse(hasattr(model, "local_color"))
-        self.assertEqual(profile_from_state(model.state_dict()), "normalized-compact")
-        for size in (64, 128):
-            with self.subTest(size=size), torch.inference_mode():
-                pixels = torch.from_numpy(fixture_input(size, 7, frames=5))
-                expected = model(pixels)
-                self.assertEqual(tuple(expected.shape), shapes(size, 5)[1])
-                self.assertTrue(torch.isfinite(expected).all())
-                changed = pixels.clone()
-                changed[:, -3:] = 0
-                self.assertGreater(float((model(changed)-expected).abs().max()), 1e-6)
+    def test_normalized_profiles_preserve_resolution_with_no_rgb_readout(self):
+        for profile, count, width in (("normalized-compact", 125600, 16),
+                                      ("normalized-tube", 125808, 32)):
+            with self.subTest(profile=profile):
+                torch.manual_seed(7)
+                model = OpticalDecoder(profile, frames=5).eval()
+                self.assertEqual(parameter_count(model), count)
+                self.assertEqual(model.inlet[0][0].out_channels, width)
+                self.assertEqual(model.inlet[1][0].out_channels, width)
+                self.assertEqual(sum(isinstance(layer, ChannelLayerNorm) for layer in model.modules()), 12)
+                self.assertFalse(hasattr(model, "local_color"))
+                self.assertEqual(profile_from_state(model.state_dict()), profile)
+                if profile == "normalized-tube":
+                    hidden = [layer for layer in model.modules()
+                              if isinstance(layer, torch.nn.Conv2d) and layer is not model.head]
+                    self.assertEqual(len(hidden), 12)
+                    self.assertEqual({layer.out_channels for layer in hidden}, {32})
+                    self.assertEqual((model.d1[0][0].in_channels, model.d0[0][0].in_channels), (64, 64))
+                for size in (64, 128):
+                    with self.subTest(size=size), torch.inference_mode():
+                        pixels = torch.from_numpy(fixture_input(size, 7, frames=5))
+                        expected = model(pixels)
+                        self.assertEqual(tuple(expected.shape), shapes(size, 5)[1])
+                        self.assertTrue(torch.isfinite(expected).all())
+                        changed = pixels.clone()
+                        changed[:, -3:] = 0
+                        self.assertGreater(float((model(changed)-expected).abs().max()), 1e-6)
 
     def test_every_profile_clips_before_learned_layers_without_mutating_captures(self):
         torch.manual_seed(19)
@@ -185,7 +194,7 @@ class ModelTests(unittest.TestCase):
 
     def test_larger_frame_counts_expand_only_input_weights(self):
         for profile, baseline, per_frame in (("compact", 121_792, 216), ("wide", 487_104, 480),
-                                             ("normalized-compact", 123_872, 432)):
+                                             ("normalized-compact", 123_872, 432), ("normalized-tube", 122_352, 864)):
             original = OpticalDecoder(profile).eval()
             for frames in (2, 3, 32, MAX_FRAMES):
                 with self.subTest(profile=profile, frames=frames):
@@ -251,24 +260,25 @@ class ExportTests(unittest.TestCase):
     def test_five_frame_export_has_fixed_fifteen_channel_graph_and_exact_fixture(self):
         import onnx
         from export import export_smoke
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)/"burst"
-            manifest = export_smoke(directory, frames=5, sizes=(64,), check_ort=False, profile="normalized-compact")
-            self.assertEqual(manifest["framesPerInput"], 5)
-            self.assertEqual(manifest["channels"], 15)
-            self.assertEqual(manifest["parameterCount"], 125_600)
-            self.assertEqual(manifest["modelProfile"], "normalized-compact")
-            case = manifest["cases"][0]
-            self.assertEqual(case["inputShape"], [1, 15, 256, 256])
-            graph = onnx.load(directory/case["model"]["file"])
-            self.assertEqual([dim.dim_value for dim in graph.graph.input[0].type.tensor_type.shape.dim],
-                             case["inputShape"])
-            torch.manual_seed(7)
-            model = OpticalDecoder("normalized-compact", frames=5).eval()
-            pixels = np.fromfile(directory/case["input"]["file"], dtype="<f4").reshape(case["inputShape"])
-            expected = np.fromfile(directory/case["expected"]["file"], dtype="<f4").reshape(case["outputShape"])
-            with torch.inference_mode():
-                np.testing.assert_array_equal(model(torch.from_numpy(pixels)).numpy(), expected)
+        for profile, count in (("normalized-compact", 125600), ("normalized-tube", 125808)):
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)/"burst"
+                manifest = export_smoke(directory, frames=5, sizes=(64,), check_ort=False, profile=profile)
+                self.assertEqual(manifest["framesPerInput"], 5)
+                self.assertEqual(manifest["channels"], 15)
+                self.assertEqual(manifest["parameterCount"], count)
+                self.assertEqual(manifest["modelProfile"], profile)
+                case = manifest["cases"][0]
+                self.assertEqual(case["inputShape"], [1, 15, 256, 256])
+                graph = onnx.load(directory/case["model"]["file"])
+                self.assertEqual([dim.dim_value for dim in graph.graph.input[0].type.tensor_type.shape.dim],
+                                 case["inputShape"])
+                torch.manual_seed(7)
+                model = OpticalDecoder(profile, frames=5).eval()
+                pixels = np.fromfile(directory/case["input"]["file"], dtype="<f4").reshape(case["inputShape"])
+                expected = np.fromfile(directory/case["expected"]["file"], dtype="<f4").reshape(case["outputShape"])
+                with torch.inference_mode():
+                    np.testing.assert_array_equal(model(torch.from_numpy(pixels)).numpy(), expected)
 
     def test_native_runtime_parity_when_available(self):
         from export import export_smoke
