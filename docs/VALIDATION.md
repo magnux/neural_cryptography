@@ -476,3 +476,41 @@ These checks establish implementation and numerical agreement, not improved
 recovery. No full GPU training or physical-device accuracy run was performed.
 No site was deployed. The next run starts fresh with the existing real and
 matched synthetic datasets; wide-burst5 can be archived independently.
+
+## Harder paired synthesis and mild real augmentation — 2026-11-02
+
+The submitted normalized five-frame run selected step 31,000: **19/144 exact
+validation groups (13.19%)**, **32.43% cell error**, CE **1.3507**, and zero wrong
+acceptances. Classical recovery on identical observations was 0/144. All learned
+successes were PC→phone (19/96); phone→PC remained 0/48 with 65.60% cell error.
+Final step 32,000 recovered 18/144. At the selected step synthetic training CE
+was .053 versus .510 for real inputs. These are user-run measurements on fixed
+random groups, not a controlled comparison against earlier wide architectures.
+
+The current generator adds a coherently moving elliptical glare core and broad
+tinted veiling halo, plus optional per-burst severity ranges. Independent RNG
+streams keep glare and severity selection separate from other nuisance draws.
+The recommended corpus has 32 independent bursts × 12 frames per recorded
+training target, with severity .45–.9 and stronger photometric limits. Targets,
+labels/masks, phase identities and split ownership are unchanged.
+
+Training now applies mild real-only noise (.008 RGB01 standard deviation), tint
+(.06 stops), and exposure (.08 stops) after random burst assembly. Gains are
+shared within a stack; noise is independent across exposures/pixels. A dedicated
+RNG leaves sampling behavior unchanged. Original files and synthetic inputs
+are not mutated; validation receives no augmentation. The existing model input
+clip remains the final common [-1,1] boundary. Settings/history/checkpoints
+record the new controls, with all-zero strengths disabling the augmentation.
+
+**101 Python tests passed, one native ONNX Runtime check skipped** (102 total),
+and **61 JavaScript tests passed**. Checks include deterministic glare motion,
+local contrast loss/saturation, independent severity draws, same-target pairing,
+unchanged label/mask/expected-byte hashes and split ownership, real-only
+augmentation, non-mutation, and actual normalized five-frame CLI continuation.
+The continuation reproduced the parent checkpoint's unaugmented validation
+baseline, retained its profile/frame count, and used a fresh optimizer while
+preserving the original checkpoint and data files. Whitespace checks passed.
+
+The recommended next run initializes `normalized-burst5/best.pt` at `3e-5` for
+32,000 additional updates. No full GPU training, new recovery gain, physical
+device throughput measurement or site deployment is claimed for this change.

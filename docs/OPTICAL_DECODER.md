@@ -1,6 +1,6 @@
 # Learned color-matrix decoder: design and training plan
 
-Status: **G64 device feasibility established; M2 capture/training software implemented; normalized decoder and final input clipping implemented**, 2026-11-02.
+Status: **G64 device feasibility established; normalized decoder evaluated; harder paired synthetics and mild real augmentation implemented**, 2026-11-02.
 The submitted reports establish phone WebGPU and PC WASM parity and speed at G64. PC crop acquisition and G128 device
 measurements remain open. Use [the M2 guide](OPTICAL_DECODER_TRAINING.md) for capture, synthetic generation, training,
 and held-out evaluation, and [Decoder Lab](DECODER_LAB.md) for checkpoint parity/device timing. Real-data model
@@ -147,8 +147,9 @@ At five frames this is **74.3% fewer parameters** than wide. The profile is
 implemented in training, strict checkpoint loading, ONNX export and the browser
 contract. The input clamp adds no trainable parameters.
 
-The architecture targets capacity and photometric shortcuts; improved recovery
-still needs training and device evaluation. Feature normalization can reduce dependence on feature scale, but
+The architecture targets capacity and photometric shortcuts. Its first five-frame
+run recovered 19/144 validation groups (13.19%), all PC→phone; phone→PC remained
+0/48. This is progress, not reliable transport. Feature normalization can reduce dependence on feature scale, but
 does not guarantee white-balance invariance. Do not normalize the raw RGB triplet
 to unit variance: absolute color/luminance differences carry palette information.
 The input calibration and reference grid remain available to learned convolutions.
@@ -300,6 +301,9 @@ frames inside each burst:
   a transition between different payloads as one static target.
 - Add soft, rotated rectangle/ellipse shapes with opacity gradients: tinted
   multiplicative shadows and additive reflections/highlights, with burst motion.
+- Add drifting elliptical glare: a locally saturating core and a broader tinted
+  halo that reduces contrast. Draw severity per burst between configured bounds
+  to retain moderate examples alongside harder conditions.
 
 Treat these as calibrated-crop approximations, not a full camera simulator.
 Randomize nuisance parameters independently of payload symbols. Preserve original
@@ -312,19 +316,25 @@ Train on the user's RTX 4090 using plain PyTorch and NumPy; CPU supports small
 pipeline checks. The current trainer has one ordinary masked cross-entropy path,
 AdamW weight decay `.01`, effective batch 16, a 32,000-update default, and learning
 rate `1e-4` fresh or `5e-5` initialized. The unsuccessful adaptation recipe and its
-extra objective, online augmentation and plateau machinery have been removed.
+extra objective and plateau machinery have been removed. Real stacks now receive
+mild shared tint/exposure and independent noise during training only, through
+three explicit controls. The augmentation keeps calibration overshoot until the
+model input clamp and leaves files, synthetic inputs and validation unchanged.
 Keep useful source/group metrics and initialized-checkpoint baseline protection.
 
-For the next experiment, train `--model normalized-compact` from scratch on the
-existing real captures and matched nine-frame synthetic bursts with
-`--frames 5 --paired-targets`. Reuse those datasets without regeneration. Each real stack receives a synthetic stack of the exact
+For the next experiment, continue `normalized-burst5/best.pt` at `3e-5` for 32,000
+updates using the unchanged real datasets and a new paired corpus of 32 independent
+bursts × 12 frames per target. Use severity .45–.9, glare and stronger photometric
+limits, retaining `--frames 5 --paired-targets`. Initialization loads weights with
+a fresh optimizer. Each real stack receives a synthetic stack of the exact
 same session/payload/frame/phase and target hashes. The 50:50 source quota applies
 to each complete optimizer update; an optional session sidecar balances real
 acquisition directions. Full real validation every 1,000 updates selects by exact
 recovery, then ordinary CE. Per-direction results remain essential when one
-direction recovers nothing. Keep `wide-real/best.pt` as the comparison baseline.
+direction recovers nothing. Compare against the initialized normalized model on
+the same fixed-random validation groups.
 See the [training guide](OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
-for generation, cleanup and training commands.
+for generation and continuation commands.
 
 Mask reference cells and inactive palette classes from the objective. Batch
 G64/G128 profiles separately by shape. The architecture still predicts physical

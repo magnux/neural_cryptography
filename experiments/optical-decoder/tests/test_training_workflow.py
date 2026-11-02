@@ -21,6 +21,7 @@ sys.path.insert(0, str(EXPERIMENT))
 HAS_TORCH = importlib.util.find_spec("torch") is not None
 if HAS_TORCH:
     import torch
+    from augmentation import RealAugmentation
     from bursts import BurstIndex
     from checkpoint import load_model_checkpoint
     from data import Dataset, digest
@@ -90,7 +91,19 @@ class TrainingWorkflowTests(unittest.TestCase):
         snapshots = {sample.id: tuple(row.copy() for row in sample.tensors())
                      for sample in self.train.samples+self.validation.samples}
         source_metadata = [copy.deepcopy(sample.metadata) for sample in self.train.samples+self.validation.samples]
-        validation_calls, states = [], []
+        validation_calls, states, augmentations = [], [], []
+        augment = RealAugmentation.__call__
+        def observed_augmentation(transform, pixels, sources):
+            original = pixels.copy()
+            result = augment(transform, pixels, sources)
+            np.testing.assert_array_equal(pixels, original)
+            for index, source in enumerate(sources):
+                if source == "synthetic":
+                    np.testing.assert_array_equal(result[index], original[index])
+                else:
+                    self.assertFalse(np.array_equal(result[index], original[index]))
+            augmentations.append(tuple(sources))
+            return result
         def observed_evaluation(model, dataset, **kwargs):
             self.assertIs(dataset, self.validation)
             self.assertEqual(kwargs["max_samples"], 0)
@@ -102,7 +115,8 @@ class TrainingWorkflowTests(unittest.TestCase):
             validation_calls.append(result)
             return result
         console = io.StringIO()
-        with patch("train.evaluate_model", side_effect=observed_evaluation), \
+        with patch("train.RealAugmentation.__call__", autospec=True, side_effect=observed_augmentation), \
+                patch("train.evaluate_model", side_effect=observed_evaluation), \
                 patch.object(console, "isatty", return_value=True), contextlib.redirect_stdout(console):
             result = run_training(self.train, self.validation, **self.options("actual"))
         self.assertIn("Training", console.getvalue())
@@ -111,6 +125,7 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertIn("| val CER", console.getvalue())
         self.assertEqual(result["steps"], 2)
         self.assertEqual(len(validation_calls), 3)  # baseline plus both updates
+        self.assertEqual(len(augmentations), 4)  # train microbatches only, never validation
         self.assertFalse(torch.equal(states[0], states[-1]), "optimizer must update real model weights")
         self.assertTrue((self.root/"actual/baseline-validation.json").is_file())
         for entry in result["history"][1:]:
@@ -129,6 +144,7 @@ class TrainingWorkflowTests(unittest.TestCase):
         _, checkpoint = load_model_checkpoint(result["checkpoint"])
         self.assertEqual(checkpoint["training"]["selectionAggregation"], "group-balanced-real")
         self.assertEqual(checkpoint["training"]["settings"]["weightDecay"], .01)
+        self.assertEqual(checkpoint["training"]["settings"]["realAugmentation"]["noiseStdRGB01"], .008)
         self.assertIs(checkpoint["training"]["pairedTargets"], True)
         self.assertNotIn("recipe", checkpoint["training"]["settings"])
         self.assertEqual(digest(self.initial), self.initial_hash)
@@ -194,6 +210,7 @@ class TrainingWorkflowTests(unittest.TestCase):
             "--train", str(self.root/"train"), "--validation", str(self.root/"validation"),
             "--initialize", str(self.initial), "--session-groups", str(sidecar),
             "--paired-targets", "--steps", "1", "--batch-size", "4", "--accumulate", "1",
+            "--real-noise-std", ".003", "--real-tint-stops", ".02", "--real-exposure-stops", ".03",
             "--device", "cpu", "--validation-samples", "0", "--eval-every", "1",
             "--out", str(out)], capture_output=True, text=True, timeout=90)
         self.assertEqual(process.returncode, 0, process.stderr[-3000:])
@@ -212,6 +229,9 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertIs(settings["pairedTargets"], True)
         self.assertEqual(settings["validationSamples"], 0)
         self.assertEqual(settings["initialLearningRate"], 5e-5)
+        self.assertEqual(settings["realAugmentation"]["noiseStdRGB01"], .003)
+        self.assertEqual(settings["realAugmentation"]["tintStops"], .02)
+        self.assertEqual(settings["realAugmentation"]["exposureStops"], .03)
         self.assertNotIn("hardWeight", settings)
         update = history["history"][-1]
         self.assertEqual(update["trainSources"]["real"]["samples"], 2)
@@ -358,6 +378,34 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertEqual(tuple(logits.shape), (1, 16, 64, 64))
         self.assertTrue(torch.isfinite(logits).all())
         torch.testing.assert_close(seen[0], torch.from_numpy(pixels[None]).clamp(-1., 1.), rtol=0, atol=0)
+        self.assertEqual({path: digest(path) for path in recorded}, recorded)
+
+        # Continue the actual normalized five-frame best checkpoint with the
+        # new augmentation; validation must reproduce its unaugmented baseline.
+        prior_hash = digest(out/"best.pt")
+        prior_validation = json.loads((out/"validation.json").read_text())
+        continued = self.root/"cli-normalized-continued"
+        process = subprocess.run([sys.executable, str(EXPERIMENT/"train.py"),
+            "--train", str(directories["train"]), "--validation", str(directories["validation"]),
+            "--initialize", str(out/"best.pt"), "--session-groups", str(sidecar),
+            "--paired-targets", "--steps", "1", "--batch-size", "4", "--accumulate", "1",
+            "--device", "cpu", "--eval-every", "1", "--no-progress", "--out", str(continued)],
+            capture_output=True, text=True, timeout=90)
+        self.assertEqual(process.returncode, 0, process.stderr[-3000:])
+        history = json.loads((continued/"history.json").read_text())
+        self.assertEqual(history["completedSteps"], 1)
+        self.assertEqual(history["settings"]["framesPerInput"], 5)
+        self.assertEqual(history["settings"]["modelProfile"], DEFAULT_MODEL_PROFILE)
+        self.assertEqual(history["settings"]["initialLearningRate"], 5e-5)
+        self.assertTrue(history["history"][0]["selected"])
+        self.assertGreater(history["history"][-1]["trainLoss"], 0.)
+        baseline = json.loads((continued/"baseline-validation.json").read_text())
+        self.assertEqual(baseline["loss"], prior_validation["loss"])
+        self.assertEqual(baseline["cellErrorRate"], prior_validation["cellErrorRate"])
+        self.assertEqual(baseline["recovery"]["summary"], prior_validation["recovery"]["summary"])
+        _, checkpoint = load_model_checkpoint(continued/"best.pt")
+        self.assertEqual(checkpoint["training"]["initialCheckpointSha256"], prior_hash)
+        self.assertEqual(digest(out/"best.pt"), prior_hash)
         self.assertEqual({path: digest(path) for path in recorded}, recorded)
 
 

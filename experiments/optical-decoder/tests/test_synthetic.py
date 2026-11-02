@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -12,10 +13,10 @@ sys.path.insert(0, str(EXPERIMENT))
 HAS_TORCH = importlib.util.find_spec("torch") is not None
 if HAS_TORCH:
     import torch
-    from synthetic import (PhotometricConfig, apply_color_exposure, apply_overlays,
+    from synthetic import (PhotometricConfig, apply_color_exposure, apply_overlays, apply_glare,
                            apply_motion_blur, corrupt_burst, motion_blur_grids,
                            overlay_alpha, rolling_shutter_maps, sample_motion_blur,
-                           sample_photometric, sample_rolling_shutter)
+                           sample_photometric, sample_rolling_shutter, sample_glare, glare_maps)
     torch.set_num_threads(1)
 
 
@@ -122,6 +123,64 @@ class PhotometricTests(unittest.TestCase):
                     PhotometricConfig(rolling_shutter_probability=1, rolling_shutter_skew=.75))
         _, offsets = rolling_shutter_maps(512, maximum, 3)
         self.assertLess(float(offsets.abs().max())+.9, 2.)
+
+    def test_glare_is_bounded_correlated_elliptical_core_and_broad_halo(self):
+        config = PhotometricConfig(glare_probability=1)
+        glare = sample_glare(np.random.default_rng(7), .9, config)
+        self.assertEqual(glare, sample_glare(np.random.default_rng(7), .9, config))
+        self.assertLessEqual(glare["coreStrength"], .9*config.glare_strength)
+        self.assertLessEqual(glare["veilStrength"], .65*glare["coreStrength"])
+        self.assertNotEqual(glare["radiusX"], glare["radiusY"])
+        self.assertNotEqual(glare["color"][0], glare["color"][1])
+        core, veil = glare_maps(128, glare, 0)
+        later_core, later_veil = glare_maps(128, glare, 6)
+        for value, limit in ((core, glare["coreStrength"]), (veil, glare["veilStrength"])):
+            self.assertTrue(torch.isfinite(value).all())
+            self.assertGreaterEqual(float(value.min()), 0)
+            self.assertLessEqual(float(value.max()), limit)
+        self.assertGreater(int((veil > veil.max()*.1).sum()), 3*int((core > core.max()*.1).sum()))
+        self.assertFalse(torch.equal(core, later_core))
+        self.assertFalse(torch.equal(veil, later_veil))
+        # Small phone motion changes the same broad spot, not independent speckle.
+        correlation = torch.corrcoef(torch.stack([core.flatten(), later_core.flatten()]))[0, 1]
+        self.assertGreater(float(correlation), .8)
+        sampled = [sample_glare(np.random.default_rng(seed), 1, PhotometricConfig()) for seed in range(32)]
+        self.assertTrue(any(item is None for item in sampled))
+        self.assertTrue(any(item is not None for item in sampled))
+
+    def test_glare_reduces_contrast_tints_and_can_saturate_locally(self):
+        glare = sample_glare(np.random.default_rng(9), 1, PhotometricConfig(glare_probability=1))
+        glare.update(cx=.5, cy=.5, coreStrength=.6, veilStrength=.3, phase=np.pi/2)
+        dark, bright = torch.full((3, 128, 128), .15), torch.full((3, 128, 128), .55)
+        original = dark.clone()
+        dark_glare, bright_glare = apply_glare(dark, glare), apply_glare(bright, glare)
+        self.assertLess(float((bright_glare-dark_glare)[:, 64, 64].mean()), .2)
+        self.assertTrue(torch.all(dark_glare[:, 64, 64] > dark[:, 64, 64]))
+        self.assertGreater(float(dark_glare[:, 64, 64].max()-dark_glare[:, 64, 64].min()), .001)
+        self.assertEqual(float(bright_glare.max()), 1.)
+        self.assertLess(float((bright_glare == 1).float().mean()), .15)
+        self.assertTrue(torch.isfinite(dark_glare).all())
+        self.assertGreaterEqual(float(dark_glare.min()), 0)
+        self.assertLessEqual(float(dark_glare.max()), 1)
+        torch.testing.assert_close(dark, original, rtol=0, atol=0)
+        self.assertIs(apply_glare(dark, None), dark)
+
+    def test_glare_controls_do_not_redraw_other_artifacts(self):
+        clean = np.random.default_rng(23).uniform(-1, 1, (3, 256, 256)).astype(np.float32)
+        probability_off = PhotometricConfig(glare_probability=0)
+        strength_off = PhotometricConfig(glare_strength=0)
+        enabled = PhotometricConfig(glare_probability=1)
+        for config, severity in ((probability_off, 1), (strength_off, 1), (enabled, 0)):
+            self.assertIsNone(sample_glare(np.random.default_rng(4), severity, config))
+        baseline = corrupt_burst(clean, 17, 2, .8, photometric=probability_off)
+        np.testing.assert_array_equal(baseline, corrupt_burst(clean, 17, 2, .8, photometric=strength_off))
+        # Exercise all glare draws but bypass application: other trajectories and
+        # sensor draws must be byte-identical, even after the first frame.
+        with patch("synthetic.apply_glare", side_effect=lambda image, glare, frame: image):
+            np.testing.assert_array_equal(baseline, corrupt_burst(clean, 17, 2, .8, photometric=enabled))
+        changed = corrupt_burst(clean, 17, 2, .8, photometric=enabled)
+        self.assertFalse(np.array_equal(baseline, changed))
+        np.testing.assert_array_equal(changed, corrupt_burst(clean, 17, 2, .8, photometric=enabled))
 
     @staticmethod
     def motion(**changes):
@@ -232,7 +291,8 @@ class PhotometricTests(unittest.TestCase):
                               ("rolling_shutter_stops", 3), ("rolling_shutter_probability", 1),
                               ("rolling_shutter_skew", .75), ("motion_probability", 1),
                               ("linear_blur_pixels", 12), ("rotation_blur_degrees", 5),
-                              ("zoom_blur_fraction", .05)):
+                              ("zoom_blur_fraction", .05), ("glare_probability", 1),
+                              ("glare_strength", 1)):
             for value in (-.1, maximum+.01, np.nan, np.inf, -np.inf, True):
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                     PhotometricConfig(**{name: value})

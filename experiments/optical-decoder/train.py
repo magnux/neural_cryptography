@@ -19,6 +19,7 @@ import torch
 from tqdm import tqdm
 
 from torch.nn import functional as F
+from augmentation import RealAugmentation
 from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED
 from contract import FRAME_COUNTS, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 from checkpoint import load_model_checkpoint
@@ -55,7 +56,8 @@ def save_checkpoint(path: Path, model, training: dict):
 def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, batch_size=4,
                  accumulate=4, learning_rate=None, device="cpu", seed=7, eval_every=1000,
                  validation_samples=0, real_fraction=.5, initialize=None, node="node", model_profile=None,
-                 session_groups=None, weight_decay=.01, paired_targets=False, frames=None, no_progress=False):
+                 session_groups=None, weight_decay=.01, paired_targets=False, frames=None, no_progress=False,
+                 real_noise_std=.008, real_tint_stops=.06, real_exposure_stops=.08):
     steps, learning_rate = training_defaults(initialize, steps, learning_rate)
     if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
         raise ValueError("Input frame count must be an integer from 1 through 64")
@@ -68,6 +70,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             or not np.isfinite(weight_decay) or not 0 <= weight_decay <= 1
             or not isinstance(paired_targets, bool)):
         raise ValueError("Invalid training budget, learning rate, weight decay, or pairing setting")
+    real_augmentation = RealAugmentation(seed=seed, noise_std=real_noise_std,
+                                        tint_stops=real_tint_stops, exposure_stops=real_exposure_stops)
     if any(s.metadata["split"] != "train" for s in train.samples):
         raise ValueError("Only train samples may be fitted")
     if any(s.metadata["split"] != "validation" for s in validation.samples):
@@ -121,6 +125,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                "weightDecay": weight_decay, "realFraction": real_fraction,
                "pairedTargets": paired_targets, "framesPerInput": model.frames,
                "modelProfile": model.profile, "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
+               "realAugmentation": real_augmentation.settings(),
                "loss": "mean-masked-cross-entropy",
                "evalEvery": eval_every, "validationSamples": validation_samples,
                "evaluationGrouping": EVALUATION_POLICY, "evaluationSeed": EVALUATION_SEED,
@@ -202,7 +207,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         (out/"history.json").write_text(json.dumps({"format": "optical-decoder-training-run", "version": 1,
             "requestedSteps": steps, "completedSteps": completed, "selectedStep": selected_step,
             "stopReason": stop_reason, "device": str(device), "settings": options, "history": history,
-            "note": "Validation selects checkpoints; untouched real test sessions establish generalization."}, indent=2)+"\n")
+            "note": "Training CE includes configured real-only augmentation; validation inputs are unchanged. "
+                    "Validation selects checkpoints; untouched real test sessions establish generalization."}, indent=2)+"\n")
 
     def update_progress(progress, interval, refresh=False):
         last = history[-1]
@@ -224,7 +230,9 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                 for anchors in batches:
                     samples = [burst_index.train_sample(anchor, burst_rng) for anchor in anchors]
                     triples = [sample.tensors() for sample in samples]
-                    pixels = torch.from_numpy(np.stack([row[0] for row in triples]))
+                    pixels = real_augmentation(np.stack([row[0] for row in triples]),
+                                               [sample.metadata["source"] for sample in samples])
+                    pixels = torch.from_numpy(pixels)
                     labels = torch.from_numpy(np.stack([row[1] for row in triples])).to(device)
                     mask = torch.from_numpy(np.stack([row[2] for row in triples])).to(device)
                     output = model(pixels.to(device))
@@ -290,6 +298,12 @@ def main():
     parser.add_argument("--eval-every", type=int, default=1000, help="validation interval (default: 1000 updates)")
     parser.add_argument("--validation-samples", type=int, default=0, help="0 evaluates all (default); positive values cap the diagnostic subset")
     parser.add_argument("--real-fraction", type=float, default=.5)
+    parser.add_argument("--real-noise-std", type=float, default=.008,
+                        help="real training noise standard deviation in RGB [0,1] units (default: .008)")
+    parser.add_argument("--real-tint-stops", type=float, default=.06,
+                        help="real training per-RGB gain range in stops, shared by the burst (default: .06)")
+    parser.add_argument("--real-exposure-stops", type=float, default=.08,
+                        help="real training exposure range in stops, shared by the burst (default: .08); set all three strengths to 0 to disable")
     parser.add_argument("--model", choices=MODEL_PROFILES,
                         help=f"default: {DEFAULT_MODEL_PROFILE} fresh, otherwise checkpoint profile")
     parser.add_argument("--initialize", type=Path, help="initialize validated weights; optimizer starts fresh")

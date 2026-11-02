@@ -21,7 +21,7 @@ from torch.nn import functional as F
 from data import DATASET_FORMAT, Dataset, digest, local_path
 
 
-CORRUPTION_KIND = "correlated-calibrated-crop-v4"
+CORRUPTION_KIND = "correlated-calibrated-crop-v5"
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,8 @@ class PhotometricConfig:
     rotation_blur_degrees: float = .35
     zoom_blur_fraction: float = .006
     motion_samples: int = 7
+    glare_probability: float = .65
+    glare_strength: float = .6
 
     def __post_init__(self):
         for name, limit in (("white_balance_stops", 4), ("exposure_stops", 4),
@@ -47,7 +49,8 @@ class PhotometricConfig:
                             ("rolling_shutter_stops", 3), ("rolling_shutter_probability", 1),
                             ("rolling_shutter_skew", .75), ("motion_probability", 1),
                             ("linear_blur_pixels", 12), ("rotation_blur_degrees", 5),
-                            ("zoom_blur_fraction", .05)):
+                            ("zoom_blur_fraction", .05), ("glare_probability", 1),
+                            ("glare_strength", 1)):
             value = getattr(self, name)
             if isinstance(value, bool) or not np.isfinite(value) or not 0 <= value <= limit:
                 raise ValueError(f"{name.replace('_', '-')} must be finite and in [0, {limit}]")
@@ -133,6 +136,56 @@ def apply_overlays(image, overlays, frame=0):
         else:
             image = (image+alpha*color).clamp(0, 1)
     return image
+
+
+def sample_glare(rng, severity, config):
+    """A shared optical glare spot with smooth motion and a broad veiling halo.
+
+    This is a crop-space approximation, independent of transmitted symbols.
+    The narrow bright core can saturate locally; its wider tinted halo reduces
+    contrast without erasing the entire crop. Some bursts have no glare at all.
+    """
+    if severity == 0 or config.glare_strength == 0 or rng.random() >= config.glare_probability:
+        return None
+    radius = float(rng.uniform(.055, .13))
+    aspect = float(rng.uniform(.65, 1.7))
+    strength = float(severity*config.glare_strength*rng.uniform(.35, 1))
+    tint = rng.uniform(.88, 1, 3)
+    tint /= tint.max()
+    return {"cx": float(rng.uniform(.05, .95)), "cy": float(rng.uniform(.05, .95)),
+            "radiusX": radius*np.sqrt(aspect), "radiusY": radius/np.sqrt(aspect),
+            "angle": float(rng.uniform(-np.pi, np.pi)), "haloScale": float(rng.uniform(2.5, 4)),
+            "coreStrength": strength, "veilStrength": strength*float(rng.uniform(.35, .65)),
+            "color": tint.tolist(), "driftX": float(rng.uniform(-.035, .035)),
+            "driftY": float(rng.uniform(-.035, .035)), "phase": float(rng.uniform(0, 2*np.pi)),
+            "velocity": float(rng.uniform(.18, .4))}
+
+
+def glare_maps(side, glare, frame, *, device=None, dtype=torch.float32):
+    """Return bounded additive core and veiling-alpha maps, centered on one ellipse."""
+    axis = (torch.arange(side, device=device, dtype=dtype)+.5)/side
+    y, x = torch.meshgrid(axis, axis, indexing="ij")
+    phase = glare["phase"]+frame*glare["velocity"]
+    movement = np.sin(phase)-np.sin(glare["phase"])
+    x = x-glare["cx"]-glare["driftX"]*movement
+    y = y-glare["cy"]-glare["driftY"]*movement
+    sine, cosine = np.sin(glare["angle"]), np.cos(glare["angle"])
+    u = (cosine*x+sine*y)/glare["radiusX"]
+    v = (-sine*x+cosine*y)/glare["radiusY"]
+    squared_radius = u*u+v*v
+    modulation = .9+.1*np.sin(phase)
+    core = glare["coreStrength"]*modulation*torch.exp(-.5*squared_radius)
+    veil = glare["veilStrength"]*modulation*torch.exp(-.5*squared_radius/glare["haloScale"]**2)
+    return core, veil
+
+
+def apply_glare(image, glare, frame=0):
+    """Blend in broad scattered light, then add the localized highlight and clip."""
+    if glare is None:
+        return image
+    core, veil = glare_maps(image.shape[-1], glare, frame, device=image.device, dtype=image.dtype)
+    color = torch.as_tensor(glare["color"], device=image.device, dtype=image.dtype)[:, None, None]
+    return (image*(1-veil)+color*(veil+core)).clamp(0, 1)
 
 
 def sample_rolling_shutter(rng, severity, config):
@@ -252,7 +305,8 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
     Labels are unaffected by less than half-cell registration jitter. Spatial
     aliasing, curved multi-channel bands, rolling-shutter exposure/skew,
     integrated linear/rotational/radial-zoom exposure blur,
-    white balance, signed exposure, soft tinted shade/reflections, and shot/read
+    white balance, signed exposure, soft tinted shade/reflections, drifting
+    highlight/veiling glare, and shot/read
     noise vary independently of payload symbols. Seed is public augmentation data.
     """
     clean = np.asarray(clean, dtype=np.float32)
@@ -296,6 +350,8 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
     shutter = sample_rolling_shutter(shutter_rng, severity, photometric)
     motion_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x4d4f544e]))
     motion = sample_motion_blur(motion_rng, severity, photometric)
+    glare_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x474c4152]))
+    glare = sample_glare(glare_rng, severity, photometric)
     outputs = []
     for t in range(frames):
         blurred = gaussian_blur(high, base_sigma + severity*.15*np.sin(t*.6+phase0))
@@ -316,6 +372,7 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
         observed = apply_color_exposure(observed, lighting["whiteBalanceGains"][t],
                                          lighting["exposureStops"][t]).pow(gamma)
         observed = apply_overlays(observed, lighting["overlays"], t)
+        observed = apply_glare(observed, glare, t)
         # Shot variance follows intensity; read noise is independent per capture.
         std = severity*(.008 + .025*observed.sqrt())
         noise = torch.from_numpy(rng.normal(size=clean.shape).astype(np.float32))
@@ -326,13 +383,19 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
 
 def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
              max_output_mib=2**20, node="node", photometric: PhotometricConfig | None = None,
-             bursts_per_target=1):
+             bursts_per_target=1, severity_min=None):
     if not isinstance(max_output_mib, int) or isinstance(max_output_mib, bool) or max_output_mib < 0:
         raise ValueError("max-output-mib must be a nonnegative integer; zero disables the estimate limit")
     if type(bursts_per_target) is not int or not 1 <= bursts_per_target <= 2**20:
         raise ValueError("bursts-per-target must be an integer in [1, 1048576]")
+    if isinstance(severity, bool) or not np.isfinite(severity) or not 0 <= severity <= 1:
+        raise ValueError("severity must be finite and in [0, 1]")
+    if severity_min is not None and (isinstance(severity_min, bool) or
+            not np.isfinite(severity_min) or not 0 <= severity_min <= severity):
+        raise ValueError("severity-min must be finite and in [0, severity]")
     photometric = photometric or PhotometricConfig()
     recipe = {"kind": CORRUPTION_KIND, "seed": seed, "severity": severity,
+              "severityMin": severity_min,
               "frames": frames, "burstsPerTarget": bursts_per_target, "photometric": asdict(photometric)}
     recipe_hash = hashlib.sha256(json.dumps(recipe, sort_keys=True, allow_nan=False).encode()).hexdigest()
     dataset = Dataset(clean_directories)
@@ -355,7 +418,12 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
         for burst_index in range(bursts_per_target):
             derived = int.from_bytes(hashlib.sha256(
                 f"{seed}/{sample.id}/{burst_index}".encode()).digest()[:4], "little")
-            burst = corrupt_burst(pixels, derived, frames, severity, photometric=photometric)
+            # One strength per trajectory, not independently per frame. Its own
+            # stream keeps selecting strength independent from all artifact RNGs.
+            severity_rng = np.random.default_rng(np.random.SeedSequence([derived, 0x53455652]))
+            burst_severity = (severity if severity_min is None else
+                              float(severity_rng.uniform(severity_min, severity)))
+            burst = corrupt_burst(pixels, derived, frames, burst_severity, photometric=photometric)
             burst_id = hashlib.sha256(f"{sample.id}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
             for index, value in enumerate(burst):
                 identifier = hashlib.sha256(f"{burst_id}/{index}".encode()).hexdigest()[:24]
@@ -364,7 +432,7 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
                 record = {**sample.metadata, "id": identifier, "hashes": {},
                           "source": "synthetic", "burstId": f"synthetic-{burst_id}",
                           "synthetic": {"seed": derived, "frame": index, "burst": burst_index,
-                          "frames": frames, "severity": severity, "parentId": sample.id,
+                          "frames": frames, "severity": burst_severity, "parentId": sample.id,
                           "kind": CORRUPTION_KIND, "recipeSha256": recipe_hash},
                           "baselineMode": "canonical-from-corrupted-input"}
                 for field in ("input", "labels", "mask", "baseline", "expected"):
@@ -404,6 +472,8 @@ def main():
     parser.add_argument("--bursts-per-target", type=int, default=1,
                         help="independent corruption bursts per clean target (default: 1)")
     parser.add_argument("--severity", type=float, default=.65)
+    parser.add_argument("--severity-min", type=float, default=None,
+                        help="sample severity uniformly per burst from this minimum to --severity; omitted uses fixed severity")
     parser.add_argument("--white-balance-stops", type=float, default=.6,
                         help="max residual per-channel log2 gain at severity 1 (default: .6); 0 disables")
     parser.add_argument("--exposure-stops", type=float, default=1.5,
@@ -412,6 +482,10 @@ def main():
                         help="max soft shadow/reflection strength at severity 1 (default: .45); 0 disables")
     parser.add_argument("--shade-probability", type=float, default=.7,
                         help="fraction of bursts with rotated rectangles/ellipses (default: .7)")
+    parser.add_argument("--glare-probability", type=float, default=.65,
+                        help="fraction of bursts with drifting highlight/veiling glare, 0–1 (default: .65)")
+    parser.add_argument("--glare-strength", type=float, default=.6,
+                        help="max localized glare strength at severity 1, 0–1 (default: .6); 0 disables")
     parser.add_argument("--rolling-shutter-stops", type=float, default=.65,
                         help="max scanline exposure log2 gain at severity 1 (default: .65); 0 disables banding")
     parser.add_argument("--rolling-shutter-probability", type=float, default=.7,
@@ -441,10 +515,12 @@ def main():
                                          args.rolling_shutter_stops, args.rolling_shutter_probability,
                                          args.rolling_shutter_skew, args.motion_probability,
                                          args.linear_blur_pixels, args.rotation_blur_degrees,
-                                         args.zoom_blur_fraction, args.motion_samples)
+                                         args.zoom_blur_fraction, args.motion_samples,
+                                         args.glare_probability, args.glare_strength)
         result = generate(args.clean, args.out, seed=args.seed, frames=args.frames,
                           severity=args.severity, max_output_mib=args.max_output_mib, node=args.node,
-                          photometric=photometric, bursts_per_target=args.bursts_per_target)
+                          photometric=photometric, bursts_per_target=args.bursts_per_target,
+                          severity_min=args.severity_min)
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f"Synthetic generation failed: {error}\n")
     print(f"Wrote {len(result['samples'])} correlated synthetic crops to {args.out.resolve()}")

@@ -224,6 +224,9 @@ enabled by default:
 | `--exposure-stops` | `1.5` | Signed exposure gain in 80% of bursts, with highlight/shadow clipping. |
 | `--shade-opacity` | `.45` | Maximum strength of soft, rotated rectangle/ellipse shadows and reflections. |
 | `--shade-probability` | `.7` | Probability of a burst receiving one broad shape, sometimes with a smaller second shape. |
+| `--glare-probability` | `.65` | Probability of a drifting elliptical highlight with a broader veiling halo. |
+| `--glare-strength` | `.6` | Maximum glare strength before severity scaling; zero disables it. |
+| `--severity-min` | omitted | If set, draw one severity per independent burst, uniformly from this minimum to `--severity`; otherwise use fixed severity. |
 | `--rolling-shutter-stops` | `.65` | Maximum row-dependent exposure-band strength, with mild channel variation. |
 | `--rolling-shutter-probability` | `.7` | Probability of correlated drifting rolling-shutter bands/skew. |
 | `--rolling-shutter-skew` | `.5` | Maximum row-dependent horizontal displacement in dense-crop pixels, before severity scaling. |
@@ -256,6 +259,13 @@ nor its parameters depend on payload symbols. Multiple independently seeded
 bursts provide different conditions for the same target, while frames within a
 burst remain correlated.
 
+Glare adds a localized bright core and a wider, slightly tinted scattered-light
+halo. The halo reduces local contrast; the core can saturate highlights. Its
+position and intensity evolve smoothly through a burst. Glare has an independent
+random stream, so changing its controls does not redraw unrelated nuisance
+parameters. A severity range preserves moderate examples alongside hard ones;
+the recipe records its bounds and each capture records its burst's actual value.
+
 Motion blur now integrates several centered exposure samples with arbitrary-
 direction linear travel, rotation around an off-center pivot and radial zoom.
 The old two-position horizontal smear is removed. Strength/direction evolve
@@ -276,9 +286,24 @@ cross-entropy, microbatches of 4 and accumulation of 4 (effective batch 16).
 Training defaults to **32,000 updates**, learning rate `1e-4` for fresh weights or
 `5e-5` for an initialized checkpoint, and weight decay `.01`. Full validation
 runs every 1,000 updates. `--steps`, `--lr`, `--eval-every` and
-`--validation-samples` remain explicit controls. The unsuccessful adaptation
-recipe, its hard-cell loss, online augmentation and plateau scheduler have been
-removed; there is no `--recipe` option.
+`--validation-samples` remain explicit controls. There is no adaptation recipe,
+hard-cell objective or plateau scheduler.
+
+Real training stacks receive mild online photometric augmentation, after random
+stack assembly and before the model's existing [-1,1] input clip:
+
+| Option | Default | Units and behavior |
+| --- | ---: | --- |
+| `--real-noise-std` | `.008` | Gaussian noise standard deviation in RGB [0,1] units, about two camera-byte levels; independent across exposures/pixels. |
+| `--real-tint-stops` | `.06` | Small per-channel log2 gains, shared across a stack. |
+| `--real-exposure-stops` | `.08` | Small global log2 gain, shared across a stack. |
+
+Set all three to zero to disable this augmentation. Its dedicated random stream
+does not change sampler draws. It does not modify synthetic inputs, stored real
+captures, labels, masks, validation or inference. Calibration overshoot is retained
+until the model's final input clip. Settings and provenance record the controls;
+real training CE now measures augmented inputs, so an initial rise relative to an
+unaugmented run is not by itself a regression. Compare unchanged validation.
 
 For a fresh synthetic pilot:
 
@@ -392,7 +417,7 @@ while its unaugmented interval training CE falls from 1.745 to .349 to .182.
 This supports overfitting to training sessions. Both selected models recover only
 the same two PC→phone sessions. Multiple observations offer new visual evidence, but
 are not by themselves a solution to this generalization failure. Keep `wide-real`
-as a historical result. The normalized model below starts from fresh weights.
+as a historical result.
 
 The fresh-training/export default is `normalized-compact`; see its
 [implemented architecture and diagrams](OPTICAL_DECODER.md#normalized-compact--implemented-default).
@@ -401,26 +426,29 @@ inputs to [-1,1], including stored captures whose calibration retained values
 within [-1.5,1.5]. Data files stay unchanged. The Clip is exported inside ONNX;
 regenerate prepared model bundles after updating the code.
 
+The submitted normalized five-frame run selected step **31,000**, recovering
+**19/144 fixed-random validation groups (13.19%)**, with **32.43% cell error**,
+CE **1.3507** and zero wrong acceptances. Classical fusion recovered 0/144 from
+identical observations. All successes were PC→phone (19/96); phone→PC remained
+0/48, with 65.60% cell error. Final step 32,000 recovered 18/144. Synthetic
+training CE was already .053 versus .510 on real captures at the selected step.
+These results motivate harder paired synthetics and mild real augmentation;
+they do not establish reliable transport. Earlier wide results used different
+grouping/input clipping, so they are not a controlled architecture comparison.
+
 ## Recommended next training run
 
-**Train a fresh `normalized-compact --frames 5` model on the existing real and
-matched synthetic bursts.** Do not initialize from wide weights: the inlet,
-normalization and backbone shapes differ. The five-frame model has 125,600
-parameters. Its ordinary fresh learning rate is `1e-4`, with 32,000 updates.
-Existing `real-train`, `real-validation` and nine-frame
-`target-synthetic-burst-train` datasets can be reused without conversion or
-regeneration. If they exist, skip the generation section below.
+**Continue from `normalized-burst5/best.pt` with a larger, harder paired synthetic
+corpus and mild augmentation of real inputs.** Keep the five-frame architecture
+(125,600 parameters) and existing real training/validation sets unchanged. Use
+`3e-5` for 32,000 additional updates. This is weight initialization with a **fresh
+optimizer**, not an exact optimizer-state resume. The initial checkpoint is
+evaluated at step zero and retained as best if no subsequent checkpoint improves.
 
-The previous wide run may be moved aside locally without deleting it:
-
-```sh
-mkdir -p checkpoints/optical-decoder/archive
-mv -n -- checkpoints/optical-decoder/wide-burst5 checkpoints/optical-decoder/archive/
-```
-
-Run this only when that old directory exists and is no longer in use. The new
-output directory is `normalized-burst5`; the trainer requires it to be empty.
-No checkpoint or data cleanup is required to run this experiment.
+Reuse `target-clean-train` and `session-groups.json`; generate the new synthetic
+corpus into the empty `target-synthetic-glare-train` directory. The new run uses
+the empty `normalized-burst5-refine` output directory, preserving the parent run.
+No checkpoint or real-data cleanup is required.
 
 ### Reconstruct clean targets and generate paired corruptions
 
@@ -432,8 +460,12 @@ node scripts/decoder-dataset.mjs targets \
 
 python experiments/optical-decoder/synthetic.py \
   --clean local-data/target-clean-train \
-  --out local-data/target-synthetic-burst-train \
-  --bursts-per-target 16 --frames 9 --severity .65 --seed 31
+  --out local-data/target-synthetic-glare-train \
+  --bursts-per-target 32 --frames 12 --seed 41 \
+  --severity-min .45 --severity .9 \
+  --glare-probability .7 --glare-strength .65 \
+  --white-balance-stops .8 --exposure-stops 1.75 \
+  --shade-opacity .55 --rolling-shutter-stops .8
 ```
 
 `targets` reconstructs canonical clean matrices from the sender-derived bytes
@@ -447,11 +479,15 @@ passed as a comma-separated `--dataset` list. This command supports the capture
 app’s single logical frame with palette phases; it rejects incomplete multipart
 payloads rather than inventing missing target bytes.
 
-Sixteen independent corruption bursts with nine frames each provide **144
-synthetic observations per clean target**. Independent bursts vary optical
-conditions; nine frames of one burst are correlated. The generator reports the
-actual target/sample count and estimates its disk budget before writing. This
-avoids duplicating the same canonical clean raster for every real capture.
+Thirty-two independent corruption bursts with twelve frames each provide **384
+synthetic observations per clean target**: twice as many independent trajectories
+and 2.67× the previous 144 observations. Frames of one burst remain correlated.
+Severity varies from .45 to .9 per burst. The range's mean (.675) is close to the
+previous .65; new glare and stronger white balance, exposure, shade and rolling
+shutter limits supply the main difficulty increase. This retains moderate cases
+rather than making every example maximally degraded. The generator reports the
+actual target/sample count and estimated disk budget before writing; G64 RGB
+tensors alone occupy 288 MiB per target at these settings.
 
 Generate training targets **only from `real-train`**. Do not add validation or
 test target matrices to training, including through a pilot checkpoint. Synthetic
@@ -464,7 +500,7 @@ identical or prove domain alignment; the new corruptions and held-out real
 results test that hypothesis. The clean references are offline supervision,
 not an additional model input or a browser decoding oracle.
 
-### Train the paired model
+### Continue the paired model
 
 Reuse the existing direction sidecar. If it does not exist, create it once:
 
@@ -484,13 +520,14 @@ but the following run uses it to balance and report both directions.
 
 ```sh
 python experiments/optical-decoder/train.py \
-  --train local-data/real-train local-data/target-synthetic-burst-train \
+  --train local-data/real-train local-data/target-synthetic-glare-train \
   --validation local-data/real-validation \
-  --model normalized-compact \
+  --initialize checkpoints/optical-decoder/normalized-burst5/best.pt \
   --session-groups local-data/session-groups.json \
   --frames 5 --paired-targets --real-fraction .5 \
-  --lr .0001 --steps 32000 --eval-every 1000 --validation-samples 0 \
-  --device cuda --out checkpoints/optical-decoder/normalized-burst5
+  --real-noise-std .008 --real-tint-stops .06 --real-exposure-stops .08 \
+  --lr .00003 --steps 32000 --eval-every 1000 --validation-samples 0 \
+  --device cuda --out checkpoints/optical-decoder/normalized-burst5-refine
 ```
 
 Each effective update pairs every chosen real stack with one synthetic stack of its
@@ -512,14 +549,13 @@ bursts. Training rejects any burst with fewer than five observations; evaluation
 uses a fixed seed-7 random permutation within each burst before forming
 disjoint groups, and reports leftovers. It does not group chronological neighbors.
 The same fixed groups are used at every checkpoint and by both recovery methods.
-`synthetic.py --frames 9` means exposures generated per burst; `train.py --frames 5`
-means exposures consumed per model input. These controls have different purposes. Existing nine-exposure v4 synthetic bursts
-can be reused for five-frame training without regeneration. The synthetic
-generator is unchanged and currently accepts 1–16 exposures per burst; higher
+`synthetic.py --frames 12` means exposures generated per burst; `train.py --frames 5`
+means exposures consumed per model input. These controls have different purposes.
+The synthetic generator accepts 1–16 exposures per burst; higher
 training counts require sufficiently long recorded bursts. Every training burst
 must contain at least T distinct members: no padding or cross-burst mixing.
-There is no consistency loss,
-reconstruction head, online real augmentation or hidden recipe switch.
+Mild real augmentation is applied after this sampling, without changing the
+five-frame model. There is no consistency loss, reconstruction head or hidden recipe switch.
 
 The run writes `settings.json`, `history.json`, `baseline-validation.json`,
 `final-validation.json`, selected `validation.json` and `best.pt`. History records
@@ -537,16 +573,16 @@ final update. All model selection uses the unchanged real validation set.
 ```sh
 python experiments/optical-decoder/evaluate.py \
   --dataset local-data/real-validation --split validation \
-  --checkpoint checkpoints/optical-decoder/normalized-burst5/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-burst5-refine/best.pt \
   --session-groups local-data/session-groups.json \
   --max-samples 0 --device cuda \
-  --out local-results/optical-decoder/normalized-burst5-validation.json
+  --out local-results/optical-decoder/normalized-burst5-refine-validation.json
 ```
 
 Compare learned and classical recovery within this report: both receive the
 same five observations. Compare `baseline-validation.json` with selected
-`validation.json` to measure learning beyond the fresh model's baseline.
-The baseline contains random weights and is not eligible for checkpoint selection.
+`validation.json` to measure learning beyond the initialized model's baseline.
+The baseline contains the parent checkpoint and is eligible for checkpoint selection.
 Send those reports, `history.json` and generation summaries. Earlier single-frame
 reports remain useful context but have a different observation budget. Keep
 untouched real test sessions for the selected model and settings. The goal remains
@@ -556,7 +592,7 @@ better recovery in both directions with zero wrong accepted payloads.
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/normalized-burst5/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-burst5-refine/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected

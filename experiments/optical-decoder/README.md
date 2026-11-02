@@ -41,8 +41,10 @@ pilot. Each training burst must contain at least T distinct captures.
 There is one plain masked-cross-entropy training path, with 32,000 updates by
 default, AdamW weight decay `.01`, and learning rate `1e-4` for fresh weights or
 `5e-5` for an initialized model. Full validation runs every 1,000 updates. The
-unsuccessful adaptation recipe and its extra loss/augmentation/scheduler options
-have been removed. Source/group metrics, baseline protection, and the optional
+unsuccessful adaptation recipe and its extra loss/scheduler options have been
+removed. Mild real-only noise/tint/exposure augmentation is now enabled by three
+independent strength controls; validation and stored captures stay unchanged.
+Source/group metrics, baseline protection, and the optional
 session-direction sidecar remain useful general tools. A throttled tqdm bar shows
 training CE, learning rate and latest validation CER/exact recovery. Validation
 summaries stay short; `history.json` retains full records at each evaluation,
@@ -50,8 +52,10 @@ including interval source/group metrics. Use `--no-progress` to hide the bar;
 redirected output automatically uses concise text without terminal control codes.
 
 The [recommended next run](../../docs/OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
-trains `normalized-compact --frames 5` from scratch on existing real captures and
-matched synthetic bursts. `--paired-targets` places each real stack alongside a
+continues `normalized-burst5/best.pt` at `3e-5` for 32,000 updates, with a larger,
+harder matched synthetic corpus and mild real augmentation. `--initialize` loads
+weights with a fresh optimizer and preserves the starting validation baseline.
+`--paired-targets` places each real stack alongside a
 synthetic stack of that exact session/payload/frame/phase, with matching target
 hashes. Each side uses five distinct exposures from its own burst; independent
 synthetic corruption bursts and palette phases are never mixed. Target content
@@ -61,9 +65,12 @@ target is used during inference.
 Synthetic generation includes curved moiré, integrated arbitrary-direction linear,
 rotational and radial-zoom motion blur, Gaussian blur/noise, white-balance and
 exposure shifts, drifting rolling-shutter bands and bounded row-wise skew, plus
-soft, rotated rectangle/ellipse shadows and reflections. `--bursts-per-target`
+soft, rotated rectangle/ellipse shadows and reflections. Drifting elliptical
+glare adds localized saturation and a broad tinted halo that reduces contrast.
+`--severity-min` enables per-burst severity draws up to `--severity`.
+`--bursts-per-target`
 controls independent corruption trajectories; `--frames` controls correlated
-exposures within each. The recommended paired corpus uses 16 bursts × 9 frames
+exposures within each. The recommended paired corpus uses 32 bursts × 12 frames
 per target. These are calibrated-crop approximations, not a full camera simulator.
 See the [training guide](../../docs/OPTICAL_DECODER_TRAINING.md#generate-the-synthetic-pilot)
 for controls and cleanup commands.
@@ -76,7 +83,11 @@ corpora retain their existing formats and identities.
 
 The retained single-frame baseline recovered 69/768 captures. Paired single-frame
 training recovered 68/768 at step 22k, with phone→PC still at zero and worse
-validation loss despite falling training loss. Archive the previous wide runs as references; the normalized model starts fresh. Multiframe evaluation applies a fixed seed-7 random permutation within each burst
+validation loss despite falling training loss. The normalized five-frame run
+recovered **19/144 (13.19%)** fixed-random validation groups at step 31,000, with
+32.43% cell error and no wrong acceptances. PC→phone recovered 19/96; phone→PC
+remained 0/48. Classical fusion recovered 0/144 with the same observations.
+Multiframe evaluation applies a fixed seed-7 random permutation within each burst
 before making disjoint stacks, and compares classical fusion over the exact same exposures; its denominator differs from a single-frame
 report. Existing checkpoints can be reevaluated under the corrected grouping
 without retraining; the method and seed appear in each report.
@@ -97,7 +108,7 @@ For a selected trained checkpoint:
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/normalized-burst5/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-burst5-refine/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected
@@ -216,7 +227,10 @@ load time, backend, model hash, and UI responsiveness.
 - `bursts.py`: distinct same-burst training subsets and deterministic disjoint
   evaluation stacks, without rewriting recorded samples.
 - `synthetic.py`: independently seeded corruption bursts with moiré, blur/noise,
-  exposure/WB, rolling-shutter bands/skew, and soft shadows/reflections.
+  exposure/WB, rolling-shutter bands/skew, soft shadows/reflections, drifting
+  glare and per-burst severity ranges.
+- `augmentation.py`: mild real-only training noise/tint/exposure, with an
+  independent RNG and no changes to labels, recordings or evaluation.
 - `train.py`: plain masked CE, paired-target option, source/group metrics,
   validation selection and initialized-baseline protection.
 - `sampling.py`: indexed source/group/session/payload/phase sampling, exact real/
