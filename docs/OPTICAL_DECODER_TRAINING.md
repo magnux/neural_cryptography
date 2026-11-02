@@ -396,8 +396,8 @@ settings on validation.
 | Profile | Parameters | Structure |
 | --- | ---: | --- |
 | `normalized-compact`, five frames | **125,600** | 16→16 inlet, 16/32/64 features, all hidden convolutions normalized, no RGB readout |
-| `normalized-tube`, five frames | **125,808** | 32→32 inlet, 32/32/32 features and decoder, same normalization, no RGB readout |
-| `normalized-tube`, 64 frames | 176,784 | Same constant-width backbone; wider multiframe input only |
+| `normalized-tube`, five frames | **144,432** | Full-resolution 32-channel U-Net, stride-1 inlet, two stride-2 output reductions, all hidden convolutions normalized |
+| `normalized-tube`, 64 frames | 195,408 | Same full-resolution backbone; wider multiframe input only |
 | `compact`, one frame | 121,792 | Plain U-Net baseline |
 | `wide`, one frame | 487,104 | Doubled widths, feature-channel LayerNorm, unnormalized pooled-RGB readout |
 | `wide`, five frames | **489,024** | Same backbone, 15-channel RGB inlet and local-color path |
@@ -421,11 +421,18 @@ decoder and a `3T→16→16` local-color path. Compact uses a `3T→8→16`
 inlet and `16/32/64` features. Parameter counts are `486624 + 480T` for
 wide and `121576 + 216T` for compact. Wide is below 500k through T=27;
 compact, normalized-compact and normalized-tube stay below that budget through
-64 frames. Tube has `121488 + 864T` parameters. At G64/T=5 its convolution MAC
-count is 351,272,960 versus 168,558,592 for normalized-compact (about 2.08×).
-This is a redistribution toward higher-resolution features, not a reduction in
-parameter count or a measured speedup. See the
-[tube diagram and comparison](OPTICAL_DECODER.md#normalized-tube--optional-allocation-experiment).
+64 frames. Tube has `140112 + 864T` parameters. At G64/T=5 its convolution MAC
+count is 4,928,307,200 versus 168,558,592 for normalized-compact (about 29.24×).
+Its U-Net operates at 256→128→64→128→256 before a normalized outlet reduces to
+128 then 64. At G128 these sides double. This preserves full-resolution features
+until the output reduction, with fourteen hidden LayerNorm/ReLU convolutions;
+there is no direct RGB branch. It increases activation memory and computation,
+not just parameters. MACs are operation counts, not measured runtime. See the
+[tube diagram and comparison](OPTICAL_DECODER.md#normalized-tube--full-resolution-experiment).
+
+This current `normalized-tube` replaces the earlier inlet-downsampling definition.
+Earlier tube checkpoints lack the required outlet and are rejected, not silently
+loaded into a different computation. The full-resolution run must start fresh.
 
 Raw float32 input memory per example is `0.75 × T` MiB at G64 and `3 × T`
 MiB at G128. At 64 frames that is 48/192 MiB before batches, activations and
@@ -479,9 +486,10 @@ Phone→PC still recovers no groups. From 7k to 20k its validation CE rises
 1.6223→2.1400 and cell error rises 60.10%→63.42%, while its interval training CE
 falls 1.4106→.8879. The harder data has not removed this direction's
 generalization gap. These are partial-run observations, not final 32k results;
-only the available history is used here. The tube proposal tests feature-width
-allocation at approximately the same parameter count, without claiming it will
-solve the gap.
+only the available history is used here. The current tube proposal tests
+full-resolution feature processing before output reduction, within a modest
+parameter budget but with much higher computation. It does not establish a
+solution to the gap.
 
 ## Paired synthetic corpus reference
 
@@ -554,13 +562,16 @@ not an additional model input or a browser decoding oracle.
 
 ## Recommended next training run
 
-**Train `normalized-tube` from scratch**, with five frames, at `1e-4` for 32,000
+**Train the full-resolution `normalized-tube` from scratch**, with five frames,
+at `1e-4` for 32,000
 updates. Reuse `real-train`, `real-validation`, `target-synthetic-resolution-train`
 and the direction sidecar. Keep the existing mild real augmentation and ordinary
-masked cross-entropy. The new output directory is `normalized-tube5`; preserve the
-earlier runs for comparison. `normalized-compact` remains the default, so select
-tube explicitly. Do not pass `--initialize`: these internal widths differ from
-the existing normalized-compact checkpoints.
+masked cross-entropy. Use **batch 2 and accumulation 8**, retaining effective batch
+16 while reducing peak memory. The new output directory is
+`normalized-tube5-fullres`, avoiding any existing `normalized-tube5` run.
+`normalized-compact` remains the default, so select tube explicitly. Do not pass
+`--initialize`: this full-resolution model is incompatible with earlier tube,
+normalized-compact and wide checkpoints.
 
 Reuse the existing direction sidecar. If it does not exist, create it once:
 
@@ -585,9 +596,10 @@ python experiments/optical-decoder/train.py \
   --model normalized-tube \
   --session-groups local-data/session-groups.json \
   --frames 5 --paired-targets --real-fraction .5 \
+  --batch-size 2 --accumulate 8 \
   --real-noise-std .008 --real-tint-stops .06 --real-exposure-stops .08 \
   --lr .0001 --steps 32000 --eval-every 1000 --validation-samples 0 \
-  --device cuda --out checkpoints/optical-decoder/normalized-tube5
+  --device cuda --out checkpoints/optical-decoder/normalized-tube5-fullres
 ```
 
 Each effective update pairs every chosen real stack with one synthetic stack of its
@@ -633,10 +645,10 @@ final update. All model selection uses the unchanged real validation set.
 ```sh
 python experiments/optical-decoder/evaluate.py \
   --dataset local-data/real-validation --split validation \
-  --checkpoint checkpoints/optical-decoder/normalized-tube5/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-tube5-fullres/best.pt \
   --session-groups local-data/session-groups.json \
   --max-samples 0 --device cuda \
-  --out local-results/optical-decoder/normalized-tube5-validation.json
+  --out local-results/optical-decoder/normalized-tube5-fullres-validation.json
 ```
 
 Compare learned and classical recovery within this report: both receive the
@@ -653,7 +665,7 @@ better recovery in both directions with zero wrong accepted payloads.
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/normalized-tube5/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-tube5-fullres/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected

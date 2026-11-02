@@ -123,26 +123,45 @@ class ModelTests(unittest.TestCase):
 
     def test_normalized_profiles_preserve_resolution_with_no_rgb_readout(self):
         for profile, count, width in (("normalized-compact", 125600, 16),
-                                      ("normalized-tube", 125808, 32)):
+                                      ("normalized-tube", 144432, 32)):
             with self.subTest(profile=profile):
                 torch.manual_seed(7)
                 model = OpticalDecoder(profile, frames=5).eval()
                 self.assertEqual(parameter_count(model), count)
                 self.assertEqual(model.inlet[0][0].out_channels, width)
                 self.assertEqual(model.inlet[1][0].out_channels, width)
-                self.assertEqual(sum(isinstance(layer, ChannelLayerNorm) for layer in model.modules()), 12)
+                self.assertEqual(sum(isinstance(layer, ChannelLayerNorm) for layer in model.modules()),
+                                 14 if profile == "normalized-tube" else 12)
                 self.assertFalse(hasattr(model, "local_color"))
                 self.assertEqual(profile_from_state(model.state_dict()), profile)
                 if profile == "normalized-tube":
                     hidden = [layer for layer in model.modules()
                               if isinstance(layer, torch.nn.Conv2d) and layer is not model.head]
-                    self.assertEqual(len(hidden), 12)
+                    self.assertEqual(len(hidden), 14)
                     self.assertEqual({layer.out_channels for layer in hidden}, {32})
                     self.assertEqual((model.d1[0][0].in_channels, model.d0[0][0].in_channels), (64, 64))
                 for size in (64, 128):
                     with self.subTest(size=size), torch.inference_mode():
                         pixels = torch.from_numpy(fixture_input(size, 7, frames=5))
-                        expected = model(pixels)
+                        spatial = {}
+                        stages = ("inlet.0", "inlet.1", "e0", "e1", "bottleneck", "d1", "d0",
+                                  "outlet.0", "outlet.1", "head") if profile == "normalized-tube" else ()
+                        handles = [model.get_submodule(name).register_forward_hook(
+                            lambda _module, _args, output, name=name: spatial.__setitem__(name, tuple(output.shape)))
+                            for name in stages]
+                        try:
+                            expected = model(pixels)
+                        finally:
+                            for handle in handles:
+                                handle.remove()
+                        if profile == "normalized-tube":
+                            for name in ("inlet.0", "inlet.1", "e0", "d0"):
+                                self.assertEqual(spatial[name], (1, 32, 4*size, 4*size))
+                            for name in ("e1", "d1", "outlet.0"):
+                                self.assertEqual(spatial[name], (1, 32, 2*size, 2*size))
+                            for name in ("bottleneck", "outlet.1"):
+                                self.assertEqual(spatial[name], (1, 32, size, size))
+                            self.assertEqual(spatial["head"], (1, 16, size, size))
                         self.assertEqual(tuple(expected.shape), shapes(size, 5)[1])
                         self.assertTrue(torch.isfinite(expected).all())
                         changed = pixels.clone()
@@ -194,7 +213,7 @@ class ModelTests(unittest.TestCase):
 
     def test_larger_frame_counts_expand_only_input_weights(self):
         for profile, baseline, per_frame in (("compact", 121_792, 216), ("wide", 487_104, 480),
-                                             ("normalized-compact", 123_872, 432), ("normalized-tube", 122_352, 864)):
+                                             ("normalized-compact", 123_872, 432), ("normalized-tube", 140_976, 864)):
             original = OpticalDecoder(profile).eval()
             for frames in (2, 3, 32, MAX_FRAMES):
                 with self.subTest(profile=profile, frames=frames):
@@ -260,7 +279,7 @@ class ExportTests(unittest.TestCase):
     def test_five_frame_export_has_fixed_fifteen_channel_graph_and_exact_fixture(self):
         import onnx
         from export import export_smoke
-        for profile, count in (("normalized-compact", 125600), ("normalized-tube", 125808)):
+        for profile, count in (("normalized-compact", 125600), ("normalized-tube", 144432)):
             with tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary)/"burst"
                 manifest = export_smoke(directory, frames=5, sizes=(64,), check_ort=False, profile=profile)

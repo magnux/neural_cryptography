@@ -347,7 +347,7 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertGreater(history["history"][-1]["trainLoss"], 0.)
         model, checkpoint = load_model_checkpoint(out/"best.pt")
         self.assertEqual((model.profile, model.frames), ("normalized-tube", 5))
-        self.assertEqual(parameter_count(model), 125808)
+        self.assertEqual(parameter_count(model), 144432)
         self.assertNotIn("initialCheckpointSha256", checkpoint["training"])
         torch.manual_seed(7)
         initial = OpticalDecoder("normalized-tube", frames=5)

@@ -597,3 +597,43 @@ expansion through 64 inputs, ONNX fixtures and exact browser parameter-count
 validation. An actual fresh five-frame tube CLI training run updated weights,
 saved a correctly identified checkpoint and evaluated through canonical recovery.
 Model preparation and whitespace checks passed.
+
+## Full-resolution tube and output reduction — 2026-11-02
+
+The tube experiment now follows the requested full-resolution U-Net layout.
+Both inlet convolutions use stride 1. At G64 the learned feature path is
+**256→128→64→128→256**, with a full-resolution normalized skip. Only after that
+decoder do two new normalized stride-2 outlet convolutions reduce
+**256→128→64**, followed by the 16-logit head. All fourteen hidden convolutions
+output 32 channels. G128 follows the corresponding 512-pixel input path. Other
+profiles and the stored input/output contracts remain unchanged.
+
+The current tube has **144,432 parameters at five frames**, with formula
+**140112 + 864T** (195,408 at 64 frames). At G64/T5, convolution MACs are
+**4,928,307,200**, about **14.03×** the earlier inlet-reduced tube and **29.24×**
+normalized-compact. Activation memory also increases. These operation counts
+are not measured GPU/phone runtimes. The recommended fresh run uses batch 2
+and accumulation 8, retaining effective batch 16, and reuses the existing
+datasets in a new `normalized-tube5-fullres` output directory.
+
+This replaces the previous tube definition under the same experimental profile.
+Checkpoint validation requires the learned outlet and rejects the earlier tube
+state, because convolution strides alone are absent from a state dictionary.
+Browser manifests require the new exact parameter count. No compatibility
+reader or weight migration was introduced. Spatial-hook tests verify both
+inlet layers, encoder/decoder stages, outlet layers and final logits at both
+supported grid sizes.
+
+**107 Python tests passed, one native ONNX Runtime check skipped** (108 total),
+and **61 JavaScript tests passed**. Tests include actual fresh five-frame CLI
+training, gradients, unchanged source data, profile/frame-count round trips,
+old tube checkpoint rejection, ONNX graph/fixture checks and browser rejection
+of the earlier tube parameter count. Both grid exports and model preparation
+completed. No full GPU training, new real recovery measurement or deployment
+was performed.
+
+The untrained full-resolution five-frame export also passed actual ONNX Runtime
+Web WASM checks at G64/G128. Maximum absolute errors against PyTorch were
+**1.61e-6/1.55e-6**; original overshooting fixtures and explicitly clipped copies
+produced exactly identical logits. These establish numerical agreement, not
+recognition accuracy or phone performance.

@@ -48,8 +48,10 @@ class OpticalDecoder(nn.Module):
 
     Normalized-compact uses a 16-channel inlet, a 16/32/64 backbone, and channel
     LayerNorm after every hidden convolution, with no RGB-to-logits branch.
-    Normalized-tube keeps all hidden stage outputs at 32 channels; skip
-    concatenations are reduced from 64 to 32 by their next convolution.
+    Normalized-tube keeps all hidden stage outputs at 32 channels. Its inlet
+    and outer U stages preserve the full crop resolution; two outlet convolutions
+    reduce to the symbol grid after the full-resolution decoder and skips.
+    Skip concatenations are reduced from 64 to 32 by their next convolution.
     Compact and wide remain explicit experimental profiles. The constructor's
     compact default identifies the original baseline; fresh training/export use
     DEFAULT_MODEL_PROFILE. All profiles clip input only at the model boundary.
@@ -69,13 +71,17 @@ class OpticalDecoder(nn.Module):
         context_width = width if profile == "normalized-tube" else 4 * width
         normalize = profile != "compact"
         normalize_inlet = profile in ("normalized-compact", "normalized-tube")
-        self.inlet = nn.Sequential(conv(3 * frames, inlet_width, 2, normalize_inlet),
-                                   conv(inlet_width, width, 2, normalize_inlet))
+        inlet_stride = 1 if profile == "normalized-tube" else 2
+        self.inlet = nn.Sequential(conv(3 * frames, inlet_width, inlet_stride, normalize_inlet),
+                                   conv(inlet_width, width, inlet_stride, normalize_inlet))
         self.e0 = nn.Sequential(conv(width, width, normalize=normalize), conv(width, width, normalize=normalize))
         self.e1 = nn.Sequential(conv(width, middle_width, 2, normalize), conv(middle_width, middle_width, normalize=normalize))
         self.bottleneck = nn.Sequential(conv(middle_width, context_width, 2, normalize), conv(context_width, context_width, normalize=normalize))
         self.d1 = nn.Sequential(conv(context_width + middle_width, middle_width, normalize=normalize), conv(middle_width, middle_width, normalize=normalize))
         self.d0 = nn.Sequential(conv(middle_width + width, width, normalize=normalize), conv(width, width, normalize=normalize))
+        if profile == "normalized-tube":
+            self.outlet = nn.Sequential(conv(width, width, 2, normalize=True),
+                                        conv(width, width, 2, normalize=True))
         self.head = nn.Conv2d(width, 16, 1, bias=True)
         if profile == "wide":
             self.local_color = nn.Sequential(nn.Conv2d(3 * frames, 16, 1), nn.ReLU(), nn.Conv2d(16, 16, 1))
@@ -90,6 +96,8 @@ class OpticalDecoder(nn.Module):
         context = self.bottleneck(e1)
         d1 = self.d1(torch.cat((F.interpolate(context, scale_factor=2, mode="nearest"), e1), dim=1))
         d0 = self.d0(torch.cat((F.interpolate(d1, scale_factor=2, mode="nearest"), e0), dim=1))
+        if self.profile == "normalized-tube":
+            d0 = self.outlet(d0)
         logits = self.head(d0)
         if self.profile == "wide":
             logits = logits + self.local_color(F.avg_pool2d(pixels, kernel_size=4, stride=4))
@@ -109,14 +117,14 @@ def profile_from_state(state: dict) -> str:
         raise ValueError("Checkpoint has no valid decoder inlet")
     signature = (tuple(state["head.weight"].shape), inlet.shape[0],
                  "inlet.0.1.weight" in state, "e0.0.1.weight" in state,
-                 "local_color.0.weight" in state)
-    if signature == ((16, 16, 1, 1), 8, False, False, False):
+                 "local_color.0.weight" in state, "outlet.0.0.weight" in state)
+    if signature == ((16, 16, 1, 1), 8, False, False, False, False):
         return "compact"
-    if signature == ((16, 32, 1, 1), 16, False, True, True):
+    if signature == ((16, 32, 1, 1), 16, False, True, True, False):
         return "wide"
-    if signature == ((16, 16, 1, 1), 16, True, True, False):
+    if signature == ((16, 16, 1, 1), 16, True, True, False, False):
         return "normalized-compact"
-    if signature == ((16, 32, 1, 1), 32, True, True, False):
+    if signature == ((16, 32, 1, 1), 32, True, True, False, True):
         return "normalized-tube"
     raise ValueError("Checkpoint model does not match a supported decoder profile")
 

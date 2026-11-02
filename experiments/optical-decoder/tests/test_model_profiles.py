@@ -33,7 +33,8 @@ class ProfileTests(unittest.TestCase):
                 model = OpticalDecoder(profile)
                 for size in (64, 128):
                     pixels = torch.randn(1, 3, 4 * size, 4 * size).clamp(-1.5, 1.5)
-                    output = model(pixels)
+                    with torch.inference_mode():
+                        output = model(pixels)
                     self.assertEqual(tuple(output.shape), (1, 16, size, size))
                     self.assertTrue(torch.isfinite(output).all())
                 model.zero_grad()
@@ -80,6 +81,16 @@ class ProfileTests(unittest.TestCase):
                 self.assertEqual(checkpoint["version"], 1)
                 for name, tensor in original.state_dict().items():
                     torch.testing.assert_close(loaded.state_dict()[name], tensor, rtol=0, atol=0)
+                if profile == "normalized-tube":
+                    # Strides are absent from state_dict. The current learned
+                    # outlet must be present so an earlier inlet-reducing tube
+                    # cannot silently acquire different spatial semantics.
+                    value["modelState"] = {name: tensor for name, tensor in original.state_dict().items()
+                                           if not name.startswith("outlet.")}
+                    torch.save(value, path)
+                    with self.assertRaisesRegex(ValueError, "supported decoder profile"):
+                        load_model_checkpoint(path)
+                    value["modelState"] = original.state_dict()
                 value["training"]["modelProfile"] = "wide" if profile != "wide" else "compact"
                 torch.save(value, path)
                 with self.assertRaisesRegex(ValueError, "profile metadata disagrees"):

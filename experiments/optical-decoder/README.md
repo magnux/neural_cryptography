@@ -21,14 +21,22 @@ Fresh training and export default to `normalized-compact`. `--model normalized-t
 checkpoint loading validate all parameter shapes; changing internal width needs
 fresh weights. Do not initialize tube from a normalized-compact or wide checkpoint.
 
-The optional **normalized-tube** has a 3T→32→32 inlet, constant 32-channel
-encoder/bottleneck/decoder stages, 64-channel skip concatenations, and a 32→16
-head. It keeps all twelve hidden LayerNorm/ReLU stages and has no direct RGB
-path. Its `121488 + 864T` parameters give **125,808 at T=5** and **176,784 at T=64**.
-This tests feature allocation rather than reducing capacity. At G64/T=5,
-convolution MACs rise from 168,558,592 to 351,272,960 (about 2.08×); that is an
-operation count, not measured browser latency. See the
-[tube diagram and comparison](../../docs/OPTICAL_DECODER.md#normalized-tube--optional-allocation-experiment).
+The current optional **normalized-tube** keeps the dense crop at full resolution
+through a stride-1 3T→32→32 inlet and a constant-width 32-channel U-Net. At G64,
+the U-Net spatial sides are **256→128→64→128→256**, with learned feature skips
+and 64-channel decoder concatenations. Two normalized stride-2 outlet convolutions
+then reduce **256→128→64**, followed by the 32→16 head. At G128 all spatial sides
+double. All **fourteen hidden convolutions** have LayerNorm/ReLU; no direct RGB
+path exists. Its `140112 + 864T` parameters give **144,432 at T=5** and **195,408 at T=64**.
+This tests full-resolution feature processing before output reduction. Convolution
+MACs are **4,928,307,200** at G64/T=5 versus 168,558,592 for normalized-compact
+(about 29.24×), and activation memory also increases. This is an operation count,
+not measured browser latency. See the
+[tube diagram and comparison](../../docs/OPTICAL_DECODER.md#normalized-tube--full-resolution-experiment).
+
+This replaces the earlier tube with inlet downsampling. The required outlet
+distinguishes the current checkpoint structure; earlier tube checkpoints are
+rejected rather than reinterpreted. Start the full-resolution model from scratch.
 
 Capture calibration preserves overshoot: `x_capture = clip(c/127.5 - 1, -1.5, 1.5)`.
 Every model begins with `x_network = clip(x_capture, -1, 1)` **before any learned
@@ -62,10 +70,12 @@ redirected output automatically uses concise text without terminal control codes
 
 The [recommended next run](../../docs/OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
 trains **`--model normalized-tube --frames 5` from scratch** at `1e-4` for 32,000
-updates into `normalized-tube5`. Reuse `target-synthetic-resolution-train`, the
+updates into `normalized-tube5-fullres`, using `--batch-size 2 --accumulate 8`
+for effective batch 16 with lower peak memory. Reuse `target-synthetic-resolution-train`, the
 existing real train/validation datasets, and direction sidecar; no synthetic
 regeneration is required. Keep mild real augmentation and do not pass
-`--initialize`, since the internal widths differ. The previous resolution/glare
+`--initialize`, since this topology is incompatible with earlier tube and
+normalized-compact checkpoints. The previous resolution/glare
 recipe remains a corpus reference, and existing run outputs remain available.
 `--paired-targets` places each real stack alongside a
 synthetic stack of that exact session/payload/frame/phase, with matching target
@@ -118,7 +128,8 @@ The newer fresh normalized-compact history reaches 20k with CE 1.0514, cell erro
 32.995%, and the same 8/144. Phone→PC still recovers nothing, with validation CE
 rising while its training CE falls. This is a remaining direction-specific
 generalization gap. Only that partial history is available; no final-run or tube
-result is claimed. The tube changes feature allocation, not the data split or loss.
+result is claimed. The current tube changes feature resolution and output reduction;
+the data split and loss stay unchanged.
 Multiframe evaluation applies a fixed seed-7 random permutation within each burst
 before making disjoint stacks, and compares classical fusion over the exact same exposures; its denominator differs from a single-frame
 report. Existing checkpoints can be reevaluated under the corrected grouping
@@ -140,7 +151,7 @@ For a selected trained checkpoint:
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/normalized-tube5/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-tube5-fullres/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected

@@ -7,7 +7,7 @@ import {DecoderClient} from '../dist/js/decoder-lab/client.js';
 function manifest(frames=1,profile='compact') {
   const entry=(file,bytes)=>({file,bytes,sha256:'a'.repeat(64)});
   const [base,perFrame]={compact:[121576,216],wide:[486624,480],
-    'normalized-compact':[123440,432],'normalized-tube':[121488,864]}[profile];
+    'normalized-compact':[123440,432],'normalized-tube':[140112,864]}[profile];
   const count=base+perFrame*frames;
   return {format:'optical-decoder',version:1,status:'untrained',modelProfile:profile,framesPerInput:frames,parameterCount:count,pixelsPerCell:4,channels:3*frames,classes:16,
     normalization:{divisor:127.5,offset:-1,clip:[-1.5,1.5]},networkInputClip:[-1,1],
@@ -125,7 +125,8 @@ test('arbitrary frame stacks require exact channels/counts through the G128/64-f
     }
   }
   assert.equal(manifest(5,'wide').parameterCount,489024);
-  assert.equal(manifest(5,'normalized-tube').parameterCount,125808);
+  assert.equal(manifest(5,'normalized-tube').parameterCount,144432);
+  assert.throws(()=>validateManifest({...manifest(5,'normalized-tube'),parameterCount:125808}),/profile/);
   assert.equal(manifest(64,'wide').parameterCount,517344);
   assert.equal(manifest(64,'compact').parameterCount,135400);
   assert.equal(manifest(1,'normalized-compact').parameterCount,123872);

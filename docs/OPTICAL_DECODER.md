@@ -1,6 +1,6 @@
 # Learned color-matrix decoder: design and training plan
 
-Status: **G64 device feasibility established; normalized decoder evaluated; constant-width normalized tube added as an optional architecture experiment**, 2026-11-02.
+Status: **G64 device feasibility established; normalized decoder evaluated; full-resolution normalized tube implemented as the current optional tube experiment**, 2026-11-02.
 The submitted reports establish phone WebGPU and PC WASM parity and speed at G64. PC crop acquisition and G128 device
 measurements remain open. Use [the M2 guide](OPTICAL_DECODER_TRAINING.md) for capture, synthetic generation, training,
 and held-out evaluation, and [Decoder Lab](DECODER_LAB.md) for checkpoint parity/device timing. Real-data model
@@ -156,47 +156,64 @@ The input calibration and reference grid remain available to learned convolution
 Changing the internal widths needs a fresh model; wide weights cannot be loaded
 unchanged. This model uses no per-frame encoder, attention or additional training objective.
 
-### Normalized tube — optional allocation experiment
+### Normalized tube — full-resolution experiment
 
-`--model normalized-tube` keeps the normalized compact model's spatial scales,
-two-convolution blocks, skip topology, twelve hidden LayerNorm/ReLU stages and
-input clamp. Its inlet and every backbone stage use **32 channels**. It has no
-direct RGB readout. Skip concatenation briefly produces 64 channels before the
-decoder returns to 32. `normalized-compact` remains the default.
+`--model normalized-tube` now processes the **full dense crop before reducing to
+the matrix grid**. Both inlet convolutions have stride 1. The 32-channel U-Net
+starts at 4G×4G, downsamples twice, and returns to 4G×4G using learned feature
+skips. Two normalized stride-2 outlet convolutions then reduce to G×G before the
+32→16 prediction head. All **fourteen hidden convolutions** have channel LayerNorm
+and ReLU; there is no direct RGB readout. Skip concatenation briefly produces
+64 channels before each decoder block returns to 32. The input clamp remains
+unchanged, and `normalized-compact` remains the default.
 
 ```mermaid
 flowchart TD
   I["5 RGB crops · 15×256×256"] --> C["Final input clip: -1 to 1"]
-  C --> S["Conv + LN + ReLU twice · 32×128×128 → 32×64×64"]
-  S --> E0["E0 · 32×64×64"]
-  E0 --> E1["E1 · 32×32×32"]
-  E1 --> B["Bottleneck · 32×16×16"]
-  B --> D1["Upsample + concat 64 → D1 · 32×32×32"]
+  C --> S["Stride-1 inlet twice · 32×256×256"]
+  S --> E0["E0 · 32×256×256"]
+  E0 --> E1["E1 · 32×128×128"]
+  E1 --> B["Bottleneck · 32×64×64"]
+  B --> D1["Upsample + concat 64 → D1 · 32×128×128"]
   E1 -->|normalized feature skip| D1
-  D1 --> D0["Upsample + concat 64 → D0 · 32×64×64"]
+  D1 --> D0["Upsample + concat 64 → D0 · 32×256×256"]
   E0 -->|normalized feature skip| D0
-  D0 --> H["1×1 head · 16×64×64 logits"]
+  D0 --> O["Stride-2 outlet twice · 32×128×128 → 32×64×64"]
+  O --> H["1×1 head · 16×64×64 logits"]
 ```
 
 | Property | `normalized-compact` | `normalized-tube` |
 | --- | ---: | ---: |
 | Inlet channels | 3T→16→16 | 3T→32→32 |
+| Inlet stride / output side | 2, 2 / G | 1, 1 / 4G |
 | E0 / E1 / bottleneck widths | 16 / 32 / 64 | 32 / 32 / 32 |
 | D1 / D0 widths | 32 / 16 | 32 / 32 |
-| Parameters, T=5 | 125,600 | 125,808 |
-| Parameter formula | 123440 + 432T | 121488 + 864T |
-| Parameters, T=64 | 151,088 | 176,784 |
-| Convolution MACs, G64/T=5 | 168,558,592 | 351,272,960 |
+| U-Net spatial sides, G64 | 64→32→16→32→64 | 256→128→64→128→256 |
+| Outlet | None | Two 3×3 stride-2 convolutions, 32→32→32 |
+| Hidden normalized convolutions | 12 | 14 |
+| Parameters, T=5 | 125,600 | 144,432 |
+| Parameter formula | 123440 + 432T | 140112 + 864T |
+| Parameters, T=64 | 151,088 | 195,408 |
+| Convolution MACs, G64/T=5 | 168,558,592 | 4,928,307,200 |
 
-This tests **where the parameters are allocated**, not a reduction in total
-capacity. The wider inlet and cell-resolution stages may retain more local color
-evidence; the narrower bottleneck allocates fewer weights to coarse context. That
-is a hypothesis, not a cure for the real/synthetic or session gap. Convolution
-multiply-accumulates rise about **2.08×** at G64/T=5 because more channels operate
-at larger spatial sizes. These counts exclude normalization, activation, resizing
-and memory movement; they are not browser latency measurements. Both models stay
-below 500k parameters through 64 frames. Internal shapes differ, so train tube
-from scratch; a normalized-compact checkpoint cannot initialize it.
+At G128 the U-Net sides are 512→256→128→256→512, followed by outlet reductions
+to 256 then 128. Inputs and physical-color outputs retain their existing shapes.
+
+This tests whether processing subcell detail at full resolution before output
+reduction helps recognition. It increases parameters modestly and activation
+memory substantially; it is not a capacity or compute reduction. Convolution
+multiply-accumulates are about **29.24×** normalized-compact at G64/T=5 because
+most operations now run on larger maps. Counts exclude normalization, activation,
+resizing and memory movement; they are not browser latency measurements. Both
+models remain below 500k parameters through 64 frames. Start training with batch
+2 and accumulation 8 to retain effective batch 16 while limiting peak memory.
+
+This is the current `normalized-tube` definition, replacing the earlier tube
+that reduced resolution in its inlet. Its checkpoints must contain the outlet;
+the loader rejects earlier tube weights rather than reinterpreting them with
+new strides. Train this model from scratch. Normalized-compact and wide weights
+also cannot initialize it. A full-resolution path is a recognition hypothesis,
+not a guaranteed solution to the remaining direction-specific generalization gap.
 
 ### Burst sampling and evaluation
 
@@ -261,8 +278,9 @@ groups. The new overall CE minimum is .96655 at 14k and its lowest cell error is
 cell error rises 60.10%→63.42%, with zero exact recovery. This supports a
 direction-specific generalization problem even though the overall loss improves.
 Only the supplied 20k history is available for this update; there is no new
-completed-run or tube result. The tube experiment changes feature allocation
-while reusing the current data and objective; additional physical sessions remain
+completed-run or tube result. The tube experiment moves feature processing to
+full resolution before output reduction while reusing the current data and
+objective; additional physical sessions remain
 necessary to test generalization beyond the existing capture conditions.
 
 ## Integrating probabilities with the existing receiver
@@ -395,8 +413,9 @@ For the next experiment, train **`normalized-tube` from scratch** at `1e-4` for
 32,000 updates, with `--frames 5 --paired-targets`. Reuse `real-train`,
 `real-validation`, `target-synthetic-resolution-train` and the existing direction
 sidecar; no synthetic regeneration is required. Keep mild real augmentation and
-write to `normalized-tube5`. Do not pass `--initialize`: the internal widths
-differ from normalized-compact. The earlier resolution/glare generation settings
+write to `normalized-tube5-fullres`, using `--batch-size 2 --accumulate 8`.
+Do not pass `--initialize`: this full-resolution tube adds an outlet and is
+incompatible with earlier tube and normalized-compact checkpoints. The earlier resolution/glare generation settings
 remain documented as a corpus reference, not an additional run to perform.
 Each real stack receives a synthetic stack of the exact
 same session/payload/frame/phase and target hashes. The 50:50 source quota applies

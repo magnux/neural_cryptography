@@ -10,7 +10,7 @@ export const MODEL_PROFILES = Object.freeze({
   compact:Object.freeze({base:121576,perFrame:216}),
   wide:Object.freeze({base:486624,perFrame:480}),
   'normalized-compact':Object.freeze({base:123440,perFrame:432}),
-  'normalized-tube':Object.freeze({base:121488,perFrame:864})
+  'normalized-tube':Object.freeze({base:140112,perFrame:864})
 });
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
 
