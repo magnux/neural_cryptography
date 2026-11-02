@@ -171,10 +171,10 @@ independent decoding to measure whether accepted output is exact.
 
 Use the experiment's pinned dependencies in a virtual environment. Select an
 appropriate PyTorch CUDA build for the 4090; CPU works for small smoke runs.
-**For the recommended fresh paired run, skip this optional pilot generation
+**For the recommended continuation run, skip this optional pilot generation
 and use the [target-paired run below](#recommended-next-training-run).** That
-run starts with fresh normalized-compact weights; old wide checkpoints cannot
-initialize its different internal architecture.
+run initializes the existing `normalized-burst5/best.pt`; old wide checkpoints
+cannot initialize its different internal architecture.
 
 For a fresh pilot, reuse existing clean corpora or generate them below. Generate
 corrupted corpora into empty directories. Real recordings and joined datasets
@@ -226,6 +226,10 @@ enabled by default:
 | `--shade-probability` | `.7` | Probability of a burst receiving one broad shape, sometimes with a smaller second shape. |
 | `--glare-probability` | `.65` | Probability of a drifting elliptical highlight with a broader veiling halo. |
 | `--glare-strength` | `.6` | Maximum glare strength before severity scaling; zero disables it. |
+| `--capture-probability` | `.75` | Probability of a burst receiving the reduced-capture-resolution stage. |
+| `--capture-min-scale` | `.25` | Minimum native capture side as a fraction of the stored crop side. |
+| `--capture-max-scale` | `1` | Maximum native capture side as a fraction of the stored crop side. |
+| `--capture-blur-sigma` | `.35` | Maximum Gaussian blur sigma in native capture pixels; selected bursts draw between half and all of this value. |
 | `--severity-min` | omitted | If set, draw one severity per independent burst, uniformly from this minimum to `--severity`; otherwise use fixed severity. |
 | `--rolling-shutter-stops` | `.65` | Maximum row-dependent exposure-band strength, with mild channel variation. |
 | `--rolling-shutter-probability` | `.7` | Probability of correlated drifting rolling-shutter bands/skew. |
@@ -237,10 +241,12 @@ enabled by default:
 | `--zoom-blur-fraction` | `.006` | Full radial scale change during an exposure, before severity scaling. |
 | `--motion-samples` | `7` | Temporal samples averaged per simulated exposure. |
 
-Strengths are scaled by `--severity`; at `.65`, a `.65`-stop rolling-shutter
+Photometric and motion strengths are scaled by `--severity`; at `.65`, a `.65`-stop rolling-shutter
 limit becomes `.4225` stops. Zero strength disables its effect; set rolling-shutter
 probability to zero to disable both bands and skew, or shade probability to zero
-to disable overlays. `--severity 0` returns the clean crop unchanged.
+to disable overlays. Capture resolution and its blur are separate geometric
+controls, not severity-scaled. `--severity 0` returns the clean crop unchanged,
+including bypassing the capture-resolution stage.
 
 Rolling-shutter effects approximate exposure bands from a rolling readout and
 screen flicker: broad/narrow bands evolve over successive frames, with slight
@@ -265,6 +271,25 @@ position and intensity evolve smoothly through a burst. Glare has an independent
 random stream, so changing its controls does not redraw unrelated nuisance
 parameters. A severity range preserves moderate examples alongside hard ones;
 the recipe records its bounds and each capture records its burst's actual value.
+
+Reduced capture resolution approximates a small phone display occupying fewer
+pixels in the PC camera, even though rectification produces a fixed-size crop.
+After the other image effects and sensor noise, selected bursts use area
+downsampling, a small Gaussian blur at that native resolution, and bilinear
+upsampling to the original crop size. One native side and blur sigma are drawn
+per burst and kept fixed across its exposures. The native side is uniform over
+the integer pixel sizes in the configured scale range; an independent random
+stream leaves existing artifact draws unchanged. The recipe and each burst's
+capture settings are recorded in synthetic provenance.
+
+At the default `.25–1` scale range, G64 crops go from 256×256 to 64–256 pixels
+per side and back; G128 crops go from 512×512 to 128–512 and back. The lower
+endpoint is one native pixel per matrix cell. That is an intentionally difficult
+case, not a guarantee of recoverable symbols. Upsampling does not restore lost
+spatial evidence. This stage preserves model input size, labels and recording
+formats, and does not simulate marker/header detection or full camera geometry.
+Set `--capture-probability 0` to disable the entire stage; setting only blur
+sigma to zero still permits downsampling.
 
 Motion blur now integrates several centered exposure samples with arbitrary-
 direction linear travel, rotation around an off-center pivot and radial zoom.
@@ -438,17 +463,26 @@ grouping/input clipping, so they are not a controlled architecture comparison.
 
 ## Recommended next training run
 
-**Continue from `normalized-burst5/best.pt` with a larger, harder paired synthetic
-corpus and mild augmentation of real inputs.** Keep the five-frame architecture
+**Continue from `normalized-burst5/best.pt` with paired synthetics that include
+low native capture resolution and the existing harder glare recipe.** Keep mild
+augmentation of real inputs, the five-frame architecture
 (125,600 parameters) and existing real training/validation sets unchanged. Use
 `3e-5` for 32,000 additional updates. This is weight initialization with a **fresh
 optimizer**, not an exact optimizer-state resume. The initial checkpoint is
 evaluated at step zero and retained as best if no subsequent checkpoint improves.
 
 Reuse `target-clean-train` and `session-groups.json`; generate the new synthetic
-corpus into the empty `target-synthetic-glare-train` directory. The new run uses
-the empty `normalized-burst5-refine` output directory, preserving the parent run.
-No checkpoint or real-data cleanup is required.
+corpus into the empty `target-synthetic-resolution-train` directory. The new run
+uses the empty `normalized-burst5-resolution` output directory, preserving the
+parent run. No checkpoint or real-data cleanup is required.
+
+The earlier glare recommendation used `target-synthetic-glare-train` and
+`normalized-burst5-refine`, with 32 bursts × 12 exposures, severity .45–.9 and the
+photometric controls below. Keep any existing outputs as that experiment's record.
+The current recommendation adds capture resolution, keeps seed 41 and initializes
+the original normalized checkpoint. The resolution stage has its own RNG, so its
+addition leaves the earlier artifact draws unchanged. No new validation results
+are implied by this update.
 
 ### Reconstruct clean targets and generate paired corruptions
 
@@ -460,12 +494,14 @@ node scripts/decoder-dataset.mjs targets \
 
 python experiments/optical-decoder/synthetic.py \
   --clean local-data/target-clean-train \
-  --out local-data/target-synthetic-glare-train \
+  --out local-data/target-synthetic-resolution-train \
   --bursts-per-target 32 --frames 12 --seed 41 \
   --severity-min .45 --severity .9 \
   --glare-probability .7 --glare-strength .65 \
   --white-balance-stops .8 --exposure-stops 1.75 \
-  --shade-opacity .55 --rolling-shutter-stops .8
+  --shade-opacity .55 --rolling-shutter-stops .8 \
+  --capture-probability .75 --capture-min-scale .25 --capture-max-scale 1 \
+  --capture-blur-sigma .35
 ```
 
 `targets` reconstructs canonical clean matrices from the sender-derived bytes
@@ -485,7 +521,11 @@ and 2.67× the previous 144 observations. Frames of one burst remain correlated.
 Severity varies from .45 to .9 per burst. The range's mean (.675) is close to the
 previous .65; new glare and stronger white balance, exposure, shade and rolling
 shutter limits supply the main difficulty increase. This retains moderate cases
-rather than making every example maximally degraded. The generator reports the
+rather than making every example maximally degraded. The resolution stage then
+applies to 75% of bursts, independently of severity: G64 uses a native side of
+64–256 pixels and blur sigma .175–.35 native pixels. Other bursts skip that stage.
+The mixture includes full-resolution evidence; it does not assume that all
+one-pixel-per-cell captures can be decoded. The generator reports the
 actual target/sample count and estimated disk budget before writing; G64 RGB
 tensors alone occupy 288 MiB per target at these settings.
 
@@ -520,14 +560,14 @@ but the following run uses it to balance and report both directions.
 
 ```sh
 python experiments/optical-decoder/train.py \
-  --train local-data/real-train local-data/target-synthetic-glare-train \
+  --train local-data/real-train local-data/target-synthetic-resolution-train \
   --validation local-data/real-validation \
   --initialize checkpoints/optical-decoder/normalized-burst5/best.pt \
   --session-groups local-data/session-groups.json \
   --frames 5 --paired-targets --real-fraction .5 \
   --real-noise-std .008 --real-tint-stops .06 --real-exposure-stops .08 \
   --lr .00003 --steps 32000 --eval-every 1000 --validation-samples 0 \
-  --device cuda --out checkpoints/optical-decoder/normalized-burst5-refine
+  --device cuda --out checkpoints/optical-decoder/normalized-burst5-resolution
 ```
 
 Each effective update pairs every chosen real stack with one synthetic stack of its
@@ -573,10 +613,10 @@ final update. All model selection uses the unchanged real validation set.
 ```sh
 python experiments/optical-decoder/evaluate.py \
   --dataset local-data/real-validation --split validation \
-  --checkpoint checkpoints/optical-decoder/normalized-burst5-refine/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-burst5-resolution/best.pt \
   --session-groups local-data/session-groups.json \
   --max-samples 0 --device cuda \
-  --out local-results/optical-decoder/normalized-burst5-refine-validation.json
+  --out local-results/optical-decoder/normalized-burst5-resolution-validation.json
 ```
 
 Compare learned and classical recovery within this report: both receive the
@@ -592,7 +632,7 @@ better recovery in both directions with zero wrong accepted payloads.
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/normalized-burst5-refine/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-burst5-resolution/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected

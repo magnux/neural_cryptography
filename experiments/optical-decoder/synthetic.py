@@ -21,7 +21,7 @@ from torch.nn import functional as F
 from data import DATASET_FORMAT, Dataset, digest, local_path
 
 
-CORRUPTION_KIND = "correlated-calibrated-crop-v5"
+CORRUPTION_KIND = "correlated-calibrated-crop-v6"
 
 
 @dataclass(frozen=True)
@@ -56,6 +56,43 @@ class PhotometricConfig:
                 raise ValueError(f"{name.replace('_', '-')} must be finite and in [0, {limit}]")
         if type(self.motion_samples) is not int or self.motion_samples not in (3, 5, 7, 9, 11, 13, 15):
             raise ValueError("motion-samples must be an odd integer from 3 to 15")
+
+
+@dataclass(frozen=True)
+class CaptureResolutionConfig:
+    """Effective crop resolution before rectification back to four pixels/cell."""
+
+    probability: float = .75
+    min_scale: float = .25
+    max_scale: float = 1.
+    blur_sigma: float = .35
+
+    def __post_init__(self):
+        for name, minimum, maximum in (("probability", 0, 1), ("min_scale", .25, 1),
+                                        ("max_scale", .25, 1), ("blur_sigma", 0, 1)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not np.isfinite(value) or not minimum <= value <= maximum:
+                raise ValueError(f"capture {name} must be finite and in [{minimum}, {maximum}]")
+        if self.min_scale > self.max_scale:
+            raise ValueError("capture min_scale must not exceed max_scale")
+
+
+def sample_capture_resolution(side, seed, severity, config):
+    """Choose one effective pixel count and blur for a whole burst.
+
+    Working distance is independent of photometric severity. Severity zero still
+    means exact clean identity. The separate stream leaves all other effects and
+    their frame-to-frame randomness unchanged when this simulation is toggled.
+    """
+    identity = {"side": side, "blurSigma": 0.}
+    if severity == 0 or config.probability == 0:
+        return identity
+    rng = np.random.default_rng(np.random.SeedSequence([seed, 0x5245534f]))
+    if rng.random() >= config.probability:
+        return identity
+    low, high = round(side*config.min_scale), round(side*config.max_scale)
+    return {"side": int(rng.integers(low, high+1)),
+            "blurSigma": float(config.blur_sigma*rng.uniform(.5, 1.))}
 
 
 def sample_photometric(rng, frames, severity, config):
@@ -298,15 +335,36 @@ def gaussian_blur(image: torch.Tensor, sigma: float) -> torch.Tensor:
                     kernel.view(1, 1, -1, 1).expand(channels, 1, -1, 1), groups=channels)
 
 
+def apply_capture_resolution(image, capture):
+    """CHW RGB -> smaller capture -> Gaussian diffusion -> original crop size.
+
+    Area resampling approximates finite pixel footprints. Blur sigma is measured
+    in the smaller image's pixels; bilinear enlargement supplies no new evidence.
+    This is a calibrated-crop approximation, not a full camera sensor simulator.
+    """
+    side = image.shape[-1]
+    capture_side = capture["side"]
+    if capture_side == side and capture["blurSigma"] == 0:
+        return image
+    low = image[None]
+    if capture_side != side:
+        low = F.interpolate(low, size=(capture_side, capture_side), mode="area")
+    low = gaussian_blur(low, capture["blurSigma"])
+    if capture_side != side:
+        low = F.interpolate(low, size=(side, side), mode="bilinear", align_corners=False)
+    return low[0]
+
+
 def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float = .65,
-                  *, photometric: PhotometricConfig | None = None) -> np.ndarray:
+                  *, photometric: PhotometricConfig | None = None,
+                  resolution: CaptureResolutionConfig | None = None) -> np.ndarray:
     """Return [T,3,H,W]; a shared texture evolves under small motion/focus shifts.
 
     Labels are unaffected by less than half-cell registration jitter. Spatial
     aliasing, curved multi-channel bands, rolling-shutter exposure/skew,
     integrated linear/rotational/radial-zoom exposure blur,
     white balance, signed exposure, soft tinted shade/reflections, drifting
-    highlight/veiling glare, and shot/read
+    highlight/veiling glare, effective capture resolution, and shot/read
     noise vary independently of payload symbols. Seed is public augmentation data.
     """
     clean = np.asarray(clean, dtype=np.float32)
@@ -321,6 +379,7 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
         return np.repeat(clean[None], frames, axis=0).copy()
     rng = np.random.default_rng(seed)
     side = clean.shape[-1]
+    capture = sample_capture_resolution(side, seed, severity, resolution or CaptureResolutionConfig())
     rgb = torch.from_numpy(np.clip((clean+1)/2, 0, 1))[None]
     high = F.interpolate(rgb, scale_factor=2, mode="nearest")
     hy, hx = torch.meshgrid(torch.arange(2*side, dtype=torch.float32),
@@ -377,13 +436,15 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
         std = severity*(.008 + .025*observed.sqrt())
         noise = torch.from_numpy(rng.normal(size=clean.shape).astype(np.float32))
         observed = (observed + noise*std).clamp(0, 1)
+        observed = apply_capture_resolution(observed, capture).clamp(0, 1)
         outputs.append((observed*2-1).numpy())
     return np.stack(outputs).astype(np.float32, copy=False)
 
 
 def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
              max_output_mib=2**20, node="node", photometric: PhotometricConfig | None = None,
-             bursts_per_target=1, severity_min=None):
+             bursts_per_target=1, severity_min=None,
+             resolution: CaptureResolutionConfig | None = None):
     if not isinstance(max_output_mib, int) or isinstance(max_output_mib, bool) or max_output_mib < 0:
         raise ValueError("max-output-mib must be a nonnegative integer; zero disables the estimate limit")
     if type(bursts_per_target) is not int or not 1 <= bursts_per_target <= 2**20:
@@ -394,8 +455,10 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
             not np.isfinite(severity_min) or not 0 <= severity_min <= severity):
         raise ValueError("severity-min must be finite and in [0, severity]")
     photometric = photometric or PhotometricConfig()
+    resolution = resolution or CaptureResolutionConfig()
     recipe = {"kind": CORRUPTION_KIND, "seed": seed, "severity": severity,
               "severityMin": severity_min,
+              "captureResolution": asdict(resolution),
               "frames": frames, "burstsPerTarget": bursts_per_target, "photometric": asdict(photometric)}
     recipe_hash = hashlib.sha256(json.dumps(recipe, sort_keys=True, allow_nan=False).encode()).hexdigest()
     dataset = Dataset(clean_directories)
@@ -423,7 +486,9 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
             severity_rng = np.random.default_rng(np.random.SeedSequence([derived, 0x53455652]))
             burst_severity = (severity if severity_min is None else
                               float(severity_rng.uniform(severity_min, severity)))
-            burst = corrupt_burst(pixels, derived, frames, burst_severity, photometric=photometric)
+            capture = sample_capture_resolution(pixels.shape[-1], derived, burst_severity, resolution)
+            burst = corrupt_burst(pixels, derived, frames, burst_severity,
+                                  photometric=photometric, resolution=resolution)
             burst_id = hashlib.sha256(f"{sample.id}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
             for index, value in enumerate(burst):
                 identifier = hashlib.sha256(f"{burst_id}/{index}".encode()).hexdigest()[:24]
@@ -433,6 +498,7 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
                           "source": "synthetic", "burstId": f"synthetic-{burst_id}",
                           "synthetic": {"seed": derived, "frame": index, "burst": burst_index,
                           "frames": frames, "severity": burst_severity, "parentId": sample.id,
+                          "captureResolution": capture,
                           "kind": CORRUPTION_KIND, "recipeSha256": recipe_hash},
                           "baselineMode": "canonical-from-corrupted-input"}
                 for field in ("input", "labels", "mask", "baseline", "expected"):
@@ -474,6 +540,14 @@ def main():
     parser.add_argument("--severity", type=float, default=.65)
     parser.add_argument("--severity-min", type=float, default=None,
                         help="sample severity uniformly per burst from this minimum to --severity; omitted uses fixed severity")
+    parser.add_argument("--capture-probability", type=float, default=.75,
+                        help="fraction of bursts with reduced capture resolution/blur (default: .75); 0 disables")
+    parser.add_argument("--capture-min-scale", type=float, default=.25,
+                        help="minimum capture side / crop side, .25–1 (default: .25, one pixel/cell)")
+    parser.add_argument("--capture-max-scale", type=float, default=1.,
+                        help="maximum capture side / crop side, min-scale–1 (default: 1)")
+    parser.add_argument("--capture-blur-sigma", type=float, default=.35,
+                        help="max Gaussian sigma in reduced-image pixels, 0–1 (default: .35); each burst draws half to full strength")
     parser.add_argument("--white-balance-stops", type=float, default=.6,
                         help="max residual per-channel log2 gain at severity 1 (default: .6); 0 disables")
     parser.add_argument("--exposure-stops", type=float, default=1.5,
@@ -520,7 +594,10 @@ def main():
         result = generate(args.clean, args.out, seed=args.seed, frames=args.frames,
                           severity=args.severity, max_output_mib=args.max_output_mib, node=args.node,
                           photometric=photometric, bursts_per_target=args.bursts_per_target,
-                          severity_min=args.severity_min)
+                          severity_min=args.severity_min,
+                          resolution=CaptureResolutionConfig(probability=args.capture_probability,
+                              min_scale=args.capture_min_scale, max_scale=args.capture_max_scale,
+                              blur_sigma=args.capture_blur_sigma))
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f"Synthetic generation failed: {error}\n")
     print(f"Wrote {len(result['samples'])} correlated synthetic crops to {args.out.resolve()}")

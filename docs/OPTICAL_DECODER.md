@@ -1,6 +1,6 @@
 # Learned color-matrix decoder: design and training plan
 
-Status: **G64 device feasibility established; normalized decoder evaluated; harder paired synthetics and mild real augmentation implemented**, 2026-11-02.
+Status: **G64 device feasibility established; normalized decoder evaluated; paired synthetic capture-resolution simulation added alongside glare and mild real augmentation**, 2026-11-02.
 The submitted reports establish phone WebGPU and PC WASM parity and speed at G64. PC crop acquisition and G128 device
 measurements remain open. Use [the M2 guide](OPTICAL_DECODER_TRAINING.md) for capture, synthetic generation, training,
 and held-out evaluation, and [Decoder Lab](DECODER_LAB.md) for checkpoint parity/device timing. Real-data model
@@ -304,6 +304,20 @@ frames inside each burst:
 - Add drifting elliptical glare: a locally saturating core and a broader tinted
   halo that reduces contrast. Draw severity per burst between configured bounds
   to retain moderate examples alongside harder conditions.
+- Approximate a small screen occupying few camera pixels: after the other effects
+  and noise, area-downsample to a sampled native capture side, apply a small
+  native-resolution Gaussian blur, then bilinear-upsample to the stored crop size.
+  Keep the side and blur fixed within each burst, with an independent random stream.
+  Capture scale and blur are geometric controls separate from severity; clean
+  `--severity 0` still bypasses all corruption.
+
+The capture defaults select 75% of bursts, with native sides uniformly drawn
+between .25 and 1 times the crop side and blur sigma between .175 and .35 native
+pixels. G64 therefore uses 64–256 native pixels per side before returning to
+256×256; G128 uses 128–512 before returning to 512×512. This targets the
+phone→PC case where the phone display appears small in the webcam. A one-pixel-
+per-cell endpoint represents difficult information loss, not a reliability claim.
+The architecture, labels and recording format remain unchanged.
 
 Treat these as calibrated-crop approximations, not a full camera simulator.
 Randomize nuisance parameters independently of payload symbols. Preserve original
@@ -324,8 +338,14 @@ Keep useful source/group metrics and initialized-checkpoint baseline protection.
 
 For the next experiment, continue `normalized-burst5/best.pt` at `3e-5` for 32,000
 updates using the unchanged real datasets and a new paired corpus of 32 independent
-bursts × 12 frames per target. Use severity .45–.9, glare and stronger photometric
-limits, retaining `--frames 5 --paired-targets`. Initialization loads weights with
+bursts × 12 frames per target. Keep severity .45–.9, glare probability/strength
+.7/.65, white balance .8 stops, exposure 1.75 stops, shade .55 and rolling shutter
+.8 stops. Add `--capture-probability .75 --capture-min-scale .25
+--capture-max-scale 1 --capture-blur-sigma .35`, retaining `--frames 5 --paired-targets`.
+Write `target-synthetic-resolution-train` and `normalized-burst5-resolution`;
+reuse the clean targets, direction sidecar and seed 41 from the earlier glare
+recipe. Keep any glare-run outputs as an earlier experiment; this is a new
+recommendation, not a measured improvement. Initialization loads weights with
 a fresh optimizer. Each real stack receives a synthetic stack of the exact
 same session/payload/frame/phase and target hashes. The 50:50 source quota applies
 to each complete optimizer update; an optional session sidecar balances real

@@ -514,3 +514,35 @@ preserving the original checkpoint and data files. Whitespace checks passed.
 The recommended next run initializes `normalized-burst5/best.pt` at `3e-5` for
 32,000 additional updates. No full GPU training, new recovery gain, physical
 device throughput measurement or site deployment is claimed for this change.
+
+## Effective capture resolution simulation — 2026-11-02
+
+The user reported little improvement from the glare refinement and proposed
+simulating the reduced pixel footprint of the phone screen in a PC webcam.
+That geometry is phone→PC in the dataset's direction labels. No new numerical
+evaluation report was supplied for this change.
+
+Synthetic crops now optionally pass through area downsampling, a small Gaussian
+blur at the reduced resolution, and bilinear enlargement back to the model's
+input dimensions. Defaults select 75% of bursts and draw one integer native side
+from .25–1 times the crop side: 64–256 for G64, or 128–512 for G128. Blur sigma
+is sampled between .175 and .35 native pixels. Both settings stay fixed within
+a burst, while existing corruption trajectories still evolve across captures.
+Resolution uses an independent RNG and is not scaled by photometric severity;
+zero severity retains exact clean identity. Configuration and actual per-burst
+settings are recorded in the current recipe metadata. The stored dataset format,
+real recordings, pairing targets, model dimensions and evaluation are unchanged.
+
+**106 Python tests passed, one native ONNX Runtime check skipped** (107 total).
+Checks cover both minimum capture sizes, blur before enlargement, preserved
+constant colors, lost unresolvable detail, deterministic isolated randomness,
+zero/disabled controls, and unchanged label/mask/expected-byte hashes and splits.
+An actual CLI generation produced **40 synthetic captures**, each forced through
+64×64 with blur before returning to 256×256; canonical baseline preparation and
+recorded per-burst metadata succeeded. Whitespace checks passed.
+
+The next recipe keeps the earlier paired targets, seed, photometric controls and
+five-frame architecture, adding the capture-resolution mixture. It initializes
+the original `normalized-burst5/best.pt` at `3e-5` for 32,000 updates in a new run
+directory. One native pixel per cell is a deliberately difficult endpoint, not
+a reliable-recovery guarantee. No new training gain or device result is claimed.

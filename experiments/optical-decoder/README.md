@@ -53,7 +53,11 @@ redirected output automatically uses concise text without terminal control codes
 
 The [recommended next run](../../docs/OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
 continues `normalized-burst5/best.pt` at `3e-5` for 32,000 updates, with a larger,
-harder matched synthetic corpus and mild real augmentation. `--initialize` loads
+harder matched synthetic corpus, low native capture resolution and mild real
+augmentation. The new outputs are `target-synthetic-resolution-train` and
+`normalized-burst5-resolution`; reuse the existing clean targets, real datasets
+and direction sidecar. Keep any previous glare-run outputs as their own experiment.
+`--initialize` loads
 weights with a fresh optimizer and preserves the starting validation baseline.
 `--paired-targets` places each real stack alongside a
 synthetic stack of that exact session/payload/frame/phase, with matching target
@@ -72,6 +76,20 @@ glare adds localized saturation and a broad tinted halo that reduces contrast.
 controls independent corruption trajectories; `--frames` controls correlated
 exposures within each. The recommended paired corpus uses 32 bursts × 12 frames
 per target. These are calibrated-crop approximations, not a full camera simulator.
+The capture-resolution stage selects 75% of bursts by default. After the other
+effects and noise, it area-downsamples to an integer native side drawn uniformly
+from .25–1 times the crop side, applies a small Gaussian blur there, and bilinear-
+upsamples back. The side and blur stay fixed within a burst. Default maximum sigma
+is .35 native pixels, with each selected burst drawing .5–1 times that maximum.
+G64 therefore simulates 64–256 native pixels per side before returning to the
+same 256×256 model input; G128 uses 128–512 before returning to 512×512.
+This addresses the small-phone-screen-in-PC-camera case without changing the
+network, labels or recording files. One native pixel per cell is a hard endpoint,
+not a promise that the data remains recoverable. Capture scale/blur are independent
+of severity, except that severity zero keeps the clean crop unchanged. The stage
+uses its own RNG; seed 41 retains the earlier glare recipe's other artifact draws.
+Use `--capture-probability`, `--capture-min-scale`, `--capture-max-scale` and
+`--capture-blur-sigma` to control it; zero probability bypasses it completely.
 See the [training guide](../../docs/OPTICAL_DECODER_TRAINING.md#generate-the-synthetic-pilot)
 for controls and cleanup commands.
 
@@ -108,7 +126,7 @@ For a selected trained checkpoint:
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/normalized-burst5-refine/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-burst5-resolution/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected
@@ -228,7 +246,7 @@ load time, backend, model hash, and UI responsiveness.
   evaluation stacks, without rewriting recorded samples.
 - `synthetic.py`: independently seeded corruption bursts with moiré, blur/noise,
   exposure/WB, rolling-shutter bands/skew, soft shadows/reflections, drifting
-  glare and per-burst severity ranges.
+  glare, native capture-resolution loss and per-burst severity ranges.
 - `augmentation.py`: mild real-only training noise/tint/exposure, with an
   independent RNG and no changes to labels, recordings or evaluation.
 - `train.py`: plain masked CE, paired-target option, source/group metrics,

@@ -16,7 +16,7 @@ if HAS_TORCH:
     import torch
     from data import Dataset, assert_disjoint
     from sampling import BalancedSampler
-    from synthetic import generate
+    from synthetic import CaptureResolutionConfig, generate
     torch.set_num_threads(1)
 
 
@@ -46,17 +46,22 @@ class TargetSyntheticTests(unittest.TestCase):
             original = path.read_bytes()
             node("targets", "--dataset", root/"real", "--out", root/"clean")
             real, clean = Dataset([root/"real"]), Dataset([root/"clean"])
+            resolution = CaptureResolutionConfig(probability=1, min_scale=.25, max_scale=.25)
             first = generate([root/"clean"], root/"corrupted", frames=2,
-                             bursts_per_target=2, seed=71, severity=.4, severity_min=.25)
+                             bursts_per_target=2, seed=71, severity=.4, severity_min=.25,
+                             resolution=resolution)
             repeated = generate([root/"clean"], root/"repeat", frames=2,
-                                bursts_per_target=2, seed=71, severity=.4, severity_min=.25)
+                                bursts_per_target=2, seed=71, severity=.4, severity_min=.25,
+                                resolution=resolution)
             self.assertEqual(len(first["samples"]), 8)
             self.assertEqual(first["samples"], repeated["samples"])
             self.assertEqual(first["generator"]["burstsPerTarget"], 2)
             self.assertEqual(first["generator"]["severityMin"], .25)
             self.assertEqual(first["generator"]["severity"], .4)
-            self.assertEqual(first["generator"]["kind"], "correlated-calibrated-crop-v5")
+            self.assertEqual(first["generator"]["kind"], "correlated-calibrated-crop-v6")
             self.assertEqual(first["generator"]["photometric"]["glare_probability"], .65)
+            self.assertEqual(first["generator"]["captureResolution"],
+                {"probability": 1, "min_scale": .25, "max_scale": .25, "blur_sigma": .35})
             by_target = {sample.id: [] for sample in clean.samples}
             for row in first["samples"]:
                 by_target[row["synthetic"]["parentId"]].append(row)
@@ -64,6 +69,7 @@ class TargetSyntheticTests(unittest.TestCase):
                 self.assertEqual(row["split"], "train")
                 self.assertGreaterEqual(row["synthetic"]["severity"], .25)
                 self.assertLessEqual(row["synthetic"]["severity"], .4)
+                self.assertEqual(row["synthetic"]["captureResolution"]["side"], 64)
             for rows in by_target.values():
                 self.assertEqual(len({row["burstId"] for row in rows}), 2)
                 self.assertEqual(len({row["synthetic"]["seed"] for row in rows}), 2)
@@ -73,6 +79,8 @@ class TargetSyntheticTests(unittest.TestCase):
                 for burst_id in {row["burstId"] for row in rows}:
                     self.assertEqual(len({row["synthetic"]["severity"] for row in rows
                                           if row["burstId"] == burst_id}), 1)
+                    self.assertEqual(len({json.dumps(row["synthetic"]["captureResolution"], sort_keys=True)
+                                          for row in rows if row["burstId"] == burst_id}), 1)
                 target = next(sample for sample in clean.samples if sample.id == rows[0]["synthetic"]["parentId"])
                 for row in rows:
                     for field in ("labels", "mask", "expected"):
@@ -91,6 +99,15 @@ class TargetSyntheticTests(unittest.TestCase):
             self.assertEqual([row["synthetic"]["severity"] for row in first["samples"]],
                              [row["synthetic"]["severity"] for row in no_glare["samples"]])
             self.assertTrue({row["id"] for row in no_glare["samples"]}.isdisjoint(row["id"] for row in first["samples"]))
+            no_resolution = generate([root/"clean"], root/"no-resolution", frames=2,
+                bursts_per_target=2, seed=71, severity=.4, severity_min=.25,
+                resolution=CaptureResolutionConfig(probability=0))
+            self.assertTrue(all(row["synthetic"]["captureResolution"] == {"side": 256, "blurSigma": 0}
+                                for row in no_resolution["samples"]))
+            self.assertEqual([row["synthetic"]["severity"] for row in first["samples"]],
+                             [row["synthetic"]["severity"] for row in no_resolution["samples"]])
+            self.assertTrue({row["id"] for row in no_resolution["samples"]}.isdisjoint(
+                            row["id"] for row in first["samples"]))
             combined = Dataset([root/"real", root/"corrupted"], "train")
             sampler = BalancedSampler(combined.samples,
                 {"target-fixture-receiver": "phone-to-pc"}, paired_targets=True)
