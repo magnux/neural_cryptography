@@ -62,7 +62,8 @@ class GroupEvaluationTests(unittest.TestCase):
                 self.shape = (64, 4)
                 self.label = label
                 self.metadata = {"sessionId": session, "source": "real", "size": 64,
-                                 "colors": 4, "info": {"phase": index % 4}}
+                                 "payloadId": "a"*64, "split": "validation",
+                                 "colors": 4, "info": {"size": 64, "colors": 4, "phase": index % 4}}
             def tensors(self):
                 return (np.zeros((3, 8, 8), np.float32), np.full((2, 2), self.label, np.int64),
                         np.ones((2, 2), bool))

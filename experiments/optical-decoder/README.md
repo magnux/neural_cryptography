@@ -70,9 +70,12 @@ The retained single-frame baseline recovered 69/768 captures. Paired single-fram
 training recovered 68/768 at step 22k, with phone→PC still at zero and worse
 validation loss despite falling training loss. Keep `wide-real` as a historical
 reference and initialize the burst model from `wide-pilot`, not the overfit paired
-checkpoint. Multiframe evaluation uses disjoint stacks and compares classical
-fusion over the exact same exposures; its denominator differs from a single-frame
-report. No trained burst-model recovery or live throughput improvement is claimed.
+checkpoint. Multiframe evaluation applies a fixed seed-7 random permutation within each burst
+before making disjoint stacks, and compares classical fusion over the exact same exposures; its denominator differs from a single-frame
+report. Existing checkpoints can be reevaluated under the corrected grouping
+without retraining; the method and seed appear in each report.
+See [current and proposed architecture diagrams](../../docs/OPTICAL_DECODER.md#implemented-architectures)
+for the narrower normalized model proposal. No live throughput improvement is claimed.
 
 ## Setup and export
 

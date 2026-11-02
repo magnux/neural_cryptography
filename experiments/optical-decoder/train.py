@@ -19,7 +19,7 @@ import torch
 from tqdm import tqdm
 
 from torch.nn import functional as F
-from bursts import BurstIndex
+from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED
 from contract import FRAME_COUNTS
 from checkpoint import load_model_checkpoint
 from data import DATASET_FORMAT, Dataset, assert_disjoint, check_checkpoint_overlap, digest
@@ -122,6 +122,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                "pairedTargets": paired_targets, "framesPerInput": model.frames,
                "loss": "mean-masked-cross-entropy",
                "evalEvery": eval_every, "validationSamples": validation_samples,
+               "evaluationGrouping": EVALUATION_POLICY, "evaluationSeed": EVALUATION_SEED,
                "sampling": "paired-targets" if paired_targets else "source-group-session-payload-phase"}
     provenance = {"seed": seed, "samples": len(train.samples), "batchSize": batch_size,
                   "gradientAccumulation": accumulate, "device": str(device), "realFraction": real_fraction,

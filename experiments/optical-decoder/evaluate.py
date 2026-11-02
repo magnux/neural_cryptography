@@ -20,7 +20,7 @@ import torch
 from torch.nn import functional as F
 
 from data import Dataset, check_checkpoint_overlap
-from bursts import BurstIndex
+from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED
 from contract import FRAME_COUNTS, MAX_FRAMES
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -262,10 +262,11 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
             "framesPerInput": frames, "inputCaptures": len(selected)*frames,
             "availableInputCaptures": len(dataset.samples), "burstGrouping": burst_stats,
             "manifestSha256": dataset.manifest_hash, "profiles": profile_counts,
-            "selection": {"method": "nonoverlapping-bursts/session-profile-round-robin", "maximum": max_samples,
+            "selection": {"method": f"{EVALUATION_POLICY}/nonoverlapping/session-profile-round-robin",
+                "seed": EVALUATION_SEED, "maximum": max_samples,
                 "availableSessions": len(available_sessions), "selectedSessions": len(per_session),
                 "omittedSessions": sorted(available_sessions-set(per_session)),
-                "note": "Each sample is one complete, nonoverlapping capture group. "
+                "note": "One fixed seeded member permutation per burst forms complete, nonoverlapping groups. "
                         "Remainders are reported, never duplicated; use --max-samples 0 for all complete groups."},
             "sessions": per_session, **summaries,
             "dataCells": cells, "loss": loss_sum/cells,

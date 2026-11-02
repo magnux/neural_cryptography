@@ -1,6 +1,6 @@
 # Learned color-matrix decoder: design and training plan
 
-Status: **G64 device feasibility established; M2 capture/training software implemented**, 2026-10-31.
+Status: **G64 device feasibility established; M2 capture/training software implemented; evaluation grouping corrected**, 2026-11-02.
 The submitted reports establish phone WebGPU and PC WASM parity and speed at G64. PC crop acquisition and G128 device
 measurements remain open. Use [the M2 guide](OPTICAL_DECODER_TRAINING.md) for capture, synthetic generation, training,
 and held-out evaluation, and [Decoder Lab](DECODER_LAB.md) for checkpoint parity/device timing. Real-data model
@@ -37,68 +37,171 @@ JavaScript. Retain the reference grid in the crop; its observed colors provide l
 their fixed physical palette labels across phases. No uniform pre-calibration sequence or persistent moiré texture map
 is required.
 
-Use ordinary biased Conv2D layers with ReLU, 3×3 kernels and padding 1, except the final 1×1 classification head. The compact baseline has no
-BatchNorm/InstanceNorm: absolute calibrated color is useful, and inference should not depend on a
-batch.
+### Implemented architectures
 
-| Stage | Operation | Output, omitting batch dimension |
+Both current profiles use biased 3×3 convolutions with padding 1 and ReLU,
+nearest-neighbor decoder upsampling, concatenated learned-feature skips, and an
+unnormalized 1×1 classification head. T is the number of RGB exposures (1–64).
+Input is `[N,3T,4G,4G]`; output is `[N,16,G,G]`. The grid includes references,
+which are excluded from the training loss and payload recovery.
+
+| Property | Current compact | Current wide |
 | --- | --- | --- |
-| Input | One calibrated RGB crop | 3 × 4G × 4G |
-| Pixel inlet | Conv 3→8, stride 2; Conv 8→16, stride 2 | 16 × G × G |
-| Cell features E0 | Two Conv 16→16 | 16 × G × G |
-| Encoder E1 | Conv 16→32, stride 2; Conv 32→32 | 32 × G/2 × G/2 |
-| Bottleneck | Conv 32→64, stride 2; Conv 64→64 | 64 × G/4 × G/4 |
-| Decoder D1 | Nearest ×2, concatenate E1; Conv 96→32; Conv 32→32 | 32 × G/2 × G/2 |
-| Decoder D0 | Nearest ×2, concatenate E0; Conv 48→16; Conv 16→16 | 16 × G × G |
-| Head | Conv 16→16, 1×1, no activation | 16 × G × G logits |
+| Inlet | 3T→8→16, two stride-2 convolutions | 3T→16→32, two stride-2 convolutions |
+| Encoder widths | 16 / 32 / 64 | 32 / 64 / 128 |
+| Decoder widths | 32 / 16 | 64 / 32 |
+| Hidden normalization | None | Channel LayerNorm after the ten encoder/decoder convolutions; inlet remains unnormalized |
+| Direct calibrated-RGB readout | None | Average-pool RGB to cells, 1×1 3T→16→16, add to spatial logits |
+| Parameters at T=5 | 122,656 | 489,024 |
+| Parameter formula | 121576 + 216T | 486624 + 480T |
+
+Channel LayerNorm normalizes learned feature channels independently at each
+spatial position. It does not normalize across the batch or image positions.
+Input affine scaling/clipping is separate from this feature normalization.
+
+The following diagrams show **T=5, G=64**; node sizes are channels × height ×
+width. Every E/B/D block contains two convolutions. E1 and B downsample on their
+first convolution. Each D block upsamples ×2, concatenates its skip, then
+convolves. Both grid sizes use the same weights.
+
+**Current compact — implemented**
 
 ```mermaid
 flowchart TD
-  I[Rectified pixels] --> E0[Cell features]
-  E0 --> E1[Half-size features]
-  E1 --> B[Quarter-size context]
-  B --> D1[Half-size decoder]
-  E1 --> D1
-  D1 --> D0[Cell decoder]
-  E0 --> D0
-  D0 --> O[Palette logits per cell]
+  I["5 RGB crops · 15×256×256"] --> S["Inlet · 8×128×128 → 16×64×64"]
+  S --> E0["E0 · 16×64×64"]
+  E0 --> E1["E1 · 32×32×32"]
+  E1 --> B["Bottleneck · 64×16×16"]
+  B --> D1["Upsample + concat + D1 · 32×32×32"]
+  E1 -->|feature skip| D1
+  D1 --> D0["Upsample + concat + D0 · 16×64×64"]
+  E0 -->|feature skip| D0
+  D0 --> H["1×1 head · 16×64×64 logits"]
 ```
 
-The compact graph specified above has **121,792 parameters**, about 0.49 MB of float32 weights, and approximately 0.132/0.528 billion
-convolution MACs at G=64/128, excluding preprocessing, activation, resize, and runtime overhead. These are calculations,
-not measured phone performance. The same weights serve both sizes; begin with fixed-shape exports from one checkpoint to
-reduce deployment uncertainty.
+**Current wide — implemented**
 
-The current fresh-training default is the **wide** experiment (487,104 parameters):
-double feature widths to 32/64/128, normalize channels at each feature position
-with LayerNorm after feature convolutions, and add a small unnormalized pooled-RGB
-readout to the logits. Raw camera RGB and the inlet are not normalized by these
-layers. Compact remains the baseline and loads its existing checkpoints unchanged.
-Both share the current capture/tensor formats; wide requires new training and
-held-out real recovery plus phone performance checks. See the
-[updated training guide](OPTICAL_DECODER_TRAINING.md#model-profiles-and-the-latest-training-result).
+```mermaid
+flowchart TD
+  I["5 RGB crops · 15×256×256"] --> S["Inlet · 16×128×128 → 32×64×64"]
+  S --> E0["E0 + channel LN · 32×64×64"]
+  E0 --> E1["E1 + channel LN · 64×32×32"]
+  E1 --> B["Bottleneck + channel LN · 128×16×16"]
+  B --> D1["Upsample + concat + D1 + LN · 64×32×32"]
+  E1 -->|feature skip| D1
+  D1 --> D0["Upsample + concat + D0 + LN · 32×64×64"]
+  E0 -->|feature skip| D0
+  D0 --> H["1×1 spatial head · 16×64×64"]
+  I --> R["Average-pool ×4 · 1×1 15→16→16 · no LN"]
+  H --> A["Add · 16×64×64 logits"]
+  R --> A
+```
 
-Input supports any integer **1–64 exposures**, stacked as 3T channels, retaining
-the wide backbone and expanding only its two RGB-facing convolutions. Five
-frames use **489,024 parameters**, under 500k. Wide uses `486624 + 480T`
-parameters (501,984 at 32; 517,344 at 64); compact uses `121576 + 216T`
-(135,400 at 64) for a strict sub-500k budget. G64 inputs remain 256×256 pixels;
-G128 inputs remain 512×512. No Conv3D, recurrent layers, attention or extra image
-resolution is needed. Channels are grouped RGB for each exposure.
+The RGB branch receives calibrated, fixed-range input, not unprocessed camera
+RGB. It bypasses learned feature normalization and contextual mixing. At T=5 it
+contains only **528 parameters**: removing it changes the information path but
+barely reduces capacity. Most wide parameters are in the spatial backbone.
+
+### Proposed smaller normalized model — design, not implemented
+
+Keep the dense input, output grid, skip topology and convolution depth. Retain
+wide's 16-channel first inlet so five RGB crops are not immediately compressed
+to eight feature channels, then narrow the backbone to **16/32/64**. Apply the
+existing ChannelLayerNorm after **every hidden convolution**, including both
+inlet layers, before ReLU. Remove the direct RGB branch. Retain normalized
+learned-feature skips; leave final logits unnormalized.
+
+```mermaid
+flowchart TD
+  I["5 RGB crops · 15×256×256"] --> S["Conv + LN + ReLU twice · 16×128×128 → 16×64×64"]
+  S --> E0["E0 + channel LN · 16×64×64"]
+  E0 --> E1["E1 + channel LN · 32×32×32"]
+  E1 --> B["Bottleneck + channel LN · 64×16×16"]
+  B --> D1["Upsample + concat + D1 + LN · 32×32×32"]
+  E1 -->|normalized feature skip| D1
+  D1 --> D0["Upsample + concat + D0 + LN · 16×64×64"]
+  E0 -->|normalized feature skip| D0
+  D0 --> H["1×1 head · 16×64×64 logits"]
+```
+
+| Stage | Proposed channel operations | Output spatial size |
+| --- | --- | --- |
+| Inlet | 3T→16→16, stride 2 each | 4G→2G→G |
+| E0 | 16→16→16 | G |
+| E1 | 16→32→32, first stride 2 | G/2 |
+| Bottleneck | 32→64→64, first stride 2 | G/4 |
+| D1 | Concatenate 64+32; 96→32→32 | G/2 |
+| D0 | Concatenate 32+16; 48→16→16 | G |
+| Head | 16→16, 1×1, no normalization/activation | G |
+
+Exact proposed parameter count, including biases and LayerNorm affine weights:
+**123440 + 432T**, hence **125,600 at five frames** and **151,088 at 64**.
+At five frames this is **74.3% fewer parameters** than wide. These counts were
+checked by constructing the proposed modules locally; this profile is not yet
+implemented in training, checkpoint export or the browser contract.
+
+This is a capacity/photometric-shortcut hypothesis, not a demonstrated recovery
+improvement. Feature normalization can reduce dependence on feature scale, but
+does not guarantee white-balance invariance. Do not normalize the raw RGB triplet
+to unit variance: absolute color/luminance differences carry palette information.
+The input calibration and reference grid remain available to learned convolutions.
+Changing the internal widths needs a fresh model; wide weights cannot be loaded
+unchanged. No per-frame encoder, attention or additional objective is proposed
+for this first smaller-model experiment.
+
+### Burst sampling and evaluation
 
 Training draws T distinct captures at random within one burst/session/target/
-phase and randomizes their slot order. Each exposure already has its own geometry
-and color correction. Synthetic members come from one independently generated
-corruption burst. Evaluation uses disjoint chronological groups of T and
-classical fusion over the exact same observations; leftovers are reported. Short
-training bursts fail explicitly; there is no duplication or single-frame fallback.
-The browser lab collects T distinct current video exposures, resets on identity
-changes and bounds collection time/memory. Live learned transport remains pending.
+phase and randomizes their slot order. The RNG advances across updates. Each
+exposure already has its own geometry and color correction. Synthetic members
+come from one independently generated corruption burst.
 
-An explicit single→T-frame warm start repeats the original inlet and local-RGB
-weights across T slots and divides by T, retaining the trained backbone.
-Start from `wide-pilot`. Loading/exporting a checkpoint always uses its exact
-validated input width; changing architecture is an intentional training step.
+Evaluation now ranks members of each burst with a **fixed seed-7 SHA-256
+permutation**, then partitions that order into disjoint groups of T. It does not
+partition chronological neighbors. Both standalone evaluation and in-training
+validation use this one policy. Group membership and channel order are stable
+across repeated evaluations, input ordering, relocated directories and unrelated
+bursts. Reports record the method and seed; training history/settings record them
+too. Classical and neural recovery observe exactly the same selected captures.
+Remainders are reported, never duplicated; short training bursts fail explicitly.
+
+The collection pool may already contain captures retained for diversity. Random
+evaluation groups test fusion of that pool; they are not a measured streaming
+latency result. The browser lab still takes T distinct current same-header video
+exposures, resets on identity changes and bounds collection time/memory. Live
+learned transport integration remains pending.
+
+An explicit single→T-frame warm start of an existing profile repeats its original
+RGB-facing weights across slots and divides by T. Loading/exporting a checkpoint
+uses its exact validated width. Recording formats and synthetic `--frames`
+semantics are unchanged.
+
+### Remaining generalization hypotheses
+
+The submitted five-frame run lowers validation CE to .917 at 3k, then raises it
+to 3.160 at 32k while real-training CE falls .946→.071. Chronological grouping
+was a mismatched evaluation condition; rerun the existing checkpoint with the
+corrected grouping before attributing a precise amount of loss to overfitting.
+Checkpoint ranking is not an explanation for the rising validation-loss curve.
+
+Two further concrete design observations motivate the smaller model:
+
+- Wide already normalizes internal features, but its inlet and additive RGB
+  branch bypass that normalization. The branch can exploit session-specific
+  color mappings; its causal contribution requires the proposed experiment.
+- Nonzero-severity synthetic generation clamps output to [-1,1], whereas real
+  calibrated crops permit [-1.5,1.5] after affine color correction. This is a real
+  preprocessing-distribution difference; the reports contain no pixel histogram
+  to establish its prevalence or contribution. The synthetic pipeline also
+  approximates residual calibrated distortions rather than refitting a camera
+  calibration per generated exposure. No generator change is made in this fix.
+
+Paired synthetics add nuisance variation without adding new payload content.
+Limited recorded sessions/targets remain another plausible generalization limit;
+random combinations cannot create new physical capture conditions. The sampling
+audit found no RNG reset, missing frame-slot coverage, cross-phase pairing or
+optimizer/loss arithmetic error. A narrowly reproducible unused-capture selection
+bias was fixed, but the supplied run did not exercise that reuse path.
 
 ## Integrating probabilities with the existing receiver
 

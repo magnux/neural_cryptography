@@ -392,3 +392,51 @@ host. A fresh untrained wide five-frame export passed actual ONNX Runtime Web
 WASM parity in Node at G64 and G128, with maximum absolute errors **2.20e-6** and
 **3.01e-6**. These are numerical agreement checks, not recovery or device speed
 measurements. No full GPU training or site deployment was performed.
+
+
+## Fixed random evaluation and sampling audit — 2026-11-02
+
+Evaluation now uses one seed-7 permutation per burst before making disjoint
+T-frame groups. The previous chronological partition is removed. Repeated
+validation and standalone evaluation reuse the same draw; relocation, input
+ordering, timestamp changes and unrelated bursts do not alter a group's member
+order. Classical and learned recovery use identical groups. Reports and training
+settings record the evaluation method and seed. Existing checkpoints can be
+reevaluated without retraining, but earlier chronological reports are a different
+observation grouping and should not be compared as an architecture change.
+
+The sampling audit found one narrow conditional bias: after a capture had already
+been drawn from a burst within an optimizer update, a random start followed by a
+forward scan favored the next unused array entry. It now chooses a uniform rank
+among unused captures. A deterministic regression checks each possible rank for
+several used-capture patterns. The submitted run did not reuse bursts within an
+update, so this particular bug does not explain its loss curve.
+
+A controlled 1,000-update audit expanded 16,000 five-frame stacks. Source and
+acquisition-direction quotas, target pairing and distinct same-burst members
+were correct. All 32 monitored real captures, all 160 capture/slot combinations,
+and all 16 synthetic corruption variants were sampled. No RNG reset or missing
+training shuffle was found. The rare bounded fallback for choosing eligible
+bursts remains an approximation to hierarchical sampling, not a claim of exact
+conditional uniformity across all hierarchies.
+
+The submitted five-frame run's validation CE rises .917→3.160 between 3k and 32k
+updates while real-training CE falls .946→.071. This remains evidence of a
+substantial generalization gap under the previous evaluation policy. Its cause
+cannot be assigned to checkpoint ranking. Corrected evaluation needs the user's
+checkpoint and captured tensors, which are not available here.
+
+The design document now diagrams both implemented models and a **proposed**
+125,600-parameter five-frame model: a 16→16 normalized inlet, 16/32/64 features,
+normalized feature skips and no RGB readout. Its module count was verified
+locally; the proposed profile is not implemented or trained. Another concrete
+source mismatch is documented: corrupted synthetics are limited to [-1,1], while
+calibrated real inputs permit [-1.5,1.5]; actual prevalence in the recorded data
+has not been measured. No synthetic or recording format changes were made.
+
+Verification: **86 Python tests passed, one native ONNX Runtime check skipped**
+(87 total), and **59 JavaScript tests passed**. Coverage includes fixed random
+membership, group/path/order independence, disjoint equal-budget canonical
+recovery, uniform unused-capture draws, and actual five-frame training that
+records the evaluation policy. The smaller architecture was counted only; no
+new model training, checkpoint recovery measurement or site deployment occurred.

@@ -18,6 +18,7 @@ sys.path.insert(0, str(EXPERIMENT))
 HAS_TORCH = importlib.util.find_spec("torch") is not None
 if HAS_TORCH:
     import torch
+    from bursts import EVALUATION_POLICY, EVALUATION_SEED
     from data import Dataset, Sample
     from evaluate import evaluate_model
     torch.set_num_threads(1)
@@ -82,6 +83,10 @@ class BurstEvaluationTests(unittest.TestCase):
         self.assertEqual(result["inputCaptures"], 10)
         self.assertEqual(result["availableInputCaptures"], 11)
         self.assertEqual(result["burstGrouping"]["discardedCaptures"], 1)
+        self.assertEqual(result["burstGrouping"]["method"], EVALUATION_POLICY)
+        self.assertEqual(result["burstGrouping"]["seed"], EVALUATION_SEED)
+        self.assertEqual(result["selection"]["seed"], EVALUATION_SEED)
+        self.assertTrue(result["selection"]["method"].startswith(EVALUATION_POLICY))
         self.assertEqual(result["framesPerInput"], 5)
         recovered = result["recovery"]
         self.assertEqual(recovered["inputCaptures"], 10)
@@ -89,8 +94,9 @@ class BurstEvaluationTests(unittest.TestCase):
             self.assertEqual(recovered["summary"][method]["exactFrames"], 2)
             self.assertEqual(recovered["summary"][method]["wrongAcceptedFrames"], 0)
         members = [row["memberIds"] for row in recovered["samples"]]
-        self.assertEqual(members, [[f"exposure-{i}" for i in range(5)],
-                                   [f"exposure-{i}" for i in range(5, 10)]])
+        self.assertNotEqual({frozenset(ids) for ids in members},
+                            {frozenset(f"exposure-{i}" for i in range(5)),
+                             frozenset(f"exposure-{i}" for i in range(5, 10))})
         self.assertEqual(len(set(sum(members, []))), 10)
         repeated = evaluate_model(model, self.dataset, work_dir=self.root/"repeat")
         self.assertEqual([row["memberIds"] for row in repeated["recovery"]["samples"]], members)

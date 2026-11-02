@@ -278,6 +278,8 @@ class TrainingWorkflowTests(unittest.TestCase):
         history = json.loads((out/"history.json").read_text())
         self.assertEqual(history["completedSteps"], 1)
         self.assertEqual(history["settings"]["framesPerInput"], 5)
+        self.assertEqual(history["settings"]["evaluationGrouping"], "fixed-seeded-shuffle-within-burst")
+        self.assertEqual(history["settings"]["evaluationSeed"], 7)
         update = history["history"][-1]
         self.assertEqual(update["trainSources"]["real"]["samples"], 2)
         self.assertEqual(update["trainSources"]["real"]["inputCaptures"], 10)

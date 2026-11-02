@@ -328,6 +328,13 @@ exactly the same T observations;
 expected bytes are only checked after independent RS/CRC acceptance. Offline
 stack recovery is not live throughput.
 
+The current evaluation draw is a fixed seed-7 permutation within each burst,
+followed by disjoint grouping. It is independent of timestamps, directory paths
+and input-file order. Existing checkpoints can be reevaluated without retraining;
+use a new report filename because previous chronological reports used different
+input groups. `selection` and `burstGrouping` report the method and seed. Training
+settings/history also record the policy.
+
 Whole-session and whole-payload split checks, including checkpoint ancestry,
 remain mandatory. Keep sender/receiver identities intact when generating paired
 targets. Use untouched test sessions only after selecting the model and receiver
@@ -385,6 +392,10 @@ This supports overfitting to training sessions. Both selected models recover onl
 the same two PC→phone sessions. Multiple observations offer new visual evidence, but
 are not by themselves a solution to this generalization failure. Keep `wide-real`
 and initialize the burst model from `wide-pilot`, rather than `wide-paired`.
+
+For the proposed narrower, fully feature-normalized model and diagrams, see
+[the architecture design](OPTICAL_DECODER.md#proposed-smaller-normalized-model--design-not-implemented).
+That proposal is not a trainable profile yet; the commands below still use wide.
 
 ## Recommended next training run
 
@@ -502,7 +513,9 @@ same ordinary classification objective. Five distinct members are sampled within
 each selected burst without replacement and shuffled into RGB channel slots.
 Do not stack different phases, sessions, payloads or independent corruption
 bursts. Training rejects any burst with fewer than five observations; evaluation
-uses deterministic nonoverlapping chronological groups and reports leftovers.
+uses a fixed seed-7 random permutation within each burst before forming
+disjoint groups, and reports leftovers. It does not group chronological neighbors.
+The same fixed groups are used at every checkpoint and by both recovery methods.
 `synthetic.py --frames 9` means exposures generated per burst; `train.py --frames 5`
 means exposures consumed per model input. These controls have different purposes. Existing nine-exposure v4 synthetic bursts
 can be reused for five-frame training without regeneration. The synthetic

@@ -1,4 +1,4 @@
-"""Burst membership, distinct observations, and deterministic held-out windows."""
+"""Burst membership and fixed random held-out groups of distinct observations."""
 
 import copy
 from pathlib import Path
@@ -9,7 +9,7 @@ import unittest
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bursts import BurstIndex
+from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED
 
 
 class Exposure:
@@ -51,22 +51,57 @@ class BurstTests(unittest.TestCase):
         orders = {tuple(r.id for r in index.train_sample(rows[2], random.Random(seed)).members)
                   for seed in range(12)}
         self.assertGreater(len(orders), 1)
+        rng = random.Random(7)
+        evolving = [index.train_sample(rows[2], rng) for _ in range(12)]
+        self.assertGreater(len({tuple(m.id for m in sample.members) for sample in evolving}), 1)
+        self.assertGreater(len({sample.members.index(rows[2]) for sample in evolving}), 1)
 
-    def test_evaluation_nonoverlap_chronology_and_remainder_are_explicit(self):
-        rows = [Exposure(i, burst=burst) for burst in ("a", "b") for i in range(9)]
-        first, stats = BurstIndex(rows, 4).eval_samples()
-        repeat, other = BurstIndex(list(reversed(rows)), 4).eval_samples()
+    def test_evaluation_fixed_random_nonoverlap_and_remainder_are_explicit(self):
+        rows = [Exposure(i, burst=burst) for burst in ("a", "b") for i in range(32)]
+        first, stats = BurstIndex(rows, 5).eval_samples()
+        repeat, other = BurstIndex(list(reversed(rows)), 5).eval_samples()
         self.assertEqual([[m.id for m in r.members] for r in first],
                          [[m.id for m in r.members] for r in repeat])
         ids = [member.id for sample in first for member in sample.members]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(stats, {"framesPerInput": 4, "inputCaptures": 18,
-            "usedCaptures": 16, "discardedCaptures": 2, "insufficientBursts": 0,
-            "completeBursts": 4})
+        self.assertEqual(stats, {"method": EVALUATION_POLICY, "seed": EVALUATION_SEED,
+            "framesPerInput": 5, "inputCaptures": 64,
+            "usedCaptures": 60, "discardedCaptures": 4, "insufficientBursts": 0,
+            "completeBursts": 12})
         self.assertEqual(stats, other)
         for sample in first:
-            self.assertEqual([r.value for r in sample.members], sorted(r.value for r in sample.members))
             self.assertEqual(sample.id, sample.members[0].id)
+            self.assertEqual(len({m.metadata["burstId"] for m in sample.members}), 1)
+        # Randomizing only slot order within chronological windows would fail:
+        # the chosen member sets themselves must change before grouping.
+        expected_chronological = {frozenset(range(start, start+5)) for start in range(0, 30, 5)}
+        actual_sets = {frozenset(m.value for m in sample.members) for sample in first}
+        self.assertNotEqual(actual_sets, expected_chronological)
+        self.assertTrue(any([m.value for m in sample.members] != sorted(m.value for m in sample.members)
+                            for sample in first))
+
+    def test_evaluation_draw_ignores_paths_timestamps_target_hashes_and_other_bursts(self):
+        rows = [Exposure(i, burst=burst, phase=phase, manifest=f"/old/{burst}-{phase}/manifest.json")
+                for burst in ("a", "b") for phase in (0, 1) for i in range(12)]
+
+        def member_ids(values):
+            return [tuple(m.id for m in sample.members) for sample in BurstIndex(values, 5).eval_samples()[0]]
+
+        expected = member_ids(rows)
+        relocated = copy.deepcopy(rows)
+        for row in relocated:
+            row.manifest = Path("/new/renamed")/row.manifest.parent.name/"manifest.json"
+            row.metadata["timestamp"] = 10000-row.metadata["timestamp"]
+            row.metadata["hashes"] = {"labels": "e"*64, "mask": "f"*64, "expected": "0"*64}
+        random.Random(42).shuffle(relocated)
+        self.assertEqual(member_ids(relocated), expected)
+        extra = [Exposure(i, session="unrelated", burst="added") for i in range(17)]
+        together = member_ids(extra+rows)
+        original_ids = {r.id for r in rows}
+        self.assertEqual([ids for ids in together if ids[0] in original_ids], expected)
+        for sample in BurstIndex(rows, 5).eval_samples()[0]:
+            self.assertEqual(len({(m.metadata["burstId"], m.metadata["info"]["phase"])
+                                  for m in sample.members}), 1)
 
     def test_never_combines_sources_phases_sessions_splits_or_bursts(self):
         variants = [{"source": "synthetic"}, {"phase": 1}, {"session": "other"},
@@ -84,10 +119,15 @@ class BurstTests(unittest.TestCase):
                 self.assertEqual(stats["discardedCaptures"], 4)
                 self.assertEqual(stats["insufficientBursts"], 2)
 
-    def test_synthetic_order_uses_frame_number_not_inherited_target_timestamp(self):
+    def test_synthetic_evaluation_does_not_restore_chronological_frame_order(self):
         rows = [Exposure(i, source="synthetic", synthetic={"frame": 8-i}) for i in range(8)]
         windows, _ = BurstIndex(rows, 4).eval_samples()
-        self.assertEqual([member.value for member in windows[0].members], [7, 6, 5, 4])
+        expected = [[member.id for member in sample.members] for sample in windows]
+        for row in rows:
+            row.metadata["synthetic"]["frame"] = row.value
+        other, _ = BurstIndex(rows, 4).eval_samples()
+        self.assertEqual([[member.id for member in sample.members] for sample in other], expected)
+        self.assertNotEqual([member.value for sample in windows for member in sample.members], list(range(8)))
 
     def test_short_missing_duplicate_or_inconsistent_records_reject(self):
         rows = [Exposure(i) for i in range(4)]

@@ -13,7 +13,7 @@ import unittest
 EXPERIMENT = Path(__file__).resolve().parents[1]
 ROOT = EXPERIMENT.parents[1]
 sys.path.insert(0, str(EXPERIMENT))
-from sampling import (BalancedSampler, GROUP_FORMAT, MAX_GROUP_BYTES,
+from sampling import (BalancedSampler, GROUP_FORMAT, MAX_GROUP_BYTES, _Pool,
                       load_session_groups, validate_session_groups)
 
 
@@ -126,6 +126,40 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(sampler.last_counts["real"], 4)
         self.assertEqual(sampler.last_counts["repeatedBursts"], 3)
         self.assertEqual(sampler.last_counts["repeatedSamples"], 1)
+
+    def test_reused_burst_draws_uniformly_among_remaining_captures(self):
+        # Enumerate the random ranks instead of relying on statistical tolerance.
+        # With A already used, the previous random-start/forward-scan algorithm
+        # selected B for two of four starts, but C and D for only one each.
+        rows = examples("real", "one", phases=1, frames=4)
+        pool = _Pool(rows)
+        ordered = pool.bursts[0].samples
+
+        class RankedRandom:
+            def __init__(self, rank):
+                self.rank = rank
+                self.bounds = []
+
+            def choice(self, values):
+                return values[0]
+
+            def randrange(self, stop):
+                self.bounds.append(stop)
+                return self.rank
+
+        for used_indices in ((0,), (1,), (0, 2), (0, 1, 2)):
+            previous = {ordered[i].id for i in used_indices}
+            remaining = [row.id for row in ordered if row.id not in previous]
+            observed = []
+            for rank in range(len(remaining)):
+                rng = RankedRandom(rank)
+                usage = ({0: set(previous)}, set(previous))
+                sample, repeated_burst, repeated_sample = pool.draw(rng, usage)
+                self.assertEqual(rng.bounds, [len(remaining)])
+                self.assertTrue(repeated_burst)
+                self.assertFalse(repeated_sample)
+                observed.append(sample.id)
+            self.assertEqual(observed, remaining)
 
     def test_profiles_stay_separate_and_missing_direction_profiles_fail(self):
         rows = examples("real", "a", shape=(64, 16))+examples("real", "b", shape=(128, 16))

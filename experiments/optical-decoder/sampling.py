@@ -158,13 +158,20 @@ class _Pool:
                 if eligible(burst):
                     break
         previous = used_bursts.setdefault(burst.index, set())
-        start = rng.randrange(len(burst.samples))
-        sample = burst.samples[start]
-        if len(previous) < len(burst.samples):
-            for offset in range(len(burst.samples)):
-                sample = burst.samples[(start+offset) % len(burst.samples)]
+        remaining = len(burst.samples) - len(previous)
+        if previous and remaining:
+            # Pick a uniform rank among unused captures. Starting at a random
+            # array position and scanning forward would favor a capture directly
+            # after already-used entries. Scan only this burst, without copying
+            # its members or searching the full source pool.
+            rank = rng.randrange(remaining)
+            for sample in burst.samples:
                 if sample.id not in previous:
-                    break
+                    if rank == 0:
+                        break
+                    rank -= 1
+        else:
+            sample = burst.samples[rng.randrange(len(burst.samples))]
         repeated_burst = bool(previous)
         repeated_sample = sample.id in used_samples
         previous.add(sample.id)

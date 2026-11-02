@@ -1,11 +1,12 @@
 """Distinct exposures of one recorded matrix, without changing recording files.
 
 Training samples random subsets within a physical/corruption burst. Evaluation
-uses deterministic nonoverlapping windows; neither path mixes palette phases,
-sources, sessions, or independent synthetic corruption trajectories.
+fixes a seeded random member order before nonoverlapping grouping; neither path
+mixes palette phases, sources, sessions, or independent synthetic trajectories.
 """
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 import re
@@ -14,6 +15,11 @@ import numpy as np
 
 from contract import FRAME_COUNTS, MAX_FRAMES
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
+# One fixed held-out draw, shared by training validation and standalone evaluation.
+# SHA-256 ranking makes that draw portable without relying on random.shuffle's
+# implementation or on the order in which other bursts consume a shared RNG.
+EVALUATION_SEED = 7
+EVALUATION_POLICY = "fixed-seeded-shuffle-within-burst"
 
 
 def _burst_key(sample):
@@ -42,6 +48,25 @@ def _time_order(sample):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError("Burst frame timestamps/indices must be finite numbers")
     return value, sample.id
+
+
+def _evaluation_identity(sample):
+    """Portable recorded identity, excluding storage paths and target hashes."""
+    row = sample.metadata
+    identity = [row["source"], row["sessionId"], row.get("senderSessionId"),
+                row["payloadId"], row["split"], row["info"], row.get("burstId")]
+    return json.dumps(identity, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _evaluation_order(values):
+    identity = _evaluation_identity(values[0])
+
+    def rank(sample):
+        material = json.dumps([EVALUATION_POLICY, EVALUATION_SEED, identity, sample.id],
+                              ensure_ascii=True, separators=(",", ":")).encode("utf8")
+        return hashlib.sha256(material).digest(), sample.id
+
+    return tuple(sorted(values, key=rank))
 
 
 @dataclass(frozen=True)
@@ -130,17 +155,22 @@ class BurstIndex:
     def eval_samples(self):
         windows = []
         discarded, insufficient = 0, 0
-        # Group/member ordering uses only recorded identity and capture order,
-        # never confidence, payload correctness or validation loss.
-        for key in sorted(self.groups, key=repr):
-            values = self.groups[key]
+        # Fix one random permutation per burst before forming disjoint groups.
+        # Ranking never uses pixel values, target hashes, decoder predictions,
+        # validation loss, timestamps or absolute manifest paths. In particular,
+        # adding another burst cannot consume RNG state and change this draw.
+        groups = sorted(self.groups.values(), key=lambda values:
+                        (_evaluation_identity(values[0]), tuple(sorted(s.id for s in values))))
+        for original in groups:
+            values = _evaluation_order(original)
             count = len(values)//self.frames
             insufficient += int(count == 0)
             discarded += len(values) % self.frames
             for index in range(count):
                 members = values[index*self.frames:(index+1)*self.frames]
                 windows.append(BurstSample(members[0], members))
-        return windows, {"framesPerInput": self.frames, "inputCaptures": len(self.samples),
+        return windows, {"method": EVALUATION_POLICY, "seed": EVALUATION_SEED,
+                         "framesPerInput": self.frames, "inputCaptures": len(self.samples),
                          "usedCaptures": len(windows)*self.frames,
                          "discardedCaptures": discarded, "insufficientBursts": insufficient,
                          "completeBursts": len(windows)}
