@@ -14,6 +14,10 @@ CHANNELS = 3
 MAX_FRAMES = 64
 FRAME_COUNTS = tuple(range(1, MAX_FRAMES + 1))
 CLASSES = 16
+CAPTURE_INPUT_MIN = -1.5
+CAPTURE_INPUT_MAX = 1.5
+NETWORK_INPUT_MIN = -1.0
+NETWORK_INPUT_MAX = 1.0
 # Compact is an active ablation. Wide exports record their actual parameter count.
 PARAMETER_COUNT = 121_792
 INPUT_NAME = "pixels"
@@ -35,9 +39,11 @@ def shapes(size: int, frames: int = 1) -> tuple[tuple[int, ...], tuple[int, ...]
 def normalize_rgb(calibrated_hwc: np.ndarray) -> np.ndarray:
     """Calibrated RGB [H,W,3] in 0..255 units -> float32 [1,3,H,W].
 
-    Calibration may produce values outside the camera byte range. Do not clip
-    to 0..255 first: match the receiver's final [-1.5,1.5] clamp exactly. Camera
-    homography and affine color fitting remain the JavaScript receiver's job.
+    Calibration may produce values outside the camera byte range. Preserve
+    that overshoot in the stored crop, matching the receiver's [-1.5,1.5]
+    capture bound. The model separately clips every source to [-1,1] immediately
+    before its learned layers; that operation is also part of the ONNX graph.
+    Camera homography and affine color fitting remain the receiver's job.
     Float64 intermediate arithmetic matches JavaScript Number operations;
     the final tensor is float32.
     """
@@ -49,7 +55,8 @@ def normalize_rgb(calibrated_hwc: np.ndarray) -> np.ndarray:
     if (not np.issubdtype(rgb.dtype, np.number) or np.iscomplexobj(rgb)
             or not np.isfinite(rgb).all()):
         raise ValueError("RGB samples must be finite real numeric values")
-    normalized = np.clip(rgb.astype(np.float64) / 127.5 - 1.0, -1.5, 1.5)
+    normalized = np.clip(rgb.astype(np.float64) / 127.5 - 1.0,
+                         CAPTURE_INPUT_MIN, CAPTURE_INPUT_MAX)
     return np.ascontiguousarray(normalized.transpose(2, 0, 1)[None], dtype=np.float32)
 
 
@@ -58,6 +65,7 @@ def fixture_input(size: int, seed: int, frames: int = 1) -> np.ndarray:
 
     This input has no transmitted payload or symbol labels. It tests numerical
     inference agreement only; it cannot measure a decoder's recovery accuracy.
+    Retained calibrated overshoot exercises the model's final [-1,1] input clip.
     """
     input_shape, _ = shapes(size, frames)
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 0xFFFFFFFF:

@@ -91,6 +91,7 @@ async function inference(context, pixels) {
 }
 function describe(context, options) {
   return {format: 'optical-decoder-report', version: 1, modelStatus: context.manifest.status,
+    modelProfile: context.manifest.modelProfile, networkInputClip: context.manifest.networkInputClip,
     checkpointSha256: context.manifest.checkpointSha256 ?? null, size: options.size, framesPerInput:context.manifest.framesPerInput,
     requestedBackend: options.backend, effectiveBackend: context.effectiveBackend, fallbackReason: context.fallbackReason,
     runtimeVersions: {...(ort.env.versions || {})}, exportVersions: context.manifest.versions,

@@ -1,6 +1,6 @@
 # Learned color-matrix decoder: design and training plan
 
-Status: **G64 device feasibility established; M2 capture/training software implemented; evaluation grouping corrected**, 2026-11-02.
+Status: **G64 device feasibility established; M2 capture/training software implemented; normalized decoder and final input clipping implemented**, 2026-11-02.
 The submitted reports establish phone WebGPU and PC WASM parity and speed at G64. PC crop acquisition and G128 device
 measurements remain open. Use [the M2 guide](OPTICAL_DECODER_TRAINING.md) for capture, synthetic generation, training,
 and held-out evaluation, and [Decoder Lab](DECODER_LAB.md) for checkpoint parity/device timing. Real-data model
@@ -32,14 +32,18 @@ sampled cell RGB plus palette pilots; its 320-pixel whole-marker preview is not 
 using its validated homography and `FORMAT.payload` coordinates.
 
 Fit the existing affine color correction from the **current exposure's** border palette, apply it to the dense crop,
-divide RGB by 127.5 and subtract 1, then clip to [-1.5, 1.5]. Implement identical preprocessing in training and
-JavaScript. Retain the reference grid in the crop; its observed colors provide local context. The reference cells retain
+divide RGB by 127.5 and subtract 1, then preserve the crop within [-1.5, 1.5].
+This is the capture/storage range, including affine-correction overshoot. The
+model itself applies **clip(x, -1, 1) as its first operation**, before every learned
+path. Exported ONNX contains this Clip, so Python and browser inference match.
+Existing recorded files and hashes remain unchanged; no dataset regeneration is
+needed. The final learned-input range is the same for real and synthetic sources. Retain the reference grid in the crop; its observed colors provide local context. The reference cells retain
 their fixed physical palette labels across phases. No uniform pre-calibration sequence or persistent moiré texture map
 is required.
 
 ### Implemented architectures
 
-Both current profiles use biased 3×3 convolutions with padding 1 and ReLU,
+All current profiles use biased 3×3 convolutions with padding 1 and ReLU,
 nearest-neighbor decoder upsampling, concatenated learned-feature skips, and an
 unnormalized 1×1 classification head. T is the number of RGB exposures (1–64).
 Input is `[N,3T,4G,4G]`; output is `[N,16,G,G]`. The grid includes references,
@@ -68,7 +72,8 @@ convolves. Both grid sizes use the same weights.
 
 ```mermaid
 flowchart TD
-  I["5 RGB crops · 15×256×256"] --> S["Inlet · 8×128×128 → 16×64×64"]
+  I["5 RGB crops · 15×256×256"] --> C["Final input clip: -1 to 1"]
+  C --> S["Inlet · 8×128×128 → 16×64×64"]
   S --> E0["E0 · 16×64×64"]
   E0 --> E1["E1 · 32×32×32"]
   E1 --> B["Bottleneck · 64×16×16"]
@@ -83,7 +88,8 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  I["5 RGB crops · 15×256×256"] --> S["Inlet · 16×128×128 → 32×64×64"]
+  I["5 RGB crops · 15×256×256"] --> C["Final input clip: -1 to 1"]
+  C --> S["Inlet · 16×128×128 → 32×64×64"]
   S --> E0["E0 + channel LN · 32×64×64"]
   E0 --> E1["E1 + channel LN · 64×32×32"]
   E1 --> B["Bottleneck + channel LN · 128×16×16"]
@@ -92,7 +98,7 @@ flowchart TD
   D1 --> D0["Upsample + concat + D0 + LN · 32×64×64"]
   E0 -->|feature skip| D0
   D0 --> H["1×1 spatial head · 16×64×64"]
-  I --> R["Average-pool ×4 · 1×1 15→16→16 · no LN"]
+  C --> R["Average-pool ×4 · 1×1 15→16→16 · no LN"]
   H --> A["Add · 16×64×64 logits"]
   R --> A
 ```
@@ -102,18 +108,19 @@ RGB. It bypasses learned feature normalization and contextual mixing. At T=5 it
 contains only **528 parameters**: removing it changes the information path but
 barely reduces capacity. Most wide parameters are in the spatial backbone.
 
-### Proposed smaller normalized model — design, not implemented
+### Normalized compact — implemented default
 
-Keep the dense input, output grid, skip topology and convolution depth. Retain
-wide's 16-channel first inlet so five RGB crops are not immediately compressed
-to eight feature channels, then narrow the backbone to **16/32/64**. Apply the
-existing ChannelLayerNorm after **every hidden convolution**, including both
-inlet layers, before ReLU. Remove the direct RGB branch. Retain normalized
-learned-feature skips; leave final logits unnormalized.
+`--model normalized-compact` is the fresh-training/export default. It keeps the
+dense input, output grid, skip topology and convolution depth. The 16-channel
+first inlet retains wide's initial width; the backbone narrows to **16/32/64**.
+The existing ChannelLayerNorm follows **every hidden convolution**, including
+both inlet layers, before ReLU. There is no direct RGB branch. Normalized learned
+feature skips remain, and the final logits have no normalization or activation.
 
 ```mermaid
 flowchart TD
-  I["5 RGB crops · 15×256×256"] --> S["Conv + LN + ReLU twice · 16×128×128 → 16×64×64"]
+  I["5 RGB crops · 15×256×256"] --> C["Final input clip: -1 to 1"]
+  C --> S["Conv + LN + ReLU twice · 16×128×128 → 16×64×64"]
   S --> E0["E0 + channel LN · 16×64×64"]
   E0 --> E1["E1 + channel LN · 32×32×32"]
   E1 --> B["Bottleneck + channel LN · 64×16×16"]
@@ -124,7 +131,7 @@ flowchart TD
   D0 --> H["1×1 head · 16×64×64 logits"]
 ```
 
-| Stage | Proposed channel operations | Output spatial size |
+| Stage | Channel operations | Output spatial size |
 | --- | --- | --- |
 | Inlet | 3T→16→16, stride 2 each | 4G→2G→G |
 | E0 | 16→16→16 | G |
@@ -134,20 +141,19 @@ flowchart TD
 | D0 | Concatenate 32+16; 48→16→16 | G |
 | Head | 16→16, 1×1, no normalization/activation | G |
 
-Exact proposed parameter count, including biases and LayerNorm affine weights:
+Exact parameter count, including biases and LayerNorm affine weights:
 **123440 + 432T**, hence **125,600 at five frames** and **151,088 at 64**.
-At five frames this is **74.3% fewer parameters** than wide. These counts were
-checked by constructing the proposed modules locally; this profile is not yet
-implemented in training, checkpoint export or the browser contract.
+At five frames this is **74.3% fewer parameters** than wide. The profile is
+implemented in training, strict checkpoint loading, ONNX export and the browser
+contract. The input clamp adds no trainable parameters.
 
-This is a capacity/photometric-shortcut hypothesis, not a demonstrated recovery
-improvement. Feature normalization can reduce dependence on feature scale, but
+The architecture targets capacity and photometric shortcuts; improved recovery
+still needs training and device evaluation. Feature normalization can reduce dependence on feature scale, but
 does not guarantee white-balance invariance. Do not normalize the raw RGB triplet
 to unit variance: absolute color/luminance differences carry palette information.
 The input calibration and reference grid remain available to learned convolutions.
 Changing the internal widths needs a fresh model; wide weights cannot be loaded
-unchanged. No per-frame encoder, attention or additional objective is proposed
-for this first smaller-model experiment.
+unchanged. This model uses no per-frame encoder, attention or additional training objective.
 
 ### Burst sampling and evaluation
 
@@ -188,13 +194,13 @@ Two further concrete design observations motivate the smaller model:
 
 - Wide already normalizes internal features, but its inlet and additive RGB
   branch bypass that normalization. The branch can exploit session-specific
-  color mappings; its causal contribution requires the proposed experiment.
-- Nonzero-severity synthetic generation clamps output to [-1,1], whereas real
-  calibrated crops permit [-1.5,1.5] after affine color correction. This is a real
-  preprocessing-distribution difference; the reports contain no pixel histogram
-  to establish its prevalence or contribution. The synthetic pipeline also
-  approximates residual calibrated distortions rather than refitting a camera
-  calibration per generated exposure. No generator change is made in this fix.
+  color mappings. The normalized model removes that path and normalizes the inlet.
+- Nonzero-severity synthetics already occupy [-1,1], while stored calibrated
+  crops can occupy [-1.5,1.5]. The model now clips both at [-1,1] before learned
+  processing, fixing this input-range mismatch while preserving the recordings.
+  Artifact distributions can still differ: synthetic generation approximates
+  residual calibrated distortions rather than refitting a camera calibration
+  per generated exposure. The generator itself is unchanged.
 
 Paired synthetics add nuisance variation without adding new payload content.
 Limited recorded sessions/targets remain another plausible generalization limit;
@@ -309,9 +315,9 @@ rate `1e-4` fresh or `5e-5` initialized. The unsuccessful adaptation recipe and 
 extra objective, online augmentation and plateau machinery have been removed.
 Keep useful source/group metrics and initialized-checkpoint baseline protection.
 
-For the next experiment, reuse `wide-pilot/best.pt`, generate 16 independent
-nine-frame corruption bursts per recorded training target, and enable
-`--frames 5 --paired-targets`. Each real stack receives a synthetic stack of the exact
+For the next experiment, train `--model normalized-compact` from scratch on the
+existing real captures and matched nine-frame synthetic bursts with
+`--frames 5 --paired-targets`. Reuse those datasets without regeneration. Each real stack receives a synthetic stack of the exact
 same session/payload/frame/phase and target hashes. The 50:50 source quota applies
 to each complete optimizer update; an optional session sidecar balances real
 acquisition directions. Full real validation every 1,000 updates selects by exact

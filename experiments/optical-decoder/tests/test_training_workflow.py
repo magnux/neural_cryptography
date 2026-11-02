@@ -21,10 +21,11 @@ sys.path.insert(0, str(EXPERIMENT))
 HAS_TORCH = importlib.util.find_spec("torch") is not None
 if HAS_TORCH:
     import torch
+    from bursts import BurstIndex
     from checkpoint import load_model_checkpoint
     from data import Dataset, digest
     from evaluate import evaluate_model
-    from model import OpticalDecoder
+    from model import DEFAULT_MODEL_PROFILE, OpticalDecoder, parameter_count
     from train import run_training, save_checkpoint
     torch.set_num_threads(1)
 
@@ -247,12 +248,23 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertEqual(history["selectedStep"], 0)
         load_model_checkpoint(self.root/"interrupted/best.pt")
 
-    def test_five_frame_cli_warmstart_runs_optimizer_and_preserves_recordings(self):
+    def burst_directories(self, prefix, *, overshoot=False):
+        directories = {}
         for split in ("train", "validation"):
-            destination = self.root/f"burst-{split}"
+            destination = self.root/f"{prefix}-{split}"
             shutil.copytree(self.root/split, destination)
             path = destination/"manifest.json"
             manifest = json.loads(path.read_text())
+            if overshoot:
+                # Calibrated recordings retain valid out-of-camera-range RGB.
+                # The model boundary, not stored files, must clamp these values.
+                for relative in {row["input"] for row in manifest["samples"]}:
+                    target = destination/relative
+                    pixels = np.fromfile(target, dtype="<f4")
+                    pixels[:2] = [1.4, -1.4]
+                    pixels.tofile(target)
+                for row in manifest["samples"]:
+                    row["hashes"]["input"] = digest(destination/row["input"])
             # Distinct recorded identities with canonical pixels exercise burst
             # stacking and the actual optimizer; these remain synthetic fixtures.
             exposures = []
@@ -264,12 +276,17 @@ class TrainingWorkflowTests(unittest.TestCase):
                     exposures.append(item)
             manifest["samples"] = exposures
             path.write_text(json.dumps(manifest))
+            directories[split] = destination
+        return directories
+
+    def test_five_frame_cli_warmstart_runs_optimizer_and_preserves_recordings(self):
+        directories = self.burst_directories("burst")
         sidecar = self.root/"burst-session-groups.json"
         sidecar.write_text(json.dumps({"format": "optical-decoder-session-groups",
                                       "version": 1, "sessions": self.mapping}))
         out = self.root/"cli-burst"
         process = subprocess.run([sys.executable, str(EXPERIMENT/"train.py"),
-            "--train", str(self.root/"burst-train"), "--validation", str(self.root/"burst-validation"),
+            "--train", str(directories["train"]), "--validation", str(directories["validation"]),
             "--initialize", str(self.initial), "--session-groups", str(sidecar),
             "--frames", "5", "--paired-targets", "--steps", "1", "--batch-size", "4",
             "--accumulate", "1", "--device", "cpu", "--eval-every", "1", "--no-progress", "--out", str(out)],
@@ -289,6 +306,59 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertEqual(checkpoint["training"]["framesPerInput"], 5)
         self.assertEqual(checkpoint["training"]["initialCheckpointSha256"], self.initial_hash)
         self.assertEqual(digest(self.initial), self.initial_hash)
+
+    def test_fresh_five_frame_default_trains_normalized_model_without_rewriting_crops(self):
+        directories = self.burst_directories("normalized", overshoot=True)
+        recorded = {path: digest(path) for directory in directories.values()
+                    for path in directory.rglob("*") if path.is_file()}
+        sidecar = self.root/"normalized-session-groups.json"
+        sidecar.write_text(json.dumps({"format": "optical-decoder-session-groups",
+                                      "version": 1, "sessions": self.mapping}))
+        out = self.root/"cli-normalized"
+        process = subprocess.run([sys.executable, str(EXPERIMENT/"train.py"),
+            "--train", str(directories["train"]), "--validation", str(directories["validation"]),
+            "--session-groups", str(sidecar), "--frames", "5", "--paired-targets",
+            "--steps", "1", "--batch-size", "4", "--accumulate", "1",
+            "--device", "cpu", "--eval-every", "1", "--no-progress", "--out", str(out)],
+            capture_output=True, text=True, timeout=90)
+        self.assertEqual(process.returncode, 0, process.stderr[-3000:])
+        history = json.loads((out/"history.json").read_text())
+        settings = history["settings"]
+        self.assertEqual(history["completedSteps"], 1)
+        self.assertEqual(settings["modelProfile"], "normalized-compact")
+        self.assertEqual(settings["framesPerInput"], 5)
+        self.assertEqual(settings["networkInputClip"], [-1., 1.])
+        self.assertEqual(settings["initialLearningRate"], 1e-4)
+        self.assertEqual(settings["evaluationGrouping"], "fixed-seeded-shuffle-within-burst")
+        self.assertEqual(settings["evaluationSeed"], 7)
+        model, checkpoint = load_model_checkpoint(out/"best.pt")
+        self.assertEqual(model.profile, DEFAULT_MODEL_PROFILE)
+        self.assertEqual(parameter_count(model), 125600)
+        self.assertFalse(hasattr(model, "local_color"))
+        self.assertEqual(checkpoint["training"]["networkInputClip"], [-1., 1.])
+        self.assertEqual(checkpoint["training"]["modelProfile"], model.profile)
+        self.assertNotIn("initialCheckpointSha256", checkpoint["training"])
+        torch.manual_seed(7)
+        initial = OpticalDecoder(DEFAULT_MODEL_PROFILE, frames=5)
+        self.assertFalse(torch.equal(initial.head.weight, model.head.weight))
+
+        dataset = Dataset([directories["validation"]], "validation")
+        sample = BurstIndex(dataset.samples, 5).eval_samples()[0][0]
+        pixels = sample.tensors()[0]
+        self.assertGreater(float(pixels.max()), 1.)
+        self.assertLess(float(pixels.min()), -1.)
+        seen = []
+        hook = model.inlet[0][0].register_forward_pre_hook(
+            lambda _module, inputs: seen.append(inputs[0].detach().clone()))
+        try:
+            with torch.inference_mode():
+                logits = model(torch.from_numpy(pixels[None]))
+        finally:
+            hook.remove()
+        self.assertEqual(tuple(logits.shape), (1, 16, 64, 64))
+        self.assertTrue(torch.isfinite(logits).all())
+        torch.testing.assert_close(seen[0], torch.from_numpy(pixels[None]).clamp(-1., 1.), rtol=0, atol=0)
+        self.assertEqual({path: digest(path) for path in recorded}, recorded)
 
 
 if __name__ == "__main__":

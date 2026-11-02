@@ -7,7 +7,9 @@ export const LEARNED_INPUT = Object.freeze({sizes:Object.freeze([64,128]),colors
 
 /** Interleaved calibrated camera RGB -> contiguous float32 CHW.
  * RGB values are in the nominal 0..255 range, but color correction can overshoot.
- * This exact affine normalization/clipping is also used by the Python contract.
+ * This capture normalization/clipping is also used by the Python contract.
+ * Preserve overshoot here; the ONNX graph applies the final [-1,1] clamp
+ * before learned layers, matching PyTorch training and evaluation.
  */
 export function normalizeCalibratedRGB(rgb,width,height){
   if(!Number.isInteger(width)||!Number.isInteger(height)||width<1||height<1||width>512||height>512||

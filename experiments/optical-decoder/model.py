@@ -1,17 +1,18 @@
 """Multiframe optical classifiers with a shared browser tensor contract.
 
-Both profiles accept stacked RGB, [N,3*T,4G,4G], and predict physical palette
-logits, [N,16,G,G]. Neither receives keys, labels, or expected payload bytes.
+All profiles accept stacked RGB, [N,3*T,4G,4G], and predict physical palette
+logits, [N,16,G,G]. None receives keys, labels, or expected payload bytes.
 """
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-from contract import CHANNELS, FRAME_COUNTS, MAX_FRAMES
+from contract import CHANNELS, FRAME_COUNTS, MAX_FRAMES, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 
 
-MODEL_PROFILES = ("compact", "wide")
+MODEL_PROFILES = ("compact", "wide", "normalized-compact")
+DEFAULT_MODEL_PROFILE = "normalized-compact"
 
 
 class ChannelLayerNorm(nn.Module):
@@ -43,13 +44,13 @@ def conv(in_channels: int, out_channels: int, stride: int = 1,
 
 
 class OpticalDecoder(nn.Module):
-    """Compact baseline or wider feature-normalized U-Net with local RGB path.
+    """Baseline, wide, or fully feature-normalized compact U-Net.
 
-    The compact profile is the 121,792-parameter ablation already tested on
-    devices. Wide doubles its feature widths and normalizes feature channels.
-    A small unnormalized cell-RGB readout preserves absolute color evidence
-    alongside the normalized spatial context. Wide still requires retraining
-    and held-out device evaluation; capacity is not a claim of better recovery.
+    Normalized-compact uses a 16-channel inlet, a 16/32/64 backbone, and channel
+    LayerNorm after every hidden convolution, with no RGB-to-logits branch.
+    Compact and wide remain explicit experimental profiles. The constructor's
+    compact default identifies the original baseline; fresh training/export use
+    DEFAULT_MODEL_PROFILE. All profiles clip input only at the model boundary.
     """
 
     def __init__(self, profile: str = "compact", frames: int = 1) -> None:
@@ -60,9 +61,12 @@ class OpticalDecoder(nn.Module):
             raise ValueError(f"Choose 1 to {MAX_FRAMES} input frames")
         self.profile = profile
         self.frames = frames
-        width = 16 if profile == "compact" else 32
-        normalize = profile == "wide"
-        self.inlet = nn.Sequential(conv(3 * frames, width // 2, 2), conv(width // 2, width, 2))
+        width = 32 if profile == "wide" else 16
+        inlet_width = 8 if profile == "compact" else 16
+        normalize = profile != "compact"
+        normalize_inlet = profile == "normalized-compact"
+        self.inlet = nn.Sequential(conv(3 * frames, inlet_width, 2, normalize_inlet),
+                                   conv(inlet_width, width, 2, normalize_inlet))
         self.e0 = nn.Sequential(conv(width, width, normalize=normalize), conv(width, width, normalize=normalize))
         self.e1 = nn.Sequential(conv(width, 2 * width, 2, normalize), conv(2 * width, 2 * width, normalize=normalize))
         self.bottleneck = nn.Sequential(conv(2 * width, 4 * width, 2, normalize), conv(4 * width, 4 * width, normalize=normalize))
@@ -73,6 +77,10 @@ class OpticalDecoder(nn.Module):
             self.local_color = nn.Sequential(nn.Conv2d(3 * frames, 16, 1), nn.ReLU(), nn.Conv2d(16, 16, 1))
 
     def forward(self, pixels: torch.Tensor) -> torch.Tensor:
+        # Preserve calibrated overshoot in recordings/preprocessing; every
+        # learned layer consumes the same bounded range for real and synthetic
+        # inputs. ONNX exports this operation, including browser camera inference.
+        pixels = torch.clamp(pixels, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX)
         e0 = self.e0(self.inlet(pixels))
         e1 = self.e1(e0)
         context = self.bottleneck(e1)
@@ -92,11 +100,18 @@ def profile_from_state(state: dict) -> str:
     """
     if not isinstance(state, dict) or not isinstance(state.get("head.weight"), torch.Tensor):
         raise ValueError("Checkpoint has no valid decoder head")
-    shape = tuple(state["head.weight"].shape)
-    if shape == (16, 16, 1, 1):
+    inlet = state.get("inlet.0.0.weight")
+    if not isinstance(inlet, torch.Tensor) or inlet.ndim != 4:
+        raise ValueError("Checkpoint has no valid decoder inlet")
+    signature = (tuple(state["head.weight"].shape), inlet.shape[0],
+                 "inlet.0.1.weight" in state, "e0.0.1.weight" in state,
+                 "local_color.0.weight" in state)
+    if signature == ((16, 16, 1, 1), 8, False, False, False):
         return "compact"
-    if shape == (16, 32, 1, 1):
+    if signature == ((16, 32, 1, 1), 16, False, True, True):
         return "wide"
+    if signature == ((16, 16, 1, 1), 16, True, True, False):
+        return "normalized-compact"
     raise ValueError("Checkpoint model does not match a supported decoder profile")
 
 

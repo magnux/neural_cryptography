@@ -70,29 +70,71 @@ class CheckpointExportTests(unittest.TestCase):
                 expected = model(torch.from_numpy(pixels)).numpy()
             np.testing.assert_array_equal(exported, expected)
 
-    def test_five_frame_checkpoint_loads_exactly_and_export_rejects_wrong_frames(self):
+    def test_normalized_five_frame_checkpoint_and_export_preserve_exact_profile(self):
+        import onnx
         _, value = self.checkpoint()
-        model = OpticalDecoder("wide", frames=5).eval()
+        model = OpticalDecoder("normalized-compact", frames=5).eval()
         value["modelState"] = model.state_dict()
         value["training"]["framesPerInput"] = 5
+        value["training"].update(modelProfile="normalized-compact", networkInputClip=[-1., 1.])
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)/"burst.pt"
             torch.save(value, path)
             loaded, _ = load_model_checkpoint(path)
-            self.assertEqual((loaded.profile, loaded.frames), ("wide", 5))
+            self.assertEqual((loaded.profile, loaded.frames), ("normalized-compact", 5))
             for name, tensor in loaded.state_dict().items():
                 torch.testing.assert_close(tensor, model.state_dict()[name], rtol=0, atol=0)
             manifest = export_smoke(Path(temporary)/"bundle", sizes=(64,), check_ort=False, checkpoint=path)
             self.assertEqual(manifest["framesPerInput"], 5)
             self.assertEqual(manifest["training"]["framesPerInput"], 5)
+            self.assertEqual(manifest["modelProfile"], "normalized-compact")
+            self.assertEqual(manifest["training"]["modelProfile"], "normalized-compact")
+            self.assertEqual(manifest["training"]["networkInputClip"], [-1, 1])
+            self.assertEqual(manifest["normalization"]["clip"], [-1.5, 1.5])
+            self.assertEqual(manifest["networkInputClip"], [-1, 1])
+            case = manifest["cases"][0]
+            graph = onnx.load(Path(temporary)/"bundle"/case["model"]["file"])
+            self.assertIn("Clip", {node.op_type for node in graph.graph.node})
+            pixels = np.fromfile(Path(temporary)/"bundle"/case["input"]["file"], dtype="<f4")
+            self.assertGreater(float(np.abs(pixels).max()), 1)
             with self.assertRaisesRegex(ValueError, "frame count differs"):
                 export_smoke(Path(temporary)/"bad", sizes=(64,), check_ort=False, checkpoint=path, frames=1)
-            with self.assertRaises(ValueError):
-                load_checkpoint(path, OpticalDecoder("wide"))
+            for profile in ("compact", "wide"):
+                with self.subTest(profile=profile), self.assertRaises(ValueError):
+                    load_checkpoint(path, OpticalDecoder(profile, frames=5))
+            with self.assertRaisesRegex(ValueError, "profile differs"):
+                export_smoke(Path(temporary)/"wrong-profile", sizes=(64,), check_ort=False,
+                             checkpoint=path, profile="compact")
+            value["training"]["modelProfile"] = "compact"
+            torch.save(value, path)
+            with self.assertRaisesRegex(ValueError, "profile metadata disagrees"):
+                load_model_checkpoint(path)
+            value["training"]["modelProfile"] = "normalized-compact"
             value["training"]["framesPerInput"] = 1
             torch.save(value, path)
             with self.assertRaisesRegex(ValueError, "frame metadata disagrees"):
                 load_model_checkpoint(path)
+
+    def test_normalized_profile_rejects_missing_normalization_and_rgb_branch_mixtures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/"malformed.pt"
+            for defect in ("missing-inlet-norm", "missing-backbone-norm", "rgb-branch", "wrong-stem"):
+                with self.subTest(defect=defect):
+                    _, value = self.checkpoint()
+                    state = OpticalDecoder("normalized-compact", frames=5).state_dict()
+                    if defect == "missing-inlet-norm":
+                        del state["inlet.0.1.weight"]
+                    elif defect == "missing-backbone-norm":
+                        del state["e0.0.1.weight"]
+                    elif defect == "rgb-branch":
+                        state["local_color.0.weight"] = torch.zeros(16, 15, 1, 1)
+                    else:
+                        state["inlet.0.0.weight"] = torch.zeros(8, 15, 3, 3)
+                    value["modelState"] = state
+                    value["training"]["framesPerInput"] = 5
+                    torch.save(value, path)
+                    with self.assertRaises(ValueError):
+                        load_model_checkpoint(path)
 
     def test_sixty_four_frame_checkpoint_loads_without_shape_adaptation(self):
         model = OpticalDecoder("wide", frames=64).eval()
@@ -174,6 +216,8 @@ class CheckpointExportTests(unittest.TestCase):
                    {"steps": 1}, {"selectionStep": 1}, {"steps": False},
                    {"selectionStep": False}, {"initialCheckpointSha256": "bad"},
                    {"pairedTargets": 1}, {"framesPerInput": 0}, {"framesPerInput": 65}, {"framesPerInput": True},
+                   {"modelProfile": "unknown"}, {"networkInputClip": [-1.5, 1.5]},
+                   {"networkInputClip": [-1, True]}, {"networkInputClip": "-1,1"},
                    {"selectionAggregation": "unknown"},
                    {"sessionGroupsSha256": "bad"})
         for change in changes:

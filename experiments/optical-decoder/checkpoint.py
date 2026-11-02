@@ -8,8 +8,8 @@ import zipfile
 import numpy as np
 import torch
 
-from contract import FRAME_COUNTS
-from model import OpticalDecoder, profile_from_state, frames_from_state
+from contract import FRAME_COUNTS, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
+from model import MODEL_PROFILES, OpticalDecoder, profile_from_state, frames_from_state
 
 
 MAX_CHECKPOINT_BYTES = 512 * 1024 * 1024
@@ -59,6 +59,17 @@ def training_provenance(training: dict) -> dict:
         if type(value) is not int or value not in FRAME_COUNTS:
             raise ValueError("Invalid checkpoint framesPerInput")
         result["framesPerInput"] = value
+    if "modelProfile" in training:
+        if training["modelProfile"] not in MODEL_PROFILES:
+            raise ValueError("Invalid checkpoint modelProfile")
+        result["modelProfile"] = training["modelProfile"]
+    if "networkInputClip" in training:
+        value = training["networkInputClip"]
+        if (not isinstance(value, list) or len(value) != 2
+                or any(type(bound) not in (int, float) for bound in value)
+                or value != [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX]):
+            raise ValueError("Invalid checkpoint networkInputClip")
+        result["networkInputClip"] = value
     if "pairedTargets" in training:
         if not isinstance(training["pairedTargets"], bool):
             raise ValueError("Invalid checkpoint pairedTargets")
@@ -141,6 +152,8 @@ def load_checkpoint(path: Path, model: OpticalDecoder | None = None) -> dict:
     training_provenance(checkpoint.get("training"))
     if checkpoint["training"].get("framesPerInput", model.frames) != model.frames:
         raise ValueError("Checkpoint frame metadata disagrees with model parameters")
+    if checkpoint["training"].get("modelProfile", model.profile) != model.profile:
+        raise ValueError("Checkpoint profile metadata disagrees with model parameters")
     validate_split_provenance(checkpoint["training"])
     model.load_state_dict(state, strict=True)
     return checkpoint

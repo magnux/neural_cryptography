@@ -22,15 +22,16 @@ import onnx
 import torch
 
 from contract import (ATOL, CHANNELS, CLASSES, FORMAT, FRAME_COUNTS, MAX_FRAMES, INPUT_NAME, OUTPUT_NAME,
-                      PIXELS_PER_CELL, RTOL, SIZES, VERSION,
+                      PIXELS_PER_CELL, RTOL, SIZES, VERSION, CAPTURE_INPUT_MIN, CAPTURE_INPUT_MAX,
+                      NETWORK_INPUT_MIN, NETWORK_INPUT_MAX,
                       describe_file, fixture_input, shapes, write_f32)
-from model import MODEL_PROFILES, OpticalDecoder, parameter_count
+from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, OpticalDecoder, parameter_count
 from checkpoint import load_checkpoint, load_model_checkpoint, training_provenance
 
 
 OPSET = 17
 ALLOWED_OPERATORS = {"Conv", "Relu", "Concat", "Resize", "Constant", "ReduceMean",
-                     "Sub", "Mul", "Add", "Sqrt", "Div", "AveragePool", "Identity"}
+                     "Sub", "Mul", "Add", "Sqrt", "Div", "AveragePool", "Identity", "Clip"}
 
 
 def native_parity(model_path: Path, pairs: Path, threads: int) -> list[dict]:
@@ -90,7 +91,7 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
     torch.manual_seed(seed)
     if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
         raise ValueError(f"Choose 1 to {MAX_FRAMES} input frames")
-    model = OpticalDecoder(profile or "wide", frames=frames if frames is not None else 1).cpu().eval()
+    model = OpticalDecoder(profile or DEFAULT_MODEL_PROFILE, frames=frames if frames is not None else 1).cpu().eval()
     provenance = {}
     if checkpoint is not None:
         model, loaded = load_model_checkpoint(checkpoint)
@@ -117,7 +118,9 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
         "classes": CLASSES, "inputName": INPUT_NAME, "outputName": OUTPUT_NAME, "opset": OPSET,
         "versions": versions,
         "dtype": "float32", "byteOrder": "little", "layout": "NCHW",
-        "normalization": {"divisor": 127.5, "offset": -1.0, "clip": [-1.5, 1.5]},
+        "normalization": {"divisor": 127.5, "offset": -1.0,
+                          "clip": [CAPTURE_INPUT_MIN, CAPTURE_INPUT_MAX]},
+        "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
         "tolerance": {"atol": ATOL, "rtol": RTOL},
         "pythonParityStatus": {"status": "passed" if check_ort else "not_run",
                                "reason": None if check_ort else "Explicit --skip-ort-check; Python ONNX Runtime parity not run."},
@@ -181,7 +184,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "artifacts" / "smoke")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--checkpoint", type=Path, help="export a checkpoint from the current training command")
-    parser.add_argument("--model", choices=MODEL_PROFILES, help="untrained profile (default wide); checkpoints select their own profile")
+    parser.add_argument("--model", choices=MODEL_PROFILES,
+                        help=f"untrained profile (default {DEFAULT_MODEL_PROFILE}); checkpoints select their own profile")
     parser.add_argument("--frames", type=int, choices=FRAME_COUNTS, metavar=f"1..{MAX_FRAMES}",
                         help="untrained input frames (default 1); checkpoints select their own frame count")
     parser.add_argument("--threads", type=int, default=1)

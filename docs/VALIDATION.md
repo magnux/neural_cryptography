@@ -440,3 +440,39 @@ membership, group/path/order independence, disjoint equal-budget canonical
 recovery, uniform unused-capture draws, and actual five-frame training that
 records the evaluation policy. The smaller architecture was counted only; no
 new model training, checkpoint recovery measurement or site deployment occurred.
+
+
+## Normalized compact and one final neural input range — 2026-11-02
+
+The accepted narrower architecture is now implemented as `normalized-compact`,
+the fresh-training/export default. Its inlet is 3T→16→16, its backbone 16/32/64,
+and all 12 hidden convolutions have channel LayerNorm followed by ReLU. There is
+no direct RGB readout; learned-feature skips remain, and the head is linear.
+The five-frame model has **125,600 parameters**; 1–64 exposures remain supported.
+Strict model/checkpoint inference distinguishes all implemented profiles and
+rejects mixed weights, inconsistent metadata and incompatible initializations.
+
+Capture normalization remains `c/127.5 - 1` with the existing [-1.5,1.5] storage
+bounds. Affine calibration can exceed camera-byte bounds, which explained the
+extra range retained in real recordings. Every model now begins with
+**clip(x,-1,1)** before any learned convolution, including wide's RGB branch.
+This preserves recorded/joined files while making real and synthetic learned
+input ranges identical. The ONNX graph contains the same first operation;
+export manifests require `networkInputClip:[-1,1]` and explicit capture
+normalization metadata. Existing prepared bundles must be regenerated together.
+The synthetic generator and recording format are unchanged.
+
+**92 Python tests passed, one native ONNX Runtime check skipped** (93 total), and
+**61 JavaScript tests passed**. Tests include actual fresh five-frame training,
+strict checkpoint round trips/rejections, both grid shapes, graph-input clipping,
+unchanged overshooting recordings and matching first-layer input bounds.
+An untrained normalized five-frame export passed actual ONNX Runtime Web WASM
+checks in Node at G64/G128: maximum absolute errors against PyTorch were
+**1.34e-6/1.46e-6**. Raw overshoot fixtures and their explicitly clipped copies
+produced exactly identical WASM logits, including 74,979/297,887 clipped input
+values. Both model bundles and local runtime assets were prepared successfully.
+
+These checks establish implementation and numerical agreement, not improved
+recovery. No full GPU training or physical-device accuracy run was performed.
+No site was deployed. The next run starts fresh with the existing real and
+matched synthetic datasets; wide-burst5 can be archived independently.

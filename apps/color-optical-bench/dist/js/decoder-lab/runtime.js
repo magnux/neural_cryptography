@@ -6,7 +6,11 @@ export const MAX_INPUT_BYTES = 3 * MAX_INPUT_FRAMES * 512 * 512 * 4;
 export const validFrameCount = frames => Number.isInteger(frames) && frames >= 1 && frames <= MAX_INPUT_FRAMES;
 export const PARITY_TOLERANCE = Object.freeze({atol: 1e-4, rtol: 1e-3});
 const shapeEqual = (a, b) => Array.isArray(a) && a.length === b.length && a.every((v, i) => v === b[i]);
-export const MODEL_PROFILES = Object.freeze({compact:Object.freeze({base:121576,perFrame:216}),wide:Object.freeze({base:486624,perFrame:480})});
+export const MODEL_PROFILES = Object.freeze({
+  compact:Object.freeze({base:121576,perFrame:216}),
+  wide:Object.freeze({base:486624,perFrame:480}),
+  'normalized-compact':Object.freeze({base:123440,perFrame:432})
+});
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
 
 export function validateManifest(manifest) {
@@ -19,6 +23,13 @@ export function validateManifest(manifest) {
   }
   const profile=manifest.modelProfile;
   if (!Object.hasOwn(MODEL_PROFILES,profile)||MODEL_PROFILES[profile].base+MODEL_PROFILES[profile].perFrame*manifest.framesPerInput!==manifest.parameterCount) throw new Error('Invalid decoder model profile/count.');
+  // Preserve calibrated overshoot in captures/fixtures; the exported graph
+  // clips to the common real/synthetic range before its first learned layer.
+  if (!plain(manifest.normalization) || manifest.normalization.divisor !== 127.5 ||
+      manifest.normalization.offset !== -1 || !shapeEqual(manifest.normalization.clip, [-1.5, 1.5]) ||
+      !shapeEqual(manifest.networkInputClip, [-1, 1])) {
+    throw new Error('Invalid decoder normalization/clip contract. Regenerate the current model and fixtures.');
+  }
   if (manifest.status === 'trained' && (!/^[a-f0-9]{64}$/.test(manifest.checkpointSha256) || !plain(manifest.training))) {
     throw new Error('Trained exports require checkpoint provenance.');
   }

@@ -2,10 +2,11 @@
 
 This implements M1 feasibility and the M2 capture/training pipeline from the
 [optical decoder plan](../../docs/OPTICAL_DECODER.md). The
-**compact** and **wide** U-Nets support 1–64 RGB exposures, with fixed
-browser profiles for physical grid sizes 64 and 128. Wide has **487,104 parameters
-for one frame and 489,024 for five frames**. Widths stay fixed as frame count grows;
-wide stays below 500k through 27 frames, while compact stays below 500k through 64. The submitted device reports support starting at G64. See the
+**normalized-compact** default and the **compact/wide** comparison profiles support
+1–64 RGB exposures, with fixed browser grids 64 and 128. The default has
+**125,600 parameters at five frames**, with a 16→16 inlet, 16/32/64 features,
+channel LayerNorm after every hidden convolution, and no direct RGB readout.
+It stays below 500k through 64 frames (151,088 parameters). See the
 [capture and training guide](../../docs/OPTICAL_DECODER_TRAINING.md) for the full
 workflow, from browser captures through synthetic generation and RTX 4090 training.
 
@@ -15,11 +16,19 @@ trained weights and their provenance. The existing classical decoder remains
 responsible for live transport until held-out recovery validates a candidate.
 Numerical parity measures runtime agreement, not optical accuracy.
 
-Fresh training and export default to `wide`: feature widths 32/64/128,
-channel LayerNorm after learned feature convolutions, and a separate unnormalized
-cell-RGB readout. `--model compact` is the existing active baseline. Existing
-compact checkpoints still load in their exact architecture; `--initialize` and
-`--checkpoint` infer the supported profile from validated parameter shapes.
+Fresh training and export default to `normalized-compact`. `--model compact`
+and `--model wide` remain explicit comparison profiles. Profile inference and
+checkpoint loading validate all parameter shapes; changing internal width needs
+fresh weights. Do not initialize this model from `wide-pilot` or `wide-burst5`.
+
+Capture calibration preserves overshoot: `x_capture = clip(c/127.5 - 1, -1.5, 1.5)`.
+Every model begins with `x_network = clip(x_capture, -1, 1)` **before any learned
+layer**, including any RGB readout. This clamp is part of the exported ONNX graph,
+so Python training/evaluation and browser inference enforce the same range.
+Stored recordings, joined tensors and checksums remain unchanged. Existing
+synthetics can be reused. A common input range fixes the clipping mismatch; it
+does not establish that synthetic and camera artifact distributions are identical.
+
 Recording files remain unchanged: each stores one RGB crop. `--frames 5` stacks
 five distinct same-phase exposures along the channel axis. Explicitly initializing
 from a single-frame pilot expands only the RGB-facing convolution weights, repeats
@@ -41,14 +50,13 @@ including interval source/group metrics. Use `--no-progress` to hide the bar;
 redirected output automatically uses concise text without terminal control codes.
 
 The [recommended next run](../../docs/OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
-reuses `wide-pilot/best.pt`, reconstructs clean matrices from the sender-derived
-targets in `real-train`, and generates multiple independent corruption bursts
-for each. `--paired-targets` trains each real capture alongside a synthetic of
-that exact session/payload/frame/phase, with matching target hashes. For the new
-five-frame run, each side uses five distinct exposures from its own burst;
-independent synthetic corruption bursts and palette phases are never mixed. Target
-content is aligned between sources; optical nuisance distributions still need
-to be tested on held-out real captures. No clean target is used during inference.
+trains `normalized-compact --frames 5` from scratch on existing real captures and
+matched synthetic bursts. `--paired-targets` places each real stack alongside a
+synthetic stack of that exact session/payload/frame/phase, with matching target
+hashes. Each side uses five distinct exposures from its own burst; independent
+synthetic corruption bursts and palette phases are never mixed. Target content
+is aligned between sources; held-out real captures test generalization. No clean
+target is used during inference.
 
 Synthetic generation includes curved moiré, integrated arbitrary-direction linear,
 rotational and radial-zoom motion blur, Gaussian blur/noise, white-balance and
@@ -68,14 +76,12 @@ corpora retain their existing formats and identities.
 
 The retained single-frame baseline recovered 69/768 captures. Paired single-frame
 training recovered 68/768 at step 22k, with phone→PC still at zero and worse
-validation loss despite falling training loss. Keep `wide-real` as a historical
-reference and initialize the burst model from `wide-pilot`, not the overfit paired
-checkpoint. Multiframe evaluation applies a fixed seed-7 random permutation within each burst
+validation loss despite falling training loss. Archive the previous wide runs as references; the normalized model starts fresh. Multiframe evaluation applies a fixed seed-7 random permutation within each burst
 before making disjoint stacks, and compares classical fusion over the exact same exposures; its denominator differs from a single-frame
 report. Existing checkpoints can be reevaluated under the corrected grouping
 without retraining; the method and seed appear in each report.
-See [current and proposed architecture diagrams](../../docs/OPTICAL_DECODER.md#implemented-architectures)
-for the narrower normalized model proposal. No live throughput improvement is claimed.
+See [architecture diagrams](../../docs/OPTICAL_DECODER.md#implemented-architectures)
+for the implemented narrower normalized model. No live throughput improvement is claimed.
 
 ## Setup and export
 
@@ -91,7 +97,7 @@ For a selected trained checkpoint:
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/wide-burst5/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-burst5/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected
@@ -123,8 +129,8 @@ data, unrelated to runtime cryptographic randomness.
 Export performs ONNX graph validation and runs two distinct inputs per shape
 through PyTorch and Python ONNX Runtime before writing the final manifest. The
 graph uses opset 17 and the explicit TorchScript exporter (`dynamo=False`), with
-Conv, ReLU, Concat, Resize, and constants; wide also uses AveragePool and
-channel-normalization reductions/basic arithmetic. This avoids an additional
+Clip, Conv, ReLU, Concat, Resize, and constants. Normalized profiles also use
+channel-normalization reductions/basic arithmetic; wide adds AveragePool. This avoids an additional
 `onnxscript` dependency. Exact installed package versions and operator names
 are recorded in the manifest. An unsupported graph or failed parity check stops
 the export; it does not produce a passing report.
@@ -166,10 +172,12 @@ palette classes and performs no softmax. The receiver masks inactive classes,
 maps palette phases back into logical symbol order, and excludes reference
 cells before passing scores to the current error-recovery code.
 
-Preprocessing receives calibrated RGB in camera-byte units, divides by 127.5,
-subtracts 1, and clips to `[-1.5,1.5]`. Intermediate arithmetic uses float64,
+Capture preprocessing receives calibrated RGB in camera-byte units, divides by
+127.5, subtracts 1, and clips to `[-1.5,1.5]`. The network then clips to `[-1,1]`
+as its first graph operation; manifests require `networkInputClip: [-1,1]`. Intermediate arithmetic uses float64,
 then writes float32 NCHW; do not clamp calibrated RGB to `[0,255]` first.
-`contract.normalize_rgb()` mirrors this final receiver step. The JavaScript
+`contract.normalize_rgb()` mirrors this capture step; `OpticalDecoder.forward()`
+provides the subsequent network-input clamp. The JavaScript
 receiver continues to own detection, homography, and color calibration.
 
 The diagnostic inputs contain spatial/channel variation but **no known payload
@@ -195,8 +203,8 @@ load time, backend, model hash, and UI responsiveness.
 
 ## Files and acceptance
 
-- `model.py`: compact and wide multiframe U-Nets; wide adds feature-channel
-  LayerNorm and an unnormalized cell-RGB readout.
+- `model.py`: normalized-compact default plus compact/wide comparison U-Nets;
+  all graphs apply final input clipping before learned layers.
 - `contract.py`: shape constants, RGB normalization, fixture generation, numeric
   parity, and little-endian serialization.
 - `export.py`: static ONNX graphs, optional explicit native-runtime validation,

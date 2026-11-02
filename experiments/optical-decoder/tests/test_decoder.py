@@ -22,7 +22,8 @@ HAS_TORCH = importlib.util.find_spec("torch") is not None
 HAS_EXPORT = HAS_TORCH and importlib.util.find_spec("onnx") is not None
 if HAS_TORCH:
     import torch
-    from model import OpticalDecoder, parameter_count, initialize_frames, frames_from_state
+    from model import (ChannelLayerNorm, MODEL_PROFILES, OpticalDecoder, parameter_count,
+                       initialize_frames, frames_from_state, profile_from_state)
     torch.set_num_threads(1)
 
 
@@ -120,8 +121,44 @@ class ModelTests(unittest.TestCase):
                     changed[:, slot*3:(slot+1)*3] = 0
                     self.assertGreater(float((model(changed)-expected).abs().max()), 1e-6)
 
+    def test_normalized_compact_preserves_resolution_with_no_rgb_readout(self):
+        torch.manual_seed(7)
+        model = OpticalDecoder("normalized-compact", frames=5).eval()
+        self.assertEqual(parameter_count(model), 125_600)
+        self.assertEqual(model.inlet[0][0].out_channels, 16)
+        self.assertEqual(model.inlet[1][0].out_channels, 16)
+        self.assertEqual(sum(isinstance(layer, ChannelLayerNorm) for layer in model.modules()), 12)
+        self.assertFalse(hasattr(model, "local_color"))
+        self.assertEqual(profile_from_state(model.state_dict()), "normalized-compact")
+        for size in (64, 128):
+            with self.subTest(size=size), torch.inference_mode():
+                pixels = torch.from_numpy(fixture_input(size, 7, frames=5))
+                expected = model(pixels)
+                self.assertEqual(tuple(expected.shape), shapes(size, 5)[1])
+                self.assertTrue(torch.isfinite(expected).all())
+                changed = pixels.clone()
+                changed[:, -3:] = 0
+                self.assertGreater(float((model(changed)-expected).abs().max()), 1e-6)
+
+    def test_every_profile_clips_before_learned_layers_without_mutating_captures(self):
+        torch.manual_seed(19)
+        pixels = torch.linspace(-1.5, 1.5, 15*32*32).reshape(1, 15, 32, 32)
+        original = pixels.clone()
+        for profile in MODEL_PROFILES:
+            with self.subTest(profile=profile), torch.inference_mode():
+                model = OpticalDecoder(profile, frames=5).eval()
+                received = []
+                handle = model.inlet.register_forward_pre_hook(
+                    lambda _module, args: received.append(args[0].clone()))
+                actual = model(pixels)
+                handle.remove()
+                expected = model(pixels.clamp(-1, 1))
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                torch.testing.assert_close(received[0], pixels.clamp(-1, 1), rtol=0, atol=0)
+                torch.testing.assert_close(pixels, original, rtol=0, atol=0)
+
     def test_explicit_five_frame_warm_start_preserves_repeated_input_function(self):
-        for profile in ("compact", "wide"):
+        for profile in MODEL_PROFILES:
             torch.manual_seed(31)
             original = OpticalDecoder(profile).eval()
             before = {name: value.clone() for name, value in original.state_dict().items()}
@@ -147,7 +184,8 @@ class ModelTests(unittest.TestCase):
                 initialize_frames(original, frames)
 
     def test_larger_frame_counts_expand_only_input_weights(self):
-        for profile, baseline, per_frame in (("compact", 121_792, 216), ("wide", 487_104, 480)):
+        for profile, baseline, per_frame in (("compact", 121_792, 216), ("wide", 487_104, 480),
+                                             ("normalized-compact", 123_872, 432)):
             original = OpticalDecoder(profile).eval()
             for frames in (2, 3, 32, MAX_FRAMES):
                 with self.subTest(profile=profile, frames=frames):
@@ -215,17 +253,18 @@ class ExportTests(unittest.TestCase):
         from export import export_smoke
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)/"burst"
-            manifest = export_smoke(directory, frames=5, sizes=(64,), check_ort=False, profile="wide")
+            manifest = export_smoke(directory, frames=5, sizes=(64,), check_ort=False, profile="normalized-compact")
             self.assertEqual(manifest["framesPerInput"], 5)
             self.assertEqual(manifest["channels"], 15)
-            self.assertEqual(manifest["parameterCount"], 489_024)
+            self.assertEqual(manifest["parameterCount"], 125_600)
+            self.assertEqual(manifest["modelProfile"], "normalized-compact")
             case = manifest["cases"][0]
             self.assertEqual(case["inputShape"], [1, 15, 256, 256])
             graph = onnx.load(directory/case["model"]["file"])
             self.assertEqual([dim.dim_value for dim in graph.graph.input[0].type.tensor_type.shape.dim],
                              case["inputShape"])
             torch.manual_seed(7)
-            model = OpticalDecoder("wide", frames=5).eval()
+            model = OpticalDecoder("normalized-compact", frames=5).eval()
             pixels = np.fromfile(directory/case["input"]["file"], dtype="<f4").reshape(case["inputShape"])
             expected = np.fromfile(directory/case["expected"]["file"], dtype="<f4").reshape(case["outputShape"])
             with torch.inference_mode():

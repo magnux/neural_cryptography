@@ -20,11 +20,11 @@ from tqdm import tqdm
 
 from torch.nn import functional as F
 from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED
-from contract import FRAME_COUNTS
+from contract import FRAME_COUNTS, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 from checkpoint import load_model_checkpoint
 from data import DATASET_FORMAT, Dataset, assert_disjoint, check_checkpoint_overlap, digest
 from evaluate import evaluate_model
-from model import MODEL_PROFILES, OpticalDecoder, initialize_frames
+from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, OpticalDecoder, initialize_frames
 from sampling import BalancedSampler, load_session_groups, validate_session_groups
 
 
@@ -91,7 +91,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     torch.manual_seed(seed)
     previous = None
     if initialize is None:
-        model = OpticalDecoder(model_profile or "wide", frames=frames or 1)
+        model = OpticalDecoder(model_profile or DEFAULT_MODEL_PROFILE, frames=frames or 1)
     else:
         model, previous = load_model_checkpoint(initialize)
         if model_profile is not None and model.profile != model_profile:
@@ -120,6 +120,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                "gradientAccumulation": accumulate, "initialLearningRate": learning_rate,
                "weightDecay": weight_decay, "realFraction": real_fraction,
                "pairedTargets": paired_targets, "framesPerInput": model.frames,
+               "modelProfile": model.profile, "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
                "loss": "mean-masked-cross-entropy",
                "evalEvery": eval_every, "validationSamples": validation_samples,
                "evaluationGrouping": EVALUATION_POLICY, "evaluationSeed": EVALUATION_SEED,
@@ -127,6 +128,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     provenance = {"seed": seed, "samples": len(train.samples), "batchSize": batch_size,
                   "gradientAccumulation": accumulate, "device": str(device), "realFraction": real_fraction,
                   "pairedTargets": paired_targets, "framesPerInput": model.frames, "selection": "validation-exact", "datasetFormat": DATASET_FORMAT,
+                  "modelProfile": model.profile, "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
                   "trainManifestSha256": train.manifest_hash, "validationManifestSha256": validation.manifest_hash,
                   "trainSessionIds": sorted(train_sessions), "trainPayloadIds": sorted(train_payloads),
                   "validationSessionIds": sorted(validation_sessions), "validationPayloadIds": sorted(validation_payloads),
@@ -288,7 +290,8 @@ def main():
     parser.add_argument("--eval-every", type=int, default=1000, help="validation interval (default: 1000 updates)")
     parser.add_argument("--validation-samples", type=int, default=0, help="0 evaluates all (default); positive values cap the diagnostic subset")
     parser.add_argument("--real-fraction", type=float, default=.5)
-    parser.add_argument("--model", choices=MODEL_PROFILES, help="default: wide fresh, otherwise checkpoint profile")
+    parser.add_argument("--model", choices=MODEL_PROFILES,
+                        help=f"default: {DEFAULT_MODEL_PROFILE} fresh, otherwise checkpoint profile")
     parser.add_argument("--initialize", type=Path, help="initialize validated weights; optimizer starts fresh")
     parser.add_argument("--node", default="node")
     parser.add_argument("--no-progress", action="store_true", help="hide the live bar; keep concise validation summaries")

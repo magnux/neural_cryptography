@@ -171,10 +171,10 @@ independent decoding to measure whether accepted output is exact.
 
 Use the experiment's pinned dependencies in a virtual environment. Select an
 appropriate PyTorch CUDA build for the 4090; CPU works for small smoke runs.
-**If you already have `wide-pilot/best.pt`, skip this optional pilot generation
-and use the [target-paired run below](#recommended-next-training-run).** Its
-weights remain a useful initialization; a fresh pilot is not required after
-changing corruptions.
+**For the recommended fresh paired run, skip this optional pilot generation
+and use the [target-paired run below](#recommended-next-training-run).** That
+run starts with fresh normalized-compact weights; old wide checkpoints cannot
+initialize its different internal architecture.
 
 For a fresh pilot, reuse existing clean corpora or generate them below. Generate
 corrupted corpora into empty directories. Real recordings and joined datasets
@@ -286,7 +286,7 @@ For a fresh synthetic pilot:
 python experiments/optical-decoder/train.py \
   --train local-data/synthetic-train \
   --validation local-data/synthetic-validation \
-  --model wide --device cuda --out checkpoints/optical-decoder/wide-pilot
+  --model normalized-compact --frames 5 --device cuda --out checkpoints/optical-decoder/normalized-pilot
 ```
 
 Microbatches share a grid size and palette. Reference cells and inactive palette
@@ -344,6 +344,7 @@ settings on validation.
 
 | Profile | Parameters | Structure |
 | --- | ---: | --- |
+| `normalized-compact`, five frames | **125,600** | 16→16 inlet, 16/32/64 features, all hidden convolutions normalized, no RGB readout |
 | `compact`, one frame | 121,792 | Plain U-Net baseline |
 | `wide`, one frame | 487,104 | Doubled widths, feature-channel LayerNorm, unnormalized pooled-RGB readout |
 | `wide`, five frames | **489,024** | Same backbone, 15-channel RGB inlet and local-color path |
@@ -353,7 +354,7 @@ settings on validation.
 Models take `[N,3T,4G,4G]` calibrated pixels, integer T=1…64, and output
 `[N,16,G,G]` physical-color logits. LayerNorm does not normalize raw RGB or depend on batch statistics.
 `--initialize` keeps the checkpoint's profile. Explicit `--frames T` can warm-start
-from one-frame weights by repeating the two RGB-facing kernels across slots and
+from one-frame weights of the same profile by repeating its RGB-facing kernels across slots and
 dividing by T; all other weights/biases are copied. Identical repeated inputs
 preserve the initial function within floating-point tolerance. No implicit shape
 migration occurs when loading/exporting checkpoints. An incompatible profile or
@@ -366,7 +367,7 @@ Wide uses a `3T→16→32` inlet, `32/64/128` feature encoder, `64→32`
 decoder and a `3T→16→16` local-color path. Compact uses a `3T→8→16`
 inlet and `16/32/64` features. Parameter counts are `486624 + 480T` for
 wide and `121576 + 216T` for compact. Wide is below 500k through T=27;
-choose compact if that budget must hold at larger counts.
+both compact and normalized-compact stay below that budget through 64 frames.
 
 Raw float32 input memory per example is `0.75 × T` MiB at G64 and `3 × T`
 MiB at G128. At 64 frames that is 48/192 MiB before batches, activations and
@@ -391,40 +392,35 @@ while its unaugmented interval training CE falls from 1.745 to .349 to .182.
 This supports overfitting to training sessions. Both selected models recover only
 the same two PC→phone sessions. Multiple observations offer new visual evidence, but
 are not by themselves a solution to this generalization failure. Keep `wide-real`
-and initialize the burst model from `wide-pilot`, rather than `wide-paired`.
+as a historical result. The normalized model below starts from fresh weights.
 
-For the proposed narrower, fully feature-normalized model and diagrams, see
-[the architecture design](OPTICAL_DECODER.md#proposed-smaller-normalized-model--design-not-implemented).
-That proposal is not a trainable profile yet; the commands below still use wide.
+The fresh-training/export default is `normalized-compact`; see its
+[implemented architecture and diagrams](OPTICAL_DECODER.md#normalized-compact--implemented-default).
+Its parameter count is `123440 + 432T`. The first operation of every model clips
+inputs to [-1,1], including stored captures whose calibration retained values
+within [-1.5,1.5]. Data files stay unchanged. The Clip is exported inside ONNX;
+regenerate prepared model bundles after updating the code.
 
 ## Recommended next training run
 
-**Reuse `wide-pilot/best.pt` and train a five-frame model on real bursts paired
-with synthetic bursts of the exact same target matrices.** Starting from scratch is possible by omitting
-`--initialize`, but is not required: only the RGB-facing convolutions expand,
-and the pilot already learned useful color/spatial features. Keep the earlier
-`wide-real/best.pt` as the single-frame reference; use the equal-budget classical
-comparison in the burst report to assess the new model.
+**Train a fresh `normalized-compact --frames 5` model on the existing real and
+matched synthetic bursts.** Do not initialize from wide weights: the inlet,
+normalization and backbone shapes differ. The five-frame model has 125,600
+parameters. Its ordinary fresh learning rate is `1e-4`, with 32,000 updates.
+Existing `real-train`, `real-validation` and nine-frame
+`target-synthetic-burst-train` datasets can be reused without conversion or
+regeneration. If they exist, skip the generation section below.
 
-### Remove obsolete generated outputs
-
-Run from the repository root, after retaining any reports you still want. This
-command deletes the previous paired *corrupted* synthetic corpus. It preserves
-recordings, joined real data, clean targets and checkpoints. Do not run cleanup
-while training/generation uses that directory. Keep the corpus if you still need
-a reproducible comparison against the previous corruption generator. The new output directory below is separate.
+The previous wide run may be moved aside locally without deleting it:
 
 ```sh
-# Explicit old output paths only; no broad checkpoint/data wildcards.
-rm -rf -- local-data/target-synthetic-train
+mkdir -p checkpoints/optical-decoder/archive
+mv -n -- checkpoints/optical-decoder/wide-burst5 checkpoints/optical-decoder/archive/
 ```
 
-Preserve `checkpoints/optical-decoder/wide-pilot/`,
-`checkpoints/optical-decoder/wide-real/`, `checkpoints/optical-decoder/wide-paired/`,
-`local-data/real-*`, `local-data/clean-*`, `local-data/target-clean-train/`, and the original sender/receiver JSON files. The new run
-uses different, empty output paths below. Check any additional old run's contents
-before deleting it; directory names alone do not establish that its weights are
-replaceable.
+Run this only when that old directory exists and is no longer in use. The new
+output directory is `normalized-burst5`; the trainer requires it to be empty.
+No checkpoint or data cleanup is required to run this experiment.
 
 ### Reconstruct clean targets and generate paired corruptions
 
@@ -490,11 +486,11 @@ but the following run uses it to balance and report both directions.
 python experiments/optical-decoder/train.py \
   --train local-data/real-train local-data/target-synthetic-burst-train \
   --validation local-data/real-validation \
-  --initialize checkpoints/optical-decoder/wide-pilot/best.pt \
+  --model normalized-compact \
   --session-groups local-data/session-groups.json \
   --frames 5 --paired-targets --real-fraction .5 \
-  --lr .00005 --steps 32000 --eval-every 1000 --validation-samples 0 \
-  --device cuda --out checkpoints/optical-decoder/wide-burst5
+  --lr .0001 --steps 32000 --eval-every 1000 --validation-samples 0 \
+  --device cuda --out checkpoints/optical-decoder/normalized-burst5
 ```
 
 Each effective update pairs every chosen real stack with one synthetic stack of its
@@ -541,15 +537,16 @@ final update. All model selection uses the unchanged real validation set.
 ```sh
 python experiments/optical-decoder/evaluate.py \
   --dataset local-data/real-validation --split validation \
-  --checkpoint checkpoints/optical-decoder/wide-burst5/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-burst5/best.pt \
   --session-groups local-data/session-groups.json \
   --max-samples 0 --device cuda \
-  --out local-results/optical-decoder/wide-burst5-validation.json
+  --out local-results/optical-decoder/normalized-burst5-validation.json
 ```
 
 Compare learned and classical recovery within this report: both receive the
 same five observations. Compare `baseline-validation.json` with selected
-`validation.json` to measure learning beyond the initialized five-frame model.
+`validation.json` to measure learning beyond the fresh model's baseline.
+The baseline contains random weights and is not eligible for checkpoint selection.
 Send those reports, `history.json` and generation summaries. Earlier single-frame
 reports remain useful context but have a different observation budget. Keep
 untouched real test sessions for the selected model and settings. The goal remains
@@ -559,7 +556,7 @@ better recovery in both directions with zero wrong accepted payloads.
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/wide-burst5/best.pt \
+  --checkpoint checkpoints/optical-decoder/normalized-burst5/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected
@@ -569,6 +566,7 @@ npm run test:decoder:wasm -- --artifacts experiments/optical-decoder/artifacts/s
 Export produces both G64 and G128 graphs using the selected weights, with fresh
 PyTorch numerical fixtures. The current `optical-decoder` manifest records
 `trained` status, checkpoint hash, required `framesPerInput`/channel dimensions,
+required capture-normalization and `networkInputClip: [-1,1]` metadata,
 and bounded public training provenance.
 It omits local paths and session/payload lists; full split provenance remains
 inside the local checkpoint. Export without `--checkpoint` still creates an

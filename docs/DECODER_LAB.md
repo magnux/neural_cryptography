@@ -94,7 +94,7 @@ G64. Training begins after we establish a usable receiving profile on each side.
 
 | Component | Implementation |
 | --- | --- |
-| Compact/wide U-Nets and fixed-shape ONNX graphs | [`experiments/optical-decoder/`](../experiments/optical-decoder/README.md) |
+| Normalized-compact/compact/wide U-Nets and ONNX graphs | [`experiments/optical-decoder/`](../experiments/optical-decoder/README.md) |
 | Validated dense physical crop, including references | `vision.js` → `extractDensePayload()` |
 | Per-exposure correction and `[1,3,4G,4G]` crop | `learned-input.js` → `extractLearnedInput()` |
 | 1–64-exposure `[1,3T,4G,4G]` input assembly | `js/decoder-lab/burst.js` → `CameraBurst` |
@@ -119,7 +119,7 @@ npm run test:decoder:wasm
 Current exports declare required `framesPerInput` and matching channel counts;
 regenerate local bundles after updating. A five-frame G128 input is 15 MiB of
 float32 pixels before runtime working memory (192 MiB at 64 frames). Both grid
-sizes use the same weights: wide has 489,024 parameters at five frames. The
+sizes use the same weights: normalized-compact has 125,600 parameters at five frames. The
 frame count is fixed in an export; the lab follows that model rather than reshaping it.
 
 The last command requires the exported/prepared assets and runs the same ONNX
@@ -127,3 +127,14 @@ Runtime Web bundle's WASM backend in **Node** against the Python fixtures. It is
 a reproducible runtime check, not a browser or phone benchmark. Actual browser
 WebGPU support, camera contention, and physical crop quality still need the
 device checklist above.
+
+
+Current exports require `networkInputClip: [-1,1]` in addition to capture
+normalization `c/127.5 - 1` with storage bounds [-1.5,1.5]. Camera calibration and
+recordings preserve those wider values; the first ONNX operation clips every
+model input before learned convolutions. Capture adds no extra [-1,1] clamp;
+its existing wider storage bounds are preserved.
+Regenerate and prepare the export together after updating; previous bundles
+without the explicit contract are rejected. The Node WASM check also compares an
+overshoot fixture against its explicitly clipped copy and requires identical
+outputs. The default model is `normalized-compact`.

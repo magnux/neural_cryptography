@@ -6,8 +6,9 @@ import {DecoderClient} from '../dist/js/decoder-lab/client.js';
 
 function manifest(frames=1,profile='compact') {
   const entry=(file,bytes)=>({file,bytes,sha256:'a'.repeat(64)});
-  const count=profile==='compact'?121576+216*frames:486624+480*frames;
+  const count=profile==='compact'?121576+216*frames:profile==='wide'?486624+480*frames:123440+432*frames;
   return {format:'optical-decoder',version:1,status:'untrained',modelProfile:profile,framesPerInput:frames,parameterCount:count,pixelsPerCell:4,channels:3*frames,classes:16,
+    normalization:{divisor:127.5,offset:-1,clip:[-1.5,1.5]},networkInputClip:[-1,1],
     inputName:'pixels',outputName:'logits',seed:7,opset:17,versions:{torch:'test'},cases:[64,128].map(size=>({size,
       inputShape:[1,3*frames,4*size,4*size],outputShape:[1,16,size,size],model:entry(`model-${size}.onnx`,500000),
       input:entry(`input-${size}.f32`,3*frames*16*size*size*4),expected:entry(`expected-${size}.f32`,16*size*size*4)}))};
@@ -19,6 +20,17 @@ test('decoder manifest accepts only bounded current shape/artifact contracts',()
     m=>m.cases[0].model.file='../model.onnx',m=>m.cases[0].model.file='https://example.com/a',
     m=>m.cases[0].model.sha256='invalid',m=>m.cases[1].model.file=m.cases[0].model.file]) {
     const invalid=manifest(); mutate(invalid); assert.throws(()=>validateManifest(invalid));
+  }
+});
+test('manifest distinguishes retained capture range from the mandatory in-graph input clip',()=>{
+  for (const profile of ['compact','wide','normalized-compact']) {
+    const valid=manifest(5,profile); assert.equal(validateManifest(valid),valid);
+    for (const mutate of [m=>delete m.networkInputClip,m=>m.networkInputClip=[-1.5,1.5],
+      m=>m.networkInputClip=[-1,1,0],m=>m.networkInputClip=['-1','1'],
+      m=>delete m.normalization,m=>m.normalization.divisor=255,m=>m.normalization.offset=0,
+      m=>m.normalization.clip=[-1,1],m=>m.normalization.clip=null]) {
+      const invalid=manifest(5,profile);mutate(invalid);assert.throws(()=>validateManifest(invalid),/normalization\/clip/);
+    }
   }
 });
 test('trained exports require checkpoint provenance and the current format',()=>{
@@ -100,7 +112,7 @@ test('active model profiles validate exact parameter counts without changing ten
 
 test('arbitrary frame stacks require exact channels/counts through the G128/64-frame bound',()=>{
   assert.equal(MAX_INPUT_FRAMES,64);assert.equal(MAX_INPUT_BYTES,192*1024*1024);
-  for (const profile of ['compact','wide']) for (const frames of [1,4,5,32,64]) {
+  for (const profile of ['compact','wide','normalized-compact']) for (const frames of [1,4,5,32,64]) {
     const value=manifest(frames,profile);
     assert.equal(validateManifest(value),value);
     assert.equal(value.cases[1].input.bytes,3*frames*512*512*4);
@@ -113,7 +125,17 @@ test('arbitrary frame stacks require exact channels/counts through the G128/64-f
   assert.equal(manifest(5,'wide').parameterCount,489024);
   assert.equal(manifest(64,'wide').parameterCount,517344);
   assert.equal(manifest(64,'compact').parameterCount,135400);
+  assert.equal(manifest(1,'normalized-compact').parameterCount,123872);
+  assert.equal(manifest(5,'normalized-compact').parameterCount,125600);
+  assert.equal(manifest(64,'normalized-compact').parameterCount,151088);
   assert.equal(manifest(64).cases[1].input.bytes,MAX_INPUT_BYTES);
+});
+test('camera assembly retains calibrated overshoot until the model graph clips it',()=>{
+  const crop=cameraCrop(1.25);crop.input[0]=-1.5;
+  const result=new CameraBurst(1).add(crop,{context:'normalized-model/run',mediaTime:1,presentedFrames:1});
+  assert.equal(result.ready,true);
+  assert.equal(result.input[0],-1.5);assert.equal(result.input[1],1.25);
+  assert.equal(crop.input[0],-1.5);assert.equal(crop.input[1],1.25);
 });
 function cameraCrop(value=0,overrides={}) {
   return {input:new Float32Array(3*256*256).fill(value),info:{size:64,colors:16,

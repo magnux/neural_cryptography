@@ -33,6 +33,7 @@ async function main() {
   ort.env.wasm.proxy = false;
   ort.env.wasm.wasmPaths = runtimeRoot.href;
   const report = {format: 'optical-decoder-node-wasm-report', version: 1, modelStatus: manifest.status,
+    modelProfile: manifest.modelProfile, networkInputClip: manifest.networkInputClip,
     framesPerInput: manifest.framesPerInput, inputChannels: manifest.channels,
     environment: `Node.js ${process.version}`, runtimeVersions: {...ort.env.versions},
     execution: 'ONNX Runtime Web WebGPU bundle, WASM provider, one thread. Not a browser or phone measurement.',
@@ -51,7 +52,7 @@ async function main() {
     const session = await ort.InferenceSession.create(model, {executionProviders: ['wasm'], graphOptimizationLevel: 'all'});
     const initMs = performance.now()-started;
     const tensor = new ort.Tensor('float32', input, entry.inputShape), samples = [];
-    let parity = null, exportToleranceParity = null;
+    let parity = null, exportToleranceParity = null, clippingParity = null;
     try {
       if (session.inputNames.length !== 1 || session.inputNames[0] !== manifest.inputName ||
           session.outputNames.length !== 1 || session.outputNames[0] !== manifest.outputName) throw new Error('Export tensor names do not match the manifest.');
@@ -68,11 +69,28 @@ async function main() {
           }
         } finally { for (const value of Object.values(result)) value.dispose?.(); }
       }
+      // Fixture storage retains affine-calibration overshoot. Running the same
+      // graph on an explicitly clipped copy must give the identical logits.
+      const [low, high] = manifest.networkInputClip;
+      const clippedInput = input.map(value => Math.max(low, Math.min(high, value)));
+      const changedValues = input.reduce((n, value) => n+Number(value<low || value>high), 0);
+      if (!changedValues) throw new Error('Numerical fixture must exercise the network input clip.');
+      const clippedTensor = new ort.Tensor('float32', clippedInput, entry.inputShape);
+      let original, clipped;
+      try {
+        original = await session.run({[manifest.inputName]: tensor});
+        clipped = await session.run({[manifest.inputName]: clippedTensor});
+        clippingParity = {...compareLogits(original[manifest.outputName].data,
+          clipped[manifest.outputName].data, {atol:0,rtol:0}), changedValues};
+      } finally {
+        clippedTensor.dispose();
+        for (const result of [original, clipped]) for (const value of Object.values(result || {})) value.dispose?.();
+      }
     } finally { tensor.dispose(); await session.release(); }
-    report.cases.push({size: entry.size, modelSha256: entry.model.sha256, initMs, parity, exportToleranceParity,
+    report.cases.push({size: entry.size, modelSha256: entry.model.sha256, initMs, parity, exportToleranceParity, clippingParity,
       timings: summarizeTimings(samples), timingScope: 'session.run plus CPU output copy; excludes parity comparison'});
   }
-  report.passed = report.cases.every(entry=>entry.parity.passed && entry.exportToleranceParity.passed);
+  report.passed = report.cases.every(entry=>entry.parity.passed && entry.exportToleranceParity.passed && entry.clippingParity.passed);
   const text = JSON.stringify(report, null, 2)+'\n';
   if (out) { await mkdir(dirname(out), {recursive: true}); await writeFile(out, text); }
   process.stdout.write(text);
