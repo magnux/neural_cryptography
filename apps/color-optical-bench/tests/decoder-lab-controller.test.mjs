@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {validateOptions,summarizeTimings,validFrameCount,MAX_INPUT_FRAMES} from '../dist/js/decoder-lab/runtime.js';
 
-async function harness({advance=true,alwaysWaiting=false,duplicateFrame=false,frames=4,frameInterval=100}={}) {
+async function harness({advance=true,alwaysWaiting=false,duplicateFrame=false,frames=4,frameInterval=100,capacity=frames,captureFrames=0}={}) {
   const nodes=new Map(),calls=[],clients=[],pendingFrames=new Map();let stopped=0,requestedFrames=0,canceledFrames=0,presented=0,clock=0;
   class Element {
     constructor(id='') {this.id=id;this.value='';this.hidden=false;this.disabled=false;this.dataset={};this.children=[];this.listeners={};}
@@ -15,7 +15,7 @@ async function harness({advance=true,alwaysWaiting=false,duplicateFrame=false,fr
     getContext() {return {drawImage(){},getImageData:(_x,_y,width,height)=>({width,height,data:new Uint8ClampedArray(width*height*4)})};}
   }
   function element(id) {if(!nodes.has(id))nodes.set(id,new Element(id));return nodes.get(id);}
-  for(const [id,value] of Object.entries({modelSize:'64',backend:'wasm',iterations:'1',resolution:'720'}))element(id).value=value;
+  for(const [id,value] of Object.entries({modelSize:'64',backend:'wasm',iterations:'1',resolution:'720',captureFrames:String(captureFrames)}))element(id).value=value;
   const video=element('video');Object.assign(video,{videoWidth:32,videoHeight:32,readyState:2,currentTime:1,play:async()=>{}});
   video.requestVideoFrameCallback=callback=>{
     const id=++requestedFrames;pendingFrames.set(id,callback);
@@ -36,8 +36,8 @@ async function harness({advance=true,alwaysWaiting=false,duplicateFrame=false,fr
       calls.push({operation,options,transfer,captureStartedMs:clock});
       // The playback clock may advance independently of presented frames.
       video.currentTime+=.01;
-      if(alwaysWaiting||calls.length%frames!==0)return {waiting:true,collected:calls.length%frames||1,framesPerInput:frames,operation:'capture'};
-      return {operation:'capture',modelStatus:'trained',size:64,paletteColors:16,framesPerInput:frames,inputCaptures:frames,
+      if(alwaysWaiting||calls.length%frames!==0)return {waiting:true,collected:calls.length%frames||1,framesPerInput:capacity,requiredCaptures:frames,operation:'capture'};
+      return {operation:'capture',modelStatus:'trained',size:64,paletteColors:16,framesPerInput:capacity,requiredCaptures:frames,inputCaptures:frames,
         inputStats:{preprocessMs:8},inferenceMs:1,effectiveBackend:'wasm',logitsFinite:true,note:'fixture'};
     }
     cancel() {this.canceled++;}
@@ -116,4 +116,16 @@ test('unsupported browsers fail clearly instead of substituting playback time',a
   const h=await harness();delete h.video.requestVideoFrameCallback;
   await h.lab.run('capture');assert.equal(h.calls.length,0);
   assert.match(h.lab.records[0].error,/requestVideoFrameCallback/);
+});
+
+
+test('variable-frame camera selection sends actual count while preserving eight-slot model capacity',async()=>{
+  for(const frames of [5,6,7,8]) {
+    const h=await harness({frames,capacity:8,captureFrames:frames});await h.lab.run('capture');
+    assert.equal(h.calls.length,frames);
+    assert.ok(h.calls.every(call=>call.options.captureFrames===frames));
+    assert.equal(h.lab.records[0].inputCaptures,frames);
+    assert.equal(h.lab.records[0].framesPerInput,8);
+    assert.equal(h.lab.records[0].requiredCaptures,frames);
+  }
 });

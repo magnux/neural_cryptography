@@ -59,6 +59,24 @@ def training_provenance(training: dict) -> dict:
         if type(value) is not int or value not in FRAME_COUNTS:
             raise ValueError("Invalid checkpoint framesPerInput")
         result["framesPerInput"] = value
+    if "minFramesPerInput" in training:
+        value = training["minFramesPerInput"]
+        if type(value) is not int or value not in FRAME_COUNTS:
+            raise ValueError("Invalid checkpoint minFramesPerInput")
+        result["minFramesPerInput"] = value
+    if "frameCounts" in training:
+        values = training["frameCounts"]
+        if (not isinstance(values, list) or not values or
+                any(type(value) is not int or value not in FRAME_COUNTS for value in values) or
+                values != sorted(set(values))):
+            raise ValueError("Invalid checkpoint frameCounts")
+        result["frameCounts"] = values
+    for key, choices in (("inputLayout", ("stacked-rgb", "rgb-presence-planes")),
+                         ("frameCountPolicy", ("fixed", "uniform-5-8"))):
+        if key in training:
+            if training[key] not in choices:
+                raise ValueError(f"Invalid checkpoint {key}")
+            result[key] = training[key]
     if "modelProfile" in training:
         if training["modelProfile"] not in MODEL_PROFILES:
             raise ValueError("Invalid checkpoint modelProfile")
@@ -74,7 +92,8 @@ def training_provenance(training: dict) -> dict:
         if not isinstance(training["pairedTargets"], bool):
             raise ValueError("Invalid checkpoint pairedTargets")
         result["pairedTargets"] = training["pairedTargets"]
-    for key, choices in (("selectionAggregation", ("global", "group-balanced-real")),):
+    for key, choices in (("selectionAggregation", ("global", "group-balanced-real",
+                            "frame-count-balanced", "frame-count-group-balanced-real")),):
         if key in training:
             if training[key] not in choices:
                 raise ValueError(f"Invalid checkpoint {key}")
@@ -154,6 +173,18 @@ def load_checkpoint(path: Path, model: OpticalDecoder | None = None) -> dict:
         raise ValueError("Checkpoint frame metadata disagrees with model parameters")
     if checkpoint["training"].get("modelProfile", model.profile) != model.profile:
         raise ValueError("Checkpoint profile metadata disagrees with model parameters")
+    frame_metadata = {"inputLayout": model.input_layout,
+                      "minFramesPerInput": model.min_frames,
+                      "frameCounts": list(range(model.min_frames, model.frames+1)),
+                      "frameCountPolicy": "uniform-5-8" if model.variable_frames else "fixed"}
+    for name, expected_value in frame_metadata.items():
+        training = checkpoint["training"]
+        if model.variable_frames and name not in training:
+            raise ValueError(f"Attention-tube checkpoint requires {name}")
+        if name in training and training[name] != expected_value:
+            raise ValueError(f"Checkpoint {name} disagrees with model parameters")
+    if model.variable_frames and checkpoint["training"].get("framesPerInput") != 8:
+        raise ValueError("Attention-tube checkpoint requires eight-slot frame metadata")
     validate_split_provenance(checkpoint["training"])
     model.load_state_dict(state, strict=True)
     return checkpoint

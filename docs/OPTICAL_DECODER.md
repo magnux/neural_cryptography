@@ -1,6 +1,6 @@
 # Learned color-matrix decoder: design and training plan
 
-Status: **full-resolution normalized-tube is the default; longtube residual experiment implemented**, 2026-11-03.
+Status: **full-resolution tube and longtube retained; masked, anchored attention-tube implemented**, 2026-11-03.
 The submitted M1 reports establish phone WebGPU and PC WASM feasibility at G64; each new model still needs device timing. PC crop acquisition and G128 device
 measurements remain open. Use [the M2 guide](OPTICAL_DECODER_TRAINING.md) for capture, synthetic generation, training,
 and held-out evaluation, and [Decoder Lab](DECODER_LAB.md) for checkpoint parity/device timing. Recorded real-data recovery
@@ -19,7 +19,7 @@ existing mechanisms. It never decides whether a proof is valid.
 Focus on the **64×64 physical grid**, 16 colors, and a 4-color control. Grid dimensions include reference cells.
 Keep grid-8 references and RS32 while reducing phases and capture requirements experimentally. A future G128 decoder
 should be trained separately with 512×512 inputs and a 128×128 bottleneck; no multi-size routing is planned now. 256/512 grids, learned
-geometry, ViTs, Conv3D, and resolution-specific inlet/outlet branches are deferred. Both optical directions matter; the
+geometry, full ViT backbones, Conv3D, and resolution-specific inlet/outlet branches are deferred. The current G64 attention experiment adds local attention to the existing full-resolution U. Both optical directions matter; the
 phone's smaller display may need a different profile. There is no requirement to use identical settings on the two
 devices. Keep 32×32/four-color control packets on the current classical decoder
 for the first POC; learned control decoding is optional and needs its own G=32 evaluation.
@@ -44,13 +44,14 @@ is required.
 
 ### Implemented architectures
 
-Only two profiles are supported: **`normalized-tube` is the default**, and
-**`longtube` is the deeper experiment**. Both accept `[N,3T,4G,4G]` and produce
-`[N,16,G,G]`, where T is 1–64 RGB exposures. They use 32-channel hidden features,
+Three profiles are supported. **`normalized-tube` remains the default** and
+**`longtube`** retains its residual architecture and fixed 1–64 RGB exposures.
+They accept `[N,3T,4G,4G]`. The new **`attention-tube`** accepts five to eight
+observations in eight fixed slots, plus presence planes, at G64 only; its input
+is `[N,32,256,256]`. All profiles produce `[N,16,G,G]`. They use 32-channel hidden features,
 biased 3×3 convolutions, ReLU, nearest-neighbor decoder upsampling and learned
 feature skips. Concatenations have 64 channels before returning to 32. The final
-1×1 head emits physical-palette logits without normalization or softmax. Neither
-model has a direct RGB path.
+1×1 head emits physical-palette logits without normalization or softmax. No model has a direct RGB path.
 
 **Spatial design rule:** the outside of the U matches the rectified crop (4G),
 and its bottleneck matches the target grid (G). Output reduction follows the
@@ -119,10 +120,70 @@ G128 still has a structural export/shape case, using 512→256→128→256→512
 outlet 512→256→128. Exporting G64-trained weights at that shape does not establish
 G128 accuracy. Train a separate G128 model if that experiment becomes necessary.
 
+### Anchored attention-tube
+
+`attention-tube` combines the current longtube body with variable observations,
+a learned global positional anchor and two local-attention blocks. It does not
+shrink the camera crop at the inlet. The 32-channel U still runs at
+256→128→64→128→256, and only the outlet reduces the reconstructed features to
+64×64 classification logits. Its fixed 8-slot input contains **24 RGB channels,
+then 8 binary presence planes**, in that order. Missing RGB slots are gated out
+inside the model; presence values also enter the learned inlet. Normalized RGB
+zero denotes mid-gray, so presence is explicit rather than inferred from color.
+
+The global anchor is a trainable **`[1,32,64,64]` positional tensor**, initialized
+with a small normal distribution (standard deviation .02). Bilinear interpolation
+expands it to 256×256, and the model **adds it immediately after the inlet**.
+It supplies a learned, shared coordinate reference to every subsequent stage,
+not only to attention. It is fixed across inputs once trained and receives no
+sender truth. The positional lattice has 131,072 parameters; an independently
+learned 32×256×256 tensor would require 2,097,152 by itself. Interpolating the
+anchor does not downsample image features. The compact lattice keeps the whole
+model below the 500k-parameter budget.
+
+After longtube's 64×64 bottleneck, two pre-normalized residual attention blocks
+use **32 channels, four heads, 8×8 windows, and 32→64→32 feed-forward layers**.
+The first uses regular windows; the second shifts the window partition by four
+pixels with a boundary mask that prevents cyclic wraparound connections. Q/K/V,
+output projections, softmax and feed-forward layers export as ordinary ONNX
+operators. The learned global anchor replaces a fixed sinusoidal positional
+encoding. Frame slots carry no chronological position encoding because captures
+are randomly ordered.
+
+```mermaid
+flowchart TD
+  I["5–8 RGB captures + 8 presence flags"] --> P["Pack 8 slots · clip RGB · gate absent slots"]
+  P --> N["256×256 inlet · 32 channels"]
+  A["Learned 32×64×64 global anchor"] --> R["Bilinear expansion to 256×256"]
+  N --> S["Add anchor"]
+  R --> S
+  S --> E0["Residual encoder · 256×256"]
+  E0 --> E1["Residual encoder · 128×128"]
+  E1 --> B["Residual bottleneck · 64×64"]
+  B --> W["Regular + shifted window attention"]
+  W --> D1["Decoder · 128×128"]
+  E1 --> D1
+  D1 --> D0["Decoder · 256×256"]
+  E0 --> D0
+  D0 --> O["Outlet 128→64 · 16 logits"]
+```
+
+The model has **432,848 parameters**, including 131,072 for the global anchor.
+It has the same convolutional depth as longtube; this iteration adds attention,
+not more residual convolution pairs. Attention scores for each 8×8 window are
+bounded rather than comparing every cell globally. Parameter count alone does
+not predict latency or activation memory; measure this export on both devices.
+
+The spatial anchor and current model contract are **G64-only**. Its export has
+one 64-grid case. The two existing profiles retain their 64/128 structural
+exports. A future G128 attention model needs separate design/training with a
+128-cell bottleneck and its own positional anchor. Cross-profile initialization
+is rejected; train the combined model fresh.
+
 ### Burst sampling and evaluation
 
-Training draws T distinct captures at random within one burst/session/target/
-phase and randomizes their slot order. The RNG advances across updates. Each
+For the fixed-frame tube profiles, training draws T distinct captures at random
+within one burst/session/target/phase and randomizes their slot order. The RNG advances across updates. Each
 exposure already has its own geometry and color correction. Synthetic members
 come from one independently generated corruption burst.
 
@@ -135,15 +196,37 @@ bursts. Reports record the method and seed; training history/settings record the
 too. Classical and neural recovery observe exactly the same selected captures.
 Remainders are reported, never duplicated; short training bursts fail explicitly.
 
+For `attention-tube`, training draws K uniformly from **5, 6, 7, 8**, chooses K
+distinct captures from the same burst, and places them in randomly chosen slots
+of the eight-slot input. Paired real and synthetic examples use the same K.
+Photometric augmentation applies to actual real observations before zero padding;
+presence planes never receive image augmentation. Training bursts must contain
+at least eight distinct observations. Existing twelve-frame synthetic bursts
+already satisfy that requirement; recording files need no conversion.
+
+Attention-tube evaluation fixes the same seeded random order, partitions into
+disjoint groups of **eight**, then evaluates nested 5/6/7/8-observation subsets
+of each group. Each K gets its own CER, loss, exact recovery and per-direction
+results; classical recovery receives the same K actual captures, never padding.
+With 24 phase pools of 32 observations, this gives **96 candidates per K**, not
+the previous five-frame benchmark's 144. Compare rates on matched groups and
+keep the older score labelled with its own observation grouping. The selection
+score averages the four K results, balancing real directions when the sidecar
+is supplied. The phone→PC target is **at least 50% exact recovery**; reports show
+progress per K and do not treat that target as already achieved.
+
 The collection pool may already contain captures retained for diversity. Random
 evaluation groups test fusion of that pool; they are not a measured streaming
-latency result. The browser lab still takes T distinct current same-header video
-exposures, resets on identity changes and bounds collection time/memory. Live
+latency result. The browser lab takes the chosen number of distinct current same-header video
+exposures, resets on identity changes and bounds collection time/memory. For
+attention-tube it packs the chosen 5–8 observations into the fixed eight-slot
+tensor and supplies presence planes. Live
 learned transport integration remains pending.
 
 An explicit single→T-frame warm start of an existing profile repeats its original
 RGB-facing weights across slots and divides by T. Loading/exporting a checkpoint
-uses its exact validated width. Recording formats and synthetic `--frames`
+uses its exact validated width. Attention-tube has a fixed capacity of eight
+and does not use the single→T warm-start path. Recording formats and synthetic `--frames`
 semantics are unchanged.
 
 ### Latest validation and remaining gap
@@ -165,6 +248,13 @@ fails. The final phone→PC interval training CE is .8144 versus validation CE
 and more realistic motion artifacts are hypotheses to test, not established fixes.
 The earlier runs used effective batch 16, so this result is **not a controlled
 architecture-only ablation**. Historical metrics are in [VALIDATION.md](VALIDATION.md).
+
+The user subsequently reported an ongoing five-frame longtube run reaching
+**72/144** validation recoveries before 16,000 updates, with phone→PC still not
+recovering matrices. This is a progress report, not a completed attached
+benchmark. The combined attention/anchor/variable-frame experiment targets
+**50% or greater phone→PC recovery** while preserving the other direction.
+No recovery result for attention-tube is claimed before training.
 
 Paired synthetics add artifact variation without adding new physical capture
 conditions. More held-out sessions remain necessary. Input clipping, randomized
@@ -301,28 +391,27 @@ three explicit controls. The augmentation keeps calibration overshoot until the
 model input clamp and leaves files, synthetic inputs and validation unchanged.
 Keep useful source/group metrics and initialized-checkpoint baseline protection.
 
-For the next experiment, generate `target-synthetic-rgb-train` from the existing
-training targets with seed 41 and the resolution/glare recipe, adding
-`--rgb-offset-probability .6 --rgb-offset-pixels .5`. Selected motion bursts
-receive centered, bounded per-channel exposure offsets; the new independent
-random stream leaves other nuisance draws unchanged. This approximates color
-misregistration, not a claim that every RGB camera captures channels at different
-times. Clean target labels, recording formats and splits remain unchanged.
+Reuse `target-synthetic-train` from the latest paired-data rebuild. Its
+32 bursts × 12 frames, seed 41, resolution/glare settings and RGB-offset motion
+blur already provide sufficient exposures for variable 5–8-frame sampling. If
+new sessions are added, use the fixed-name rebuild workflow after any training
+using those paths finishes. No regeneration is required solely to change the
+model. Clean target labels, recording formats and splits remain unchanged.
 
-Train **`longtube` from scratch** at `1e-4` for 32,000 updates with five frames,
-paired 50:50 real/synthetic sampling and the existing mild real augmentation.
-Use **batch 8 × accumulation 4 = effective batch 32**: this preserves the user's
-successful update size while allowing for larger activation memory. Do not pass
-`--initialize`; tube and longtube have different weights. Retain the trained tube
-checkpoint for comparison. Full real validation every 1,000 updates selects by
-per-direction mean exact recovery, then CE. Compare both directions on the same
-fixed-random groups; do not infer live throughput from offline recovery.
+Train **`attention-tube` from scratch** at `1e-4` for 32,000 updates with a fixed
+eight-slot capacity, paired 50:50 real/synthetic sampling and the existing mild
+real augmentation. Use **batch 8 × accumulation 4 = effective batch 32**. Do not
+initialize from tube/longtube weights. Full real validation every 1,000 updates
+reports K=5/6/7/8 separately; selection averages across K and real directions,
+then uses CE as the tie-break. The phone→PC target is at least 50% exact recovery,
+reported for every K. Neither aggregate recovery nor a numerical parity test
+establishes that goal or live throughput.
 See the [training guide](OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
-for generation, training and evaluation commands.
+for training/evaluation commands and the preserved longtube run reference.
 
 Mask reference cells and inactive palette classes from the objective. Focus this
 run on G64; future G128 training should use a separate network. The architecture still predicts physical
-palette classes from T calibrated crops; no reconstruction head or
+palette classes from the available calibrated crops; no reconstruction head or
 consistency loss is needed for this paired-data experiment. Measure cell confusion
 and calibration as diagnostics, and validate exact CRC recovery at equal capture
 budgets. A selected checkpoint must pass PyTorch/ONNX/browser parity before live

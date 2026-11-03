@@ -21,8 +21,8 @@ import numpy as np
 import onnx
 import torch
 
-from contract import (ATOL, CHANNELS, CLASSES, FORMAT, FRAME_COUNTS, MAX_FRAMES, INPUT_NAME, OUTPUT_NAME,
-                      PIXELS_PER_CELL, RTOL, SIZES, VERSION, CAPTURE_INPUT_MIN, CAPTURE_INPUT_MAX,
+from contract import (ATOL, CLASSES, FORMAT, FRAME_COUNTS, MAX_FRAMES, INPUT_NAME, OUTPUT_NAME,
+                      PIXELS_PER_CELL, RTOL, VERSION, CAPTURE_INPUT_MIN, CAPTURE_INPUT_MAX,
                       NETWORK_INPUT_MIN, NETWORK_INPUT_MAX,
                       describe_file, fixture_input, shapes, write_f32)
 from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, OpticalDecoder, parameter_count
@@ -31,7 +31,9 @@ from checkpoint import load_checkpoint, load_model_checkpoint, training_provenan
 
 OPSET = 17
 ALLOWED_OPERATORS = {"Conv", "Relu", "Concat", "Resize", "Constant", "ReduceMean",
-                     "Sub", "Mul", "Add", "Sqrt", "Div", "AveragePool", "Identity", "Clip"}
+                     "Sub", "Mul", "Add", "Sqrt", "Div", "AveragePool", "Identity", "Clip",
+                     "MatMul", "Softmax", "Reshape", "Transpose", "Gather",
+                     "Slice", "Unsqueeze", "Where", "Equal", "Expand", "ConstantOfShape"}
 
 
 def native_parity(model_path: Path, pairs: Path, threads: int) -> list[dict]:
@@ -69,20 +71,17 @@ print(json.dumps(checks))
     return checks
 
 
-def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threads: int = 1,
+def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None, threads: int = 1,
                  check_ort: bool = True, checkpoint: Path | None = None,
                  profile: str | None = None, frames: int | None = None) -> dict:
     """Export one initialized or checkpoint-loaded set of weights on CPU.
 
     Validate every graph and, unless explicitly disabled, two independent inputs
     per size against Python ONNX Runtime before publishing manifest.json.
-    The CLI always exports both browser profiles; subsets are for unit tests.
+    The CLI exports the selected profile's supported grids. Attention-tube has
+    one learned G64 anchor; the fixed-frame tube profiles also support G128.
     Existing unrelated output files are not deleted.
     """
-    if not sizes or len(sizes) != len(set(sizes)):
-        raise ValueError("Choose each requested grid size once")
-    for size in sizes:
-        shapes(size)
     if not isinstance(seed, int) or isinstance(seed, bool) or not 0 <= seed <= 0xFFFFFFFF:
         raise ValueError("Seed must be an unsigned 32-bit integer")
     if not isinstance(threads, int) or isinstance(threads, bool) or not 1 <= threads <= 64:
@@ -91,7 +90,6 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
     torch.manual_seed(seed)
     if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
         raise ValueError(f"Choose 1 to {MAX_FRAMES} input frames")
-    model = OpticalDecoder(profile or DEFAULT_MODEL_PROFILE, frames=frames if frames is not None else 1).cpu().eval()
     provenance = {}
     if checkpoint is not None:
         model, loaded = load_model_checkpoint(checkpoint)
@@ -102,6 +100,15 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
         model.cpu().eval()
         provenance = {"checkpointSha256": hashlib.sha256(Path(checkpoint).read_bytes()).hexdigest(),
                       "training": training_provenance(loaded["training"])}
+    else:
+        model = OpticalDecoder(profile or DEFAULT_MODEL_PROFILE, frames=frames).cpu().eval()
+    sizes = model.supported_sizes if sizes is None else sizes
+    if not sizes or len(sizes) != len(set(sizes)):
+        raise ValueError("Choose each requested grid size once")
+    for size in sizes:
+        if size not in model.supported_sizes:
+            raise ValueError(f"Model {model.profile} supports grid sizes {model.supported_sizes}")
+        shapes(size, model.frames, presence=model.variable_frames)
     count = parameter_count(model)
     out = Path(out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -114,7 +121,9 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
     manifest = {
         "format": FORMAT, "version": VERSION, "status": "trained" if checkpoint is not None else "untrained", "seed": seed,
         "modelProfile": model.profile, "parameterCount": count, "pixelsPerCell": PIXELS_PER_CELL,
-        "framesPerInput": model.frames, "channels": CHANNELS * model.frames,
+        "framesPerInput": model.frames, "channels": model.input_channels,
+        "inputLayout": model.input_layout, "minFramesPerInput": model.min_frames,
+        "frameCounts": list(range(model.min_frames, model.frames + 1)),
         "classes": CLASSES, "inputName": INPUT_NAME, "outputName": OUTPUT_NAME, "opset": OPSET,
         "versions": versions,
         "dtype": "float32", "byteOrder": "little", "layout": "NCHW",
@@ -130,8 +139,9 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
     with tempfile.TemporaryDirectory(prefix=".optical-export-", dir=out.parent) as temporary:
         stage = Path(temporary)
         for size in sizes:
-            input_shape, output_shape = shapes(size, model.frames)
-            pixels = fixture_input(size, seed, model.frames)
+            input_shape, output_shape = shapes(size, model.frames, presence=model.variable_frames)
+            pixels = fixture_input(size, seed, model.frames, presence=model.variable_frames,
+                                   available_frames=model.min_frames)
             with torch.inference_mode():
                 logits = model(torch.from_numpy(pixels)).numpy()
             if logits.shape != output_shape:
@@ -152,7 +162,9 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
             if check_ort:
                 pairs = {}
                 for index, fixture_seed in enumerate((seed, (seed + 1) & 0xFFFFFFFF)):
-                    check_pixels = fixture_input(size, fixture_seed, model.frames)
+                    check_pixels = fixture_input(size, fixture_seed, model.frames,
+                                                 presence=model.variable_frames,
+                                                 available_frames=model.min_frames if index == 0 else model.frames)
                     with torch.inference_mode():
                         expected = model(torch.from_numpy(check_pixels)).numpy()
                     pairs.update({f"input{index}": check_pixels, f"expected{index}": expected,
@@ -163,6 +175,7 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] = SIZES, threa
                 pairs_path.unlink()
             manifest["cases"].append({
                 "size": size, "inputShape": list(input_shape), "outputShape": list(output_shape),
+                "framesAvailable": model.min_frames,
                 "model": describe_file(model_path),
                 "input": write_f32(stage / f"input-{size}.f32", pixels),
                 "expected": write_f32(stage / f"expected-{size}.f32", logits),
@@ -187,7 +200,7 @@ def main() -> None:
     parser.add_argument("--model", choices=MODEL_PROFILES,
                         help=f"untrained profile (default {DEFAULT_MODEL_PROFILE}); checkpoints select their own profile")
     parser.add_argument("--frames", type=int, choices=FRAME_COUNTS, metavar=f"1..{MAX_FRAMES}",
-                        help="untrained input frames (default 1); checkpoints select their own frame count")
+                        help="untrained input capacity (default 1; attention-tube requires 8); checkpoints select their own capacity")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--skip-ort-check", action="store_true",
                         help="explicitly skip Python ONNX Runtime parity; record not_run in manifest")

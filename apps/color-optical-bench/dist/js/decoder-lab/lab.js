@@ -9,7 +9,7 @@ const supported = isSecureContext && typeof Worker === 'function' && Boolean(cry
 let stream = null, cameraStarting = false, cameraEpoch = 0, busy = false, operation = 0, lastResult = null, activeKind=null, cancelFrameWait=null;
 
 function error(message) { $('labError').textContent = message; $('labError').hidden = !message; }
-function settings() { return validateOptions({size: Number($('modelSize').value), backend: $('backend').value, iterations: Number($('iterations').value)}); }
+function settings() { return validateOptions({size: Number($('modelSize').value), backend: $('backend').value, iterations: Number($('iterations').value), captureFrames:Number($('captureFrames').value)}); }
 function cameraInfo() {
   const value = stream?.getVideoTracks()[0]?.getSettings();
   return value ? {active: true, width: value.width, height: value.height, frameRate: value.frameRate,
@@ -19,7 +19,7 @@ function renderControls() {
   $('runBenchmark').disabled = !supported || busy;
   $('runCapture').disabled = !supported || busy || !stream;
   $('cancel').disabled = !busy;
-  for (const id of ['modelSize', 'backend', 'iterations']) $(id).disabled = busy;
+  for (const id of ['modelSize', 'backend', 'iterations', 'captureFrames']) $(id).disabled = busy;
   $('startCamera').disabled = !supported || cameraStarting || Boolean(stream);
   $('stopCamera').disabled = !stream && !cameraStarting;
   $('camera').disabled = Boolean(stream) || cameraStarting;
@@ -56,7 +56,7 @@ function showResult(result) {
   const detail=document.createElement('p'); detail.className='muted';
   detail.textContent=result.operation === 'benchmark'
     ? `${result.parity.checked.toLocaleString()} logits checked · ${result.parity.failures} outside tolerance · maximum absolute error ${result.parity.maxAbsoluteError?.toExponential(2) ?? 'non-finite'}. Two warm-ups; ${result.timings.count} measured runs. Load ${result.loadMs.toFixed(0)} ms${result.cacheReused ? ' (cached session)' : `, including ${result.initMs.toFixed(0)} ms initialization`}.`
-    : `A ${result.size}×${result.size}, ${result.paletteColors}-color matrix supplied ${result.framesPerInput} distinct exposure${result.framesPerInput===1?'':'s'}. ${result.note}`;
+    : `A ${result.size}×${result.size}, ${result.paletteColors}-color matrix supplied ${result.inputCaptures} distinct exposure${result.inputCaptures===1?'':'s'} in ${result.framesPerInput} model slots. ${result.note}`;
   box.append(detail);
   if (result.fallbackReason) { const fallback=document.createElement('p'); fallback.className='muted'; fallback.textContent=`Auto fallback: ${result.fallbackReason}`; box.append(fallback); }
   const responsive=document.createElement('p'); responsive.className='muted';
@@ -120,10 +120,10 @@ async function run(kind) {
         camera.captureWidth=image.width; camera.captureHeight=image.height;
         result=await client.call(kind,{...options,runId:token,mediaTime:exposure.mediaTime,presentedFrames:exposure.presentedFrames,
           image:{width:image.width,height:image.height,data:image.data}},[image.data.buffer]);
-        if (!validFrameCount(result.framesPerInput)) throw Error('Worker returned an invalid camera frame count.');
-        maxAttempts=4*result.framesPerInput;
+        if (!validFrameCount(result.framesPerInput)||!validFrameCount(result.requiredCaptures)||result.requiredCaptures>result.framesPerInput) throw Error('Worker returned an invalid camera frame count.');
+        maxAttempts=4*result.requiredCaptures;
         if (!result.waiting) break;
-        $('labStatus').textContent=`Collected ${result.collected}/${result.framesPerInput} exposures. Keep the same matrix and palette phase visible.`;
+        $('labStatus').textContent=`Collected ${result.collected}/${result.requiredCaptures} exposures. Keep the same matrix and palette phase visible.`;
       }
       if (result?.waiting) { client.cancel(); throw Error('The matrix or phase kept changing before a complete burst. Hold one phase steady and retry.'); }
     } else result=await client.call(kind,options);
@@ -131,11 +131,11 @@ async function run(kind) {
     lastResult={...result, ui:stopMonitor(), camera, start};
     record({ok:true,...lastResult}); showResult(lastResult);
     $('labStatus').textContent=result.operation === 'benchmark'
-      ? (result.parity.passed ? 'Completed. Save this report, then test the other grid/backend.' : 'Completed with a parity mismatch. Save the report; do not train against this export yet.')
+      ? (result.parity.passed ? 'Completed. Save this report, then test another supported grid/backend.' : 'Completed with a parity mismatch. Save the report; do not train against this export yet.')
       : 'Completed. Camera test confirms the input/inference path only.';
   } catch (e) {
     const ui=stopMonitor();
-    record({ok:false, operation:kind, start, size:options.size, requestedBackend:options.backend, iterations:options.iterations,
+    record({ok:false, operation:kind, start, size:options.size, requestedBackend:options.backend, iterations:options.iterations,captureFrames:options.captureFrames,
       error:e.message, canceled:e.name === 'AbortError', ui, camera});
     if (token === operation) { error(e.message); $('labStatus').textContent=e.name === 'AbortError' ? 'Canceled. The worker model was released.' : 'Test failed. The failure is included in the report.'; }
   } finally {

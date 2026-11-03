@@ -13,7 +13,7 @@ From the repository root, with Node 22+ and a Python virtual environment:
 
 ```sh
 python -m pip install -r experiments/optical-decoder/requirements.txt
-python experiments/optical-decoder/export.py
+python experiments/optical-decoder/export.py --model attention-tube --frames 8
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:apps
 npm run prepare:decoder
@@ -44,16 +44,20 @@ benchmark performs two warm-ups, then compares every measured output against
 the Python fixture. The browser requires finite logits and elementwise
 `abs(actual - expected) <= 1e-4 + 1e-3 * abs(expected)`.
 
-1. With the camera off, select **WASM** and run the fixture at **64**, then **128**.
+1. With the camera off, select **WASM** and run the fixture at **64**.
+   For fixed-frame tube/longtube exports, also test **128**. Attention-tube
+   supports G64 only; requesting 128 produces an explicit unsupported-size error.
 2. Select **Auto** and repeat. The report identifies the actual backend and any
    fallback. If WebGPU is available, also select it explicitly to make a backend
    failure visible rather than falling back.
-3. Start the camera at **720p** and repeat the two sizes with the working backend.
+3. Start the camera at **720p** and repeat the supported sizes with the working backend.
    Keep the camera preview running during the numerical test. Compare 1080p only
    if relevant to the device's actual receiving configuration.
 4. On the other device, display a **64×64/16-color** matrix in Optical Bench,
    with grid-8 references. Select size 64 in Decoder Lab, align the entire marker,
-   and press **Test matrix burst**. Repeat at 128 and with the 4-color control.
+   and press **Test matrix burst**. With attention-tube, use **Camera exposures**
+   to test **5, 6, 7 and 8** separately; **Model default** collects eight. Repeat
+   with the 4-color control. Only use 128 with a profile that exports that case.
    Reverse devices so both PC→phone and phone→PC captures are exercised.
 5. Try **Cancel**, then run again. Stop the camera when finished. Hidden pages
    stop camera capture and terminate pending worker work.
@@ -61,15 +65,27 @@ the Python fixture. The browser requires finite logits and elementwise
    endpoints, including failures. Save before leaving the page; reports are
    kept only in memory, capped at 50 tests.
 
-The camera probe uses the prepared model's `framesPerInput` (integer 1–64).
-It automatically collects that many distinct video exposures
-of the same complete header/phase, verified by `requestVideoFrameCallback`
-media timestamps and presented-frame counters, rectifies and color-corrects each separately,
-and stacks their RGB channels. A changed identity clears the partial stack;
-geometry failure, cancel, camera restart or a new run discards it. Use a current browser with video-frame callbacks; the playback clock alone
-is not accepted as evidence of a new frame. Collection targets 100 ms start-to-start sampling, bounds retries in proportion to
-T, and never duplicates an exposure to fill missing slots. Processing and inference
-add latency; this is a cadence target, not a guaranteed end-to-end rate.
+The camera probe validates **Camera exposures** against the model's declared
+`frameCounts`. Fixed-frame tube/longtube exports allow only their T; attention-tube
+allows 5, 6, 7 or 8 with a fixed capacity of eight. **Model default** uses capacity.
+It collects K distinct video exposures of the same complete header/phase, verified
+by `requestVideoFrameCallback` media timestamps and presented-frame counters,
+then rectifies and color-corrects each separately. A changed identity clears the
+partial stack; geometry failure, cancel, restart or a new run discards it.
+The playback clock alone is not accepted as evidence of a new frame.
+
+For attention-tube, the K collected RGB crops occupy the first K of eight slots;
+remaining slots are zero. Eight spatially constant binary presence planes follow
+the 24 RGB planes. Training randomizes slot placement, while this deterministic
+browser packing makes diagnostics repeatable. Missing slots never count as real
+observations. The worker validates the input layout and masks, then the model
+gates absent RGB internally. Fixed-frame models retain their RGB-only stack.
+
+Collection targets 100 ms start-to-start sampling, bounds retries in proportion
+to the chosen count, and never duplicates exposures to fill slots. Processing
+and inference add latency; this is a cadence target rather than an end-to-end
+rate. Choosing five observations saves acquisition time but still runs the
+fixed eight-slot attention graph.
 
 The camera probe revalidates geometry/header and samples each exposure's
 palette, even if payload CRC would fail. It reports preprocessing and inference
@@ -79,7 +95,9 @@ not feed these outputs into live recovery or report decoded content.
 
 Report fields include model and fixture hashes, package versions, requested and
 effective backend, fallback reasons, full-output parity, warm p50/p95, load and
-initialization time, camera resolution, frame-stack size, exposure timestamps and UI animation-frame gaps. Known
+initialization time, camera resolution, `framesPerInput` capacity, `inputCaptures`/`requiredCaptures`
+actual count, `inputLayout`, allowed `frameCounts`, exposure timestamps and UI
+animation-frame gaps. Known
 buffer sizes and optional main-page JS heap readings are **partial memory
 accounting**, not total process/GPU/worker memory. Use browser/OS diagnostics if
 available to investigate memory pressure. No camera frames, payload bytes, or
@@ -94,10 +112,10 @@ G64. Training begins after we establish a usable receiving profile on each side.
 
 | Component | Implementation |
 | --- | --- |
-| Normalized-compact/compact/wide U-Nets and ONNX graphs | [`experiments/optical-decoder/`](../experiments/optical-decoder/README.md) |
+| Full-resolution tube, longtube and anchored attention-tube ONNX graphs | [`experiments/optical-decoder/`](../experiments/optical-decoder/README.md) |
 | Validated dense physical crop, including references | `vision.js` → `extractDensePayload()` |
 | Per-exposure correction and `[1,3,4G,4G]` crop | `learned-input.js` → `extractLearnedInput()` |
-| 1–64-exposure `[1,3T,4G,4G]` input assembly | `js/decoder-lab/burst.js` → `CameraBurst` |
+| Fixed RGB stacks or masked eight-slot `[1,32,256,256]` input assembly | `js/decoder-lab/burst.js` → `CameraBurst` |
 | Palette mask, phase inversion, reference exclusion | `learned-input.js` → `logitsToLogicalScores()` |
 | Bounded inference, asset hashing, backend selection | `js/decoder-lab/worker.js` and `runtime.js` |
 | Worker lifecycle and independent lab UI | `js/decoder-lab/client.js`, `lab.js`, `decoder.html` |
@@ -116,15 +134,20 @@ python -m unittest discover -s experiments/optical-decoder/tests -v
 npm run test:decoder:wasm
 ```
 
-Current exports declare required `framesPerInput` and matching channel counts;
-regenerate local bundles after updating. A five-frame G128 input is 15 MiB of
-float32 pixels before runtime working memory (192 MiB at 64 frames). Both grid
-exports check numerical shape support with the same weights; this does not
-establish cross-size recognition. The default full-resolution `normalized-tube`
-has 144,432 parameters at five frames; `longtube` has 279,792. The current training
-target is G64. A future G128 experiment should train separate weights with a
-512-pixel input and a 128-cell bottleneck. The
-frame count is fixed in an export; the lab follows that model rather than reshaping it.
+Current exports declare the exact input layout and counts. Fixed-frame profiles
+use `inputLayout: "stacked-rgb"`, `frameCounts: [T]`, capacity/minimum T and 3T
+channels. Attention-tube uses `inputLayout: "rgb-presence-planes"`, capacity 8,
+minimum 5, `frameCounts: [5,6,7,8]`, 32 channels and one G64 case. Its positional
+anchor is tied to the G64 model; the lab never reshapes it into a G128 decoder.
+Regenerate local bundles after updating the current contract.
+
+A batch-one attention input takes 8 MiB of float32 storage before runtime
+buffers. A fixed-five-frame G128 input takes 15 MiB (192 MiB at T=64). The default
+full-resolution tube has 144,432 parameters at T=5; longtube has 279,792;
+attention-tube has **432,848**, including 131,072 learned positional parameters.
+The attention model keeps the full-resolution U and adds two local attention
+blocks at the 64-cell bottleneck. The two fixed-frame profiles retain 64/128
+structural exports, which do not establish cross-size recognition.
 
 The last command requires the exported/prepared assets and runs the same ONNX
 Runtime Web bundle's WASM backend in **Node** against the Python fixtures. It is
@@ -136,10 +159,13 @@ device checklist above.
 Current exports require `networkInputClip: [-1,1]` in addition to capture
 normalization `c/127.5 - 1` with storage bounds [-1.5,1.5]. Camera calibration and
 recordings preserve those wider values; the first ONNX operation clips every
-model input before learned convolutions. Capture adds no extra [-1,1] clamp;
+RGB input before learned convolutions. Presence planes remain binary and are
+validated separately; missing RGB slots are masked inside attention-tube. Capture adds no extra [-1,1] clamp;
 its existing wider storage bounds are preserved.
 Regenerate and prepare the export together after updating; previous bundles
 without the explicit contract are rejected. The Node WASM check also compares an
 overshoot fixture against its explicitly clipped copy and requires identical
-outputs. Only `normalized-tube` and `longtube` are supported; removed architecture
-profiles are rejected. The default is `normalized-tube`.
+outputs. Attention-tube also checks that arbitrary values in absent RGB slots
+cannot affect the output. Supported profiles are `normalized-tube`, `longtube`
+and `attention-tube`; removed architecture profiles are rejected. The default
+profile remains `normalized-tube` when no model is requested.

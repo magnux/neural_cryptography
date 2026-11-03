@@ -1,18 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateManifest, validateOptions, compareLogits, accumulateParity, summarizeTimings, decodeFloat32, verifyArtifact, MAX_INPUT_FRAMES, MAX_INPUT_BYTES} from '../dist/js/decoder-lab/runtime.js';
+import {validateManifest, validateOptions, compareLogits, accumulateParity, summarizeTimings, decodeFloat32, verifyArtifact, MAX_INPUT_FRAMES, MAX_INPUT_BYTES, inputPresence, packFrameStack, clipNetworkInput} from '../dist/js/decoder-lab/runtime.js';
 import {CameraBurst} from '../dist/js/decoder-lab/burst.js';
 import {DecoderClient} from '../dist/js/decoder-lab/client.js';
 
 function manifest(frames=1,profile='normalized-tube') {
   const entry=(file,bytes)=>({file,bytes,sha256:'a'.repeat(64)});
-  const [base,perFrame]={'normalized-tube':[140112,864],longtube:[275472,864]}[profile];
+  const attention=profile==='attention-tube';
+  const [base,perFrame]={'normalized-tube':[140112,864],longtube:[275472,864],'attention-tube':[432848,0]}[profile];
+  const channels=attention?32:3*frames;
   const count=base+perFrame*frames;
-  return {format:'optical-decoder',version:1,status:'untrained',modelProfile:profile,framesPerInput:frames,parameterCount:count,pixelsPerCell:4,channels:3*frames,classes:16,
+  return {format:'optical-decoder',version:1,status:'untrained',modelProfile:profile,framesPerInput:frames,inputLayout:attention?'rgb-presence-planes':'stacked-rgb',
+    minFramesPerInput:attention?5:frames,frameCounts:attention?[5,6,7,8]:[frames],parameterCount:count,pixelsPerCell:4,channels,classes:16,
     normalization:{divisor:127.5,offset:-1,clip:[-1.5,1.5]},networkInputClip:[-1,1],
-    inputName:'pixels',outputName:'logits',seed:7,opset:17,versions:{torch:'test'},cases:[64,128].map(size=>({size,
-      inputShape:[1,3*frames,4*size,4*size],outputShape:[1,16,size,size],model:entry(`model-${size}.onnx`,500000),
-      input:entry(`input-${size}.f32`,3*frames*16*size*size*4),expected:entry(`expected-${size}.f32`,16*size*size*4)}))};
+    inputName:'pixels',outputName:'logits',seed:7,opset:17,versions:{torch:'test'},cases:(attention?[64]:[64,128]).map(size=>({size,framesAvailable:attention?5:frames,
+      inputShape:[1,channels,4*size,4*size],outputShape:[1,16,size,size],model:entry(`model-${size}.onnx`,500000),
+      input:entry(`input-${size}.f32`,channels*16*size*size*4),expected:entry(`expected-${size}.f32`,16*size*size*4)}))};
 }
 test('decoder manifest accepts only bounded current shape/artifact contracts',()=>{
   const valid=manifest(); assert.equal(validateManifest(valid),valid);
@@ -42,8 +45,8 @@ test('trained exports require checkpoint provenance and the current format',()=>
   assert.throws(()=>validateManifest({...trained,format:'optical-decoder-m1'}),/manifest/);
 });
 test('bounded benchmark choices reject oversized workloads',()=>{
-  assert.deepEqual(validateOptions(),{size:64,backend:'auto',iterations:10});
-  for(const options of [{size:32},{backend:'webgl'},{iterations:31},{iterations:0},{iterations:NaN},{iterations:2.5}]) assert.throws(()=>validateOptions(options));
+  assert.deepEqual(validateOptions(),{size:64,backend:'auto',iterations:10,captureFrames:0});
+  for(const options of [{size:32},{backend:'webgl'},{iterations:31},{iterations:0},{iterations:NaN},{iterations:2.5},{captureFrames:4},{captureFrames:9},{captureFrames:5.5}]) assert.throws(()=>validateOptions(options));
 });
 test('parity checks every logit including a late mismatch and non-finite values',()=>{
   const expected=new Float32Array(1000).fill(.25),actual=expected.slice();
@@ -179,4 +182,51 @@ test('camera burst rejects duplicate timestamps and malformed inputs without fab
   assert.throws(()=>burst.add({...crop,input:new Float32Array(12)},{context:'run',mediaTime:3,presentedFrames:30}),/Invalid/);
   const single=new CameraBurst(1).add(crop,{context:'single',mediaTime:1,presentedFrames:10});
   assert.equal(single.ready,true);assert.equal(single.input.length,crop.input.length);
+});
+
+
+test('attention manifest describes fixed eight slots, five-to-eight observations and G64 only',()=>{
+  const value=manifest(8,'attention-tube');assert.equal(validateManifest(value),value);
+  assert.equal(value.parameterCount,432848);assert.equal(value.channels,32);
+  for(const mutate of [m=>m.framesPerInput=5,m=>m.channels=24,m=>m.inputLayout='stacked-rgb',
+    m=>m.minFramesPerInput=1,m=>m.frameCounts=[5,6,8],m=>m.cases[0].size=128,
+    m=>m.cases[0].framesAvailable=4,m=>m.parameterCount++,m=>delete m.inputLayout]) {
+    const wrong=manifest(8,'attention-tube');mutate(wrong);assert.throws(()=>validateManifest(wrong));
+  }
+  for(const mutate of [m=>delete m.frameCounts,m=>m.minFramesPerInput=4,m=>m.inputLayout='rgb-presence-planes']) {
+    const wrong=manifest(5);mutate(wrong);assert.throws(()=>validateManifest(wrong));
+  }
+});
+
+test('camera packing distinguishes zero-valued captures from absent slots at all supported counts',()=>{
+  const model=manifest(8,'attention-tube'),plane=256*256,one=3*plane,order=[6,1,4,0,7,2,5,3];
+  for(const count of [5,6,7,8]) {
+    const stack=new Float32Array(count*one);
+    for(let i=0;i<count;i++)stack.fill(i*.2,i*one,(i+1)*one);
+    const before=stack.slice(),slots=order.slice(0,count),packed=packFrameStack(stack,model,64,slots);
+    assert.deepEqual(stack,before);assert.equal(packed.length,32*plane);
+    assert.deepEqual(inputPresence(packed,model,64),slots.slice().sort((a,b)=>a-b));
+    for(let slot=0;slot<8;slot++) {
+      const capture=slots.indexOf(slot),values=packed.subarray(slot*one,(slot+1)*one);
+      assert.ok(values.every(x=>x===(capture<0?0:Math.fround(capture*.2))));
+      assert.ok(packed.subarray((24+slot)*plane,(25+slot)*plane).every(x=>x===Number(capture>=0)));
+    }
+  }
+  assert.throws(()=>packFrameStack(new Float32Array(4*one),model,64),/capture count/);
+  assert.throws(()=>packFrameStack(new Float32Array(5*one),model,64,[0,1,2,3,3]),/slots/);
+  const fixed=manifest(5),rgb=new Float32Array(5*one);
+  assert.equal(packFrameStack(rgb,fixed,64),rgb);
+  assert.deepEqual(inputPresence(rgb,fixed,64),[0,1,2,3,4]);
+});
+
+test('presence validation rejects malformed masks and clipping changes RGB only',()=>{
+  const model=manifest(8,'attention-tube'),plane=256*256;
+  const packed=packFrameStack(new Float32Array(5*3*plane).fill(1.25),model,64);
+  const clipped=clipNetworkInput(packed,model,64);
+  assert.equal(clipped[0],1);assert.equal(packed[0],1.25);
+  assert.deepEqual(clipped.subarray(24*plane),packed.subarray(24*plane));
+  for(const mutate of [p=>p[24*plane]=.5,p=>p[24*plane+1]=0,
+    p=>p.fill(0,24*plane),p=>p[0]=NaN]) {
+    const bad=packed.slice();mutate(bad);assert.throws(()=>inputPresence(bad,model,64));
+  }
 });

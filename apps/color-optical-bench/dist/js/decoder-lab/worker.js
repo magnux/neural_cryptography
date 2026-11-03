@@ -1,4 +1,4 @@
-import {validateManifest, validateOptions, verifyArtifact, decodeFloat32, compareLogits, accumulateParity, summarizeTimings} from './runtime.js';
+import {validateManifest, validateOptions, verifyArtifact, decodeFloat32, compareLogits, accumulateParity, summarizeTimings, inputPresence, packFrameStack} from './runtime.js';
 import {extractLearnedInput} from '../learned-input.js';
 import {CameraBurst} from './burst.js';
 
@@ -42,6 +42,7 @@ async function load(options, progress) {
   progress('Checking local model and fixture hashes…');
   const manifest = validateManifest(JSON.parse(new TextDecoder().decode(await fetchBounded(new URL('manifest.json', assetRoot), 65536))));
   const entry = manifest.cases.find(c => c.size === options.size);
+  if(!entry)throw Error(`The prepared ${manifest.modelProfile} model supports ${manifest.cases.map(c=>c.size).join('/')} cells; choose a supported matrix size.`);
   const key = `${entry.model.sha256}/${options.backend}`;
   // A changed fixture must never reuse a previous expected-output buffer.
   const fixtureKey = `${entry.input.sha256}/${entry.expected.sha256}`;
@@ -51,6 +52,7 @@ async function load(options, progress) {
   }
   if (cached) { await cached.session.release(); cached = null; }
   const model = await artifact(entry.model), input = decodeFloat32(await artifact(entry.input)), expected = decodeFloat32(await artifact(entry.expected));
+  if(inputPresence(input,manifest,entry.size).length!==entry.framesAvailable)throw Error('Fixture presence mask disagrees with its declared capture count.');
   await runtime();
   let effectiveBackend = options.backend === 'auto' ? (navigator.gpu ? 'webgpu' : 'wasm') : options.backend;
   let fallbackReason = options.backend === 'auto' && !navigator.gpu ? 'WebGPU is unavailable in this worker.' : null;
@@ -74,7 +76,7 @@ async function load(options, progress) {
   return {...cached, loadMs: performance.now()-started, initMs, cacheReused: false};
 }
 async function inference(context, pixels) {
-  if (!(pixels instanceof Float32Array)||pixels.length!==context.entry.inputShape.reduce((a,b)=>a*b,1)||pixels.some(value=>!Number.isFinite(value))) throw Error("Input does not match the prepared frame-stack contract.");
+  inputPresence(pixels,context.manifest,context.entry.size);
   const tensor = new ort.Tensor('float32', pixels, context.entry.inputShape), started = performance.now();
   let outputs;
   try {
@@ -91,7 +93,8 @@ async function inference(context, pixels) {
 }
 function describe(context, options) {
   return {format: 'optical-decoder-report', version: 1, modelStatus: context.manifest.status,
-    modelProfile: context.manifest.modelProfile, networkInputClip: context.manifest.networkInputClip,
+    modelProfile: context.manifest.modelProfile, inputLayout:context.manifest.inputLayout,
+    frameCounts:context.manifest.frameCounts, minFramesPerInput:context.manifest.minFramesPerInput, networkInputClip: context.manifest.networkInputClip,
     checkpointSha256: context.manifest.checkpointSha256 ?? null, size: options.size, framesPerInput:context.manifest.framesPerInput,
     requestedBackend: options.backend, effectiveBackend: context.effectiveBackend, fallbackReason: context.fallbackReason,
     runtimeVersions: {...(ort.env.versions || {})}, exportVersions: context.manifest.versions,
@@ -124,21 +127,24 @@ async function capture(options, progress, image, runId, mediaTime, presentedFram
   const input = extractLearnedInput(image);
   if (!input.ok) { cameraBurst=null; throw new Error(input.error || 'No supported 64/128-cell matrix was found.'); }
   if (input.info.size !== options.size) { cameraBurst=null; throw new Error(`Camera sees ${input.info.size} cells; select that model size first.`); }
-  const context = await load(options, progress), frames=context.manifest.framesPerInput;
+  const context = await load(options, progress), frames=options.captureFrames||context.manifest.framesPerInput;
+  if(!context.manifest.frameCounts.includes(frames))throw Error(`The prepared model supports ${context.manifest.frameCounts.join('/')} captures; choose model default or a supported count.`);
   if (!cameraBurst||cameraBurst.frames!==frames) cameraBurst=new CameraBurst(frames);
-  const stacked=cameraBurst.add(input,{context:`${context.key}/${runId}`,mediaTime,presentedFrames});
+  const stacked=cameraBurst.add(input,{context:`${context.key}/${runId}/${frames}`,mediaTime,presentedFrames});
   if (!stacked.ready) {
     progress(`Collected ${stacked.collected}/${frames} same-phase exposures. Keep the matrix steady.`);
-    return {operation:'capture',waiting:true,collected:stacked.collected,framesPerInput:frames};
+    return {operation:'capture',waiting:true,collected:stacked.collected,framesPerInput:context.manifest.framesPerInput,requiredCaptures:frames};
   }
   progress(`Running the selected model on ${frames} camera exposure${frames===1?'':'s'}…`);
   try {
-    const result = await inference(context, stacked.input);
+    const packed=packFrameStack(stacked.input,context.manifest,options.size);
+    const result = await inference(context, packed);
     if (result.values.some(value => !Number.isFinite(value))) throw new Error('Camera inference produced non-finite logits.');
     const description=describe(context, options);
     return {...description, operation: 'capture', inputStats:{...input.stats,preprocessMs:stacked.preprocessMs}, inferenceMs: result.ms,
-      memory:{...description.memory,cameraStackBytes:stacked.input.byteLength,
-        note:'The camera stack is additional to cached numerical fixtures. These are known buffer sizes, not peak memory; camera preprocessing, runtime working memory and GPU allocations are not measured.'},
+      requiredCaptures:frames, memory:{...description.memory,cameraStackBytes:stacked.input.byteLength,
+        packedInputBytes:packed===stacked.input?0:packed.byteLength,
+        note:'The camera stack and optional packed input are additional to cached numerical fixtures. These are known buffer sizes, not peak memory; camera preprocessing, runtime working memory and GPU allocations are not measured.'},
       paletteColors: input.info.colors, logitsFinite: true, inputCaptures:frames, mediaTimes:stacked.mediaTimes,presentedFrames:stacked.presentedFrames,
       note: 'Same-phase crop inference only. Assess symbol and payload recovery with the offline evaluation tools.'};
   } finally { cameraBurst=null; }

@@ -3,7 +3,7 @@
 import {readFile, writeFile, mkdir, stat} from 'node:fs/promises';
 import {resolve, dirname, sep} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
-import {validateManifest, verifyArtifact, decodeFloat32, compareLogits, accumulateParity, summarizeTimings}
+import {validateManifest, verifyArtifact, decodeFloat32, compareLogits, accumulateParity, summarizeTimings, inputPresence, clipNetworkInput}
   from '../../../apps/color-optical-bench/dist/js/decoder-lab/runtime.js';
 
 function options(args) {
@@ -33,7 +33,8 @@ async function main() {
   ort.env.wasm.proxy = false;
   ort.env.wasm.wasmPaths = runtimeRoot.href;
   const report = {format: 'optical-decoder-node-wasm-report', version: 1, modelStatus: manifest.status,
-    modelProfile: manifest.modelProfile, networkInputClip: manifest.networkInputClip,
+    modelProfile: manifest.modelProfile, inputLayout:manifest.inputLayout, frameCounts:manifest.frameCounts,
+    minFramesPerInput:manifest.minFramesPerInput, networkInputClip: manifest.networkInputClip,
     framesPerInput: manifest.framesPerInput, inputChannels: manifest.channels,
     environment: `Node.js ${process.version}`, runtimeVersions: {...ort.env.versions},
     execution: 'ONNX Runtime Web WebGPU bundle, WASM provider, one thread. Not a browser or phone measurement.',
@@ -48,11 +49,14 @@ async function main() {
     const model = await artifact(entry.model);
     const input = decodeFloat32(await artifact(entry.input));
     const expected = decodeFloat32(await artifact(entry.expected));
+    const present=inputPresence(input,manifest,entry.size);
+    if(present.length!==entry.framesAvailable)throw Error('Fixture presence mask disagrees with framesAvailable.');
     const started = performance.now();
     const session = await ort.InferenceSession.create(model, {executionProviders: ['wasm'], graphOptimizationLevel: 'all'});
     const initMs = performance.now()-started;
     const tensor = new ort.Tensor('float32', input, entry.inputShape), samples = [];
-    let parity = null, exportToleranceParity = null, clippingParity = null;
+    let parity = null, exportToleranceParity = null, clippingParity = null, maskedSlotParity = null;
+    const frameCountChecks=[];
     try {
       if (session.inputNames.length !== 1 || session.inputNames[0] !== manifest.inputName ||
           session.outputNames.length !== 1 || session.outputNames[0] !== manifest.outputName) throw new Error('Export tensor names do not match the manifest.');
@@ -72,8 +76,9 @@ async function main() {
       // Fixture storage retains affine-calibration overshoot. Running the same
       // graph on an explicitly clipped copy must give the identical logits.
       const [low, high] = manifest.networkInputClip;
-      const clippedInput = input.map(value => Math.max(low, Math.min(high, value)));
-      const changedValues = input.reduce((n, value) => n+Number(value<low || value>high), 0);
+      const clippedInput = clipNetworkInput(input,manifest,entry.size);
+      const rgbLength=3*manifest.framesPerInput*(4*entry.size)**2;
+      const changedValues = input.subarray(0,rgbLength).reduce((n, value) => n+Number(value<low || value>high), 0);
       if (!changedValues) throw new Error('Numerical fixture must exercise the network input clip.');
       const clippedTensor = new ort.Tensor('float32', clippedInput, entry.inputShape);
       let original, clipped;
@@ -86,11 +91,63 @@ async function main() {
         clippedTensor.dispose();
         for (const result of [original, clipped]) for (const value of Object.values(result || {})) value.dispose?.();
       }
+      if(manifest.inputLayout==='rgb-presence-planes') {
+        const poisoned=input.slice(),one=3*(4*entry.size)**2;
+        const missing=Array.from({length:manifest.framesPerInput},(_,i)=>i).filter(i=>!present.includes(i));
+        if(!missing.length)throw Error('The variable-frame parity fixture must exercise missing slots.');
+        for(const slot of missing)for(let i=slot*one;i<(slot+1)*one;i++)poisoned[i]=20+(i%37)*.1;
+        const changed=new ort.Tensor('float32',poisoned,entry.inputShape);
+        let reference,actual;
+        try {
+          reference=await session.run({[manifest.inputName]:tensor});
+          actual=await session.run({[manifest.inputName]:changed});
+          maskedSlotParity={...compareLogits(actual[manifest.outputName].data,
+            reference[manifest.outputName].data,{atol:0,rtol:0}),missingSlots:missing};
+        } finally {
+          changed.dispose();
+          for(const result of [reference,actual])for(const value of Object.values(result||{}))value.dispose?.();
+        }
+      }
+      if(manifest.inputLayout==='rgb-presence-planes') {
+        const plane=(4*entry.size)**2,one=3*plane;
+        const order=[...present,...Array.from({length:manifest.framesPerInput},(_,i)=>i).filter(i=>!present.includes(i))];
+        // Exercise every advertised observation count. These are runtime/mask
+        // checks, not extra Python fixtures or optical recovery measurements.
+        for(const framesAvailable of manifest.frameCounts) {
+          const values=input.slice(),active=order.slice(0,framesAvailable),missing=order.slice(framesAvailable);
+          for(let slot=0;slot<manifest.framesPerInput;slot++) {
+            if(active.includes(slot)&&!present.includes(slot))values.set(input.subarray(present[0]*one,(present[0]+1)*one),slot*one);
+            if(!active.includes(slot))values.fill(0,slot*one,(slot+1)*one);
+            values.fill(Number(active.includes(slot)),(3*manifest.framesPerInput+slot)*plane,(3*manifest.framesPerInput+slot+1)*plane);
+          }
+          inputPresence(values,manifest,entry.size);
+          const observation=new ort.Tensor('float32',values,entry.inputShape);
+          let result,changed,changedTensor;
+          try {
+            result=await session.run({[manifest.inputName]:observation});
+            const logits=result[manifest.outputName].data;
+            if(logits.some(value=>!Number.isFinite(value)))throw Error('Observation-count check returned non-finite logits.');
+            let ignored=null;
+            if(missing.length) {
+              const poisoned=values.slice();
+              for(const slot of missing)poisoned.fill(-23.5,slot*one,(slot+1)*one);
+              changedTensor=new ort.Tensor('float32',poisoned,entry.inputShape);
+              changed=await session.run({[manifest.inputName]:changedTensor});
+              ignored=compareLogits(changed[manifest.outputName].data,logits,{atol:0,rtol:0});
+            }
+            frameCountChecks.push({framesAvailable,logitsFinite:true,maskedSlotParity:ignored,
+              passed:ignored===null||ignored.passed});
+          } finally {
+            observation.dispose();changedTensor?.dispose();
+            for(const output of [result,changed])for(const value of Object.values(output||{}))value.dispose?.();
+          }
+        }
+      }
     } finally { tensor.dispose(); await session.release(); }
-    report.cases.push({size: entry.size, modelSha256: entry.model.sha256, initMs, parity, exportToleranceParity, clippingParity,
+    report.cases.push({size: entry.size, modelSha256: entry.model.sha256, initMs, parity, exportToleranceParity, clippingParity, maskedSlotParity, frameCountChecks, framesAvailable:present.length,
       timings: summarizeTimings(samples), timingScope: 'session.run plus CPU output copy; excludes parity comparison'});
   }
-  report.passed = report.cases.every(entry=>entry.parity.passed && entry.exportToleranceParity.passed && entry.clippingParity.passed);
+  report.passed = report.cases.every(entry=>entry.parity.passed && entry.exportToleranceParity.passed && entry.clippingParity.passed && (entry.maskedSlotParity===null||entry.maskedSlotParity.passed) && entry.frameCountChecks.every(check=>check.passed));
   const text = JSON.stringify(report, null, 2)+'\n';
   if (out) { await mkdir(dirname(out), {recursive: true}); await writeFile(out, text); }
   process.stdout.write(text);

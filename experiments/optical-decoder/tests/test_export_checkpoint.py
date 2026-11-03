@@ -72,7 +72,7 @@ class CheckpointExportTests(unittest.TestCase):
 
     def test_five_frame_checkpoint_and_export_preserve_exact_profile(self):
         import onnx
-        for profile in MODEL_PROFILES:
+        for profile in ("normalized-tube", "longtube"):
             with self.subTest(profile=profile), tempfile.TemporaryDirectory() as temporary:
                 _, value = self.checkpoint()
                 model = OpticalDecoder(profile, frames=5).eval()
@@ -113,6 +113,45 @@ class CheckpointExportTests(unittest.TestCase):
                 value["training"]["framesPerInput"] = 1
                 torch.save(value, path)
                 with self.assertRaisesRegex(ValueError, "frame metadata disagrees"):
+                    load_model_checkpoint(path)
+
+    def test_attention_checkpoint_exports_anchor_and_presence_contract_without_adaptation(self):
+        model = OpticalDecoder("attention-tube").eval()
+        _, value = self.checkpoint()
+        with torch.no_grad():
+            model.position_anchor.add_(.03)
+            model.head.bias.add_(.25)
+        value["modelState"] = model.state_dict()
+        value["training"].update(
+            framesPerInput=8, modelProfile="attention-tube", inputLayout="rgb-presence-planes",
+            minFramesPerInput=5, frameCounts=[5, 6, 7, 8], frameCountPolicy="uniform-5-8")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/"attention.pt"
+            output = Path(temporary)/"bundle"
+            torch.save(value, path)
+            loaded, _ = load_model_checkpoint(path)
+            self.assertEqual(loaded.profile, "attention-tube")
+            for name, tensor in model.state_dict().items():
+                torch.testing.assert_close(loaded.state_dict()[name], tensor, rtol=0, atol=0)
+            manifest = export_smoke(output, check_ort=False, checkpoint=path)
+            self.assertEqual(manifest["inputLayout"], "rgb-presence-planes")
+            self.assertEqual(manifest["frameCounts"], [5, 6, 7, 8])
+            self.assertEqual(manifest["parameterCount"], 432848)
+            self.assertEqual(manifest["training"]["frameCountPolicy"], "uniform-5-8")
+            self.assertEqual([case["size"] for case in manifest["cases"]], [64])
+            case = manifest["cases"][0]
+            pixels = np.fromfile(output/case["input"]["file"], dtype="<f4").reshape(case["inputShape"])
+            exported = np.fromfile(output/case["expected"]["file"], dtype="<f4").reshape(case["outputShape"])
+            with torch.inference_mode():
+                expected = model(torch.from_numpy(pixels)).numpy()
+            np.testing.assert_array_equal(exported, expected)
+            with self.assertRaisesRegex(ValueError, "frame count differs"):
+                export_smoke(output, check_ort=False, checkpoint=path, frames=5)
+            for field in ("inputLayout", "minFramesPerInput", "frameCounts", "frameCountPolicy"):
+                broken = {**value, "training": dict(value["training"])}
+                del broken["training"][field]
+                torch.save(broken, path)
+                with self.subTest(field=field), self.assertRaises(ValueError):
                     load_model_checkpoint(path)
 
     def test_normalized_profile_rejects_missing_normalization_and_rgb_branch_mixtures(self):

@@ -244,6 +244,9 @@ class BalancedSampler:
                 raise ValueError("Synthetic targets have no matching real captures; paired mode accepts only matched targets")
             self.paired_pools = {key: _Pool(rows) for key, rows in synthetic.items()}
         self.last_counts = {}
+        # Parallel to the returned microbatches; duplicate anchors may appear
+        # in one update, so sample IDs alone cannot identify a particular pair.
+        self.last_pair_ids = []
 
     def draw_update(self, batch_size, accumulate):
         if (type(batch_size) is not int or not 1 <= batch_size <= 128
@@ -280,7 +283,8 @@ class BalancedSampler:
         for source, group in slots:
             sample, repeated_burst, repeated_sample = pools[source][group].draw(
                 self.rng, usage.setdefault((source, group), ({}, set())))
-            chosen.append(sample)
+            pair_id = counts["pairedTargets"] if self.paired_targets else None
+            chosen.append((sample, pair_id))
             counts[source] += 1
             if source == "real":
                 counts["groups"][group] = counts["groups"].get(group, 0)+1
@@ -290,7 +294,7 @@ class BalancedSampler:
                 key = _target_key(sample)
                 counterpart, repeated_burst, repeated_sample = self.paired_pools[key].draw(
                     self.rng, usage.setdefault(("paired", key), ({}, set())))
-                chosen.append(counterpart)
+                chosen.append((counterpart, pair_id))
                 counts["synthetic"] += 1
                 counts["pairedTargets"] += 1
                 counts["repeatedBursts"] += int(repeated_burst)
@@ -298,4 +302,7 @@ class BalancedSampler:
         if self.paired_targets:
             self.rng.shuffle(chosen)
         self.last_counts = counts
-        return [chosen[start:start+batch_size] for start in range(0, total, batch_size)]
+        self.last_pair_ids = [[pair_id for _, pair_id in chosen[start:start+batch_size]]
+                              for start in range(0, total, batch_size)]
+        return [[sample for sample, _ in chosen[start:start+batch_size]]
+                for start in range(0, total, batch_size)]

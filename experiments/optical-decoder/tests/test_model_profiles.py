@@ -16,9 +16,20 @@ if HAS_TORCH:
     torch.set_num_threads(1)
 
 
-def training_metadata():
-    return {"steps": 1, "seed": 7, "trainSessionIds": ["training"], "trainPayloadIds": ["train-payload"],
+def training_metadata(model=None):
+    result = {"steps": 1, "seed": 7, "trainSessionIds": ["training"], "trainPayloadIds": ["train-payload"],
             "validationSessionIds": ["validation"], "validationPayloadIds": ["validation-payload"]}
+    if model is not None and model.variable_frames:
+        result.update(framesPerInput=8, inputLayout=model.input_layout, minFramesPerInput=5,
+                      frameCounts=[5, 6, 7, 8], frameCountPolicy="uniform-5-8")
+    return result
+
+
+def model_input(model, size=64, batch=1):
+    result = torch.randn(batch, model.input_channels, 4*size, 4*size).clamp(-1.5, 1.5)
+    if model.variable_frames:
+        result[:, 24:] = 1
+    return result
 
 
 @unittest.skipUnless(HAS_TORCH, "PyTorch is required for model profile tests")
@@ -28,14 +39,14 @@ class ProfileTests(unittest.TestCase):
         for profile in MODEL_PROFILES:
             with self.subTest(profile=profile):
                 model = OpticalDecoder(profile)
-                for size in (64, 128):
-                    pixels = torch.randn(1, 3, 4 * size, 4 * size).clamp(-1.5, 1.5)
+                for size in model.supported_sizes:
+                    pixels = model_input(model, size)
                     with torch.inference_mode():
                         output = model(pixels)
                     self.assertEqual(tuple(output.shape), (1, 16, size, size))
                     self.assertTrue(torch.isfinite(output).all())
                 model.zero_grad()
-                pixels = torch.randn(1, 3, 256, 256).clamp(-1.5, 1.5)
+                pixels = model_input(model)
                 logits = model(pixels)
                 torch.nn.functional.cross_entropy(logits, torch.randint(16, (1, 64, 64))).backward()
                 self.assertGreater(float(model.inlet[0][0].weight.grad.abs().sum()), 0)
@@ -43,7 +54,7 @@ class ProfileTests(unittest.TestCase):
                 model.eval()
                 with torch.inference_mode():
                     single = model(pixels)
-                    batch = model(torch.cat((pixels, torch.randn_like(pixels)), dim=0))[:1]
+                    batch = model(torch.cat((pixels, model_input(model)), dim=0))[:1]
                 torch.testing.assert_close(single, batch, rtol=1e-4, atol=1e-5)
                 self.assertLess(parameter_count(model), 500000)
         self.assertEqual(DEFAULT_MODEL_PROFILE, "normalized-tube")
@@ -70,7 +81,7 @@ class ProfileTests(unittest.TestCase):
                     torch.testing.assert_close(pair(pixels), expected, rtol=0, atol=0)
 
     def test_only_current_full_resolution_profiles_are_constructible(self):
-        self.assertEqual(MODEL_PROFILES, ("normalized-tube", "longtube"))
+        self.assertEqual(MODEL_PROFILES, ("normalized-tube", "longtube", "attention-tube"))
         for obsolete in ("compact", "wide", "normalized-compact", "unknown"):
             with self.subTest(profile=obsolete), self.assertRaises(ValueError):
                 OpticalDecoder(obsolete)
@@ -86,7 +97,7 @@ class ProfileTests(unittest.TestCase):
             for profile in MODEL_PROFILES:
                 original = OpticalDecoder(profile)
                 value = {"format": "optical-decoder-checkpoint", "version": 1, "status": "trained",
-                         "modelState": original.state_dict(), "training": training_metadata()}
+                         "modelState": original.state_dict(), "training": training_metadata(original)}
                 torch.save(value, path)
                 loaded, checkpoint = load_model_checkpoint(path)
                 self.assertEqual(loaded.profile, profile)

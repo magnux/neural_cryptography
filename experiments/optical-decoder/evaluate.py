@@ -159,13 +159,12 @@ def summarize_groups(per_session, session_groups=None, *, exact=True):
     return {"groups": groups, "sources": sources, "selectionScore": score}
 
 
-def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node="node", exact=True,
-                   work_dir=None, session_groups=None):
-    if max_samples < 0:
-        raise ValueError("max_samples must be nonnegative")
-    frames = getattr(model, "frames", 1)
-    candidates, burst_stats = BurstIndex(dataset.samples, frames).eval_samples()
+def _evaluate_candidates(model, dataset, candidates, burst_stats, *, frames, device="cpu",
+                         max_samples=0, node="node", exact=True, work_dir=None, session_groups=None):
     if not candidates:
+        if "frameCapacity" in burst_stats:
+            raise ValueError(f"No complete {burst_stats['frameCapacity']}-capture evaluation blocks; "
+                             "nested frame-count evaluation needs full capacity blocks")
         raise ValueError(f"No complete {frames}-frame evaluation groups; collect more same-phase captures")
     selected = select_samples(candidates, max_samples)
     if session_groups is not None:
@@ -262,7 +261,7 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
             "framesPerInput": frames, "inputCaptures": len(selected)*frames,
             "availableInputCaptures": len(dataset.samples), "burstGrouping": burst_stats,
             "manifestSha256": dataset.manifest_hash, "profiles": profile_counts,
-            "selection": {"method": f"{EVALUATION_POLICY}/nonoverlapping/session-profile-round-robin",
+            "selection": {"method": f"{burst_stats.get('method', EVALUATION_POLICY)}/nonoverlapping/session-profile-round-robin",
                 "seed": EVALUATION_SEED, "maximum": max_samples,
                 "availableSessions": len(available_sessions), "selectedSessions": len(per_session),
                 "omittedSessions": sorted(available_sessions-set(per_session)),
@@ -278,6 +277,151 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
                             "p95": ordered[min(len(ordered)-1, int(np.ceil(.95*len(ordered)))-1)],
                             "note": "PyTorch inference plus CPU output copy; not browser latency."},
             "recovery": recovery}
+
+
+def _combine_frame_counts(reports, *, frame_capacity, session_groups, exact):
+    """Summarize repeated nested tests without calling them independent captures.
+
+    Each K keeps its own complete report. Selection gives every observation
+    count equal weight, and each real direction equal weight within that count.
+    """
+    counts = sorted(reports, key=int)
+    values = [reports[key] for key in counts]
+    first = values[0]
+    per_session = {}
+    for report in values:
+        for session, row in report["sessions"].items():
+            total = per_session.setdefault(session, {"samples": 0, "dataCells": 0,
+                "wrongCells": 0, "source": row["source"], "lossSum": 0., "phases": {},
+                "learnedExactFrames": 0 if exact else None,
+                "classicalExactFrames": 0 if exact else None})
+            if total["source"] != row["source"]:
+                raise ValueError("A receiver session cannot mix real and synthetic sources")
+            for key in ("samples", "dataCells", "wrongCells"):
+                total[key] += row[key]
+            total["lossSum"] += row["loss"]*row["dataCells"]
+            for phase, amount in row["phases"].items():
+                total["phases"][phase] = total["phases"].get(phase, 0)+amount
+            if exact:
+                for name in ("learned", "classical"):
+                    total[name+"ExactFrames"] += row[name+"ExactFrames"]
+    for row in per_session.values():
+        row["loss"] = row.pop("lossSum")/row["dataCells"]
+        row["cellErrorRate"] = row["wrongCells"]/row["dataCells"]
+        for name in ("learned", "classical"):
+            row[name+"ExactRate"] = row[name+"ExactFrames"]/row["samples"] if exact else None
+    summaries = summarize_groups(per_session, session_groups, exact=exact)
+    scores = [report["selectionScore"] for report in values]
+    balanced = all(score["method"] == "group-balanced-real" for score in scores)
+    summaries["selectionScore"] = {
+        "method": "frame-count-group-balanced-real" if balanced else "frame-count-balanced",
+        "groups": scores[0]["groups"], "frameCounts": [int(key) for key in counts],
+        "exactRate": sum(score["exactRate"] for score in scores)/len(scores) if exact else None,
+        "loss": sum(score["loss"] for score in scores)/len(scores),
+        "cellErrorRate": sum(score["cellErrorRate"] for score in scores)/len(scores)}
+    recovery = None
+    if exact:
+        recovery = {"summary": {}, "samples": [], "framesPerInput": None,
+                    "frameCapacity": frame_capacity, "actualFrameCounts": [int(key) for key in counts],
+                    "inputCaptures": sum(report["inputCaptures"] for report in values),
+                    "uniqueInputCaptures": first["samples"]*frame_capacity,
+                    "observationBudget": "Each frame count uses the same distinct captures for learned and classical decoding. "
+                        "Counts are nested within the same capacity-sized blocks, so observations repeat across presets. "
+                        "Summed cases are not independent captures or a throughput measurement."}
+        for name in ("classical", "learned"):
+            fields = ("frames", "rawCRCFrames", "hardCRCFrames", "acceptedFrames",
+                      "exactFrames", "wrongAcceptedFrames")
+            combined = {field: sum(report["recovery"]["summary"][name][field] for report in values)
+                        for field in fields}
+            combined["exactRate"] = combined["exactFrames"]/combined["frames"]
+            recovery["summary"][name] = combined
+        for key, report in reports.items():
+            recovery["samples"].extend({**row, "actualFrames": int(key)} for row in report["recovery"]["samples"])
+    goal_rows = {}
+    for key, report in reports.items():
+        group = report["groups"].get("phone-to-pc")
+        goal_rows[key] = ({"available": bool(exact), "samples": group["samples"], "exactFrames": group["learnedExactFrames"],
+                           "exactRate": group["learnedExactRate"],
+                           "achieved": group["learnedExactRate"] >= .5 if exact else None}
+                          if group else {"available": False, "samples": 0, "exactFrames": None,
+                                         "exactRate": None, "achieved": None})
+    goal_available = all(row["available"] for row in goal_rows.values())
+    goal = {"direction": "phone-to-pc", "targetExactRate": .5,
+            "available": goal_available, "byFrameCount": goal_rows,
+            "exactRate": sum(row["exactRate"] for row in goal_rows.values())/len(goal_rows) if goal_available else None,
+            "achievedForAllFrameCounts": all(row["achieved"] for row in goal_rows.values()) if goal_available else None,
+            "note": "Measured exact CRC/RS recovery on held-out phone-to-PC cases; requires explicit direction groups and exact evaluation."}
+    confusion = np.sum([report["confusion"] for report in values], axis=0)
+    profiles = {key: sum(report["profiles"].get(key, 0) for report in values)
+                for key in sorted(set().union(*(report["profiles"] for report in values)))}
+    bins = []
+    for index in range(len(first["calibrationBins"])):
+        rows = [report["calibrationBins"][index] for report in values]
+        count = sum(row["count"] for row in rows)
+        bins.append({"count": count,
+                     "confidence": sum(row["count"]*(row["confidence"] or 0.) for row in rows)/count if count else None,
+                     "accuracy": sum(row["count"]*(row["accuracy"] or 0.) for row in rows)/count if count else None})
+    cells = sum(report["dataCells"] for report in values)
+    return {"format": "optical-decoder-evaluation", "version": 1,
+            "samples": sum(report["samples"] for report in values),
+            "observationCases": sum(report["samples"] for report in values),
+            "uniqueCandidates": first["samples"],
+            "availableSamples": sum(report["availableSamples"] for report in values),
+            "uniqueAvailableCandidates": first["availableSamples"],
+            "framesPerInput": frame_capacity, "frameCapacity": frame_capacity,
+            "actualFrameCounts": [int(key) for key in counts],
+            "inputCaptures": sum(report["inputCaptures"] for report in values),
+            "uniqueInputCaptures": first["samples"]*frame_capacity,
+            "availableInputCaptures": first["availableInputCaptures"],
+            "burstGrouping": {"method": "fixed-seeded-capacity-blocks/nested-frame-counts",
+                "seed": EVALUATION_SEED, "frameCapacity": frame_capacity,
+                "actualFrameCounts": [int(key) for key in counts],
+                "uniqueCandidates": first["samples"],
+                "note": "The same capacity-sized blocks and fixed slot order are reused for all nested frame counts. "
+                        "See byFrameCount for unused-slot and remainder accounting."},
+            "manifestSha256": first["manifestSha256"], "profiles": profiles,
+            "selection": {**first["selection"],
+                "method": "fixed-seeded-capacity-blocks/nested-frame-counts/session-profile-round-robin",
+                "note": "One fixed shuffled capacity-sized block defines every 5/6/7/8 preset. "
+                        "max_samples caps the same candidate IDs per preset. Cases repeat across presets."},
+            "sessions": per_session, **summaries, "phoneToPCGoal": goal,
+            "dataCells": cells, "loss": sum(report["loss"] for report in values)/len(values),
+            "cellErrorRate": sum(report["cellErrorRate"] for report in values)/len(values),
+            "confusion": confusion.tolist(), "calibrationBins": bins,
+            "expectedCalibrationError": sum(row["count"]*abs(row["confidence"]-row["accuracy"])
+                                                for row in bins if row["count"])/cells,
+            "inferenceMs": {"byFrameCount": {key: report["inferenceMs"] for key, report in reports.items()},
+                            "note": "PyTorch inference plus CPU copy per preset; not browser latency."},
+            "recovery": recovery, "byFrameCount": reports}
+
+
+def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node="node", exact=True,
+                   work_dir=None, session_groups=None):
+    if type(max_samples) is not int or max_samples < 0:
+        raise ValueError("max_samples must be a nonnegative integer")
+    supported = getattr(model, "supported_sizes", (64, 128))
+    if any(sample.shape[0] not in supported for sample in dataset.samples):
+        raise ValueError(f"Model supports only matrix sizes {supported}")
+    frames = getattr(model, "frames", 1)
+    variable = getattr(model, "variable_frames", False)
+    options = dict(device=device, max_samples=max_samples, node=node, exact=exact,
+                   work_dir=work_dir, session_groups=session_groups)
+    if not variable:
+        candidates, stats = BurstIndex(dataset.samples, frames).eval_samples()
+        return _evaluate_candidates(model, dataset, candidates, stats, frames=frames, **options)
+    minimum = model.min_frames
+    index = BurstIndex(dataset.samples, frames, min_frames=minimum, presence=True)
+    reports = {}
+    candidate_ids = None
+    for count in range(minimum, frames+1):
+        candidates, stats = index.eval_samples(actual_frames=count)
+        identities = tuple(sample.id for sample in candidates)
+        if candidate_ids is not None and identities != candidate_ids:
+            raise ValueError("Variable-count evaluation must retain the same candidate IDs at every count")
+        candidate_ids = identities
+        reports[str(count)] = _evaluate_candidates(model, dataset, candidates, stats, frames=count, **options)
+        reports[str(count)]["frameCapacity"] = frames
+    return _combine_frame_counts(reports, frame_capacity=frames, session_groups=session_groups, exact=exact)
 
 
 def main():
@@ -314,11 +458,19 @@ def main():
         args.out.write_text(json.dumps(result, indent=2)+"\n")
     except (OSError, ValueError, RuntimeError) as error:
         parser.exit(1, f"Evaluation failed: {error}\n")
-    print(json.dumps({"samples": result["samples"], "framesPerInput": result["framesPerInput"],
+    summary = {"samples": result["samples"], "framesPerInput": result["framesPerInput"],
                       "inputCaptures": result["inputCaptures"], "cellErrorRate": result["cellErrorRate"],
                       "loss": result["loss"], "recovery": result["recovery"]["summary"],
                       "groups": result["groups"], "selectionScore": result["selectionScore"],
-                      "report": str(args.out.resolve())}, indent=2))
+                      "report": str(args.out.resolve())}
+    if "byFrameCount" in result:
+        summary.update({"uniqueCandidates": result["uniqueCandidates"],
+                        "observationCases": result["observationCases"],
+                        "phoneToPCGoal": result["phoneToPCGoal"],
+                        "byFrameCount": {key: {"samples": row["samples"], "loss": row["loss"],
+                            "cellErrorRate": row["cellErrorRate"], "recovery": row["recovery"]["summary"],
+                            "groups": row["groups"]} for key, row in result["byFrameCount"].items()}})
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":

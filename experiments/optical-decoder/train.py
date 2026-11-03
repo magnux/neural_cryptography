@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from torch.nn import functional as F
 from augmentation import RealAugmentation
-from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED
+from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED, VARIABLE_EVALUATION_POLICY
 from contract import FRAME_COUNTS, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 from checkpoint import load_model_checkpoint
 from data import DATASET_FORMAT, Dataset, assert_disjoint, check_checkpoint_overlap, digest
@@ -51,6 +51,41 @@ def save_checkpoint(path: Path, model, training: dict):
     temporary = path.with_suffix(path.suffix+".tmp")
     torch.save(value, temporary)
     temporary.replace(path)
+
+
+def draw_training_bursts(batches, sampler, burst_index, rng):
+    """Keep each shuffled real/synthetic pair's observation budget identical."""
+    if not burst_index.presence:
+        return [[burst_index.train_sample(anchor, rng) for anchor in anchors] for anchors in batches]
+    if (len(sampler.last_pair_ids) != len(batches)
+            or any(len(anchors) != len(ids) for anchors, ids in zip(batches, sampler.last_pair_ids))):
+        raise ValueError("Sampler pair identities do not match this optimizer update")
+    paired_counts, result = {}, []
+    for anchors, pair_ids in zip(batches, sampler.last_pair_ids):
+        samples = []
+        for anchor, pair_id in zip(anchors, pair_ids):
+            if pair_id is None:
+                count = rng.randint(burst_index.min_frames, burst_index.frames)
+            else:
+                if pair_id not in paired_counts:
+                    paired_counts[pair_id] = rng.randint(burst_index.min_frames, burst_index.frames)
+                count = paired_counts[pair_id]
+            samples.append(burst_index.train_sample(anchor, rng, actual_frames=count))
+        result.append(samples)
+    return result
+
+
+def training_tensors(samples, augmentation):
+    """Augment real observations before zero filling and adding validity planes."""
+    triples = [sample.raw_tensors() for sample in samples]
+    if samples[0].slots is None:
+        pixels = augmentation(np.stack([row[0] for row in triples]),
+                              [sample.metadata["source"] for sample in samples])
+    else:
+        pixels = np.stack([sample.pack_pixels(augmentation(row[0][None],
+                           [sample.metadata["source"]])[0])
+                           for sample, row in zip(samples, triples)])
+    return pixels, np.stack([row[1] for row in triples]), np.stack([row[2] for row in triples])
 
 
 def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, batch_size=4,
@@ -95,14 +130,19 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     torch.manual_seed(seed)
     previous = None
     if initialize is None:
-        model = OpticalDecoder(model_profile or DEFAULT_MODEL_PROFILE, frames=frames or 1)
+        model = OpticalDecoder(model_profile or DEFAULT_MODEL_PROFILE, frames=frames)
     else:
         model, previous = load_model_checkpoint(initialize)
         if model_profile is not None and model.profile != model_profile:
             raise ValueError("Requested --model differs from the initialized checkpoint profile; train that architecture from scratch")
         if frames is not None:
             model = initialize_frames(model, frames)
-    burst_index = BurstIndex(train.samples, model.frames)
+    variable_frames = getattr(model, "variable_frames", False)
+    minimum_frames = getattr(model, "min_frames", model.frames)
+    frame_counts = list(range(minimum_frames, model.frames+1))
+    if any(sample.shape[0] not in model.supported_sizes for sample in train.samples+validation.samples):
+        raise ValueError(f"Model {model.profile} supports only target grid sizes {model.supported_sizes}")
+    burst_index = BurstIndex(train.samples, model.frames, min_frames=minimum_frames, presence=variable_frames)
     burst_index.validate_training()
     burst_rng = random.Random(seed ^ 0x42555253)
     train_sessions, train_payloads = set(train.session_ids), set(train.payload_ids)
@@ -124,15 +164,20 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                "gradientAccumulation": accumulate, "initialLearningRate": learning_rate,
                "weightDecay": weight_decay, "realFraction": real_fraction,
                "pairedTargets": paired_targets, "framesPerInput": model.frames,
+               "inputLayout": model.input_layout, "minFramesPerInput": minimum_frames,
+               "frameCounts": frame_counts, "frameCountPolicy": "uniform-5-8" if variable_frames else "fixed",
                "modelProfile": model.profile, "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
                "realAugmentation": real_augmentation.settings(),
                "loss": "mean-masked-cross-entropy",
                "evalEvery": eval_every, "validationSamples": validation_samples,
-               "evaluationGrouping": EVALUATION_POLICY, "evaluationSeed": EVALUATION_SEED,
+               "evaluationGrouping": VARIABLE_EVALUATION_POLICY if variable_frames else EVALUATION_POLICY,
+               "evaluationSeed": EVALUATION_SEED,
                "sampling": "paired-targets" if paired_targets else "source-group-session-payload-phase"}
     provenance = {"seed": seed, "samples": len(train.samples), "batchSize": batch_size,
                   "gradientAccumulation": accumulate, "device": str(device), "realFraction": real_fraction,
                   "pairedTargets": paired_targets, "framesPerInput": model.frames, "selection": "validation-exact", "datasetFormat": DATASET_FORMAT,
+                  "inputLayout": model.input_layout, "minFramesPerInput": minimum_frames,
+                  "frameCounts": frame_counts, "frameCountPolicy": "uniform-5-8" if variable_frames else "fixed",
                   "modelProfile": model.profile, "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
                   "trainManifestSha256": train.manifest_hash, "validationManifestSha256": validation.manifest_hash,
                   "trainSessionIds": sorted(train_sessions), "trainPayloadIds": sorted(train_payloads),
@@ -173,9 +218,9 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                         "bestValidationExact": selection["exactRate"], "bestValidationLoss": selection["loss"]}
             save_checkpoint(out/"best.pt", model, training)
             (out/"validation.json").write_text(json.dumps(report, indent=2)+"\n")
-        source_metrics = {name: {"samples": values[1], "inputCaptures": values[1]*model.frames, "meanCE": values[0]/values[1]}
+        source_metrics = {name: {"samples": values[1], "inputCaptures": values[2], "meanCE": values[0]/values[1]}
                           for name, values in interval["sources"].items()}
-        group_metrics = {name: {"samples": values[1], "inputCaptures": values[1]*model.frames, "meanCE": values[0]/values[1]}
+        group_metrics = {name: {"samples": values[1], "inputCaptures": values[2], "meanCE": values[0]/values[1]}
                          for name, values in interval["groups"].items()}
         record = {"step": step, "trainLoss": interval["loss"]/interval["updates"] if interval["updates"] else None,
                   "trainSources": source_metrics, "trainGroups": group_metrics,
@@ -186,21 +231,34 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                   "validationSelection": selection, "validationGroups": report["groups"],
                   "selected": selected, "learningRate": current_lr,
                   "elapsedSeconds": time.perf_counter()-started}
+        if variable_frames:
+            record["trainFrameCounts"] = interval["frameCounts"]
+            record["validationByFrameCount"] = report["byFrameCount"]
+            record["phoneToPCGoal"] = report["phoneToPCGoal"]
         history.append(record)
         learned = summary["learned"]
         train_text = f" | train CE {record['trainLoss']:.4f}" if record["trainLoss"] is not None else ""
         sources_text = " ".join(f"{name} {values['meanCE']:.4f}" for name, values in source_metrics.items())
         if sources_text:
             train_text += f" ({sources_text})"
+        frame_text = ""
+        if variable_frames:
+            frame_text = " | " + " ".join(f"K{k}:{row['recovery']['summary']['learned']['exactRate']:.1%}"
+                                          for k, row in report["byFrameCount"].items())
+            goal = report["phoneToPCGoal"]
+            frame_text += " | phone→PC " + " ".join(
+                f"K{k}:{row['exactRate']:.1%}" if row['exactRate'] is not None else f"K{k}:n/a"
+                for k, row in goal["byFrameCount"].items()) + " / target 50%"
         tqdm.write(f"Step {step}/{steps}{train_text} | val CE {report['loss']:.4f}"
                    f" | CER {report['cellErrorRate']:.2%}"
                    f" | exact {learned['exactFrames']}/{learned['frames']} ({learned['exactRate']:.2%})"
-                   f"{' | best' if selected else ''}", file=sys.stdout)
+                   f"{frame_text}{' | best' if selected else ''}", file=sys.stdout)
         target = "baseline-validation.json" if step == 0 else "final-validation.json"
         (out/target).write_text(json.dumps(report, indent=2)+"\n")
 
     def empty_interval():
         return {"loss": 0., "updates": 0, "sources": {}, "groups": {},
+                "frameCounts": {str(count): 0 for count in frame_counts},
                 "sampling": {"repeatedBursts": 0, "repeatedSamples": 0, "pairedTargets": 0}}
 
     def write_history():
@@ -212,10 +270,16 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
 
     def update_progress(progress, interval, refresh=False):
         last = history[-1]
+        goal_text = ""
+        if variable_frames:
+            rows = last["phoneToPCGoal"]["byFrameCount"]
+            goal_text = " | phone→PC " + "/".join(
+                f"{rows[str(k)]['exactRate']:.1%}" if rows[str(k)]["exactRate"] is not None else "n/a"
+                for k in (5, 8)) + " (K5/8; goal 50%)"
         progress.set_postfix_str(
             f"CE {interval['loss']/interval['updates']:.4f} | lr {optimizer.param_groups[0]['lr']:.2g}"
             f" | val CER {last['validationCellErrorRate']:.2%}"
-            f" | exact {last['validationExact']:.2%}", refresh=refresh)
+            f" | exact {last['validationExact']:.2%}{goal_text}", refresh=refresh)
 
     try:
         with tqdm(total=steps, desc="Training", unit="update", dynamic_ncols=True,
@@ -226,15 +290,13 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             for step in range(1, steps+1):
                 optimizer.zero_grad(set_to_none=True)
                 update_loss = 0.
-                batches = sampler.draw_update(batch_size, accumulate)
-                for anchors in batches:
-                    samples = [burst_index.train_sample(anchor, burst_rng) for anchor in anchors]
-                    triples = [sample.tensors() for sample in samples]
-                    pixels = real_augmentation(np.stack([row[0] for row in triples]),
-                                               [sample.metadata["source"] for sample in samples])
+                batches = draw_training_bursts(sampler.draw_update(batch_size, accumulate),
+                                               sampler, burst_index, burst_rng)
+                for samples in batches:
+                    pixels, labels, mask = training_tensors(samples, real_augmentation)
                     pixels = torch.from_numpy(pixels)
-                    labels = torch.from_numpy(np.stack([row[1] for row in triples])).to(device)
-                    mask = torch.from_numpy(np.stack([row[2] for row in triples])).to(device)
+                    labels = torch.from_numpy(labels).to(device)
+                    mask = torch.from_numpy(mask).to(device)
                     output = model(pixels.to(device))
                     loss, ce = training_loss(output, labels, mask, samples[0].shape[1])
                     if not torch.isfinite(loss):
@@ -243,13 +305,16 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                     update_loss += float(loss.detach())/accumulate
                     for sample, value in zip(samples, ce.detach().cpu().tolist()):
                         source = sample.metadata["source"]
-                        counters = [interval["sources"].setdefault(source, [0., 0])]
+                        count = len(sample.members)
+                        interval["frameCounts"][str(count)] += 1
+                        counters = [interval["sources"].setdefault(source, [0., 0, 0])]
                         if source == "real":
                             name = sampler_groups[sample.metadata["sessionId"]]
-                            counters.append(interval["groups"].setdefault(name, [0., 0]))
+                            counters.append(interval["groups"].setdefault(name, [0., 0, 0]))
                         for counter in counters:
                             counter[0] += value
                             counter[1] += 1
+                            counter[2] += count
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
                 optimizer.step()
                 interval["loss"] += update_loss
@@ -289,7 +354,7 @@ def main():
     parser.add_argument("--lr", type=float, help="default: 1e-4 fresh weights, 5e-5 initialized weights")
     parser.add_argument("--weight-decay", type=float, default=.01, help="AdamW decay (default: .01)")
     parser.add_argument("--frames", type=int, choices=FRAME_COUNTS,
-                        metavar="1..64", help="exposures per input: infer checkpoint or default 1; expands a single-frame initialization to the requested count")
+                        metavar="1..64", help="input capacity: attention-tube uses 8 slots with 5–8 observations; other fresh profiles default to 1")
     parser.add_argument("--paired-targets", action="store_true",
                         help="pair real captures with synthetic examples of the same target; requires real-fraction .5")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")

@@ -746,3 +746,60 @@ Filename checks cover exact suffix preservation, JSON/date independence,
 phase agreement, overwrite refusal, dry runs and idempotent reruns. Whitespace
 checks passed. No actual user recordings were migrated here and no site was
 deployed or reactivated.
+
+## 2026-11-03 — learned global anchor, window attention and variable bursts
+
+Added `attention-tube` as a combined G64 experiment. It retains longtube's
+full-resolution 32-channel U and residual depth, adds a trainable
+`[1,32,64,64]` positional tensor immediately after the inlet (bilinearly expanded
+to 256×256), and adds two four-head attention blocks at the 64×64 bottleneck.
+Each uses 8×8 windows, a 32→64→32 feed-forward block and residual connections;
+the second shifts windows by four cells with an explicit nonwrapping boundary
+mask. The learned anchor contributes 131,072 parameters; the complete model
+has **432,848**. Existing tube and longtube seeded state keys and values were
+checked to remain identical. This is a new profile, not a checkpoint conversion.
+
+The fixed input is `[N,32,256,256]`: eight RGB slots followed by eight binary
+presence planes. Training chooses 5–8 distinct same-burst/phase observations
+uniformly, assigns them to random slots, and pads only after real augmentation.
+Real/synthetic pairs share the observation count even after microbatch shuffling.
+Absent RGB slots are gated in the model. Stored recording and dataset formats
+do not change. Training bursts need at least eight members; current 12-frame
+synthetic bursts are reusable.
+
+Validation uses nested 5/6/7/8 subsets of the same fixed shuffled eight-capture
+blocks. Classical decoding receives only the actual observation IDs for each
+preset. Reports distinguish unique candidates from repeated observation cases,
+give per-count/per-direction metrics, and select checkpoints by equal-weight
+frame-count and real-direction scores. `phoneToPCGoal` records the requested
+50% exact-recovery target for each count; it is not evidence that the target
+has been achieved. The reported ongoing longtube result of 72/144 was provided
+by the user, not reproduced by this implementation test.
+
+Decoder Lab now accepts the new packed layout, offers 5/6/7/8 camera exposures,
+and reports actual observations separately from eight-slot capacity. The
+attention profile exports G64 only because its learned global anchor is tied
+to this geometry. Fixed profiles retain their existing size support. Current
+exports include explicit input-layout/frame-policy fields and must be prepared
+with the matching current browser runtime.
+
+The final untrained ONNX graph is **2,836,028 bytes**, SHA-256
+`ea243a21db0dca92b7e7af4d46acb8b7d5680a62db0c2fdcb188ffec2de57fa6`.
+ONNX graph checking passed. ONNX Runtime Web 1.23.2 in single-thread Node WASM
+matched the PyTorch five-observation fixture in all ten measured runs, with
+maximum absolute error **2.6673e-6**. RGB clipping and changing absent-slot RGB
+were exactly invariant. Additional 5/6/7/8-count runtime checks produced finite
+logits and preserved missing-slot invariance. Median inference was about
+**1,210 ms** in this Node environment; this is not a phone/WebGPU measurement.
+Preparation of local assets passed; no site was deployed. Native Python ONNX
+Runtime parity remains explicitly skipped in the restricted environment.
+
+The full affected suites completed with **126 Python tests passed and one
+native-runtime skip** (127 total), plus **80 JavaScript tests passed** with no
+skips. Coverage includes an actual attention-tube optimizer update and strict
+checkpoint reload, learned-anchor/attention gradients, shifted-window boundary
+isolation, paired observation counts across shuffled accumulated microbatches,
+padding after augmentation, deterministic nested evaluation and equal actual-K
+classical evidence. Existing fixed-frame training/export and the recording
+rebuild checks also passed. These CPU/synthetic fixtures verify implementation;
+no new trained device-recovery result or achieved 50% phone→PC rate is claimed.

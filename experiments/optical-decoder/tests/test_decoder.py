@@ -107,7 +107,7 @@ class ModelTests(unittest.TestCase):
                 self.assertGreater(float(torch.max(torch.abs(a - b))), 1e-7)
 
     def test_five_frame_profiles_stay_small_and_each_slot_affects_logits(self):
-        for profile in MODEL_PROFILES:
+        for profile in ("normalized-tube", "longtube"):
             with self.subTest(profile=profile), torch.inference_mode():
                 torch.manual_seed(7)
                 model = OpticalDecoder(profile, frames=5).eval()
@@ -123,7 +123,7 @@ class ModelTests(unittest.TestCase):
                     self.assertGreater(float((model(changed)-expected).abs().max()), 1e-6)
 
     def test_profiles_preserve_full_resolution_and_target_sized_bottleneck(self):
-        for profile in MODEL_PROFILES:
+        for profile in ("normalized-tube", "longtube"):
             with self.subTest(profile=profile):
                 torch.manual_seed(7)
                 model = OpticalDecoder(profile, frames=5).eval()
@@ -167,11 +167,11 @@ class ModelTests(unittest.TestCase):
                         self.assertEqual(tuple(output.shape), shapes(size, 5)[1])
                         self.assertTrue(torch.isfinite(output).all())
 
-    def test_every_profile_clips_before_learned_layers_without_mutating_captures(self):
+    def test_fixed_profiles_clip_before_learned_layers_without_mutating_captures(self):
         torch.manual_seed(19)
         pixels = torch.linspace(-1.5, 1.5, 15*32*32).reshape(1, 15, 32, 32)
         original = pixels.clone()
-        for profile in MODEL_PROFILES:
+        for profile in ("normalized-tube", "longtube"):
             with self.subTest(profile=profile), torch.inference_mode():
                 model = OpticalDecoder(profile, frames=5).eval()
                 received = []
@@ -185,7 +185,7 @@ class ModelTests(unittest.TestCase):
                 torch.testing.assert_close(pixels, original, rtol=0, atol=0)
 
     def test_explicit_five_frame_warm_start_preserves_repeated_input_function(self):
-        for profile in MODEL_PROFILES:
+        for profile in ("normalized-tube", "longtube"):
             torch.manual_seed(31)
             original = OpticalDecoder(profile).eval()
             before = {name: value.clone() for name, value in original.state_dict().items()}

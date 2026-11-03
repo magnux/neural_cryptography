@@ -71,7 +71,7 @@ async function prepare() {
   }, null, 2)+'\n');
   // Write the manifest last, so readers never see a new manifest with old files.
   await writeFile(join(modelTarget, 'manifest.json'), JSON.stringify(manifest, null, 2)+'\n');
-  console.log(`Prepared ${manifest.status} ${manifest.framesPerInput}-frame decoder fixtures for ${manifest.cases.map(c=>c.size).join('/')} and ONNX Runtime Web ${version}.`);
+  console.log(`Prepared ${manifest.status} ${manifest.frameCounts.join("/")}-observation decoder fixtures (${manifest.framesPerInput} slots) for ${manifest.cases.map(c=>c.size).join('/')} and ONNX Runtime Web ${version}.`);
   console.log('Serve apps/color-optical-bench/dist and open decoder.html. Assets remain local and ignored by Git.');
 }
 

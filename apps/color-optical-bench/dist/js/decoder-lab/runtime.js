@@ -8,20 +8,27 @@ export const PARITY_TOLERANCE = Object.freeze({atol: 1e-4, rtol: 1e-3});
 const shapeEqual = (a, b) => Array.isArray(a) && a.length === b.length && a.every((v, i) => v === b[i]);
 export const MODEL_PROFILES = Object.freeze({
   'normalized-tube':Object.freeze({base:140112,perFrame:864}),
-  longtube:Object.freeze({base:275472,perFrame:864})
+  longtube:Object.freeze({base:275472,perFrame:864}),
+  'attention-tube':Object.freeze({base:432848,perFrame:0})
 });
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
 
 export function validateManifest(manifest) {
   if (!plain(manifest) || manifest.format !== MODEL_FORMAT || manifest.version !== 1 ||
       !['untrained', 'trained'].includes(manifest.status) || !validFrameCount(manifest.framesPerInput) || manifest.pixelsPerCell !== 4 ||
-      manifest.channels !== 3*manifest.framesPerInput || manifest.classes !== 16 || manifest.inputName !== 'pixels' || manifest.outputName !== 'logits' ||
+      manifest.classes !== 16 || manifest.inputName !== 'pixels' || manifest.outputName !== 'logits' ||
       !Number.isSafeInteger(manifest.seed) || !Number.isSafeInteger(manifest.opset) || manifest.opset < 13 || manifest.opset > 25 ||
-      !plain(manifest.versions) || !Array.isArray(manifest.cases) || manifest.cases.length !== 2) {
+      !plain(manifest.versions) || !Array.isArray(manifest.cases)) {
     throw new Error('Unsupported decoder manifest. Regenerate the current model and fixtures.');
   }
   const profile=manifest.modelProfile;
   if (!Object.hasOwn(MODEL_PROFILES,profile)||MODEL_PROFILES[profile].base+MODEL_PROFILES[profile].perFrame*manifest.framesPerInput!==manifest.parameterCount) throw new Error('Invalid decoder model profile/count.');
+  const attention=profile==='attention-tube',frames=manifest.framesPerInput;
+  if (manifest.inputLayout!==(attention?'rgb-presence-planes':'stacked-rgb') ||
+      manifest.channels!==(attention?32:3*frames) || attention&&frames!==8 ||
+      manifest.minFramesPerInput!==(attention?5:frames) ||
+      !shapeEqual(manifest.frameCounts,attention?[5,6,7,8]:[frames]) ||
+      manifest.cases.length!==(attention?1:2)) throw Error('Invalid decoder input layout/frame policy.');
   // Preserve calibrated overshoot in captures/fixtures; the exported graph
   // clips to the common real/synthetic range before its first learned layer.
   if (!plain(manifest.normalization) || manifest.normalization.divisor !== 127.5 ||
@@ -34,9 +41,10 @@ export function validateManifest(manifest) {
   }
   const sizes = new Set(), files = new Set();
   for (const entry of manifest.cases) {
-    if (!plain(entry) || ![64, 128].includes(entry.size) || sizes.has(entry.size)) throw new Error('Invalid decoder grid cases.');
+    if (!plain(entry) || !(attention?[64]:[64, 128]).includes(entry.size) || sizes.has(entry.size)) throw new Error('Invalid decoder grid cases.');
     sizes.add(entry.size);
     const g = entry.size;
+    if (!manifest.frameCounts.includes(entry.framesAvailable)) throw Error('Invalid fixture observation count.');
     if (!shapeEqual(entry.inputShape, [1, manifest.channels, 4*g, 4*g]) || !shapeEqual(entry.outputShape, [1, 16, g, g])) throw new Error('Invalid decoder tensor shapes.');
     for (const [name, bytes] of [['model', null], ['input', manifest.channels*16*g*g*4], ['expected', 16*g*g*4]]) {
       const artifact = entry[name];
@@ -50,11 +58,64 @@ export function validateManifest(manifest) {
   return manifest;
 }
 
-export function validateOptions({size = 64, backend = 'auto', iterations = 10} = {}) {
+export function validateOptions({size = 64, backend = 'auto', iterations = 10, captureFrames = 0} = {}) {
   if (![64, 128].includes(size)) throw new Error('Choose a 64 or 128 cell grid.');
   if (!['auto', 'wasm', 'webgpu'].includes(backend)) throw new Error('Unknown inference backend.');
   if (!Number.isInteger(iterations) || iterations < 1 || iterations > 30) throw new Error('Benchmark runs must be 1–30.');
-  return {size, backend, iterations};
+  if (![0,5,6,7,8].includes(captureFrames)) throw Error('Choose model-default camera exposures, or 5–8 for a variable-frame model.');
+  return {size, backend, iterations, captureFrames};
+}
+
+/** Inspect the exact current tensor layout, including an explicit absence mask.
+ * RGB zero means mid-gray and is never interpreted as a missing observation.
+ */
+export function inputPresence(pixels, manifest, size) {
+  const plane=(4*size)**2,frames=manifest.framesPerInput;
+  if (!(pixels instanceof Float32Array)||pixels.length!==manifest.channels*plane||
+      pixels.some(value=>!Number.isFinite(value))) throw Error('Input does not match the prepared frame-stack contract.');
+  if (manifest.inputLayout==='stacked-rgb') return Array.from({length:frames},(_,i)=>i);
+  if (manifest.inputLayout!=='rgb-presence-planes'||frames!==8||size!==64||manifest.channels!==32)
+    throw Error('Unsupported packed decoder input.');
+  const active=[];
+  for(let slot=0;slot<frames;slot++) {
+    const start=(3*frames+slot)*plane,flag=pixels[start];
+    if (flag!==0&&flag!==1) throw Error('Presence planes must contain binary flags.');
+    for(let i=start+1;i<start+plane;i++)if(pixels[i]!==flag)throw Error('Presence flags must be spatially constant.');
+    if(flag===1)active.push(slot);
+  }
+  if(!manifest.frameCounts.includes(active.length))throw Error('Input has an unsupported number of available captures.');
+  return active;
+}
+
+/** Pack genuine camera observations; padding is introduced after preprocessing. */
+export function packFrameStack(stack, manifest, size, slots) {
+  const plane=(4*size)**2,one=3*plane,capacity=manifest.framesPerInput;
+  if(!(stack instanceof Float32Array)||!stack.length||stack.length%one||
+      stack.some(value=>!Number.isFinite(value)))throw Error('Invalid RGB frame stack.');
+  const available=stack.length/one;
+  if(!manifest.frameCounts.includes(available))throw Error('Prepared model does not support this capture count.');
+  if(manifest.inputLayout==='stacked-rgb') {
+    if(available!==capacity||slots!==undefined)throw Error('Fixed RGB models require their complete ordered frame stack.');
+    return stack;
+  }
+  if(manifest.inputLayout!=='rgb-presence-planes'||capacity!==8||size!==64)throw Error('Unsupported packed decoder input.');
+  slots=slots??Array.from({length:available},(_,i)=>i);
+  if(!Array.isArray(slots)||slots.length!==available||new Set(slots).size!==available||
+      slots.some(slot=>!Number.isInteger(slot)||slot<0||slot>=capacity))throw Error('Invalid available-frame slots.');
+  const pixels=new Float32Array(manifest.channels*plane);
+  slots.forEach((slot,index)=>{
+    pixels.set(stack.subarray(index*one,(index+1)*one),slot*one);
+    pixels.fill(1,(3*capacity+slot)*plane,(3*capacity+slot+1)*plane);
+  });
+  return pixels;
+}
+
+export function clipNetworkInput(pixels, manifest, size) {
+  inputPresence(pixels,manifest,size);
+  const output=pixels.slice(),end=3*manifest.framesPerInput*(4*size)**2;
+  const [low,high]=manifest.networkInputClip;
+  for(let i=0;i<end;i++)output[i]=Math.max(low,Math.min(high,output[i]));
+  return output;
 }
 
 export function decodeFloat32(buffer) {

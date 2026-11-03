@@ -11,7 +11,7 @@
   <nav class="app-nav" aria-label="Application"><a href="./index.html">Optical Bench</a><a href="./crypto.html">Crypto Lab</a><a href="./link.html">Live Demo</a><a href="./decoder.html" aria-current="page">Decoder Lab</a></nav>
   <main>
     <section class="decoder-intro"><div class="eyebrow">OPTICAL DECODER · INFERENCE LAB</div><h1>A small model. A real device test.</h1><p>Check Python-to-browser agreement and inference speed for the prepared model. <a href="./capture.html">Collect training captures →</a></p></section>
-    <div class="decoder-notice"><strong id="modelNoticeTitle">Model status appears after the first run</strong><p id="modelNoticeText">Test the prepared compact or wide U-Net and export device measurements. Use Dataset Capture to collect training examples; use offline evaluation to assess payload recovery.</p></div>
+    <div class="decoder-notice"><strong id="modelNoticeTitle">Model status appears after the first run</strong><p id="modelNoticeText">Test the prepared optical decoder and export device measurements. Use Dataset Capture to collect training examples; use offline evaluation to assess payload recovery.</p></div>
     <noscript><div class="notice">Enable JavaScript to run this local test.</div></noscript>
     <div id="labError" class="notice" role="alert" hidden></div>
     <div class="decoder-columns">
@@ -31,10 +31,12 @@
       </section>
       <section class="panel" aria-labelledby="cameraHeading">
         <div class="panel-heading"><div><span class="section-number">02</span><h2 id="cameraHeading">Camera load &amp; alignment</h2></div><span class="mode-label">OPTIONAL</span></div>
-        <div class="decoder-body"><p>Keep the camera active during the fixture benchmark to measure realistic device contention. For a crop test, point at a 64/128-cell matrix from the Optical Bench and hold one palette phase steady. The loaded model requests one or four separate exposures.</p>
+        <div class="decoder-body"><p>Keep the camera active during the fixture benchmark to measure realistic device contention. For a crop test, point at a 64/128-cell matrix from the Optical Bench and hold one palette phase steady. The loaded model determines the supported grid and exposure counts.</p>
           <div class="decoder-fields camera-fields"><label for="camera">Camera<select id="camera"><option value="">Default camera</option></select></label><label for="resolution">Requested resolution<select id="resolution"><option value="720">720p</option><option value="1080">1080p</option><option value="480">480p</option></select></label></div>
           <div class="decoder-camera"><video id="video" autoplay muted playsinline></video><span id="cameraPlaceholder">Camera is off</span></div>
           <p class="muted" id="cameraStatus">No camera frames are saved or uploaded.</p>
+          <div class="decoder-fields camera-fields"><label for="captureFrames">Camera exposures<select id="captureFrames"><option value="0">Model default</option><option value="5">5 exposures</option><option value="6">6 exposures</option><option value="7">7 exposures</option><option value="8">8 exposures</option></select></label></div>
+          <p class="muted">Attention tube accepts 5–8 exposures at 64×64. Fixed-frame models require their configured count.</p>
           <div class="decoder-actions"><button class="small-button" id="startCamera">Start camera</button><button class="small-button" id="stopCamera" disabled>Stop camera</button><button class="button secondary" id="runCapture" disabled>Test matrix burst</button></div>
           <p class="muted">Each exposure is rectified separately. The monochrome header keeps all burst frames on the same matrix and palette phase. A 32×32 control matrix continues to use the classical receiver outside this lab.</p>
         </div>

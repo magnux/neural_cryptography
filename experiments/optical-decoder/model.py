@@ -1,7 +1,8 @@
 """Multiframe optical classifiers with a shared browser tensor contract.
 
-All profiles accept stacked RGB, [N,3*T,4G,4G], and predict physical palette
-logits, [N,16,G,G]. None receives keys, labels, or expected payload bytes.
+Fixed-frame profiles accept stacked RGB, [N,3*T,4G,4G]. Attention-tube accepts
+eight RGB slots followed by eight presence planes, [N,32,256,256]. All predict
+physical palette logits [N,16,G,G]; none receives payload truth or keys.
 """
 
 import torch
@@ -11,7 +12,7 @@ from torch.nn import functional as F
 from contract import CHANNELS, FRAME_COUNTS, MAX_FRAMES, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 
 
-MODEL_PROFILES = ("normalized-tube", "longtube")
+MODEL_PROFILES = ("normalized-tube", "longtube", "attention-tube")
 DEFAULT_MODEL_PROFILE = "normalized-tube"
 
 
@@ -71,26 +72,99 @@ class ResidualBlock(nn.Module):
         return F.relu(self.norm(self.pairs(values)))
 
 
-class OpticalDecoder(nn.Module):
-    """Full-resolution 32-channel tube and deeper residual longtube.
+class WindowAttentionBlock(nn.Module):
+    """C32, four-head attention over 8x8 windows on the fixed 64x64 cell grid.
 
-    Both U-Nets start and end at the rectified crop resolution, 4G by 4G.
+    The second block shifts windows by four cells. Its additive mask prevents
+    cyclic roll from connecting opposite image edges. Channel norms are per
+    position; linear projections and attention export as standard ONNX ops.
+    """
+
+    def __init__(self, shift: int = 0) -> None:
+        super().__init__()
+        if shift not in (0, 4):
+            raise ValueError("Attention window shift must be zero or four cells")
+        self.shift = shift
+        self.norm1 = ChannelLayerNorm(32)
+        self.qkv = nn.Linear(32, 96)
+        self.projection = nn.Linear(32, 32)
+        self.norm2 = ChannelLayerNorm(32)
+        self.ffn = nn.Sequential(nn.Linear(32, 64), nn.ReLU(), nn.Linear(64, 32))
+        mask = torch.empty(0)
+        if shift:
+            regions = torch.zeros(1, 1, 64, 64)
+            label = 0
+            for ys in (slice(0, -8), slice(-8, -4), slice(-4, None)):
+                for xs in (slice(0, -8), slice(-8, -4), slice(-4, None)):
+                    regions[:, :, ys, xs] = label
+                    label += 1
+            windows = self.partition(regions).squeeze(-1)
+            difference = windows[:, :, None] - windows[:, None, :]
+            mask = torch.where(difference == 0, 0., -10000.).unsqueeze(1)
+        self.register_buffer("window_mask", mask, persistent=False)
+
+    @staticmethod
+    def partition(values: torch.Tensor) -> torch.Tensor:
+        batch, channels = values.shape[:2]
+        return values.reshape(batch, channels, 8, 8, 8, 8).permute(
+            0, 2, 4, 3, 5, 1).reshape(-1, 64, channels)
+
+    @staticmethod
+    def reverse(windows: torch.Tensor, batch: int) -> torch.Tensor:
+        return windows.reshape(batch, 8, 8, 8, 8, 32).permute(
+            0, 5, 1, 3, 2, 4).reshape(batch, 32, 64, 64)
+
+    def forward(self, values: torch.Tensor) -> torch.Tensor:
+        batch = values.shape[0]
+        normalized = self.norm1(values)
+        if self.shift:
+            normalized = torch.roll(normalized, shifts=(-self.shift, -self.shift), dims=(2, 3))
+        windows = self.partition(normalized)
+        qkv = self.qkv(windows).reshape(-1, 64, 3, 4, 8).permute(2, 0, 3, 1, 4)
+        scores = (qkv[0] @ qkv[1].transpose(-2, -1)) * (8 ** -.5)
+        if self.shift:
+            scores = (scores.reshape(batch, 64, 4, 64, 64) + self.window_mask.unsqueeze(0)).reshape(-1, 4, 64, 64)
+        attention = torch.softmax(scores, dim=-1)
+        attended = (attention @ qkv[2]).transpose(1, 2).reshape(-1, 64, 32)
+        attended = self.reverse(self.projection(attended), batch)
+        if self.shift:
+            attended = torch.roll(attended, shifts=(self.shift, self.shift), dims=(2, 3))
+        values = values + attended
+        feed_forward = self.ffn(self.norm2(values).permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        return values + feed_forward
+
+
+class OpticalDecoder(nn.Module):
+    """Full-resolution 32-channel tube, residual longtube and anchored attention.
+
+    All U-Nets start and end at the rectified crop resolution, 4G by 4G.
     Their bottleneck is G by G, exactly the target symbol-grid size. Only the
     outlet reduces the reconstructed full-resolution features to that grid.
     Normalized-tube preserves the established two-convolution normalized stages;
     longtube uses four-convolution residual resolution blocks, eight at its
-    bottleneck, with one normalization per block. Neither has an RGB shortcut.
+    bottleneck, with one normalization per block. Attention-tube keeps longtube's
+    convolutional path, adds a learned global bias after the inlet and two
+    attention blocks at the target-sized bottleneck. No model has an RGB shortcut.
     """
 
-    def __init__(self, profile: str = DEFAULT_MODEL_PROFILE, frames: int = 1) -> None:
+    def __init__(self, profile: str = DEFAULT_MODEL_PROFILE, frames: int | None = None) -> None:
         super().__init__()
         if profile not in MODEL_PROFILES:
             raise ValueError(f"Choose model profile from {MODEL_PROFILES}")
+        if frames is None:
+            frames = 8 if profile == "attention-tube" else 1
         if type(frames) is not int or frames not in FRAME_COUNTS:
             raise ValueError(f"Choose 1 to {MAX_FRAMES} input frames")
+        if profile == "attention-tube" and frames != 8:
+            raise ValueError("Attention-tube uses exactly eight input slots, with five to eight present frames")
         self.profile = profile
         self.frames = frames
-        self.inlet = nn.Sequential(conv(3 * frames, 32, normalize=profile == "normalized-tube"),
+        self.variable_frames = profile == "attention-tube"
+        self.min_frames = 5 if self.variable_frames else frames
+        self.input_channels = 4 * frames if self.variable_frames else 3 * frames
+        self.input_layout = "rgb-presence-planes" if self.variable_frames else "stacked-rgb"
+        self.supported_sizes = (64,) if self.variable_frames else (64, 128)
+        self.inlet = nn.Sequential(conv(self.input_channels, 32, normalize=profile == "normalized-tube"),
                                    conv(32, 32, normalize=True))
         if profile == "normalized-tube":
             self.e0 = nn.Sequential(conv(32, 32, normalize=True), conv(32, 32, normalize=True))
@@ -107,15 +181,39 @@ class OpticalDecoder(nn.Module):
         self.outlet = nn.Sequential(conv(32, 32, 2, normalize=True),
                                     conv(32, 32, 2, normalize=True))
         self.head = nn.Conv2d(32, 16, 1, bias=True)
+        if self.variable_frames:
+            # Learned per-channel global anchor, not a positional sinusoid or
+            # observed image. The compact lattice expands only the bias: all
+            # incoming image evidence remains at full 256x256 resolution.
+            self.position_anchor = nn.Parameter(torch.empty(1, 32, 64, 64))
+            nn.init.normal_(self.position_anchor, mean=0., std=.02)
+            self.attention = nn.Sequential(WindowAttentionBlock(), WindowAttentionBlock(shift=4))
 
     def forward(self, pixels: torch.Tensor) -> torch.Tensor:
         # Preserve calibrated overshoot in recordings/preprocessing; every
         # learned layer consumes the same bounded range for real and synthetic
         # inputs. ONNX exports this operation, including browser camera inference.
-        pixels = torch.clamp(pixels, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX)
-        e0 = self.e0(self.inlet(pixels))
+        if self.variable_frames:
+            if not torch.jit.is_tracing() and (pixels.ndim != 4 or pixels.shape[1:] != (32, 256, 256)):
+                raise ValueError("Attention-tube requires packed eight-slot G64 input [N,32,256,256]")
+            # The tensor contract supplies spatially constant binary planes.
+            # Read their flags once and reconstruct planes, so gating and
+            # conditioning always use exactly the same eight availability bits.
+            presence = pixels[:, 24:, :1, :1].clamp(0., 1.)
+            rgb = torch.clamp(pixels[:, :24], NETWORK_INPUT_MIN, NETWORK_INPUT_MAX)
+            rgb = (rgb.reshape(-1, 8, 3, 256, 256) * presence.unsqueeze(2)).reshape(-1, 24, 256, 256)
+            pixels = torch.cat((rgb, presence.expand(-1, -1, 256, 256)), dim=1)
+        else:
+            pixels = torch.clamp(pixels, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX)
+        features = self.inlet(pixels)
+        if self.variable_frames:
+            features = features + F.interpolate(self.position_anchor, size=(256, 256),
+                                                 mode="bilinear", align_corners=False)
+        e0 = self.e0(features)
         e1 = self.e1(e0)
         context = self.bottleneck(e1)
+        if self.variable_frames:
+            context = self.attention(context)
         d1 = self.d1(torch.cat((F.interpolate(context, scale_factor=2, mode="nearest"), e1), dim=1))
         d0 = self.d0(torch.cat((F.interpolate(d1, scale_factor=2, mode="nearest"), e0), dim=1))
         return self.head(self.outlet(d0))
@@ -134,17 +232,22 @@ def profile_from_state(state: dict) -> str:
         raise ValueError("Checkpoint has no valid decoder inlet")
     signature = (tuple(state["head.weight"].shape), inlet.shape[0],
                  "inlet.0.1.weight" in state, "e0.0.1.weight" in state,
-                 "e0.pairs.0.conv1.weight" in state, "outlet.0.0.weight" in state)
-    if signature == ((16, 32, 1, 1), 32, True, True, False, True):
+                 "e0.pairs.0.conv1.weight" in state, "outlet.0.0.weight" in state,
+                 "position_anchor" in state, "attention.0.qkv.weight" in state)
+    if signature == ((16, 32, 1, 1), 32, True, True, False, True, False, False):
         return "normalized-tube"
-    if signature == ((16, 32, 1, 1), 32, False, False, True, True):
+    if signature == ((16, 32, 1, 1), 32, False, False, True, True, False, False):
         return "longtube"
+    if signature == ((16, 32, 1, 1), 32, False, False, True, True, True, True) and inlet.shape[1] == 32:
+        return "attention-tube"
     raise ValueError("Checkpoint model does not match a supported decoder profile")
 
 
 def frames_from_state(state: dict) -> int:
     """Read the input width; remaining tensor shapes are checked by the loader."""
     weight = state.get("inlet.0.0.weight") if isinstance(state, dict) else None
+    if profile_from_state(state) == "attention-tube":
+        return 8
     if (not isinstance(weight, torch.Tensor) or weight.ndim != 4
             or weight.shape[1] % CHANNELS != 0 or weight.shape[1] // CHANNELS not in FRAME_COUNTS):
         raise ValueError("Checkpoint does not have a supported input frame count")

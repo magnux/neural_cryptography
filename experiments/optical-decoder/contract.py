@@ -28,12 +28,15 @@ ATOL = 2e-5
 RTOL = 2e-4
 
 
-def shapes(size: int, frames: int = 1) -> tuple[tuple[int, ...], tuple[int, ...]]:
+def shapes(size: int, frames: int = 1, *, presence: bool = False) -> tuple[tuple[int, ...], tuple[int, ...]]:
     if isinstance(size, bool) or not isinstance(size, int) or size not in SIZES:
         raise ValueError("The decoder supports physical grid sizes 64 and 128 only")
     if type(frames) is not int or frames not in FRAME_COUNTS:
         raise ValueError(f"The decoder supports 1 to {MAX_FRAMES} input frames")
-    return (1, CHANNELS * frames, size * PIXELS_PER_CELL, size * PIXELS_PER_CELL), (1, CLASSES, size, size)
+    if type(presence) is not bool or presence and (size != 64 or frames != 8):
+        raise ValueError("Presence-plane inputs require eight slots and a 64-cell grid")
+    channels = (CHANNELS + int(presence)) * frames
+    return (1, channels, size * PIXELS_PER_CELL, size * PIXELS_PER_CELL), (1, CLASSES, size, size)
 
 
 def normalize_rgb(calibrated_hwc: np.ndarray) -> np.ndarray:
@@ -60,14 +63,19 @@ def normalize_rgb(calibrated_hwc: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(normalized.transpose(2, 0, 1)[None], dtype=np.float32)
 
 
-def fixture_input(size: int, seed: int, frames: int = 1) -> np.ndarray:
+def fixture_input(size: int, seed: int, frames: int = 1, *, presence: bool = False,
+                  available_frames: int | None = None) -> np.ndarray:
     """Public diagnostic input with variation in space and all RGB channels.
 
     This input has no transmitted payload or symbol labels. It tests numerical
     inference agreement only; it cannot measure a decoder's recovery accuracy.
     Retained calibrated overshoot exercises the model's final [-1,1] input clip.
     """
-    input_shape, _ = shapes(size, frames)
+    input_shape, _ = shapes(size, frames, presence=presence)
+    available = (5 if presence else frames) if available_frames is None else available_frames
+    if type(available) is not int or (presence and available not in (5, 6, 7, 8)) or \
+            (not presence and available != frames):
+        raise ValueError("Fixture observation count must match the current input layout")
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 0xFFFFFFFF:
         raise ValueError("Seed must be an unsigned 32-bit integer")
     rng = np.random.default_rng(np.random.SeedSequence([seed, size]))
@@ -79,7 +87,16 @@ def fixture_input(size: int, seed: int, frames: int = 1) -> np.ndarray:
         rgb = texture + np.stack((255.0 * x / (side - 1), 255.0 * y / (side - 1),
                                   127.5 + 100.0 * np.sin((x + y) / 11.0 + index*.2)), axis=-1)
         values.append(normalize_rgb(rgb))
-    return np.ascontiguousarray(np.concatenate(values, axis=1), dtype=np.float32)
+    rgb = np.ascontiguousarray(np.concatenate(values, axis=1), dtype=np.float32)
+    if not presence:
+        return rgb
+    # Fixed eight-slot export; missing observations are zeros plus explicit
+    # presence flags. Neither positions nor values encode a known payload.
+    packed = np.zeros(input_shape, dtype=np.float32)
+    for slot in rng.choice(frames, size=available, replace=False):
+        packed[:, 3*slot:3*slot+3] = rgb[:, 3*slot:3*slot+3]
+        packed[:, CHANNELS*frames+slot] = 1.
+    return packed
 
 
 def write_f32(path: Path, tensor: np.ndarray) -> dict:
