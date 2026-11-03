@@ -121,11 +121,11 @@ async function run(kind) {
         result=await client.call(kind,{...options,runId:token,mediaTime:exposure.mediaTime,presentedFrames:exposure.presentedFrames,
           image:{width:image.width,height:image.height,data:image.data}},[image.data.buffer]);
         if (!validFrameCount(result.framesPerInput)||!validFrameCount(result.requiredCaptures)||result.requiredCaptures>result.framesPerInput) throw Error('Worker returned an invalid camera frame count.');
-        maxAttempts=4*result.requiredCaptures;
+        maxAttempts=result.phaseGrouped?8*MAX_INPUT_FRAMES:4*result.requiredCaptures;
         if (!result.waiting) break;
-        $('labStatus').textContent=`Collected ${result.collected}/${result.requiredCaptures} exposures. Keep the same matrix and palette phase visible.`;
+        $('labStatus').textContent=result.phaseGrouped?`Collected phases ${(result.phaseCounts??[]).join('/')}. Cycle all four palette phases of the same matrix.`:`Collected ${result.collected}/${result.requiredCaptures} exposures. Keep the same matrix and palette phase visible.`;
       }
-      if (result?.waiting) { client.cancel(); throw Error('The matrix or phase kept changing before a complete burst. Hold one phase steady and retry.'); }
+      if (result?.waiting) { client.cancel(); throw Error(result.phaseGrouped?'Could not collect all four phases of the same matrix. Cycle the phases and retry.':'The matrix or phase kept changing before a complete burst. Hold one phase steady and retry.'); }
     } else result=await client.call(kind,options);
     if (token !== operation) return;
     lastResult={...result, ui:stopMonitor(), camera, start};

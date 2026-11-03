@@ -174,3 +174,15 @@ test('confident incorrect neural evidence still fails CRC instead of becoming ac
   const result=decodeScores(frame,logitsToLogicalScores(logits,frame));
   assert.equal(result.ok,false);assert.match(result.error,/checksum/);
 });
+
+
+test('canonical logical logits are not palette-inverted a second time',()=>{
+  const {bytes,frames}=make({colors:16,phases:4}),canonical=idealLogits(frames[0]);
+  for(const frame of frames) {
+    const scores=logitsToLogicalScores(canonical,frame,{labelSpace:'logical'});
+    const decoded=decodeScores(frame,scores,{}, {recovery:'erasures'});
+    assert.equal(decoded.ok,true,decoded.error);assert.deepEqual(decoded.chunk,bytes);
+    if(frame.phase)assert.equal(decodeScores(frame,logitsToLogicalScores(canonical,frame)).ok,false);
+  }
+  assert.throws(()=>logitsToLogicalScores(canonical,frames[0],{labelSpace:'unknown'}),/label space/);
+});

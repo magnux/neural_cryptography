@@ -34,16 +34,16 @@ class VariableEvaluationTests(unittest.TestCase):
         data = cls.root/"data"
         subprocess.run(["node", str(ROOT/"scripts/decoder-dataset.mjs"), "generate",
                         "--out", str(data), "--count", "1", "--size", "64",
-                        "--colors", "4", "--phases", "1", "--split", "validation", "--seed", "12046"],
+                        "--colors", "16", "--phases", "4", "--split", "validation", "--seed", "12046"],
                        check=True, capture_output=True, text=True)
         path = data/"manifest.json"
         manifest = json.loads(path.read_text())
-        original = manifest["samples"][0]
+        originals = manifest["samples"]
         # Distinct fixture IDs exercise observation accounting. These copies
         # are not independent camera observations or an accuracy benchmark.
-        manifest["samples"] = [{**copy.deepcopy(original), "id": f"exposure-{index}",
-            "source": "real", "sessionId": "fixture-session", "burstId": "fixture-burst",
-            "timestamp": index*100} for index in range(19)]
+        manifest["samples"] = [{**copy.deepcopy(original), "id": f"phase-{phase}-exposure-{index}",
+            "source": "real", "sessionId": "fixture-session", "burstId": f"fixture-phase-{phase}",
+            "timestamp": index*100} for phase, original in enumerate(originals) for index in range(5)]
         path.write_text(json.dumps(manifest))
         cls.dataset = Dataset([data], "validation")
         labels = cls.dataset.samples[0].tensors()[1]
@@ -53,7 +53,7 @@ class VariableEvaluationTests(unittest.TestCase):
 
         class FixtureModel(torch.nn.Module):
             frames = 8
-            min_frames = 5
+            min_frames = 4
             variable_frames = True
             input_channels = 32
             supported_sizes = (64,)
@@ -75,10 +75,12 @@ class VariableEvaluationTests(unittest.TestCase):
                 if not bool(torch.all(pixels[:, :24].reshape(1, 8, 3, 256, 256)[:, missing] == 0)):
                     raise ValueError("Missing observations must be padded with zero")
                 count = int(presence.sum())
+                if not bool(torch.all(presence.reshape(1, 4, 2).sum(dim=2) >= 1)):
+                    raise ValueError("Every phase needs at least one capture")
                 self.observed_counts.append(count)
-                # Deliberate failure for K=5 tests separate metrics/goal status;
+                # Deliberate failure for K=4 tests separate metrics/goal status;
                 # it does not model a learned decoder's behavior.
-                return torch.zeros_like(self.fixture_logits) if count == 5 else self.fixture_logits
+                return torch.zeros_like(self.fixture_logits) if count == 4 else self.fixture_logits
 
         cls.model_class = FixtureModel
 
@@ -91,22 +93,22 @@ class VariableEvaluationTests(unittest.TestCase):
         result = evaluate_model(model, self.dataset, work_dir=self.root/"exact",
                                 session_groups={"fixture-session": "phone-to-pc"})
         self.assertTrue(model.training)
-        self.assertEqual(model.observed_counts, [5, 5, 6, 6, 7, 7, 8, 8])
+        self.assertEqual(model.observed_counts, [4, 4, 5, 5, 6, 6, 7, 7, 8, 8])
         self.assertEqual(result["uniqueCandidates"], 2)
-        self.assertEqual(result["samples"], 8)
-        self.assertEqual(result["observationCases"], 8)
-        self.assertEqual(result["inputCaptures"], 52)
+        self.assertEqual(result["samples"], 10)
+        self.assertEqual(result["observationCases"], 10)
+        self.assertEqual(result["inputCaptures"], 60)
         self.assertEqual(result["uniqueInputCaptures"], 16)
-        self.assertEqual(result["availableInputCaptures"], 19)
+        self.assertEqual(result["availableInputCaptures"], 20)
         self.assertEqual(result["framesPerInput"], 8)
-        self.assertEqual(result["actualFrameCounts"], [5, 6, 7, 8])
+        self.assertEqual(result["actualFrameCounts"], [4, 5, 6, 7, 8])
         previous = None
-        for count in range(5, 9):
+        for count in range(4, 9):
             row = result["byFrameCount"][str(count)]
             self.assertEqual(row["samples"], 2)
             self.assertEqual(row["frameCapacity"], 8)
             self.assertEqual(row["framesPerInput"], count)
-            self.assertEqual(row["burstGrouping"]["remainderCaptures"], 3)
+            self.assertEqual(row["burstGrouping"]["remainderCaptures"], 4)
             self.assertEqual(row["burstGrouping"]["unusedCapacityCaptures"], 2*(8-count))
             self.assertEqual(row["recovery"]["framesPerInput"], count)
             self.assertEqual(row["recovery"]["inputCaptures"], 2*count)
@@ -120,24 +122,24 @@ class VariableEvaluationTests(unittest.TestCase):
             previous = members
             summary = row["recovery"]["summary"]
             self.assertEqual(summary["classical"]["exactFrames"], 2)
-            self.assertEqual(summary["learned"]["exactFrames"], 0 if count == 5 else 2)
+            self.assertEqual(summary["learned"]["exactFrames"], 0 if count == 4 else 2)
             self.assertEqual(summary["learned"]["wrongAcceptedFrames"], 0)
         self.assertEqual(result["selectionScore"]["method"], "frame-count-group-balanced-real")
-        self.assertEqual(result["selectionScore"]["exactRate"], .75)
+        self.assertEqual(result["selectionScore"]["exactRate"], .8)
         self.assertAlmostEqual(result["selectionScore"]["loss"],
-            sum(row["selectionScore"]["loss"] for row in result["byFrameCount"].values())/4)
+            sum(row["selectionScore"]["loss"] for row in result["byFrameCount"].values())/5)
         goal = result["phoneToPCGoal"]
         self.assertEqual(goal["targetExactRate"], .5)
         self.assertTrue(goal["available"])
         self.assertFalse(goal["achievedForAllFrameCounts"])
-        self.assertFalse(goal["byFrameCount"]["5"]["achieved"])
+        self.assertFalse(goal["byFrameCount"]["4"]["achieved"])
         self.assertTrue(goal["byFrameCount"]["8"]["achieved"])
 
     def test_metrics_only_and_capping_keep_unknown_recovery_and_same_candidates(self):
         report = evaluate_model(self.model_class(), self.dataset, exact=False, max_samples=1,
                                 work_dir=self.root/"metrics")
         self.assertEqual(report["uniqueCandidates"], 1)
-        self.assertEqual(report["observationCases"], 4)
+        self.assertEqual(report["observationCases"], 5)
         self.assertEqual(report["uniqueInputCaptures"], 8)
         self.assertIsNone(report["recovery"])
         self.assertIsNone(report["selectionScore"]["exactRate"])

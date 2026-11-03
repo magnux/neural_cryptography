@@ -48,10 +48,12 @@ function validateProfile(info){
 
 /** Physical NCHW logits -> logical data-cell scores accepted by decodeScores.
  * Reference cells are omitted. Inactive palette classes are masked before
- * softmax; only then is the current public palette permutation undone.
+ * softmax; only then is a physical-output model's public palette permutation
+ * undone. Phase-grouped models already predict logical labels.
  */
-export function logitsToLogicalScores(logits,info,{temperature=1}={}){
+export function logitsToLogicalScores(logits,info,{temperature=1,labelSpace='physical'}={}){
   validateProfile(info);
+  if(!['physical','logical'].includes(labelSpace))throw Error('Invalid decoder output label space.');
   const cells=info.size*info.size;
   if(!(logits instanceof Float32Array)||logits.length!==16*cells)throw Error('Invalid learned logits shape.');
   if(!Number.isFinite(temperature)||temperature<=0)throw Error('Invalid learned confidence temperature.');
@@ -65,7 +67,7 @@ export function logitsToLogicalScores(logits,info,{temperature=1}={}){
       weights[physical]=Math.exp((logits[physical*cells+cell]-maximum)/temperature);sum+=weights[physical];
     }
     for(let logical=0;logical<info.colors;logical++){
-      scores[i*info.colors+logical]=255*weights[paletteMap(logical,info)]/sum;
+      scores[i*info.colors+logical]=255*weights[labelSpace==='logical'?logical:paletteMap(logical,info)]/sum;
     }
   }
   return scores;

@@ -17,9 +17,12 @@ if(process.env.OPTICAL_DECODER_TEST_PYTHON&&!hasPython)throw Error(`OPTICAL_DECO
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const fixtures=[];
 for(const [seed,session,receiver] of [[701,'sender-train','receiver-train'],[702,'sender-val','receiver-val']]) {
-  const sender=await createSender({seed,sessionId:session,phases:1,colors:4});
-  const record=captureFrame(renderFrame(sender.frames[0],1024),{timestamp:1000}),buffer=new CaptureBuffer();
-  buffer.add(record);buffer.add({...record,timestamp:1600});buffer.add({...record,timestamp:2200});
+  const sender=await createSender({seed,sessionId:session,phases:4,colors:16,size:64});
+  const buffer=new CaptureBuffer();
+  for(const [phase,frame] of sender.frames.entries()) {
+    const timestamp=1000+phase*3000,record=captureFrame(renderFrame(frame,1024),{timestamp});
+    buffer.add(record);buffer.add({...record,timestamp:timestamp+600});buffer.add({...record,timestamp:timestamp+1200});
+  }
   fixtures.push({sender:sender.manifest,capture:buffer.export({sessionId:receiver})});
 }
 const copy=x=>JSON.parse(JSON.stringify(x));
@@ -41,10 +44,16 @@ test('rebuild discovers both directions by folder and full headers, independent 
   await mkdir(join(root,'phone/train/nested'));
   await rename(paths.trainCapture,join(root,'phone/train/nested/misleading-prefix.json'));
   const plan=await planRebuild({dataRoot:root});
-  assert.equal(plan.entries.length,4);assert.equal(plan.summary.train.records,2);assert.equal(plan.summary.validation.records,2);
-  assert.equal(plan.summary.train.bursts,1);assert.equal(plan.summary.validation.bursts,1);
-  assert.equal(plan.summary.train.syntheticCaptures,384);assert.equal(plan.summary.validation.syntheticCaptures,48);
+  assert.equal(plan.entries.length,4);assert.equal(plan.summary.train.records,8);assert.equal(plan.summary.validation.records,8);
+  assert.equal(plan.summary.train.bursts,4);assert.equal(plan.summary.validation.bursts,4);
+  assert.equal(plan.summary.train.syntheticCaptures,1536);assert.equal(plan.summary.validation.syntheticCaptures,192);
   assert.deepEqual(plan.existingOutputs,['real-train']);await previous(root);
+}));
+
+test('incomplete phase coverage fails before replacing datasets',async()=>fixture(async(root,paths)=>{
+  const missing=copy(fixtures[0].capture);missing.records=missing.records.filter(row=>row.info.phase!==3);
+  await writeFile(paths.trainCapture,JSON.stringify(missing));
+  await assert.rejects(planRebuild({dataRoot:root}),/all four phases/);await previous(root);
 }));
 
 test('rebuild rejects unmatched headers and wrong-device pairs before replacing datasets',async()=>fixture(async(root,paths)=>{
@@ -132,14 +141,17 @@ test('small full rebuild regenerates joined bursts, exact targets, groups and se
   for(const split of ['train','validation']) {
     const read=async name=>JSON.parse(await readFile(join(root,name,'manifest.json'),'utf8'));
     const real=await read(`real-${split}`),clean=await read(`target-clean-${split}`),synthetic=await read(`target-synthetic-${split}`);
-    assert.equal(real.samples.length,2);assert.equal(clean.samples.length,1);assert.equal(synthetic.samples.length,2);
-    assert.equal(new Set(real.samples.map(s=>s.burstId)).size,1);
-    assert.equal(new Set(synthetic.samples.map(s=>s.burstId)).size,1);
+    assert.equal(real.samples.length,8);assert.equal(clean.samples.length,4);assert.equal(synthetic.samples.length,8);
+    assert.equal(synthetic.generator.phaseGrouped,true);
+    assert.equal(new Set(synthetic.samples.map(s=>s.synthetic.phaseGroupId)).size,1);
+    assert.equal(new Set(real.samples.map(s=>s.burstId)).size,4);
+    assert.equal(new Set(synthetic.samples.map(s=>s.burstId)).size,4);
     for(const sample of [...real.samples,...clean.samples,...synthetic.samples])assert.equal(sample.split,split);
     for(const sample of synthetic.samples) {
       assert.equal(sample.sessionId,real.samples[0].sessionId);
       assert.equal(sample.payloadId,real.samples[0].payloadId);
-      for(const field of ['labels','mask','expected'])assert.equal(sample.hashes[field],real.samples[0].hashes[field]);
+      const samePhase=real.samples.find(row=>row.info.phase===sample.info.phase);
+      for(const field of ['labels','mask','expected'])assert.equal(sample.hashes[field],samePhase.hashes[field]);
     }
   }
   for(const [path,hash] of rawBefore)assert.equal(sha(await readFile(path)),hash);

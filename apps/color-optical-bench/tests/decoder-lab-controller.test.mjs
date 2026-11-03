@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {validateOptions,summarizeTimings,validFrameCount,MAX_INPUT_FRAMES} from '../dist/js/decoder-lab/runtime.js';
 
-async function harness({advance=true,alwaysWaiting=false,duplicateFrame=false,frames=4,frameInterval=100,capacity=frames,captureFrames=0}={}) {
+async function harness({advance=true,alwaysWaiting=false,duplicateFrame=false,frames=4,frameInterval=100,capacity=frames,captureFrames=0,phaseGrouped=false,readyAfter=frames}={}) {
   const nodes=new Map(),calls=[],clients=[],pendingFrames=new Map();let stopped=0,requestedFrames=0,canceledFrames=0,presented=0,clock=0;
   class Element {
     constructor(id='') {this.id=id;this.value='';this.hidden=false;this.disabled=false;this.dataset={};this.children=[];this.listeners={};}
@@ -36,7 +36,7 @@ async function harness({advance=true,alwaysWaiting=false,duplicateFrame=false,fr
       calls.push({operation,options,transfer,captureStartedMs:clock});
       // The playback clock may advance independently of presented frames.
       video.currentTime+=.01;
-      if(alwaysWaiting||calls.length%frames!==0)return {waiting:true,collected:calls.length%frames||1,framesPerInput:capacity,requiredCaptures:frames,operation:'capture'};
+      if(alwaysWaiting||calls.length%readyAfter!==0)return {waiting:true,collected:calls.length%frames||1,framesPerInput:capacity,requiredCaptures:frames,operation:'capture',phaseGrouped,phaseCounts:phaseGrouped?[1,1,0,0]:undefined};
       return {operation:'capture',modelStatus:'trained',size:64,paletteColors:16,framesPerInput:capacity,requiredCaptures:frames,inputCaptures:frames,
         inputStats:{preprocessMs:8},inferenceMs:1,effectiveBackend:'wasm',logitsFinite:true,note:'fixture'};
     }
@@ -120,7 +120,7 @@ test('unsupported browsers fail clearly instead of substituting playback time',a
 
 
 test('variable-frame camera selection sends actual count while preserving eight-slot model capacity',async()=>{
-  for(const frames of [5,6,7,8]) {
+  for(const frames of [4,5,6,7,8]) {
     const h=await harness({frames,capacity:8,captureFrames:frames});await h.lab.run('capture');
     assert.equal(h.calls.length,frames);
     assert.ok(h.calls.every(call=>call.options.captureFrames===frames));
@@ -128,4 +128,13 @@ test('variable-frame camera selection sends actual count while preserving eight-
     assert.equal(h.lab.records[0].framesPerInput,8);
     assert.equal(h.lab.records[0].requiredCaptures,frames);
   }
+});
+
+
+test('phase camera collection allows transitions beyond fixed-burst attempts but remains bounded',async()=>{
+  const complete=await harness({frames:4,capacity:8,captureFrames:4,phaseGrouped:true,readyAfter:24});
+  await complete.lab.run('capture');assert.equal(complete.calls.length,24);assert.equal(complete.lab.records[0].ok,true);
+  const waiting=await harness({frames:4,capacity:8,captureFrames:4,phaseGrouped:true,alwaysWaiting:true});
+  await waiting.lab.run('capture');assert.equal(waiting.calls.length,512);
+  assert.equal(waiting.lab.records[0].ok,false);assert.match(waiting.lab.records[0].error,/all four phases/);
 });

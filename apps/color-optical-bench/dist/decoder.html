@@ -35,8 +35,8 @@
           <div class="decoder-fields camera-fields"><label for="camera">Camera<select id="camera"><option value="">Default camera</option></select></label><label for="resolution">Requested resolution<select id="resolution"><option value="720">720p</option><option value="1080">1080p</option><option value="480">480p</option></select></label></div>
           <div class="decoder-camera"><video id="video" autoplay muted playsinline></video><span id="cameraPlaceholder">Camera is off</span></div>
           <p class="muted" id="cameraStatus">No camera frames are saved or uploaded.</p>
-          <div class="decoder-fields camera-fields"><label for="captureFrames">Camera exposures<select id="captureFrames"><option value="0">Model default</option><option value="5">5 exposures</option><option value="6">6 exposures</option><option value="7">7 exposures</option><option value="8">8 exposures</option></select></label></div>
-          <p class="muted">Attention tube accepts 5–8 exposures at 64×64. Fixed-frame models require their configured count.</p>
+          <div class="decoder-fields camera-fields"><label for="captureFrames">Camera exposures<select id="captureFrames"><option value="0">Model default</option><option value="4">4 exposures</option><option value="5">5 exposures</option><option value="6">6 exposures</option><option value="7">7 exposures</option><option value="8">8 exposures</option></select></label></div>
+          <p class="muted">Attention tube accepts 4–8 exposures at 64×64: one or two captures from each of four palette phases. Fixed-frame models require their configured count.</p>
           <div class="decoder-actions"><button class="small-button" id="startCamera">Start camera</button><button class="small-button" id="stopCamera" disabled>Stop camera</button><button class="button secondary" id="runCapture" disabled>Test matrix burst</button></div>
           <p class="muted">Each exposure is rectified separately. The monochrome header keeps all burst frames on the same matrix and palette phase. A 32×32 control matrix continues to use the classical receiver outside this lab.</p>
         </div>

@@ -85,7 +85,7 @@ test('clean generation yields distinct dataset IDs and exact canonical recovery 
   const sample=a.samples[0],labels=new Uint8Array(await readFile(join(train,sample.labels))),logits=new Float32Array(16*64*64).fill(-20);
   labels.forEach((color,cell)=>{logits[color*64*64+cell]=20;});
   await writeFile(join(root,'prediction.f32'),floatBytes(logits));const prediction=join(root,'prediction.json');
-  await writeFile(prediction,JSON.stringify({framesPerInput:1,samples:[{id:sample.id,memberIds:[sample.id],logits:'prediction.f32'}]}));
+  await writeFile(prediction,JSON.stringify({framesPerInput:1,outputLabelSpace:'physical',samples:[{id:sample.id,memberIds:[sample.id],logits:'prediction.f32'}]}));
   const result=await evaluate({dataset:train,predictions:prediction});
   assert.equal(result.summary.classical.exact,1);assert.equal(result.summary.learned.exact,1);assert.equal(result.summary.learned.wrongAccepted,0);
   await assert.rejects(generate({out:train,count:'1'}),/empty/);
@@ -176,7 +176,7 @@ for(const frames of [4,5])test(`burst evaluation fuses exactly ${frames} observa
   }
   await writeFile(path,JSON.stringify(manifest));
   await writeFile(join(root,'prediction.f32'),floatBytes(logits));
-  const predictionPath=join(root,'prediction.json'),prediction={framesPerInput:frames,samples:[{
+  const predictionPath=join(root,'prediction.json'),prediction={framesPerInput:frames,outputLabelSpace:'physical',samples:[{
     id:'burst-0',memberIds:manifest.samples.map(row=>row.id),logits:'prediction.f32'}]};
   await writeFile(predictionPath,JSON.stringify(prediction));
   const result=await evaluate({dataset:directory,predictions:predictionPath});
@@ -213,4 +213,42 @@ for(const frames of [4,5])test(`burst evaluation fuses exactly ${frames} observa
     assert.equal(wrongTruth.summary[method].exact,0);
     assert.equal(wrongTruth.summary[method].wrongAccepted,1);
   }
+}));
+
+test('four-phase evaluation canonicalizes each observation and never phase-inverts logical predictions twice',async()=>temp(async root=>{
+  const directory=join(root,'phases');
+  await generate({out:directory,count:'1',size:'64',colors:'16',phases:'4',seed:'441',split:'validation'});
+  const path=join(directory,'manifest.json'),manifest=JSON.parse(await readFile(path,'utf8')),originals=manifest.samples;
+  const labels=new Uint8Array(await readFile(join(directory,originals[0].labels))),logits=new Float32Array(16*64*64).fill(-20);
+  labels.forEach((color,cell)=>{logits[color*64*64+cell]=20;});
+  manifest.samples=originals.flatMap(original=>Array.from({length:2},(_,index)=>({...copy(original),
+    id:`phase-${original.info.phase}-${index}`,burstId:`phase-burst-${original.info.phase}`,
+    synthetic:{phaseGroupId:'shared-corruption'},timestamp:index*100})));
+  await writeFile(path,JSON.stringify(manifest));await writeFile(join(root,'prediction.f32'),floatBytes(logits));
+  const predictionPath=join(root,'prediction.json');
+  // A nonzero anchor phase makes an accidental second palette reversal visible.
+  const ids=['phase-1-0','phase-0-0','phase-2-0','phase-3-0','phase-1-1','phase-0-1','phase-2-1','phase-3-1'];
+  const prediction=count=>({framesPerInput:count,outputLabelSpace:'logical',samples:[{
+    id:ids[0],memberIds:ids.slice(0,count),logits:'prediction.f32'}]});
+  for(const count of [4,5,6,7,8]) {
+    await writeFile(predictionPath,JSON.stringify(prediction(count)));
+    const result=await evaluate({dataset:directory,predictions:predictionPath});
+    assert.equal(result.summary.inputCaptures,count);
+    assert.equal(result.summary.learned.exact,1,'canonical logits must already be in logical label space');
+    assert.equal(result.summary.classical.exact,1,'each synthetic RGB observation uses its own phase mapping');
+  }
+  await writeFile(predictionPath,JSON.stringify(prediction(4)));
+  for(const mutate of [row=>row.synthetic.phaseGroupId='unrelated',row=>delete row.synthetic.phaseGroupId,
+    row=>row.sessionId='different-session',row=>row.info.index=1,row=>row.info.phases=8]) {
+    const bad=copy(manifest);mutate(bad.samples.find(row=>row.id==='phase-2-0'));
+    await writeFile(path,JSON.stringify(bad));
+    await assert.rejects(evaluate({dataset:directory,predictions:predictionPath}),/Phase-grouped|Synthetic phase groups/);
+  }
+  await writeFile(path,JSON.stringify(manifest));
+  const missing=prediction(4);missing.samples[0].memberIds[3]='phase-1-1';
+  await writeFile(predictionPath,JSON.stringify(missing));
+  await assert.rejects(evaluate({dataset:directory,predictions:predictionPath}),/every phase/);
+  const noSpace=prediction(4);delete noSpace.outputLabelSpace;
+  await writeFile(predictionPath,JSON.stringify(noSpace));
+  await assert.rejects(evaluate({dataset:directory,predictions:predictionPath}),/Unsupported dataset\/prediction/);
 }));

@@ -35,6 +35,11 @@ def masked_loss(logits, labels, mask, colors: int):
 
 def canonical_recovery(dataset, selected, predictions, work_dir: Path, node="node", *, session_groups=None):
     rows = []
+    label_spaces = {"logical" if getattr(sample, "phase_grouped", False) else "physical"
+                    for sample in selected}
+    if len(label_spaces) != 1:
+        raise ValueError("Recovery candidates cannot mix logical and physical output labels")
+    label_space = label_spaces.pop()
     members = {sample.id: tuple(getattr(sample, "members", (sample,))) for sample in selected}
     counts = {len(group) for group in members.values()}
     if len(counts) != 1 or any(count not in FRAME_COUNTS for count in counts):
@@ -43,7 +48,8 @@ def canonical_recovery(dataset, selected, predictions, work_dir: Path, node="nod
     for index, manifest in enumerate(sorted({sample.manifest for sample in selected})):
         wanted = [sample for sample in selected if sample.manifest == manifest]
         prediction_file = work_dir / f"predictions-{index}.json"
-        prediction_file.write_text(json.dumps({"framesPerInput": frames, "samples": [{"id": sample.id,
+        prediction_file.write_text(json.dumps({"framesPerInput": frames, "outputLabelSpace": label_space,
+            "samples": [{"id": sample.id,
             "memberIds": [member.id for member in members[sample.id]],
             "logits": predictions[sample.id].relative_to(work_dir).as_posix()} for sample in wanted]}))
         process = subprocess.run([node, str(ROOT/"scripts/decoder-dataset.mjs"), "evaluate",
@@ -64,7 +70,9 @@ def canonical_recovery(dataset, selected, predictions, work_dir: Path, node="nod
         for row in values:
             metadata = by_id[row["id"]].metadata
             row["sessionId"] = metadata["sessionId"]
-            row["phase"] = metadata["info"].get("phase", 0)
+            row["phase"] = None if label_space == "logical" else metadata["info"].get("phase", 0)
+            row["phases"] = sorted({member.metadata["info"].get("phase", 0)
+                                    for member in members[row["id"]]})
             row["group"] = (session_groups[metadata["sessionId"]]
                 if session_groups is not None and metadata["source"] == "real"
                 else f"source:{metadata['source']}")
@@ -79,7 +87,7 @@ def canonical_recovery(dataset, selected, predictions, work_dir: Path, node="nod
             "exactFrames": sum(bool(row.get("exact")) for row in values),
             "wrongAcceptedFrames": sum(bool(row.get("wrongAccepted")) for row in values)}
         summary[name]["exactRate"] = summary[name]["exactFrames"] / len(values)
-    return {"summary": summary, "samples": rows,
+    return {"summary": summary, "samples": rows, "outputLabelSpace": label_space,
             "framesPerInput": frames, "inputCaptures": len(rows)*frames,
             "observationBudget": (f"The same set of {frames} distinct captures per method and candidate; "
                                   "classical scores are averaged over those captures. "
@@ -164,7 +172,7 @@ def _evaluate_candidates(model, dataset, candidates, burst_stats, *, frames, dev
     if not candidates:
         if "frameCapacity" in burst_stats:
             raise ValueError(f"No complete {burst_stats['frameCapacity']}-capture evaluation blocks; "
-                             "nested frame-count evaluation needs full capacity blocks")
+                             "nested four-phase evaluation needs two captures of every phase")
         raise ValueError(f"No complete {frames}-frame evaluation groups; collect more same-phase captures")
     selected = select_samples(candidates, max_samples)
     if session_groups is not None:
@@ -223,7 +231,8 @@ def _evaluate_candidates(model, dataset, candidates, burst_stats, *, frames, dev
                     group["dataCells"] += count
                     group["wrongCells"] += int(np.count_nonzero(chosen != truth))
                     group["lossSum"] += sample_loss*count
-                    phase = str(sample.metadata["info"].get("phase", 0))
+                    phase = ("0+1+2+3" if getattr(sample, "phase_grouped", False)
+                             else str(sample.metadata["info"].get("phase", 0)))
                     group["phases"][phase] = group["phases"].get(phase, 0)+1
                     np.add.at(confusion, (truth, chosen), 1)
                     calibration_bin = np.minimum(14, (confidence*15).astype(int))
@@ -258,6 +267,7 @@ def _evaluate_candidates(model, dataset, candidates, burst_stats, *, frames, dev
     ordered = sorted(timings)
     return {"format": "optical-decoder-evaluation", "version": 1,
             "samples": len(selected), "availableSamples": len(candidates),
+            "outputLabelSpace": "logical" if getattr(selected[0], "phase_grouped", False) else "physical",
             "framesPerInput": frames, "inputCaptures": len(selected)*frames,
             "availableInputCaptures": len(dataset.samples), "burstGrouping": burst_stats,
             "manifestSha256": dataset.manifest_hash, "profiles": profile_counts,
@@ -322,6 +332,7 @@ def _combine_frame_counts(reports, *, frame_capacity, session_groups, exact):
     recovery = None
     if exact:
         recovery = {"summary": {}, "samples": [], "framesPerInput": None,
+                    "outputLabelSpace": first["outputLabelSpace"],
                     "frameCapacity": frame_capacity, "actualFrameCounts": [int(key) for key in counts],
                     "inputCaptures": sum(report["inputCaptures"] for report in values),
                     "uniqueInputCaptures": first["samples"]*frame_capacity,
@@ -363,6 +374,7 @@ def _combine_frame_counts(reports, *, frame_capacity, session_groups, exact):
                      "accuracy": sum(row["count"]*(row["accuracy"] or 0.) for row in rows)/count if count else None})
     cells = sum(report["dataCells"] for report in values)
     return {"format": "optical-decoder-evaluation", "version": 1,
+            "outputLabelSpace": first["outputLabelSpace"],
             "samples": sum(report["samples"] for report in values),
             "observationCases": sum(report["samples"] for report in values),
             "uniqueCandidates": first["samples"],
@@ -373,16 +385,16 @@ def _combine_frame_counts(reports, *, frame_capacity, session_groups, exact):
             "inputCaptures": sum(report["inputCaptures"] for report in values),
             "uniqueInputCaptures": first["samples"]*frame_capacity,
             "availableInputCaptures": first["availableInputCaptures"],
-            "burstGrouping": {"method": "fixed-seeded-capacity-blocks/nested-frame-counts",
+            "burstGrouping": {"method": "fixed-seeded-phase-pairs/nested-frame-counts",
                 "seed": EVALUATION_SEED, "frameCapacity": frame_capacity,
                 "actualFrameCounts": [int(key) for key in counts],
                 "uniqueCandidates": first["samples"],
-                "note": "The same capacity-sized blocks and fixed slot order are reused for all nested frame counts. "
+                "note": "The same two-capture-per-phase blocks and fixed paired slots are reused for all nested frame counts. "
                         "See byFrameCount for unused-slot and remainder accounting."},
             "manifestSha256": first["manifestSha256"], "profiles": profiles,
             "selection": {**first["selection"],
-                "method": "fixed-seeded-capacity-blocks/nested-frame-counts/session-profile-round-robin",
-                "note": "One fixed shuffled capacity-sized block defines every 5/6/7/8 preset. "
+                "method": "fixed-seeded-phase-pairs/nested-frame-counts/session-profile-round-robin",
+                "note": "One fixed shuffled four-phase capacity block defines every 4/5/6/7/8 preset. "
                         "max_samples caps the same candidate IDs per preset. Cases repeat across presets."},
             "sessions": per_session, **summaries, "phoneToPCGoal": goal,
             "dataCells": cells, "loss": sum(report["loss"] for report in values)/len(values),

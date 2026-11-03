@@ -156,13 +156,15 @@ class OpticalDecoder(nn.Module):
         if type(frames) is not int or frames not in FRAME_COUNTS:
             raise ValueError(f"Choose 1 to {MAX_FRAMES} input frames")
         if profile == "attention-tube" and frames != 8:
-            raise ValueError("Attention-tube uses exactly eight input slots, with five to eight present frames")
+            raise ValueError("Attention-tube uses eight phase-paired slots, with four to eight present frames")
         self.profile = profile
         self.frames = frames
         self.variable_frames = profile == "attention-tube"
-        self.min_frames = 5 if self.variable_frames else frames
+        self.min_frames = 4 if self.variable_frames else frames
         self.input_channels = 4 * frames if self.variable_frames else 3 * frames
-        self.input_layout = "rgb-presence-planes" if self.variable_frames else "stacked-rgb"
+        self.input_layout = "phase-paired-rgb-presence-planes" if self.variable_frames else "stacked-rgb"
+        self.output_label_space = "logical" if self.variable_frames else "physical"
+        self.phase_masks = (0, 15, 7, 8) if self.variable_frames else ()
         self.supported_sizes = (64,) if self.variable_frames else (64, 128)
         self.inlet = nn.Sequential(conv(self.input_channels, 32, normalize=profile == "normalized-tube"),
                                    conv(32, 32, normalize=True))

@@ -232,11 +232,12 @@ export async function baselines(options) {
 export async function evaluate(options) {
   only(options,['dataset','predictions','split']);if(!options.dataset||!options.predictions)throw Error('evaluate requires --dataset DIRECTORY --predictions FILE.');
   const root=resolve(options.dataset),manifest=await jsonFile(join(root,'manifest.json')),predictionPath=resolve(options.predictions),predictions=await jsonFile(predictionPath);
-  if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||!Array.isArray(predictions.samples)||!predictions.samples.length||!validFrameCount(predictions.framesPerInput))throw Error('Unsupported dataset/prediction manifest.');
+  if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||!Array.isArray(predictions.samples)||!predictions.samples.length||!validFrameCount(predictions.framesPerInput)||!['physical','logical'].includes(predictions.outputLabelSpace))throw Error('Unsupported dataset/prediction manifest.');
   if(new Set(manifest.samples.map(s=>s.id)).size!==manifest.samples.length)throw Error('Duplicate dataset sample ID.');
   if(options.split)splitName(options.split);
   const eligible=manifest.samples.filter(s=>!options.split||s.split===options.split),byId=new Map(eligible.map(s=>[s.id,s]));
-  const frames=predictions.framesPerInput,used=new Set(),anchors=new Set(),selected=[];
+  const frames=predictions.framesPerInput,phaseGrouped=predictions.outputLabelSpace==='logical',used=new Set(),anchors=new Set(),selected=[];
+  if(phaseGrouped&&(frames<4||frames>8))throw Error('Phase-grouped predictions require four to eight captures.');
   // Public capture identities define membership; no labels or successful decode
   // choose a member. Distinct, nonoverlapping groups match the Python evaluator.
   for(const prediction of predictions.samples) {
@@ -249,8 +250,20 @@ export async function evaluate(options) {
       used.add(id);return byId.get(id);
     });
     const sample=members[0],identity=row=>canonicalJSON([row.source,row.sessionId,row.senderSessionId??null,row.payloadId,row.split,row.size,row.colors,row.info,row.burstId??null]);
-    if(frames>1&&(!sample.burstId||members.some(row=>identity(row)!==identity(sample))))throw Error('Burst members must share source, session, payload, header/phase and burst identity.');
-    if(frames>1&&members.some(row=>['labels','mask','expected'].some(field=>row.hashes?.[field]!==sample.hashes?.[field])))throw Error('Burst target hashes disagree.');
+    if(phaseGrouped) {
+      const phaseIdentity=row=>{const {phase,...info}=row.info;return canonicalJSON([row.source,row.sessionId,row.senderSessionId??null,row.payloadId,row.split,row.size,row.colors,info,row.source==='synthetic'?row.synthetic?.phaseGroupId:null]);};
+      const counts=[0,0,0,0];
+      for(const member of members) {
+        const info=member.info;
+        if(member.size!==64||member.colors!==16||info.size!==64||info.colors!==16||info.phases!==4||info.permute!==true||!Number.isInteger(info.phase)||info.phase<0||info.phase>3||!['real','synthetic'].includes(member.source)||!member.burstId)throw Error('Phase-grouped members require four permuted G64/16 phases.');
+        if(member.source==='synthetic'&&(typeof member.synthetic?.phaseGroupId!=='string'||!member.synthetic.phaseGroupId))throw Error('Synthetic phase groups require a shared corruption identity.');
+        if(phaseIdentity(member)!==phaseIdentity(sample))throw Error('Phase-grouped members must share source, session, payload, logical header and corruption identity.');
+        counts[info.phase]++;
+      }
+      if(counts.some(count=>count<1||count>2))throw Error('Phase-grouped inputs require one or two captures of every phase.');
+    } else if(frames>1&&(!sample.burstId||members.some(row=>identity(row)!==identity(sample))))throw Error('Burst members must share source, session, payload, header/phase and burst identity.');
+    const checkedFields=phaseGrouped?['mask','expected']:['labels','mask','expected'];
+    if(frames>1&&members.some(row=>checkedFields.some(field=>row.hashes?.[field]!==sample.hashes?.[field])))throw Error('Burst target hashes disagree.');
     selected.push({sample,members,prediction});
   }
   const results=[];
@@ -263,14 +276,14 @@ export async function evaluate(options) {
     const count=gridLayout(g,info.colors,info.gridBlock).cells.length*info.colors,baseline=new Float32Array(count);
     for(const member of members) {
       const input=floatsFromBytes(await readSampleFile(root,member,'input',3*16*g*g*4),3*16*g*g);
-      const scores=member.source==='synthetic'?denseClassicalScores(input,info):floatsFromBytes(await readSampleFile(root,member,'baseline',count*4),count);
+      const scores=member.source==='synthetic'?denseClassicalScores(input,member.info):floatsFromBytes(await readSampleFile(root,member,'baseline',count*4),count);
       for(let cell=0;cell<count;cell++)baseline[cell]+=scores[cell]/frames;
     }
-    const learnedScores=logitsToLogicalScores(logits,info),expected=await readSampleFile(root,sample,'expected',65536);
+    const learnedScores=logitsToLogicalScores(logits,info,{labelSpace:predictions.outputLabelSpace}),expected=await readSampleFile(root,sample,'expected',65536);
     // Only compare expected bytes after independent CRC/RS acceptance.
     results.push({id:sample.id,memberIds:prediction.memberIds,source:sample.source,size:g,colors:info.colors,classical:recoveryResult(info,baseline,expected),learned:recoveryResult(info,learnedScores,expected)});
   }
-  const summary={samples:results.length,inputCaptures:used.size,framesPerInput:frames};
+  const summary={samples:results.length,inputCaptures:used.size,framesPerInput:frames,outputLabelSpace:predictions.outputLabelSpace};
   for(const method of ['classical','learned']) {summary[method]={};for(const field of ['rawCRC','hardCRC','accepted','exact','wrongAccepted'])summary[method][field]=results.filter(r=>r[method][field]).length;}
   return {format:'optical-decoder-recovery-report',version:1,scope:`Each candidate uses the same ${frames} distinct exposures for both methods; classical logical scores are averaged, with nonoverlapping groups and no throughput claim.`,summary,samples:results};
 }

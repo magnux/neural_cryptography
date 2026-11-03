@@ -71,12 +71,19 @@ def training_provenance(training: dict) -> dict:
                 values != sorted(set(values))):
             raise ValueError("Invalid checkpoint frameCounts")
         result["frameCounts"] = values
-    for key, choices in (("inputLayout", ("stacked-rgb", "rgb-presence-planes")),
-                         ("frameCountPolicy", ("fixed", "uniform-5-8"))):
+    for key, choices in (("inputLayout", ("stacked-rgb", "phase-paired-rgb-presence-planes")),
+                         ("outputLabelSpace", ("physical", "logical")),
+                         ("frameCountPolicy", ("fixed", "uniform-4-8"))):
         if key in training:
             if training[key] not in choices:
                 raise ValueError(f"Invalid checkpoint {key}")
             result[key] = training[key]
+    if "phaseMasks" in training:
+        values = training["phaseMasks"]
+        if (not isinstance(values, list) or any(type(value) is not int for value in values)
+                or values not in ([], [0, 15, 7, 8])):
+            raise ValueError("Invalid checkpoint phaseMasks")
+        result["phaseMasks"] = values
     if "modelProfile" in training:
         if training["modelProfile"] not in MODEL_PROFILES:
             raise ValueError("Invalid checkpoint modelProfile")
@@ -174,9 +181,11 @@ def load_checkpoint(path: Path, model: OpticalDecoder | None = None) -> dict:
     if checkpoint["training"].get("modelProfile", model.profile) != model.profile:
         raise ValueError("Checkpoint profile metadata disagrees with model parameters")
     frame_metadata = {"inputLayout": model.input_layout,
+                      "outputLabelSpace": model.output_label_space,
+                      "phaseMasks": list(model.phase_masks),
                       "minFramesPerInput": model.min_frames,
                       "frameCounts": list(range(model.min_frames, model.frames+1)),
-                      "frameCountPolicy": "uniform-5-8" if model.variable_frames else "fixed"}
+                      "frameCountPolicy": "uniform-4-8" if model.variable_frames else "fixed"}
     for name, expected_value in frame_metadata.items():
         training = checkpoint["training"]
         if model.variable_frames and name not in training:

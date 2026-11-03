@@ -2,7 +2,9 @@
 
 Recorded calibration overshoot survives the RGB conversion. The decoder remains
 responsible for the final common [-1, 1] network-input clip. No geometry, target,
-stored crop, synthetic example, or evaluation input is changed here.
+stored crop, synthetic example, or evaluation input is changed by RealAugmentation.
+PhaseAugmentation separately applies phase/geometry symmetries to assembled
+phase-grouped training inputs of either source.
 """
 
 import numpy as np
@@ -55,3 +57,61 @@ class RealAugmentation:
                 rgb += self.rng.normal(0., self.noise_std, rgb.shape).astype(np.float32)
             result[index] = np.clip(rgb*2.-1., CAPTURE_INPUT_MIN, CAPTURE_INPUT_MAX).reshape(pixels.shape[1:])
         return result
+
+
+class PhaseAugmentation:
+    """Exact phase-group symmetries and joint training-only spatial flips.
+
+    Pixel values are never recolored. Reordering the four phase pairs corresponds
+    to XORing data labels by one of the closed palette-mask group elements.
+    Pilots are unchanged by phase relabeling. Spatial flips transform all inputs,
+    targets and masks together; they are never applied during wire recovery.
+    """
+
+    def __init__(self, *, seed, flip_probability=.25, permutations=True):
+        if (isinstance(flip_probability, bool) or not np.isfinite(flip_probability)
+                or not 0 <= flip_probability <= 1 or type(permutations) is not bool):
+            raise ValueError("Phase flip probability must be within 0..1 and permutations must be boolean")
+        self.flip_probability = float(flip_probability)
+        self.permutations = permutations
+        self.seed = [seed, 0x50484153]
+        self.rng = np.random.default_rng(np.random.SeedSequence(self.seed))
+
+    def settings(self):
+        return {"scope": "phase-grouped-training-only", "phasePermutations": self.permutations,
+                "horizontalFlipProbability": self.flip_probability,
+                "verticalFlipProbability": self.flip_probability,
+                "rngSeed": self.seed, "recovery": "unaugmented-canonical-coordinates"}
+
+    @staticmethod
+    def transform(pixels, labels, mask, *, delta=0, horizontal=False, vertical=False):
+        from phases import PHASE_MASKS
+        if (pixels.dtype != np.float32 or pixels.ndim != 3 or pixels.shape[0] != 32
+                or labels.ndim != 2 or mask.shape != labels.shape or mask.dtype != np.bool_
+                or pixels.shape[-2:] != tuple(4*size for size in labels.shape)
+                or delta not in PHASE_MASKS):
+            raise ValueError("Expected packed phase-paired RGB/presence, labels and boolean mask")
+        source_phases = [PHASE_MASKS.index(value ^ delta) for value in PHASE_MASKS]
+        source_slots = [2*phase+slot for phase in source_phases for slot in range(2)]
+        rgb = pixels[:24].reshape(8, 3, *pixels.shape[-2:])[source_slots].reshape(24, *pixels.shape[-2:])
+        result = np.concatenate((rgb, pixels[24:][source_slots]), axis=0)
+        target = labels.copy()
+        target[mask] ^= delta
+        target_mask = mask.copy()
+        for axis, enabled in ((-1, horizontal), (-2, vertical)):
+            if enabled:
+                result = np.flip(result, axis=axis)
+                target = np.flip(target, axis=axis)
+                target_mask = np.flip(target_mask, axis=axis)
+        # torch.from_numpy cannot consume negative-stride flip views.
+        return (np.ascontiguousarray(result), np.ascontiguousarray(target),
+                np.ascontiguousarray(target_mask))
+
+    def __call__(self, pixels, labels, masks):
+        from phases import PHASE_MASKS
+        transformed = [self.transform(row, target, mask,
+                       delta=int(self.rng.choice(PHASE_MASKS)) if self.permutations else 0,
+                       horizontal=self.rng.random() < self.flip_probability,
+                       vertical=self.rng.random() < self.flip_probability)
+                       for row, target, mask in zip(pixels, labels, masks)]
+        return tuple(np.stack([row[index] for row in transformed]) for index in range(3))

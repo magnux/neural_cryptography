@@ -123,8 +123,9 @@ class CheckpointExportTests(unittest.TestCase):
             model.head.bias.add_(.25)
         value["modelState"] = model.state_dict()
         value["training"].update(
-            framesPerInput=8, modelProfile="attention-tube", inputLayout="rgb-presence-planes",
-            minFramesPerInput=5, frameCounts=[5, 6, 7, 8], frameCountPolicy="uniform-5-8")
+            framesPerInput=8, modelProfile="attention-tube", inputLayout="phase-paired-rgb-presence-planes",
+            minFramesPerInput=4, frameCounts=[4, 5, 6, 7, 8], frameCountPolicy="uniform-4-8",
+            outputLabelSpace="logical", phaseMasks=[0, 15, 7, 8])
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)/"attention.pt"
             output = Path(temporary)/"bundle"
@@ -134,10 +135,12 @@ class CheckpointExportTests(unittest.TestCase):
             for name, tensor in model.state_dict().items():
                 torch.testing.assert_close(loaded.state_dict()[name], tensor, rtol=0, atol=0)
             manifest = export_smoke(output, check_ort=False, checkpoint=path)
-            self.assertEqual(manifest["inputLayout"], "rgb-presence-planes")
-            self.assertEqual(manifest["frameCounts"], [5, 6, 7, 8])
+            self.assertEqual(manifest["inputLayout"], "phase-paired-rgb-presence-planes")
+            self.assertEqual(manifest["outputLabelSpace"], "logical")
+            self.assertEqual(manifest["phaseMasks"], [0, 15, 7, 8])
+            self.assertEqual(manifest["frameCounts"], [4, 5, 6, 7, 8])
             self.assertEqual(manifest["parameterCount"], 432848)
-            self.assertEqual(manifest["training"]["frameCountPolicy"], "uniform-5-8")
+            self.assertEqual(manifest["training"]["frameCountPolicy"], "uniform-4-8")
             self.assertEqual([case["size"] for case in manifest["cases"]], [64])
             case = manifest["cases"][0]
             pixels = np.fromfile(output/case["input"]["file"], dtype="<f4").reshape(case["inputShape"])
@@ -147,7 +150,7 @@ class CheckpointExportTests(unittest.TestCase):
             np.testing.assert_array_equal(exported, expected)
             with self.assertRaisesRegex(ValueError, "frame count differs"):
                 export_smoke(output, check_ort=False, checkpoint=path, frames=5)
-            for field in ("inputLayout", "minFramesPerInput", "frameCounts", "frameCountPolicy"):
+            for field in ("inputLayout", "minFramesPerInput", "frameCounts", "frameCountPolicy", "outputLabelSpace", "phaseMasks"):
                 broken = {**value, "training": dict(value["training"])}
                 del broken["training"][field]
                 torch.save(broken, path)

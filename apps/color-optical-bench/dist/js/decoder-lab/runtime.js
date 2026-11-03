@@ -24,10 +24,12 @@ export function validateManifest(manifest) {
   const profile=manifest.modelProfile;
   if (!Object.hasOwn(MODEL_PROFILES,profile)||MODEL_PROFILES[profile].base+MODEL_PROFILES[profile].perFrame*manifest.framesPerInput!==manifest.parameterCount) throw new Error('Invalid decoder model profile/count.');
   const attention=profile==='attention-tube',frames=manifest.framesPerInput;
-  if (manifest.inputLayout!==(attention?'rgb-presence-planes':'stacked-rgb') ||
+  if (manifest.inputLayout!==(attention?'phase-paired-rgb-presence-planes':'stacked-rgb') ||
       manifest.channels!==(attention?32:3*frames) || attention&&frames!==8 ||
-      manifest.minFramesPerInput!==(attention?5:frames) ||
-      !shapeEqual(manifest.frameCounts,attention?[5,6,7,8]:[frames]) ||
+      manifest.minFramesPerInput!==(attention?4:frames) ||
+      !shapeEqual(manifest.frameCounts,attention?[4,5,6,7,8]:[frames]) ||
+      manifest.outputLabelSpace!==(attention?'logical':'physical') ||
+      !shapeEqual(manifest.phaseMasks,attention?[0,15,7,8]:[]) ||
       manifest.cases.length!==(attention?1:2)) throw Error('Invalid decoder input layout/frame policy.');
   // Preserve calibrated overshoot in captures/fixtures; the exported graph
   // clips to the common real/synthetic range before its first learned layer.
@@ -62,7 +64,7 @@ export function validateOptions({size = 64, backend = 'auto', iterations = 10, c
   if (![64, 128].includes(size)) throw new Error('Choose a 64 or 128 cell grid.');
   if (!['auto', 'wasm', 'webgpu'].includes(backend)) throw new Error('Unknown inference backend.');
   if (!Number.isInteger(iterations) || iterations < 1 || iterations > 30) throw new Error('Benchmark runs must be 1–30.');
-  if (![0,5,6,7,8].includes(captureFrames)) throw Error('Choose model-default camera exposures, or 5–8 for a variable-frame model.');
+  if (![0,4,5,6,7,8].includes(captureFrames)) throw Error('Choose model-default camera exposures, or 4–8 for a phase-grouped model.');
   return {size, backend, iterations, captureFrames};
 }
 
@@ -74,7 +76,7 @@ export function inputPresence(pixels, manifest, size) {
   if (!(pixels instanceof Float32Array)||pixels.length!==manifest.channels*plane||
       pixels.some(value=>!Number.isFinite(value))) throw Error('Input does not match the prepared frame-stack contract.');
   if (manifest.inputLayout==='stacked-rgb') return Array.from({length:frames},(_,i)=>i);
-  if (manifest.inputLayout!=='rgb-presence-planes'||frames!==8||size!==64||manifest.channels!==32)
+  if (manifest.inputLayout!=='phase-paired-rgb-presence-planes'||frames!==8||size!==64||manifest.channels!==32)
     throw Error('Unsupported packed decoder input.');
   const active=[];
   for(let slot=0;slot<frames;slot++) {
@@ -84,24 +86,31 @@ export function inputPresence(pixels, manifest, size) {
     if(flag===1)active.push(slot);
   }
   if(!manifest.frameCounts.includes(active.length))throw Error('Input has an unsupported number of available captures.');
+  if([0,1,2,3].some(phase=>!active.some(slot=>Math.floor(slot/2)===phase)))throw Error('Phase-grouped inputs require at least one capture of every phase.');
   return active;
 }
 
-/** Pack genuine camera observations; padding is introduced after preprocessing. */
-export function packFrameStack(stack, manifest, size, slots) {
+/** Pack genuine camera observations into their declared phase pairs.
+ * The phase ID is public header metadata, never inferred from RGB or targets.
+ */
+export function packFrameStack(stack, manifest, size, placement) {
   const plane=(4*size)**2,one=3*plane,capacity=manifest.framesPerInput;
   if(!(stack instanceof Float32Array)||!stack.length||stack.length%one||
       stack.some(value=>!Number.isFinite(value)))throw Error('Invalid RGB frame stack.');
   const available=stack.length/one;
   if(!manifest.frameCounts.includes(available))throw Error('Prepared model does not support this capture count.');
   if(manifest.inputLayout==='stacked-rgb') {
-    if(available!==capacity||slots!==undefined)throw Error('Fixed RGB models require their complete ordered frame stack.');
+    if(available!==capacity||placement!==undefined)throw Error('Fixed RGB models require their complete ordered frame stack.');
     return stack;
   }
-  if(manifest.inputLayout!=='rgb-presence-planes'||capacity!==8||size!==64)throw Error('Unsupported packed decoder input.');
-  slots=slots??Array.from({length:available},(_,i)=>i);
+  if(manifest.inputLayout!=='phase-paired-rgb-presence-planes'||capacity!==8||size!==64)throw Error('Unsupported packed decoder input.');
+  if(!plain(placement)||!Array.isArray(placement.phases)||placement.phases.length!==available||
+      placement.phases.some(phase=>!Number.isInteger(phase)||phase<0||phase>3))throw Error('Phase-grouped packing requires a phase ID for every capture.');
+  const counts=[0,0,0,0],defaults=placement.phases.map(phase=>2*phase+counts[phase]++);
+  if(counts.some(count=>count<1||count>2))throw Error('Phase-grouped packing requires one or two captures of every phase.');
+  const slots=placement.slots??defaults;
   if(!Array.isArray(slots)||slots.length!==available||new Set(slots).size!==available||
-      slots.some(slot=>!Number.isInteger(slot)||slot<0||slot>=capacity))throw Error('Invalid available-frame slots.');
+      slots.some((slot,i)=>!Number.isInteger(slot)||slot<0||slot>=capacity||Math.floor(slot/2)!==placement.phases[i]))throw Error('Invalid available-frame phase slots.');
   const pixels=new Float32Array(manifest.channels*plane);
   slots.forEach((slot,index)=>{
     pixels.set(stack.subarray(index*one,(index+1)*one),slot*one);

@@ -7,6 +7,7 @@ import {spawn} from 'node:child_process';
 import {senderFrames,captureKey,canonicalJSON,validateSessionId,MAX_CAPTURE_BYTES,MAX_RECORDS} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
 import {validateCapture} from '../apps/color-optical-bench/dist/js/dataset/capture.js';
 import {gridLayout} from '../apps/color-optical-bench/dist/js/grid.js';
+import {frameKey} from '../apps/color-optical-bench/dist/js/format.js';
 import {joinCaptures,targets} from './decoder-dataset.mjs';
 
 const REPO=resolve(dirname(fileURLToPath(import.meta.url)),'..');
@@ -24,7 +25,7 @@ const RECIPE=['--glare-probability','.7','--glare-strength','.65','--white-balan
 function config(options) {
   for(const key of Object.keys(options))if(!(key in DEFAULTS))throw Error(`Unknown rebuild option: ${key}`);
   const value={...DEFAULTS,...options};
-  for(const [key,min,max] of [['frames',1,16],['burstsPerTarget',1,2**20],['validationBurstsPerTarget',1,2**20],
+  for(const [key,min,max] of [['frames',2,16],['burstsPerTarget',1,2**20],['validationBurstsPerTarget',1,2**20],
     ['seed',0,0xfffffffe],['maxOutputMib',0,Number.MAX_SAFE_INTEGER],['threads',1,64]]) {
     if(!Number.isSafeInteger(value[key])||value[key]<min||value[key]>max)throw Error(`${key} must be an integer in [${min}, ${max}].`);
   }
@@ -118,8 +119,8 @@ export async function planRebuild(options={}) {
       headers.set(frame.key,{entry,info:frame.info});
     }
   }
-  const summaries={train:{senders:0,captureFiles:0,records:0,bursts:new Map(),diagnostics:0},
-    validation:{senders:0,captureFiles:0,records:0,bursts:new Map(),diagnostics:0}};
+  const summaries={train:{senders:0,captureFiles:0,records:0,bursts:new Map(),phaseGroups:new Map(),diagnostics:0},
+    validation:{senders:0,captureFiles:0,records:0,bursts:new Map(),phaseGroups:new Map(),diagnostics:0}};
   for(const entry of entries) {
     const summary=summaries[entry.split];
     if(entry.kind==='sender'){summary.senders++;continue;}
@@ -138,11 +139,17 @@ export async function planRebuild(options={}) {
       if(canonicalJSON(sender.info)!==canonicalJSON(record.info))throw Error(`Capture metadata disagrees with canonical sender header: ${entry.path}`);
       sender.entry.matched=true;summary.records++;
       summary.bursts.set(`${entry.sessionId}/${record.key}`,record.info);
+      const info=record.info;
+      if(info.size!==64||info.colors!==16||info.phases!==4||!info.permute)throw Error(`Phase-grouped rebuild requires G64, 16 colors and four permuted phases: ${entry.path}`);
+      const key=`${entry.sessionId}/${frameKey(info)}`,counts=summary.phaseGroups.get(key)??[0,0,0,0];
+      counts[info.phase]++;summary.phaseGroups.set(key,counts);
     }
   }
   for(const entry of entries)if(entry.kind==='sender'&&!entry.matched)throw Error(`Sender has no matching captures: ${entry.path}`);
   for(const [split,summary] of Object.entries(summaries)) {
     if(!summary.records)throw Error(`No matched real captures in ${split}. Both train and val folders need captures.`);
+    for(const counts of summary.phaseGroups.values())if(counts.some(count=>count<2))throw Error(`${split} requires all four phases with at least two captures each per receiver session/frame.`);
+    summary.phaseGroups=summary.phaseGroups.size;
     const repetitions=split==='train'?cfg.burstsPerTarget:cfg.validationBurstsPerTarget;
     // Same binary estimate as synthetic.generate; manifests need extra disk.
     let binaryBytes=0;
@@ -168,7 +175,7 @@ function run(command,args,{input}={}) {
 function syntheticArgs(plan,split) {
   const c=plan.config;
   return [join(PYTHON,'synthetic.py'),'--clean',join(c.dataRoot,`target-clean-${split}`),
-    '--out',join(c.dataRoot,`target-synthetic-${split}`),'--frames',String(c.frames),
+    '--out',join(c.dataRoot,`target-synthetic-${split}`),'--phase-grouped','--frames',String(c.frames),
     '--bursts-per-target',String(split==='train'?c.burstsPerTarget:c.validationBurstsPerTarget),
     '--seed',String(c.seed+(split==='validation'?1:0)),'--severity-min',String(c.severityMin),
     '--severity',String(c.severity),'--max-output-mib',String(c.maxOutputMib),
@@ -178,7 +185,7 @@ function syntheticArgs(plan,split) {
 export async function rebuild(options={}, {log=console.log}={}) {
   const plan=await planRebuild(options),c=plan.config;
   log(JSON.stringify({dataRoot:c.dataRoot,summary:plan.summary,replace:plan.existingOutputs,
-    outputs:plan.outputs,synthetics:{frames:c.frames,burstsPerTarget:c.burstsPerTarget,
+    outputs:plan.outputs,synthetics:{phaseGrouped:true,framesPerPhase:c.frames,burstsPerTarget:c.burstsPerTarget,
       validationBurstsPerTarget:c.validationBurstsPerTarget,trainSeed:c.seed,validationSeed:c.seed+1}},null,2));
   // Dependency errors occur before deletion, including unavailable Python envs.
   await run(c.python,['-c','import sys; sys.path.insert(0, sys.argv[1]); import synthetic, session_groups',PYTHON]);
@@ -231,12 +238,14 @@ Read local-data/{phone,pc}/{train,val}/ recursively. Match complete optical
 headers; filenames and filesystem dates are not used for pairing. Validate
 inputs first, then replace ONLY the fixed real-*, target-clean-* and
 target-synthetic-* train/validation directories plus session-groups.json.
+Require G64/16-color recordings with all four palette phases and at least two
+captures per phase. Generate coherent phase-grouped synthetic trajectories.
 Stop training that uses these paths before rebuilding. Raw recordings and
 checkpoints are never deleted. Older differently named datasets are untouched.
 
   --data-root PATH                    default: local-data
   --python EXECUTABLE                 default: python3 (active venv)
-  --frames N                          synthetic captures per burst, 1–16 (12)
+  --frames N                          synthetic captures per phase burst, 2–16 (12)
   --bursts-per-target N                training corruption bursts (32)
   --validation-bursts-per-target N     validation corruption bursts (4)
   --seed N                            train seed (41); validation uses N+1

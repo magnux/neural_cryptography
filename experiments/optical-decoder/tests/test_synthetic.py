@@ -14,7 +14,7 @@ HAS_TORCH = importlib.util.find_spec("torch") is not None
 if HAS_TORCH:
     import torch
     from synthetic import (PhotometricConfig, apply_color_exposure, apply_overlays, apply_glare,
-                           apply_motion_blur, corrupt_burst, motion_blur_grids,
+                           apply_motion_blur, corrupt_burst, corrupt_phase_group, motion_blur_grids,
                            overlay_alpha, rolling_shutter_maps, sample_motion_blur,
                            sample_photometric, sample_rolling_shutter, sample_glare, glare_maps,
                            sample_rgb_offset, rgb_motion_blur_grids)
@@ -23,6 +23,34 @@ if HAS_TORCH:
 
 @unittest.skipUnless(HAS_TORCH, "PyTorch needed for synthetic camera corruptions")
 class PhotometricTests(unittest.TestCase):
+    def test_phase_group_uses_one_continuous_optical_trajectory(self):
+        import synthetic
+        clean = np.zeros((4, 3, 256, 256), dtype=np.float32)
+        with patch("synthetic.sample_photometric", wraps=synthetic.sample_photometric) as lighting, \
+                patch("synthetic.sample_capture_resolution", wraps=synthetic.sample_capture_resolution) as capture, \
+                patch("synthetic.rolling_shutter_maps", wraps=synthetic.rolling_shutter_maps) as shutter:
+            first = corrupt_phase_group(clean, 91, frames=2, severity=.4)
+        self.assertEqual(first.shape, (4, 2, 3, 256, 256))
+        self.assertEqual(lighting.call_count, 1)
+        self.assertEqual(capture.call_count, 1)
+        self.assertEqual([call.args[2] for call in shutter.call_args_list], list(range(8)))
+        self.assertTrue(np.isfinite(first).all())
+        self.assertLessEqual(np.abs(first).max(), 1)
+        self.assertFalse(np.array_equal(first[0, 0], first[1, 0]))
+        self.assertFalse(np.array_equal(first[0, 0], first[0, 1]))
+        np.testing.assert_array_equal(first, corrupt_phase_group(clean, 91, frames=2, severity=.4))
+
+    def test_phase_group_preserves_view_order_and_validates_profile(self):
+        clean = np.zeros((4, 3, 256, 256), dtype=np.float32)
+        clean[:] = np.array([-.8, -.2, .4, .9], dtype=np.float32)[:, None, None, None]
+        np.testing.assert_array_equal(corrupt_phase_group(clean, 7, frames=2, severity=0),
+                                      np.repeat(clean[:, None], 2, axis=1))
+        for count in (0, 1, 17, True, 2.5):
+            with self.assertRaisesRegex(ValueError, "captures per phase"):
+                corrupt_phase_group(clean, 7, frames=count)
+        with self.assertRaisesRegex(ValueError, "four finite"):
+            corrupt_phase_group(clean[:3], 7)
+
     def test_white_balance_exposure_and_saturation_on_neutral_rgb(self):
         neutral = torch.full((3, 8, 8), .4)
         tinted = apply_color_exposure(neutral, [1.25, 1, .8], 0)

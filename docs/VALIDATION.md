@@ -803,3 +803,42 @@ padding after augmentation, deterministic nested evaluation and equal actual-K
 classical evidence. Existing fixed-frame training/export and the recording
 rebuild checks also passed. These CPU/synthetic fixtures verify implementation;
 no new trained device-recovery result or achieved 50% phone→PC rate is claimed.
+
+## 2026-11-03 — phase-grouped attention with four-to-eight captures
+
+Attention-tube now assigns its eight slots to four known palette-phase pairs.
+Every input has one or two captures of each phase, so four observations suffice
+for inference. Training draws K uniformly from 4–8, canonicalizes data labels
+to phase zero, and applies exact XOR phase-group permutations plus joint
+horizontal/vertical flips (default probability .25 per axis). Reference colors
+are not XOR-transformed. Augmentation is training-only; evaluation and CRC/RS
+recovery use original coordinates and canonical logical scores. The unchanged
+full-resolution architecture has **432,848 parameters**.
+
+Synthetic generation now supports coherent four-phase trajectories, with shared
+slow optical conditions and evolving motion, moiré, exposure and sensor noise.
+The default rebuild validates complete phase groups before replacing derived
+datasets. Recorded JSON files retain their existing format and contents.
+Evaluation reports nested K=4/5/6/7/8 results on identical logical candidates,
+with the classical comparator receiving the same actual observations and each
+capture's own palette mapping. Browser collection retains earlier phases across
+transient detection failures, bounded by eight captures, 60-second evidence age
+and 512 collection attempts; a different logical header or run resets the group.
+
+Validation covered **134 Python tests**: after correcting two stale test-fixture
+expectations and rerunning their affected modules, **133 passed**, with the
+existing native ONNX Runtime check explicitly skipped in this environment.
+All **88 affected JavaScript tests passed**, without skips. Checks include an
+actual CPU attention optimizer update, strict checkpoint reload, all five
+evaluation presets, physical-label equivalence under phase permutations,
+invertible joint flips, rejection of mixed/incomplete groups, coherent synthetic
+generation, a small full rebuild, and failure-before-deletion behavior.
+
+ONNX graph checking and local asset preparation passed. The untrained graph is
+**2,836,028 bytes**. ONNX Runtime Web 1.23.2 in single-thread Node WASM matched
+the PyTorch four-observation fixture across ten measured runs, with maximum
+absolute error **2.0415e-6**. Input clipping and absent-slot perturbations were
+exactly invariant. All five capture-count configurations returned finite logits
+and preserved missing-slot invariance. These are runtime checks, not trained
+phone recovery or browser/WebGPU performance measurements. No site was deployed
+or reactivated; the real-device recovery target remains to be tested.

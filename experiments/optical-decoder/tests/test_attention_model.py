@@ -24,10 +24,12 @@ class AttentionModelTests(unittest.TestCase):
         model = OpticalDecoder("attention-tube")
         self.assertEqual(parameter_count(model), 432848)
         self.assertEqual(model.frames, 8)
-        self.assertEqual(model.min_frames, 5)
+        self.assertEqual(model.min_frames, 4)
         self.assertEqual(model.input_channels, 32)
         self.assertEqual(model.supported_sizes, (64,))
-        self.assertEqual(model.input_layout, "rgb-presence-planes")
+        self.assertEqual(model.input_layout, "phase-paired-rgb-presence-planes")
+        self.assertEqual(model.output_label_space, "logical")
+        self.assertEqual(model.phase_masks, (0, 15, 7, 8))
         self.assertEqual(tuple(model.position_anchor.shape), (1, 32, 64, 64))
         self.assertEqual([block.shift for block in model.attention], [0, 4])
         self.assertAlmostEqual(float(model.position_anchor.detach().std()), .02, delta=.001)
@@ -41,9 +43,10 @@ class AttentionModelTests(unittest.TestCase):
     def test_missing_slots_are_ignored_and_real_slots_remain_sensitive(self):
         torch.manual_seed(13)
         model = OpticalDecoder("attention-tube").eval()
-        pixels = torch.from_numpy(fixture_input(64, 13, 8, presence=True, available_frames=5))
+        pixels = torch.from_numpy(fixture_input(64, 13, 8, presence=True, available_frames=4))
         presence = pixels[0, 24:, 0, 0]
-        self.assertEqual(int(presence.sum()), 5)
+        self.assertEqual(int(presence.sum()), 4)
+        self.assertTrue(bool((presence.reshape(4, 2).sum(1) == 1).all()))
         missing = torch.nonzero(presence == 0).flatten().tolist()
         available = torch.nonzero(presence == 1).flatten().tolist()
         changed = pixels.clone()
@@ -101,9 +104,10 @@ class AttentionModelTests(unittest.TestCase):
     def test_checkpoint_requires_exact_masked_frame_contract(self):
         model = OpticalDecoder("attention-tube")
         metadata = {"steps": 1, "seed": 7, "framesPerInput": 8,
-                    "modelProfile": "attention-tube", "inputLayout": "rgb-presence-planes",
-                    "minFramesPerInput": 5, "frameCounts": [5, 6, 7, 8],
-                    "frameCountPolicy": "uniform-5-8",
+                    "modelProfile": "attention-tube", "inputLayout": "phase-paired-rgb-presence-planes",
+                    "minFramesPerInput": 4, "frameCounts": [4, 5, 6, 7, 8],
+                    "frameCountPolicy": "uniform-4-8", "outputLabelSpace": "logical",
+                    "phaseMasks": [0, 15, 7, 8],
                     "selectionAggregation": "frame-count-group-balanced-real",
                     "trainSessionIds": ["train"], "trainPayloadIds": ["train-payload"],
                     "validationSessionIds": ["val"], "validationPayloadIds": ["val-payload"]}
@@ -114,8 +118,9 @@ class AttentionModelTests(unittest.TestCase):
             torch.save(value, path)
             restored, _ = load_model_checkpoint(path)
             self.assertEqual(restored.profile, "attention-tube")
-            for key, wrong in (("minFramesPerInput", 4), ("frameCounts", [5, 8]),
-                               ("frameCountPolicy", "fixed"), ("inputLayout", "stacked-rgb")):
+            for key, wrong in (("minFramesPerInput", 5), ("frameCounts", [5, 8]),
+                               ("frameCountPolicy", "fixed"), ("inputLayout", "rgb-presence-planes"),
+                               ("outputLabelSpace", "physical"), ("phaseMasks", [])):
                 broken = {**value, "training": {**metadata, key: wrong}}
                 torch.save(broken, path)
                 with self.subTest(field=key), self.assertRaises(ValueError):
@@ -124,6 +129,13 @@ class AttentionModelTests(unittest.TestCase):
             torch.save(broken, path)
             with self.assertRaisesRegex(ValueError, "requires frameCounts"):
                 load_model_checkpoint(path)
+
+    def test_fixture_has_every_phase_at_all_capture_counts(self):
+        for count in range(4, 9):
+            pixels = fixture_input(64, 5, 8, presence=True, available_frames=count)
+            present = pixels[0, 24:, 0, 0]
+            self.assertEqual(int(present.sum()), count)
+            self.assertTrue(bool((present.reshape(4, 2).sum(1) >= 1).all()))
 
 
 if __name__ == "__main__":

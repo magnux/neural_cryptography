@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 
+import numpy as np
+
 EXPERIMENT = Path(__file__).resolve().parents[1]
 ROOT = EXPERIMENT.parents[1]
 sys.path.insert(0, str(EXPERIMENT))
@@ -22,6 +24,61 @@ if HAS_TORCH:
 
 @unittest.skipUnless(HAS_TORCH, "PyTorch needed for synthetic generation")
 class TargetSyntheticTests(unittest.TestCase):
+    def test_grouped_targets_share_conditions_and_reject_incomplete_or_wrong_truth(self):
+        from data import digest
+        base = ROOT/"validation/tmp"
+        base.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as temporary:
+            root = Path(temporary)
+            subprocess.run(["node", str(ROOT/"scripts/decoder-dataset.mjs"), "generate",
+                            "--out", str(root/"clean"), "--count", "1", "--phases", "4",
+                            "--size", "64", "--colors", "16", "--seed", "913"],
+                           check=True, capture_output=True, text=True)
+            path = root/"clean/manifest.json"
+            original = path.read_text()
+            config = dict(frames=2, bursts_per_target=2, seed=71, severity=.3,
+                          phase_grouped=True, severity_min=.2,
+                          resolution=CaptureResolutionConfig(probability=1, min_scale=.25, max_scale=.5))
+            first = generate([root/"clean"], root/"corrupted", **config)
+            repeated = generate([root/"clean"], root/"repeat", **config)
+            self.assertEqual(first["samples"], repeated["samples"])
+            self.assertTrue(first["generator"]["phaseGrouped"])
+            self.assertEqual(first["generator"]["phaseSchedule"], "round-robin-continuous")
+            self.assertEqual(len(first["samples"]), 16)
+            by_group = {}
+            for row in first["samples"]:
+                by_group.setdefault(row["synthetic"]["phaseGroupId"], []).append(row)
+            self.assertEqual(len(by_group), 2)
+            for rows in by_group.values():
+                self.assertEqual(sorted(row["synthetic"]["timelineFrame"] for row in rows), list(range(8)))
+                self.assertEqual({row["info"]["phase"] for row in rows}, set(range(4)))
+                self.assertEqual(len({row["burstId"] for row in rows}), 4)
+                self.assertEqual(len({row["synthetic"]["seed"] for row in rows}), 1)
+                self.assertEqual(len({row["synthetic"]["severity"] for row in rows}), 1)
+                self.assertEqual(len({json.dumps(row["synthetic"]["captureResolution"], sort_keys=True)
+                                      for row in rows}), 1)
+                self.assertEqual(len({row["hashes"]["input"] for row in rows}), 8)
+            # Missing phases must fail before an output directory is created.
+            broken = json.loads(original)
+            broken["samples"] = [row for row in broken["samples"] if row["info"]["phase"] != 3]
+            path.write_text(json.dumps(broken))
+            with self.assertRaisesRegex(ValueError, "complete set"):
+                generate([root/"clean"], root/"missing", **config)
+            self.assertFalse((root/"missing").exists())
+            # Even consistent file hashes cannot disguise incorrect cross-phase truth.
+            broken = json.loads(original)
+            row = next(row for row in broken["samples"] if row["info"]["phase"] == 1)
+            labels_path = root/"clean"/row["labels"]
+            labels = np.frombuffer(labels_path.read_bytes(), dtype=np.uint8).copy()
+            mask = np.frombuffer((root/"clean"/row["mask"]).read_bytes(), dtype=np.uint8)
+            labels[np.flatnonzero(mask)[0]] ^= 1
+            labels_path.write_bytes(labels.tobytes())
+            row["hashes"]["labels"] = digest(labels_path)
+            path.write_text(json.dumps(broken))
+            with self.assertRaisesRegex(ValueError, "targets disagree"):
+                generate([root/"clean"], root/"wrong-truth", **config)
+            self.assertFalse((root/"wrong-truth").exists())
+
     def test_targets_independent_bursts_pairing_and_split_ownership(self):
         base = ROOT/"validation/tmp"
         base.mkdir(parents=True, exist_ok=True)
@@ -59,7 +116,7 @@ class TargetSyntheticTests(unittest.TestCase):
             self.assertEqual(first["generator"]["burstsPerTarget"], 2)
             self.assertEqual(first["generator"]["severityMin"], .25)
             self.assertEqual(first["generator"]["severity"], .4)
-            self.assertEqual(first["generator"]["kind"], "correlated-calibrated-crop-v7")
+            self.assertEqual(first["generator"]["kind"], "correlated-calibrated-crop-v8")
             self.assertEqual(first["generator"]["photometric"]["glare_probability"], .65)
             self.assertEqual(first["generator"]["photometric"]["rgb_offset_probability"], 1)
             self.assertEqual(first["generator"]["photometric"]["rgb_offset_pixels"], .5)

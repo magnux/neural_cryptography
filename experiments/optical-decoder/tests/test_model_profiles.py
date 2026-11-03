@@ -20,8 +20,9 @@ def training_metadata(model=None):
     result = {"steps": 1, "seed": 7, "trainSessionIds": ["training"], "trainPayloadIds": ["train-payload"],
             "validationSessionIds": ["validation"], "validationPayloadIds": ["validation-payload"]}
     if model is not None and model.variable_frames:
-        result.update(framesPerInput=8, inputLayout=model.input_layout, minFramesPerInput=5,
-                      frameCounts=[5, 6, 7, 8], frameCountPolicy="uniform-5-8")
+        result.update(framesPerInput=8, inputLayout=model.input_layout, minFramesPerInput=4,
+                      frameCounts=[4, 5, 6, 7, 8], frameCountPolicy="uniform-4-8",
+                      outputLabelSpace="logical", phaseMasks=[0, 15, 7, 8])
     return result
 
 

@@ -72,8 +72,8 @@ def fixture_input(size: int, seed: int, frames: int = 1, *, presence: bool = Fal
     Retained calibrated overshoot exercises the model's final [-1,1] input clip.
     """
     input_shape, _ = shapes(size, frames, presence=presence)
-    available = (5 if presence else frames) if available_frames is None else available_frames
-    if type(available) is not int or (presence and available not in (5, 6, 7, 8)) or \
+    available = (4 if presence else frames) if available_frames is None else available_frames
+    if type(available) is not int or (presence and available not in (4, 5, 6, 7, 8)) or \
             (not presence and available != frames):
         raise ValueError("Fixture observation count must match the current input layout")
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 0xFFFFFFFF:
@@ -90,10 +90,13 @@ def fixture_input(size: int, seed: int, frames: int = 1, *, presence: bool = Fal
     rgb = np.ascontiguousarray(np.concatenate(values, axis=1), dtype=np.float32)
     if not presence:
         return rgb
-    # Fixed eight-slot export; missing observations are zeros plus explicit
-    # presence flags. Neither positions nor values encode a known payload.
+    # Fixed phase pairs: one observation in every pair, then random extra
+    # phases. The fixture tests packing/inference, not a known optical payload.
     packed = np.zeros(input_shape, dtype=np.float32)
-    for slot in rng.choice(frames, size=available, replace=False):
+    slots = [2*phase + int(rng.integers(2)) for phase in range(4)]
+    for phase in rng.choice(4, size=available-4, replace=False):
+        slots.append(slots[int(phase)] ^ 1)
+    for slot in slots:
         packed[:, 3*slot:3*slot+3] = rgb[:, 3*slot:3*slot+3]
         packed[:, CHANNELS*frames+slot] = 1.
     return packed

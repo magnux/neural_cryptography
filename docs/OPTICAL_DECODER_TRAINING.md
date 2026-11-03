@@ -4,10 +4,12 @@ The software for collecting examples, generating synthetic interference,
 training the small U-Net, evaluating recovery, and exporting a checkpoint is
 implemented. The full-resolution tube has improved recorded PC→phone recovery.
 The next combined model, **attention-tube**, adds a learned global positional
-anchor, window attention and variable 5–8-frame observations. Its immediate
+anchor, window attention and variable 4–8-frame observations grouped across
+four palette phases. Its immediate
 phone→PC target is **at least 50% exact recovery**; this remains unachieved by
 the reported runs, and live learned transport remains open. Focus on G64/16 colors,
-using G64/4 colors as a control. G128 remains a structural export case; train a
+using a fixed-frame profile for the G64/4-color control. Attention-tube requires
+G64/16 colors and four permuted phases. G128 remains a structural export case; train a
 separate network with a 128×128 bottleneck if that experiment becomes necessary.
 
 The [design](OPTICAL_DECODER.md) and [roadmap](ROADMAP.md) describe how this feeds
@@ -193,7 +195,10 @@ node scripts/rebuild-decoder-data.mjs --python python
 
 Use the active training virtual environment for `python`. Do not rebuild while
 a training/evaluation process is reading these paths. The command checks raw
-inputs, pairing, split ownership and dependencies before replacing outputs.
+inputs, pairing, split ownership, complete four-phase coverage and dependencies
+before replacing outputs. The standard phase-grouped rebuild requires G64,
+16 colors, four permuted phases and at least two distinct real captures per phase
+for each logical group.
 It rejects unmatched captures and conflicting/duplicate records instead of
 silently shrinking the dataset. Captures in `phone` map to **PC→phone**; captures
 in `pc` map to **phone→PC**, with the sender required on the opposite device.
@@ -214,18 +219,21 @@ space for two synthetic corpora. A later processing/disk failure leaves an
 incomplete rebuild; fix the cause and rerun before training.
 
 The training corpus uses the current harder recipe, including glare, native
-capture-resolution loss and RGB-offset motion blur, with **32 bursts × 12 frames
-per clean target**, seed 41. Validation synthetics use **4 bursts × 12 frames**,
-seed 42, and remain in the validation split. Model selection should still use
-`real-validation`; synthetic validation is an additional diagnostic. The command
-exposes `--frames`, `--bursts-per-target`, `--validation-bursts-per-target`,
-`--seed`, severity and output-budget controls in `--help`. Training `--frames 5` remains
-independent of the number of generated exposures per burst.
+capture-resolution loss and RGB-offset motion blur, with **32 coherent phase
+groups × 12 captures per phase**, seed 41. Validation synthetics use **4 groups
+× 12 captures per phase**, seed 42, and remain held out. Each group contains all
+four phases of one logical matrix. The generator shares slow optical conditions
+and varies capture-level artifacts across an interleaved four-phase timeline.
+It records a common synthetic phase-group identity while preserving each
+phase-specific burst ID. Model selection still uses `real-validation`.
 
-Existing real burst IDs are preserved; neither renaming nor rebuilding makes
-temporally correlated captures into independent physical sessions. The model
-continues to draw random distinct captures inside each burst. Newly added
-sessions enter the next rebuild without any handwritten sender/capture lists.
+The command exposes `--frames`, `--bursts-per-target`,
+`--validation-bursts-per-target`, `--seed`, severity and output-budget controls in
+`--help`. Here `--frames` is generated captures **per phase**, with at least two
+for grouped training; training `--frames 8` is the model's fixed capacity. Existing
+real capture files and burst IDs are unchanged. Rebuilding does not make
+correlated captures independent physical sessions. New sessions enter the next
+rebuild without handwritten sender/capture lists.
 
 ## Join labels offline manually
 
@@ -463,7 +471,7 @@ improves it. A fresh model's random step-zero weights are diagnostic only.
 With explicit real groups, fixed-frame checkpoint selection uses mean exact
 recovery across those groups, then mean CE as the tie-break; otherwise it uses
 global metrics. Attention-tube averages the per-count selection metrics across
-K=5/6/7/8, balancing real groups within each K when the sidecar is supplied.
+K=4/5/6/7/8, balancing real groups within each K when the sidecar is supplied.
 Read the per-direction results too: mean recovery alone can improve while a
 still-failing direction stays at zero.
 
@@ -476,17 +484,19 @@ accepted frames, and inference timing. Multiframe reports count complete stacks,
 not individual exposures: `inputCaptures` records consumed observations and
 `burstGrouping` reports discarded leftovers/insufficient groups. For fixed-frame
 models, 768 captures in 24 phase pools of 32 give 144 five-frame candidates,
-consuming 720 captures and leaving 48 unused. Attention-tube instead forms
-eight-member groups and reports 96 candidates for each nested K in this example. Actual grouping depends
-on burst boundaries. Never compare the raw candidate denominator directly with
+consuming 720 captures and leaving 48 unused. Attention-tube joins four phase pools of the same logical matrix, taking two
+captures per phase for each full candidate. Six complete phase groups with 32
+captures per phase yield 96 candidates per K. Actual grouping depends on phase
+coverage and group boundaries. Never compare the raw candidate denominator directly with
 768 single-exposure candidates. Classical recovery averages logical scores over
 exactly the same T observations;
 expected bytes are only checked after independent RS/CRC acceptance. Offline
 stack recovery is not live throughput.
 
-The evaluation draw is a fixed seed-7 permutation within each burst, followed
-by disjoint grouping at the model capacity. Attention-tube evaluates nested
-5/6/7/8 subsets of each eight-member group. It is independent of timestamps, directory paths
+The evaluation draw is a fixed seed-7 permutation within each phase burst.
+Fixed-frame profiles group at their fixed T; attention-tube makes pairs in each
+phase and combines four pairs from the same logical matrix. It evaluates nested
+4/5/6/7/8 subsets, starting with one capture from every phase. It is independent of timestamps, directory paths
 and input-file order. Existing checkpoints can be reevaluated without retraining;
 use a new report filename because previous chronological reports used different
 input groups. `selection` and `burstGrouping` report the method and seed. Training
@@ -509,11 +519,13 @@ needs separate design/training; this combined model is G64-only.
 | --- | --- | ---: | --- |
 | `normalized-tube` (default) | Fixed T=1…64 | 144,432 at T=5 | Two normalized convs per resolution block |
 | `longtube` | Fixed T=1…64 | 279,792 at T=5 | Four convs per outer block, eight at bottleneck, residual pairs |
-| `attention-tube` | Variable K=5…8, capacity 8 | 432,848 | Longtube body + learned global anchor + two window-attention blocks |
+| `attention-tube` | Variable K=4…8, capacity 8 | 432,848 | Longtube body + learned global anchor + two window-attention blocks |
 
 The fixed-frame models accept `[N,3T,4G,4G]`. Attention-tube accepts
 **`[N,32,256,256]`: 24 RGB planes followed by eight binary presence planes**.
-All emit 16 physical-color logits per cell. RGB is clipped to [-1,1] before
+Fixed-frame models emit physical-color logits; phase-grouped attention-tube
+emits 16 canonical logical data logits per cell and declares that output space.
+RGB is clipped to [-1,1] before
 learned processing; stored captures retain [-1.5,1.5] calibration overshoot.
 Missing slots are masked inside the new model, so their values cannot influence
 its output. The input layout is explicit in checkpoints and exported metadata.
@@ -536,8 +548,10 @@ chronological frame-slot positions are added. See the
 The existing tube and longtube checkpoint tensors remain unchanged and loadable.
 Cross-profile initialization is rejected: train attention-tube fresh. An explicit
 single→T initialization still applies to the existing fixed-frame profiles;
-attention-tube always has capacity eight. Omitting `--frames` chooses eight for
-attention-tube and one for a fresh fixed-frame model. The model's eight-slot input
+attention-tube always has capacity eight. Earlier same-phase attention weights
+are rejected because equal tensor shapes do not preserve the new semantics.
+Omitting `--frames` chooses eight for
+attention-tube and one for a fresh fixed-frame model. The model's phase-paired eight-slot input
 uses 8 MiB per example before activations/runtime buffers; fewer valid observations
 do not make the exported graph smaller.
 
@@ -558,20 +572,23 @@ validation; real/synthetic training CE is .4898/.0840. Depth and more realistic
 color-motion artifacts are the next hypotheses, not established remedies.
 Earlier runs used effective batch 16, so the improvement cannot be attributed
 solely to architecture. Historical results are in [VALIDATION.md](VALIDATION.md).
-The user subsequently reported the ongoing longtube run reaching **72/144**
-validation recoveries before 16,000 of 32,000 updates, with no phone→PC exact
-recoveries yet. This is a user progress report, not a completed attached result.
-The next experiment combines the input, positional-anchor and attention upgrades;
-there is no broad ablation plan. Phone→PC **50% exact recovery** is the target,
-not a result claimed for the new model. Its matched nested validation groups
-change the candidate denominator; live transport must still be tested separately.
+The ongoing longtube history through 26,000 updates selects step 24,000 with
+**82/144** exact recoveries: PC→phone 82/96 and phone→PC 0/48. Phone→PC training
+CE falls .814→.643 from 16k to 26k while validation CE rises 1.165→1.360.
+Directions already receive equal real training draws; more physical sessions
+improve diversity rather than correcting sampling weights. The next experiment
+combines the learned anchor/window attention with evidence across four phases.
+Phone→PC **50% exact recovery** is a target, not a result claimed for the new
+model. The multi-phase grouping changes the candidate denominator, and live
+transport must still be tested separately.
 
 ## Generate the updated paired synthetic corpus
 
 The rebuild command already performs this step. For a manual regeneration,
 reuse `target-clean-train`, or reconstruct it once with the first command below.
-Generate the RGB-offset corpus into an empty `target-synthetic-train` directory. This keeps seed 41 and the existing resolution/glare settings while
-adding the new color-motion effect. Original recordings and joined real data
+Generate the phase-grouped corpus into an empty `target-synthetic-train`
+directory. This keeps seed 41 and the resolution/glare/RGB-offset recipe, while
+correlating slow optical conditions across each four-phase group. Original recordings and joined real data
 remain unchanged.
 
 ```sh
@@ -583,7 +600,7 @@ node scripts/decoder-dataset.mjs targets \
 python experiments/optical-decoder/synthetic.py \
   --clean local-data/target-clean-train \
   --out local-data/target-synthetic-train \
-  --bursts-per-target 32 --frames 12 --seed 41 \
+  --phase-grouped --bursts-per-target 32 --frames 12 --seed 41 \
   --severity-min .45 --severity .9 \
   --glare-probability .7 --glare-strength .65 \
   --white-balance-stops .8 --exposure-stops 1.75 \
@@ -604,8 +621,12 @@ passed as a comma-separated `--dataset` list. This command supports the capture
 app’s single logical frame with palette phases; it rejects incomplete multipart
 payloads rather than inventing missing target bytes.
 
-Thirty-two independent corruption bursts with twelve frames each provide **384
-synthetic observations per clean target**. Frames of one burst remain correlated.
+Thirty-two coherent phase groups with twelve captures per phase provide **384
+synthetic observations per clean phase target**. A logical target has four such
+phase targets. Slow optical conditions are shared across the four phases, while
+noise, motion, moiré, rolling shutter and exposure drift change over the capture
+timeline. `--phase-grouped` requires all four phases, G64/16 colors and consistent
+logical data targets before writing outputs. The raw recording schema is unchanged.
 Severity varies from .45 to .9 per burst. Glare, white balance, exposure, shade,
 rolling shutter and resolution settings match the previous paired corpus; RGB
 exposure offsets add the new effect. This retains moderate cases
@@ -632,26 +653,28 @@ not an additional model input or a browser decoding oracle.
 
 ## Recommended next training run
 
-**Train `attention-tube` from scratch**, with capacity eight and randomly selected
-5–8 observations at `1e-4` for 32,000 updates. Use the current `real-train`,
-`target-synthetic-train`, `real-validation` and direction sidecar. Twelve-frame
-synthetic bursts already support this run; **no synthetic regeneration is needed
-solely for the model change**. Each real and synthetic training burst must have
-at least eight distinct observations, and every sample must be G64. Add recordings
-through the [rebuild workflow](#organize-recordings-and-rebuild-datasets) after
-active training stops if necessary.
+First rebuild after the current training job stops reading the managed dataset
+paths. The script validates the raw inputs before replacing only the standard
+generated directories and creates coherent four-phase synthetics:
 
-Keep ordinary masked cross-entropy and mild real augmentation. Use **batch 8 ×
-accumulation 4 = effective batch 32**; batch 4 × 8 is an alternative if activation
-memory is limiting. Attention and the positional anchor add parameters and
-working memory, so measure actual GPU usage. The new output directory is
-`attention-tube8`. Do not pass `--initialize` from a tube/longtube checkpoint.
-The current longtube run can finish independently; its code and weights remain
-supported and its output directory is not reused.
+```sh
+node scripts/rebuild-decoder-data.mjs --python python --dry-run
+node scripts/rebuild-decoder-data.mjs --python python
+```
 
-The rebuild command creates `session-groups.json` from receiver locations and
-validates both directions. Use the regenerated sidecar when adding sessions.
-For custom datasets, `session_groups.py --help` describes explicit assignments.
+**Train `attention-tube` from scratch**, with eight phase-paired slots and randomly
+selected 4–8 observations at `1e-4` for 32,000 updates. Use the regenerated
+`real-train`, `target-synthetic-train`, `real-validation` and direction sidecar.
+Each training group must have at least two distinct captures of every phase,
+although each draw uses only one or two. All examples must be G64/16 colors with
+four permuted phases. Existing recording files need no conversion; independently
+generated old synthetic phase bursts need regeneration.
+
+Use **batch 16 × accumulation 2 = effective batch 32**. Batch 8 × 4 retains that
+effective batch if activation memory is limiting. The new output directory is
+`attention-phase8`. Do not initialize from tube/longtube or the previous same-phase
+attention checkpoint: the input slots and output labels now have different
+meanings, even though attention's parameter count remains 432,848.
 
 ```sh
 python experiments/optical-decoder/train.py \
@@ -660,80 +683,90 @@ python experiments/optical-decoder/train.py \
   --model attention-tube --frames 8 \
   --session-groups local-data/session-groups.json \
   --paired-targets --real-fraction .5 \
-  --batch-size 8 --accumulate 4 \
+  --batch-size 16 --accumulate 2 \
   --real-noise-std .008 --real-tint-stops .06 --real-exposure-stops .08 \
+  --phase-flip-probability .25 \
   --lr .0001 --steps 32000 --eval-every 1000 --validation-samples 0 \
-  --device cuda --out checkpoints/optical-decoder/attention-tube8
+  --device cuda --out checkpoints/optical-decoder/attention-phase8
 ```
 
-Every selected real example is paired with a synthetic example of the same
-session, payload, frame and phase, with matching label/mask/expected-byte hashes.
-The pair receives the same available count K, drawn uniformly from 5, 6, 7 or 8.
-Actual members are sampled without replacement within their own bursts, then
-randomly assigned to the fixed eight slots. They never cross phases, payloads,
-sessions or independent synthetic trajectories. Real photometric augmentation
-is applied to the actual RGB observations **before zero padding**. Presence
-planes are not augmented. The model does not need to infer missing frames from
-mid-gray RGB values.
+Each input uses fixed slots **P0a, P0b, P1a, P1b, P2a, P2b, P3a, P3b**.
+K is uniform over 4/5/6/7/8. Every phase contributes one capture; K−4 randomly
+selected phases contribute a second, and placement within each pair is random.
+The remaining slots contain zero RGB and zero presence indicators. Real and
+synthetic target partners receive the same K; members never cross physical
+sessions, logical frames or independent synthetic phase groups. Targets are
+canonical phase-zero data symbols, with unchanged physical reference labels.
+Real photometric augmentation occurs before padding and never affects presence.
 
-With effective batch 32 and two mapped directions, an update has eight real
-PC→phone examples, eight real phone→PC examples and their sixteen synthetic
-partners. The number of actual exposures varies with K; interval accounting
-records it instead of treating all eight slots as observations. Synthetic
-`--frames 12` continues to mean generated exposures per independent burst;
-training `--frames 8` is this model's capacity, with actual counts 5–8.
+Two training-only augmentations apply to both real and synthetic groups:
+
+- **Exact phase permutations**, enabled by default: choose d from `[0,15,7,8]`,
+  reorder whole phase pairs and their presence indicators, then XOR only data
+  labels by d. For example, d=15 swaps phases 0↔1 and 2↔3. RGB values are not
+  recolored. `--no-phase-permutations` disables this augmentation.
+- **Joint spatial flips:** independently flip horizontally/vertically with
+  `--phase-flip-probability .25` each. Apply the same flip to all RGB slots,
+  labels and masks; zero disables both. This provides classification examples,
+  not new canonical wire-format messages. Neither augmentation is applied to
+  validation or stored files. Recovery on transformed predictions would first
+  have to reverse the transformation.
+
+With effective batch 32 and two mapped directions, each update contains eight
+real PC→phone examples, eight real phone→PC examples and sixteen matched
+synthetic partners. Extra sessions add diversity without changing this balance.
+Synthetic `--frames 12` means captures per phase burst; training `--frames 8`
+means capacity, with 4–8 actual captures per input. Four-frame inference requires
+**one from each phase**, not the first four camera exposures regardless of phase.
 
 The run writes `settings.json`, `history.json`, `baseline-validation.json`,
-`final-validation.json`, selected `validation.json` and `best.pt`. Validation
-reports have a **`byFrameCount`** map for K=5/6/7/8 with complete per-count CER,
-loss, classical/learned recovery, session and direction metrics. `frameCapacity`
-is eight, `actualFrameCounts` lists the four tested counts, `uniqueCandidates`
-counts the shared groups, and `observationCases` sums their evaluations across K. The top-level
-selection combines the per-count scores: equal weights for K and, with the
-sidecar, equal weights for real directions (`frame-count-group-balanced-real`).
-Loss is the tie-break. It does not select whichever K happens to look best.
+`final-validation.json`, selected `validation.json` and `best.pt`. Reports contain
+**`byFrameCount`** for K=4/5/6/7/8 with per-count loss, CER, classical/learned
+recovery, session and direction metrics. `frameCapacity` is eight;
+`actualFrameCounts` lists all five counts. `uniqueCandidates` counts the shared
+logical groups and `observationCases` their evaluations across K. Selection
+weights K equally and, with the sidecar, real directions equally, then uses CE
+as the tie-break. It does not select whichever K happens to look best.
 
-History retains `validationByFrameCount`, `phoneToPCGoal` and the training
-`trainFrameCounts` histogram alongside source/group statistics. The
-`phoneToPCGoal.targetExactRate` is .5, with actual recovery and `achieved`
-reported for each K. Its overall `exactRate` is the mean across K, while
-`achievedForAllFrameCounts` requires every tested K to meet the target; missing
-direction mappings do not count as success. The progress display summarizes
-these metrics; full results remain in JSON. Inspect the five-frame result as
-well as the eight-frame result, and check both directions. A shortfall from 50%
-is an experiment result, not a reason to report success on aggregate recovery alone.
+History retains `validationByFrameCount`, `phoneToPCGoal` and `trainFrameCounts`
+alongside source/group statistics. The goal is .5 exact recovery for phone→PC,
+reported per K. `achievedForAllFrameCounts` requires every tested K to meet it;
+missing direction mappings do not count as success. Inspect four-frame and
+eight-frame results separately and check both directions. Full data remain in
+JSON; the progress bar only summarizes key metrics.
 
-### Evaluate the four observation counts
+### Evaluate all five observation counts
 
 ```sh
 python experiments/optical-decoder/evaluate.py \
   --dataset local-data/real-validation --split validation \
-  --checkpoint checkpoints/optical-decoder/attention-tube8/best.pt \
+  --checkpoint checkpoints/optical-decoder/attention-phase8/best.pt \
   --session-groups local-data/session-groups.json \
   --max-samples 0 --device cuda \
-  --out local-results/optical-decoder/attention-tube8-validation.json
+  --out local-results/optical-decoder/attention-phase8-validation.json
 ```
 
-The evaluator ranks each burst with its fixed seed-7 random permutation, forms
-disjoint groups of eight, and evaluates nested first-5/6/7/8 subsets with fixed
-slot assignments. Each K therefore sees the same candidate targets and a subset
-of the same exposures. Canonical classical fusion and neural recovery receive
-only the K actual member IDs; zero padding is never supplied as an observation.
-Remainders and insufficient bursts are reported, never duplicated into a group.
+The evaluator shuffles each phase pool once with fixed seed 7, makes disjoint
+pairs, and joins pairs from the four phases of the same logical matrix. It uses
+one member from each pair at K=4, then adds second members in a fixed shuffled
+phase order for K=5/6/7/8. Every K therefore tests the same candidate targets
+with nested evidence. Classical scores reverse each member's own phase mapping;
+neural predictions are already canonical. Both receive the same actual captures,
+and padding never counts as evidence. Remainders and incomplete groups are
+reported, never duplicated into a candidate.
 
-For the previously reported 24 phase pools of 32 captures, there are **96
-candidates per K**, compared with 144 in the fixed-five-frame evaluation. The
-four per-count evaluations reuse candidates, so their combined count is not a
-count of independent matrices. Compare per-count/per-direction rates, not raw
-success totals across these different grouping policies. Existing fixed-frame
-tube/longtube evaluations retain their original grouping behavior.
+For six complete logical groups with 32 captures in each of four phases, there
+are **96 candidates per K**. The five per-count evaluations reuse candidates;
+their sum is not an independent matrix count. Compare per-direction/per-count
+rates and equal observation budgets instead of old single-phase success totals.
+Fixed-frame tube/longtube evaluation retains its existing grouping.
 
-For this fresh run, `baseline-validation.json` evaluates random step-zero weights;
-it is diagnostic and contains no parent checkpoint. Share selected
-`validation.json`, `history.json` and the standalone validation report. Keep
-untouched test sessions for the selected model/settings. Phone→PC recovery of at
-least 50% is the immediate target; zero wrong accepted payloads and the existing
-4-color control remain required checks before live integration.
+For this fresh run, step-zero `baseline-validation.json` is diagnostic random
+weights, with no parent checkpoint. Share `validation.json`, `history.json` and
+the standalone validation report. Keep untouched test sessions for the selected
+model/settings. The immediate target is at least 50% phone→PC exact recovery,
+with zero wrong accepted payloads. Check the fixed-profile 4-color control
+separately before live integration.
 
 ### Existing fixed-five-frame longtube run
 
@@ -758,7 +791,7 @@ retain the historical 144-candidate grouping for the same 24 pools.
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/attention-tube8/best.pt \
+  --checkpoint checkpoints/optical-decoder/attention-phase8/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected
@@ -770,7 +803,7 @@ Tube and longtube continue to export both G64/G128 using the selected weights;
 the latter is a structural/parity check, not validated cross-size recognition.
 The current `optical-decoder` manifest records trained status, checkpoint hash,
 required `inputLayout`, `framesPerInput` capacity, `minFramesPerInput`, allowed
-`frameCounts` and channel dimensions,
+`frameCounts`, channel dimensions, `outputLabelSpace` and `phaseMasks`,
 required capture-normalization and `networkInputClip: [-1,1]` metadata,
 and bounded public training provenance.
 It omits local paths and session/payload lists; full split provenance remains

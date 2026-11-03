@@ -19,13 +19,14 @@ HAS_EXPORT = importlib.util.find_spec("torch") is not None and importlib.util.fi
 class CaptureNormalizationTests(unittest.TestCase):
     def test_presence_fixtures_keep_observations_and_binary_flags_separate(self):
         self.assertEqual(shapes(64, 8, presence=True), ((1, 32, 256, 256), (1, 16, 64, 64)))
-        for count in (5, 6, 7, 8):
+        for count in (4, 5, 6, 7, 8):
             with self.subTest(count=count):
                 pixels = fixture_input(64, 7, 8, presence=True, available_frames=count)
                 np.testing.assert_array_equal(pixels,
                     fixture_input(64, 7, 8, presence=True, available_frames=count))
                 masks = pixels[0, 24:]
                 self.assertEqual(int(masks[:, 0, 0].sum()), count)
+                self.assertTrue(np.all(masks[:, 0, 0].reshape(4, 2).sum(1) >= 1))
                 self.assertTrue(np.all((masks == 0) | (masks == 1)))
                 self.assertTrue(np.all(masks == masks[:, :1, :1]))
                 for slot, present in enumerate(masks[:, 0, 0]):
@@ -37,7 +38,7 @@ class CaptureNormalizationTests(unittest.TestCase):
         for size, frames in ((128, 8), (64, 5)):
             with self.assertRaises(ValueError):
                 shapes(size, frames, presence=True)
-        for count in (0, 4, 9, True):
+        for count in (0, 3, 9, True):
             with self.assertRaises(ValueError):
                 fixture_input(64, 7, 8, presence=True, available_frames=count)
 
@@ -70,16 +71,18 @@ class NetworkInputExportTests(unittest.TestCase):
             self.assertEqual(manifest["modelProfile"], "attention-tube")
             self.assertEqual(manifest["framesPerInput"], 8)
             self.assertEqual(manifest["channels"], 32)
-            self.assertEqual(manifest["inputLayout"], "rgb-presence-planes")
-            self.assertEqual(manifest["minFramesPerInput"], 5)
-            self.assertEqual(manifest["frameCounts"], [5, 6, 7, 8])
+            self.assertEqual(manifest["inputLayout"], "phase-paired-rgb-presence-planes")
+            self.assertEqual(manifest["outputLabelSpace"], "logical")
+            self.assertEqual(manifest["phaseMasks"], [0, 15, 7, 8])
+            self.assertEqual(manifest["minFramesPerInput"], 4)
+            self.assertEqual(manifest["frameCounts"], [4, 5, 6, 7, 8])
             self.assertLess(manifest["parameterCount"], 500000)
             self.assertEqual([case["size"] for case in manifest["cases"]], [64])
             case = manifest["cases"][0]
-            self.assertEqual(case["framesAvailable"], 5)
+            self.assertEqual(case["framesAvailable"], 4)
             self.assertEqual(case["inputShape"], [1, 32, 256, 256])
             pixels = np.fromfile(directory/case["input"]["file"], dtype="<f4").reshape(case["inputShape"])
-            self.assertEqual(int(pixels[0, 24:, 0, 0].sum()), 5)
+            self.assertEqual(int(pixels[0, 24:, 0, 0].sum()), 4)
             graph = onnx.load(directory/case["model"]["file"])
             self.assertTrue({"MatMul", "Softmax", "Resize", "Clip"}.issubset(
                 {node.op_type for node in graph.graph.node}))

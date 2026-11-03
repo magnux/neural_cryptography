@@ -46,12 +46,14 @@ is required.
 
 Three profiles are supported. **`normalized-tube` remains the default** and
 **`longtube`** retains its residual architecture and fixed 1–64 RGB exposures.
-They accept `[N,3T,4G,4G]`. The new **`attention-tube`** accepts five to eight
+They accept `[N,3T,4G,4G]`. The new **`attention-tube`** accepts four to eight
 observations in eight fixed slots, plus presence planes, at G64 only; its input
 is `[N,32,256,256]`. All profiles produce `[N,16,G,G]`. They use 32-channel hidden features,
 biased 3×3 convolutions, ReLU, nearest-neighbor decoder upsampling and learned
 feature skips. Concatenations have 64 channels before returning to 32. The final
-1×1 head emits physical-palette logits without normalization or softmax. No model has a direct RGB path.
+1×1 head emits unnormalized logits: physical palette classes for the fixed-frame
+profiles and canonical logical data classes for phase-grouped attention-tube.
+No model has a direct RGB path.
 
 **Spatial design rule:** the outside of the U matches the rectified crop (4G),
 and its bottleneck matches the target grid (G). Output reduction follows the
@@ -147,12 +149,12 @@ The first uses regular windows; the second shifts the window partition by four
 pixels with a boundary mask that prevents cyclic wraparound connections. Q/K/V,
 output projections, softmax and feed-forward layers export as ordinary ONNX
 operators. The learned global anchor replaces a fixed sinusoidal positional
-encoding. Frame slots carry no chronological position encoding because captures
-are randomly ordered.
+encoding. Frame slots carry phase identity through their fixed pair positions,
+with no chronological position encoding within a pair.
 
 ```mermaid
 flowchart TD
-  I["5–8 RGB captures + 8 presence flags"] --> P["Pack 8 slots · clip RGB · gate absent slots"]
+  I["Four phases · 1–2 RGB captures each"] --> P["Pack 8 phase slots + presence · clip RGB"]
   P --> N["256×256 inlet · 32 channels"]
   A["Learned 32×64×64 global anchor"] --> R["Bilinear expansion to 256×256"]
   N --> S["Add anchor"]
@@ -196,38 +198,60 @@ bursts. Reports record the method and seed; training history/settings record the
 too. Classical and neural recovery observe exactly the same selected captures.
 Remainders are reported, never duplicated; short training bursts fail explicitly.
 
-For `attention-tube`, training draws K uniformly from **5, 6, 7, 8**, chooses K
-distinct captures from the same burst, and places them in randomly chosen slots
-of the eight-slot input. Paired real and synthetic examples use the same K.
-Photometric augmentation applies to actual real observations before zero padding;
-presence planes never receive image augmentation. Training bursts must contain
-at least eight distinct observations. Existing twelve-frame synthetic bursts
-already satisfy that requirement; recording files need no conversion.
+For `attention-tube`, training draws K uniformly from **4, 5, 6, 7, 8** and uses
+fixed phase pairs `[P0a,P0b,P1a,P1b,P2a,P2b,P3a,P3b]`. Every input contains at
+least one capture per phase; K−4 randomly selected phases supply a second.
+The two positions within each pair are randomized. Captures share one physical
+session and logical frame; synthetic captures also share one coherent generated
+phase-group identity. Two captures per phase are required for training the full
+range. Paired real/synthetic examples use the same K. Real photometric
+augmentation precedes padding; presence indicators never receive color noise.
 
-Attention-tube evaluation fixes the same seeded random order, partitions into
-disjoint groups of **eight**, then evaluates nested 5/6/7/8-observation subsets
-of each group. Each K gets its own CER, loss, exact recovery and per-direction
-results; classical recovery receives the same K actual captures, never padding.
-With 24 phase pools of 32 observations, this gives **96 candidates per K**, not
-the previous five-frame benchmark's 144. Compare rates on matched groups and
-keep the older score labelled with its own observation grouping. The selection
-score averages the four K results, balancing real directions when the sidecar
-is supplied. The phone→PC target is **at least 50% exact recovery**; reports show
-progress per K and do not treat that target as already achieved.
+For the supported 16-color/four-phase profile, physical data labels equal logical
+labels XOR `[0,15,7,8][phase]`. Targets are canonicalized to phase zero; fixed
+reference labels are not XOR-transformed. The default phase augmentation chooses
+d uniformly from `[0,15,7,8]`, reorders whole phase pairs according to that group,
+and XORs only the data targets by d. For example, d=15 swaps phases 0↔1 and 2↔3.
+This preserves a correct classification task without recoloring observed RGB.
+Arbitrary phase permutations are not equivalent.
 
-The collection pool may already contain captures retained for diversity. Random
-evaluation groups test fusion of that pool; they are not a measured streaming
-latency result. The browser lab takes the chosen number of distinct current same-header video
-exposures, resets on identity changes and bounds collection time/memory. For
-attention-tube it packs the chosen 5–8 observations into the fixed eight-slot
-tensor and supplies presence planes. Live
-learned transport integration remains pending.
+Independent horizontal and vertical flips each have probability .25 by default.
+The same spatial transform applies to every RGB slot, target and loss mask.
+These are training-only classification augmentations: transformed reference
+patterns and codewords are not treated as canonical optical transmissions.
+Validation stays unaugmented, and any diagnostic recovery after an augmentation
+must first undo it. `--phase-flip-probability 0` disables flips;
+`--no-phase-permutations` disables the exact phase permutations.
+
+Evaluation fixes a seed-7 random order within each phase and makes disjoint
+pairs. A candidate joins one pair from each phase. Its nested K=4/5/6/7/8 cases
+start with one member of every phase, then add second members in a fixed shuffled
+phase order. Classical fusion uses each capture's own public palette mapping
+before combining logical scores; neural output is already logical. Both methods
+receive precisely the same K actual captures. Remainders, incomplete phase sets
+and insufficient groups are reported, never filled with duplicates. With six
+complete four-phase groups and 32 captures per phase, there are 96 logical
+candidates per K. Other datasets depend on their actual group sizes.
+
+Selection averages the five K results and balances real directions with the
+sidecar. The phone→PC target is **at least 50% exact recovery**, reported per K.
+Counts now refer to logical matrices across phases, not independent single-phase
+stacks. Compare recovery rates on matched observations rather than raw counts
+from earlier grouping policies.
+
+Browser collection waits for one capture from every phase before a four-frame
+attempt. A phase change does not reset a matching logical matrix; a different
+logical frame does. Further captures fill the second slot per phase, with bounded
+memory and capture time. Four arbitrary consecutive camera exposures are not
+enough if they all observe the same phase. The fixed eight-slot graph has the
+same inference cost at K=4 and K=8; fewer captures save acquisition time.
+Live learned transport integration remains pending.
 
 An explicit single→T-frame warm start of an existing profile repeats its original
 RGB-facing weights across slots and divides by T. Loading/exporting a checkpoint
 uses its exact validated width. Attention-tube has a fixed capacity of eight
-and does not use the single→T warm-start path. Recording formats and synthetic `--frames`
-semantics are unchanged.
+and does not use the single→T warm-start path. Recording formats are unchanged;
+synthetic `--frames` still counts generated exposures per phase burst.
 
 ### Latest validation and remaining gap
 
@@ -249,12 +273,16 @@ and more realistic motion artifacts are hypotheses to test, not established fixe
 The earlier runs used effective batch 16, so this result is **not a controlled
 architecture-only ablation**. Historical metrics are in [VALIDATION.md](VALIDATION.md).
 
-The user subsequently reported an ongoing five-frame longtube run reaching
-**72/144** validation recoveries before 16,000 updates, with phone→PC still not
-recovering matrices. This is a progress report, not a completed attached
-benchmark. The combined attention/anchor/variable-frame experiment targets
-**50% or greater phone→PC recovery** while preserving the other direction.
-No recovery result for attention-tube is claimed before training.
+The ongoing longtube history through 26,000 updates selects step 24,000 with
+**82/144** exact recovery (PC→phone 82/96, phone→PC 0/48). From 16k to 26k,
+phone→PC training CE decreases .814→.643 while validation CE increases
+1.165→1.360 and validation cell error rises 44.80%→46.19%. This is consistent
+with within-direction overfitting; the sampler already supplies equal real
+example counts for both directions. Three newly recorded phone→PC sessions
+(two train, one validation) add physical diversity on the next rebuild.
+The phase-grouped attention/anchor experiment targets **50% or greater
+phone→PC recovery** while preserving the other direction. No trained recovery
+result for attention-tube is claimed.
 
 Paired synthetics add artifact variation without adding new physical capture
 conditions. More held-out sessions remain necessary. Input clipping, randomized
@@ -264,14 +292,16 @@ audit found no RNG reset, cross-phase pairing or optimizer/loss arithmetic error
 
 ## Integrating probabilities with the existing receiver
 
-The model predicts **physical palette IDs**. For C=4, mask logits 4–15 before softmax; C=16 uses all outputs. After
+Fixed-frame models predict **physical palette IDs**. For C=4, mask logits 4–15 before softmax; C=16 uses all outputs. After
 softmax, exclude reference cells using `gridLayout(...).cells`, and convert each data-cell distribution to logical
 symbol order with the existing mapping:
 
 `logicalScores[i, k] = physicalProbabilities[cell_i, paletteMap(k, info)]`.
 
-This inversion occurs before temporal fusion. Header fields select the mapping; the model does not learn or guess phase
-identity. Scale probabilities to the current 0–255 score convention, retaining float precision until a bounded pool
+This inversion occurs before temporal fusion for fixed-frame models and classical
+per-capture scores. Phase-grouped attention-tube already predicts canonical
+logical classes: use its probabilities directly and never invert a phase again.
+Header fields validate phase membership and the declared permutation. Scale probabilities to the current 0–255 score convention, retaining float precision until a bounded pool
 requires quantization. A validation-only temperature can calibrate confidence.
 
 Add an evidence entry point to `TemporalDecoder` that accepts these logical scores; the present `process()` only accepts
@@ -391,27 +421,32 @@ three explicit controls. The augmentation keeps calibration overshoot until the
 model input clamp and leaves files, synthetic inputs and validation unchanged.
 Keep useful source/group metrics and initialized-checkpoint baseline protection.
 
-Reuse `target-synthetic-train` from the latest paired-data rebuild. Its
-32 bursts × 12 frames, seed 41, resolution/glare settings and RGB-offset motion
-blur already provide sufficient exposures for variable 5–8-frame sampling. If
-new sessions are added, use the fixed-name rebuild workflow after any training
-using those paths finishes. No regeneration is required solely to change the
-model. Clean target labels, recording formats and splits remain unchanged.
+Rebuild the paired synthetic corpus with **`--phase-grouped`** (enabled by the
+standard rebuild script). Generate four phases of the same target together,
+sharing slow optics such as capture resolution, baseline blur, white balance and
+broad shading, while noise, motion, moiré displacement, rolling-shutter timing and
+small exposure drift vary across captures. Each coherent synthetic group retains
+explicit membership. Do not combine independently generated phase trajectories
+and assume they reproduce the correlations of one physical capture session.
+The recipe keeps 32 groups × 12 captures per phase, seed 41, resolution/glare
+settings and RGB-offset motion blur. Raw recordings and splits remain unchanged.
 
-Train **`attention-tube` from scratch** at `1e-4` for 32,000 updates with a fixed
-eight-slot capacity, paired 50:50 real/synthetic sampling and the existing mild
-real augmentation. Use **batch 8 × accumulation 4 = effective batch 32**. Do not
-initialize from tube/longtube weights. Full real validation every 1,000 updates
-reports K=5/6/7/8 separately; selection averages across K and real directions,
-then uses CE as the tie-break. The phone→PC target is at least 50% exact recovery,
-reported for every K. Neither aggregate recovery nor a numerical parity test
-establishes that goal or live throughput.
+Train **`attention-tube` from scratch** at `1e-4` for 32,000 updates with fixed
+eight-slot capacity, paired 50:50 real/synthetic sampling, mild real photometric
+augmentation, exact phase permutations and joint flips. Use **batch 16 ×
+accumulation 2 = effective batch 32**. The changed phase semantics require fresh
+weights, even when an earlier attention checkpoint has the same tensor shapes.
+Full real validation every 1,000 updates reports K=4/5/6/7/8 separately; selection
+averages across K and real directions, then uses CE as the tie-break. The
+phone→PC goal is at least 50% exact recovery for every K. Aggregate recovery and
+numerical parity do not establish that goal or live throughput.
 See the [training guide](OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
-for training/evaluation commands and the preserved longtube run reference.
+for regeneration, training and evaluation commands.
 
 Mask reference cells and inactive palette classes from the objective. Focus this
-run on G64; future G128 training should use a separate network. The architecture still predicts physical
-palette classes from the available calibrated crops; no reconstruction head or
+run on G64/16 colors with four permuted phases; future G128 training should use a
+separate network. Phase-grouped attention predicts canonical logical data classes
+from the calibrated crops; no reconstruction head or
 consistency loss is needed for this paired-data experiment. Measure cell confusion
 and calibration as diagnostics, and validate exact CRC recovery at equal capture
 budgets. A selected checkpoint must pass PyTorch/ONNX/browser parity before live

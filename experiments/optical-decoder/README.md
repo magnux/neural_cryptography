@@ -4,13 +4,15 @@ This implements the model/export foundation and capture/training pipeline in the
 [optical decoder plan](../../docs/OPTICAL_DECODER.md). **`normalized-tube` remains
 the default**; `longtube` adds residual depth; **`attention-tube`** combines that
 body with window attention, a learned global positional anchor and variable
-5–8-observation inputs. Start with G64/16 colors and a G64/4-color control.
+4–8-observation inputs grouped across four palette phases. This model requires
+G64/16 colors and four permuted phases; use the fixed-frame profiles for a
+G64/4-color control.
 
 | Property | `normalized-tube` | `longtube` | `attention-tube` |
 | --- | --- | --- | --- |
 | G64 U spatial sizes | 256→128→64→128→256 | Same | Same |
 | Outlet spatial sizes | 256→128→64 | Same | Same |
-| Observations | Fixed T, 1–64 | Fixed T, 1–64 | Variable 5–8; fixed capacity 8 |
+| Observations | Fixed T, 1–64 | Fixed T, 1–64 | Variable 4–8; fixed capacity 8 |
 | Input channels | 3T | 3T | 24 RGB + 8 presence planes |
 | Convs per resolution block / bottleneck | 2 / 2 | 4 / 8, residual pairs | Same as longtube |
 | Additional learned features | None | Residual shortcut projections | Global positional tensor and two window-attention blocks |
@@ -37,39 +39,50 @@ positional encoding is used.
 
 Its input is **`[N,32,256,256]`**, with the first 24 planes containing eight RGB
 slots and the last eight containing spatially constant binary presence flags.
+Slots have fixed phase meanings: **P0a, P0b, P1a, P1b, P2a, P2b, P3a, P3b**.
 Missing RGB is masked inside the model. Training selects K uniformly from
-5/6/7/8, chooses distinct members of one burst/session/target/phase, and randomizes
-slot placement. Paired real/synthetic examples use the same K. Real augmentation
-happens before zero padding; presence flags are never color-augmented. Every
-training burst needs at least eight members. Existing twelve-frame paired
-synthetics are sufficient, and recording files remain unchanged.
+4/5/6/7/8, with at least one capture per phase and at most two. It randomizes
+which phases supply second captures and placement within each phase pair.
+Paired real/synthetic examples use the same K. Each training group needs two
+captures per phase to support the full range; live inference can start with
+four captures, **one from each phase**, rather than four of the same phase.
+Recording files remain unchanged.
 
-Evaluation uses fixed seed-7 random eight-member groups with nested 5/6/7/8
-subsets. It reports each count separately, including direction-specific CER and
-exact recovery; classical fusion uses only those same real observations. With
-24 pools of 32 captures, each K has 96 candidates. The earlier fixed-five-frame
-144-candidate score uses different grouping. Checkpoint selection averages all
-four K results and balances real directions when a session sidecar is supplied.
+The output data labels are canonical phase-zero logical symbols. Reference
+cells keep their physical colors and are excluded from the loss. Four exact
+XOR phase-group permutations and joint horizontal/vertical flips augment
+training. The input RGB, labels and masks are transformed consistently; presence
+flags move with their slots. Augmentations do not alter stored captures or
+validation, and transformed training labels are not decoded as original bytes.
+
+Evaluation uses fixed seed-7 random choices within each phase, forming disjoint
+pairs and nested 4/5/6/7/8 subsets across the four phases. It reports each count
+separately, including direction-specific CER and exact recovery. Classical fusion
+uses the same actual observations, reversing each capture's own palette mapping
+before combining logical scores. Candidates now represent a logical matrix
+across phases, so compare per-direction rates and observation budgets rather
+than old single-phase denominators. Checkpoint selection averages all five K
+results and balances real directions when a session sidecar is supplied.
 The immediate target is **at least 50% exact recovery for phone→PC**, reported
 per K; this is a goal, not a measured result for the new architecture.
 
 The [next training recipe](../../docs/OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
 trains **`--model attention-tube --frames 8` fresh** at `1e-4` for 32,000 updates
-into `attention-tube8`, using **batch 8 × accumulation 4 = effective batch 32**.
-Reuse `real-train`, `target-synthetic-train`, `real-validation` and the current
-direction sidecar. The combined model retains ordinary masked cross-entropy,
-paired 50:50 real/synthetic sampling and mild real-only augmentation. Do not pass
-`--initialize` from another architecture. The existing tube/longtube checkpoints
-remain loadable for their own evaluation or continuation; no cross-profile
-conversion is performed.
+into `attention-phase8`, using **batch 16 × accumulation 2 = effective batch 32**.
+Rebuild the paired synthetic corpus with coherent four-phase groups before this
+run. Use `real-train`, `target-synthetic-train`, `real-validation` and the current
+direction sidecar. The model retains masked cross-entropy, paired 50:50
+real/synthetic sampling and mild real-only photometric augmentation. Do not pass
+`--initialize` from a previous same-phase attention checkpoint: tensor shapes
+alone cannot establish the new input/output meaning. Fixed-profile tube/longtube
+checkpoints remain loadable for their own evaluation or continuation.
 
-For context, the submitted tube run selected **68/144** exact five-frame groups
-(47.22%), with **17.31% cell error**. PC→phone recovered 68/96 and phone→PC 0/48.
-The user later reported an ongoing longtube run reaching 72/144 before halfway
-through 32,000 updates, still with no phone→PC recovery. The latter is a user
-progress report, not a completed benchmark supplied here. See the
-[training result](../../docs/OPTICAL_DECODER_TRAINING.md#current-models-and-latest-result)
-and [validation record](../../docs/VALIDATION.md).
+The ongoing longtube history through 26,000 updates reached 82/144 exact
+five-frame groups at step 24,000: PC→phone 82/96, phone→PC 0/48. Phone→PC training
+CE fell from .814 at 16k to .643 at 26k while validation CE rose from 1.165 to
+1.360. The sampler already allocates equal real examples to both directions;
+additional physical sessions improve diversity. These are ongoing-run results,
+not measurements of phase-grouped attention-tube.
 
 Capture calibration stores `x = clip(c/127.5 - 1, -1.5, 1.5)`. Every model clips
 RGB to [-1,1] before learned processing, including exported ONNX. Presence
@@ -115,7 +128,7 @@ For a selected trained checkpoint:
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/attention-tube8/best.pt \
+  --checkpoint checkpoints/optical-decoder/attention-phase8/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected
@@ -128,7 +141,7 @@ metadata includes checkpoint hashes and bounded scalar training settings; local
 session identities and filesystem paths stay in the checkpoint. Training uses
 `best.pt`, selected by validation exact-frame recovery with loss as the tie-break.
 With explicit real groups, those selection metrics are averaged equally across
-groups; attention-tube also averages equally across its four observation counts.
+groups; attention-tube also averages equally across its five observation counts.
 Initialized runs evaluate and preserve their starting checkpoint at
 step zero, so worse fine-tuning cannot replace that baseline. Training settings,
 session mappings and their hash remain in the local run/checkpoint; exports keep
@@ -174,17 +187,20 @@ build/test tools, not a service used during an authentication attempt.
 The current manifest has `format: "optical-decoder"`, `version: 1`, and
 `status: "untrained"` or `"trained"`. It declares the exact profile, required
 `inputLayout`, `framesPerInput` capacity, `minFramesPerInput`, `frameCounts`,
-`channels`, grid cases and `networkInputClip`. Trained exports also require
+`channels`, grid cases, `outputLabelSpace`, `phaseMasks` and `networkInputClip`.
+Trained exports also require
 `checkpointSha256` and public `training` metadata. Regenerate local exports after
 updating; there is no earlier-bundle reader.
 
 | Profile layout | Capacity / allowed counts | Input shape |
 | --- | --- | --- |
 | `stacked-rgb` for tube/longtube | T / `[T]`, T=1…64 | `[1,3T,4G,4G]` |
-| `rgb-presence-planes` for attention-tube | 8 / `[5,6,7,8]` | `[1,32,256,256]` |
+| `phase-paired-rgb-presence-planes` for attention-tube | 8 / `[4,5,6,7,8]` | `[1,32,256,256]` |
 
 The fixed-frame RGB order is `R0,G0,B0,R1,G1,B1,...`. Attention-tube uses that
-order for its first 24 planes, followed by eight constant binary presence planes.
+order for its first 24 planes, with two slots per phase, followed by eight
+constant binary presence planes. Its metadata declares `phaseMasks: [0,15,7,8]`
+and `outputLabelSpace: "logical"`; fixed-frame profiles use physical labels.
 Each export case declares `framesAvailable` for its numerical fixture and
 includes SHA-256 and byte count for `model-G.onnx`,
 `input-G.f32` and `expected-G.f32`; tensors are little-endian contiguous float32.
@@ -193,11 +209,12 @@ per batch-one example before runtime buffers. Fixed-frame raw input storage is
 `0.75 × T` MiB at G64 or `3 × T` MiB at G128. Supplying fewer observations to
 attention-tube still executes its fixed eight-slot graph.
 
-The output is named `logits`, shape
-`[1,16,G,G]`. The grid includes reference cells. The head predicts **physical**
-palette classes and performs no softmax. The receiver masks inactive classes,
-maps palette phases back into logical symbol order, and excludes reference
-cells before passing scores to the current error-recovery code.
+The output is named `logits`, shape `[1,16,G,G]`, without softmax. Fixed-frame
+profiles predict physical palette classes, so their receiver adapter reverses
+the observed phase mapping. Attention-tube predicts **canonical logical data
+classes directly** and must not receive a second phase reversal. Both paths
+exclude reference cells before passing scores to the current error-recovery
+code. The grid includes references, but their logits are not payload evidence.
 
 Capture preprocessing receives calibrated RGB in camera-byte units, divides by
 127.5, subtracts 1, and clips to `[-1.5,1.5]`. The network then clips RGB to `[-1,1]`
@@ -241,14 +258,15 @@ load time, backend, model hash, and UI responsiveness.
   graph shape checks, and actual runtime parity.
 - `checkpoint.py`: one bounded checkpoint loader for training, evaluation, and export.
 - `data.py`: hashed local datasets and whole-session/payload split checks.
-- `bursts.py`: distinct same-burst training subsets, masked variable-count
-  packing and deterministic nested evaluation subsets, without rewriting recordings.
-- `synthetic.py`: independently seeded corruption bursts with moiré, blur/noise,
+- `bursts.py`: same-phase fixed-frame subsets or four-phase masked groups,
+  canonical target validation and deterministic nested evaluation, without rewriting recordings.
+- `synthetic.py`: coherent four-phase groups or independent corruption bursts with moiré, blur/noise,
   exposure/WB, rolling-shutter bands/skew, soft shadows/reflections, drifting
   glare, native capture-resolution loss, channel-offset RGB motion blur and
   per-burst severity ranges.
-- `augmentation.py`: mild real-only training noise/tint/exposure, with an
-  independent RNG and no changes to labels, recordings or evaluation.
+- `augmentation.py`: mild real-only noise/tint/exposure, plus training-only exact
+  phase permutations and joint spatial flips with transformed labels/masks.
+  Recording files and evaluation inputs remain unchanged.
 - `train.py`: plain masked CE, paired-target option, source/group metrics,
   validation selection and initialized-baseline protection.
 - `sampling.py`: indexed source/group/session/payload/phase sampling, exact real/

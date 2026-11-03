@@ -19,7 +19,7 @@ import torch
 from tqdm import tqdm
 
 from torch.nn import functional as F
-from augmentation import RealAugmentation
+from augmentation import RealAugmentation, PhaseAugmentation
 from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED, VARIABLE_EVALUATION_POLICY
 from contract import FRAME_COUNTS, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 from checkpoint import load_model_checkpoint
@@ -75,7 +75,7 @@ def draw_training_bursts(batches, sampler, burst_index, rng):
     return result
 
 
-def training_tensors(samples, augmentation):
+def training_tensors(samples, augmentation, phase_augmentation=None):
     """Augment real observations before zero filling and adding validity planes."""
     triples = [sample.raw_tensors() for sample in samples]
     if samples[0].slots is None:
@@ -85,14 +85,20 @@ def training_tensors(samples, augmentation):
         pixels = np.stack([sample.pack_pixels(augmentation(row[0][None],
                            [sample.metadata["source"]])[0])
                            for sample, row in zip(samples, triples)])
-    return pixels, np.stack([row[1] for row in triples]), np.stack([row[2] for row in triples])
+    labels, masks = np.stack([row[1] for row in triples]), np.stack([row[2] for row in triples])
+    if phase_augmentation is not None:
+        if not all(sample.phase_grouped for sample in samples):
+            raise ValueError("Phase augmentation requires phase-grouped inputs")
+        return phase_augmentation(pixels, labels, masks)
+    return pixels, labels, masks
 
 
 def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, batch_size=4,
                  accumulate=4, learning_rate=None, device="cpu", seed=7, eval_every=1000,
                  validation_samples=0, real_fraction=.5, initialize=None, node="node", model_profile=None,
                  session_groups=None, weight_decay=.01, paired_targets=False, frames=None, no_progress=False,
-                 real_noise_std=.008, real_tint_stops=.06, real_exposure_stops=.08):
+                 real_noise_std=.008, real_tint_stops=.06, real_exposure_stops=.08,
+                 phase_flip_probability=.25, no_phase_permutations=False):
     steps, learning_rate = training_defaults(initialize, steps, learning_rate)
     if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
         raise ValueError("Input frame count must be an integer from 1 through 64")
@@ -139,6 +145,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             model = initialize_frames(model, frames)
     variable_frames = getattr(model, "variable_frames", False)
     minimum_frames = getattr(model, "min_frames", model.frames)
+    phase_augmentation = PhaseAugmentation(seed=seed, flip_probability=phase_flip_probability,
+                                           permutations=not no_phase_permutations) if variable_frames else None
     frame_counts = list(range(minimum_frames, model.frames+1))
     if any(sample.shape[0] not in model.supported_sizes for sample in train.samples+validation.samples):
         raise ValueError(f"Model {model.profile} supports only target grid sizes {model.supported_sizes}")
@@ -165,9 +173,10 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                "weightDecay": weight_decay, "realFraction": real_fraction,
                "pairedTargets": paired_targets, "framesPerInput": model.frames,
                "inputLayout": model.input_layout, "minFramesPerInput": minimum_frames,
-               "frameCounts": frame_counts, "frameCountPolicy": "uniform-5-8" if variable_frames else "fixed",
+               "frameCounts": frame_counts, "frameCountPolicy": "uniform-4-8" if variable_frames else "fixed",
                "modelProfile": model.profile, "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
                "realAugmentation": real_augmentation.settings(),
+               "phaseAugmentation": phase_augmentation.settings() if phase_augmentation else None,
                "loss": "mean-masked-cross-entropy",
                "evalEvery": eval_every, "validationSamples": validation_samples,
                "evaluationGrouping": VARIABLE_EVALUATION_POLICY if variable_frames else EVALUATION_POLICY,
@@ -177,12 +186,16 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                   "gradientAccumulation": accumulate, "device": str(device), "realFraction": real_fraction,
                   "pairedTargets": paired_targets, "framesPerInput": model.frames, "selection": "validation-exact", "datasetFormat": DATASET_FORMAT,
                   "inputLayout": model.input_layout, "minFramesPerInput": minimum_frames,
-                  "frameCounts": frame_counts, "frameCountPolicy": "uniform-5-8" if variable_frames else "fixed",
+                  "frameCounts": frame_counts, "frameCountPolicy": "uniform-4-8" if variable_frames else "fixed",
                   "modelProfile": model.profile, "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
                   "trainManifestSha256": train.manifest_hash, "validationManifestSha256": validation.manifest_hash,
                   "trainSessionIds": sorted(train_sessions), "trainPayloadIds": sorted(train_payloads),
                   "validationSessionIds": sorted(validation_sessions), "validationPayloadIds": sorted(validation_payloads),
                   "settings": options}
+    if variable_frames:
+        phase_metadata = {"outputLabelSpace": "logical", "phaseMasks": [0, 15, 7, 8]}
+        options.update(phase_metadata)
+        provenance.update(phase_metadata)
     if initialize is not None:
         provenance["initialCheckpointSha256"] = digest(Path(initialize))
     if session_groups is not None:
@@ -275,7 +288,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             rows = last["phoneToPCGoal"]["byFrameCount"]
             goal_text = " | phone→PC " + "/".join(
                 f"{rows[str(k)]['exactRate']:.1%}" if rows[str(k)]["exactRate"] is not None else "n/a"
-                for k in (5, 8)) + " (K5/8; goal 50%)"
+                for k in (4, 8)) + " (K4/8; goal 50%)"
         progress.set_postfix_str(
             f"CE {interval['loss']/interval['updates']:.4f} | lr {optimizer.param_groups[0]['lr']:.2g}"
             f" | val CER {last['validationCellErrorRate']:.2%}"
@@ -293,7 +306,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                 batches = draw_training_bursts(sampler.draw_update(batch_size, accumulate),
                                                sampler, burst_index, burst_rng)
                 for samples in batches:
-                    pixels, labels, mask = training_tensors(samples, real_augmentation)
+                    pixels, labels, mask = training_tensors(samples, real_augmentation, phase_augmentation)
                     pixels = torch.from_numpy(pixels)
                     labels = torch.from_numpy(labels).to(device)
                     mask = torch.from_numpy(mask).to(device)
@@ -354,7 +367,7 @@ def main():
     parser.add_argument("--lr", type=float, help="default: 1e-4 fresh weights, 5e-5 initialized weights")
     parser.add_argument("--weight-decay", type=float, default=.01, help="AdamW decay (default: .01)")
     parser.add_argument("--frames", type=int, choices=FRAME_COUNTS,
-                        metavar="1..64", help="input capacity: attention-tube uses 8 slots with 5–8 observations; other fresh profiles default to 1")
+                        metavar="1..64", help="input capacity: attention-tube uses 8 phase-paired slots with 4–8 observations; other fresh profiles default to 1")
     parser.add_argument("--paired-targets", action="store_true",
                         help="pair real captures with synthetic examples of the same target; requires real-fraction .5")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -369,6 +382,10 @@ def main():
                         help="real training per-RGB gain range in stops, shared by the burst (default: .06)")
     parser.add_argument("--real-exposure-stops", type=float, default=.08,
                         help="real training exposure range in stops, shared by the burst (default: .08); set all three strengths to 0 to disable")
+    parser.add_argument("--phase-flip-probability", type=float, default=.25,
+                        help="attention-tube training: independent horizontal/vertical flip probability (default: .25)")
+    parser.add_argument("--no-phase-permutations", action="store_true",
+                        help="disable attention-tube exact XOR phase-group augmentation")
     parser.add_argument("--model", choices=MODEL_PROFILES,
                         help=f"default: {DEFAULT_MODEL_PROFILE} fresh, otherwise checkpoint profile")
     parser.add_argument("--initialize", type=Path, help="initialize validated weights; optimizer starts fresh")

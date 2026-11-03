@@ -112,7 +112,7 @@ class GroupEvaluationTests(unittest.TestCase):
                              ("session-one", 3, "phone_to_pc"))
             self.assertEqual(report["summary"]["learned"]["exactRate"], 1)
             sent = json.loads((root/"predictions-0.json").read_text())
-            self.assertEqual(sent, {"framesPerInput": 1, "samples": [{"id": "sample-one", "memberIds": ["sample-one"], "logits": "prediction.f32"}]})
+            self.assertEqual(sent, {"framesPerInput": 1, "outputLabelSpace": "physical", "samples": [{"id": "sample-one", "memberIds": ["sample-one"], "logits": "prediction.f32"}]})
             process.stdout = json.dumps({"samples": response["samples"]*2})
             with patch("evaluate.subprocess.run", return_value=process), self.assertRaisesRegex(RuntimeError, "different sample set"):
                 canonical_recovery(None, [sample], predictions, root)

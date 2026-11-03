@@ -34,7 +34,7 @@ async function main() {
   ort.env.wasm.wasmPaths = runtimeRoot.href;
   const report = {format: 'optical-decoder-node-wasm-report', version: 1, modelStatus: manifest.status,
     modelProfile: manifest.modelProfile, inputLayout:manifest.inputLayout, frameCounts:manifest.frameCounts,
-    minFramesPerInput:manifest.minFramesPerInput, networkInputClip: manifest.networkInputClip,
+    minFramesPerInput:manifest.minFramesPerInput,outputLabelSpace:manifest.outputLabelSpace,phaseMasks:manifest.phaseMasks, networkInputClip: manifest.networkInputClip,
     framesPerInput: manifest.framesPerInput, inputChannels: manifest.channels,
     environment: `Node.js ${process.version}`, runtimeVersions: {...ort.env.versions},
     execution: 'ONNX Runtime Web WebGPU bundle, WASM provider, one thread. Not a browser or phone measurement.',
@@ -91,7 +91,7 @@ async function main() {
         clippedTensor.dispose();
         for (const result of [original, clipped]) for (const value of Object.values(result || {})) value.dispose?.();
       }
-      if(manifest.inputLayout==='rgb-presence-planes') {
+      if(manifest.inputLayout==='phase-paired-rgb-presence-planes') {
         const poisoned=input.slice(),one=3*(4*entry.size)**2;
         const missing=Array.from({length:manifest.framesPerInput},(_,i)=>i).filter(i=>!present.includes(i));
         if(!missing.length)throw Error('The variable-frame parity fixture must exercise missing slots.');
@@ -108,15 +108,16 @@ async function main() {
           for(const result of [reference,actual])for(const value of Object.values(result||{}))value.dispose?.();
         }
       }
-      if(manifest.inputLayout==='rgb-presence-planes') {
+      if(manifest.inputLayout==='phase-paired-rgb-presence-planes') {
         const plane=(4*entry.size)**2,one=3*plane;
-        const order=[...present,...Array.from({length:manifest.framesPerInput},(_,i)=>i).filter(i=>!present.includes(i))];
+        const first=[0,1,2,3].map(phase=>present.find(slot=>Math.floor(slot/2)===phase));
+        const order=[...first,...Array.from({length:manifest.framesPerInput},(_,i)=>i).filter(i=>!first.includes(i))];
         // Exercise every advertised observation count. These are runtime/mask
         // checks, not extra Python fixtures or optical recovery measurements.
         for(const framesAvailable of manifest.frameCounts) {
           const values=input.slice(),active=order.slice(0,framesAvailable),missing=order.slice(framesAvailable);
           for(let slot=0;slot<manifest.framesPerInput;slot++) {
-            if(active.includes(slot)&&!present.includes(slot))values.set(input.subarray(present[0]*one,(present[0]+1)*one),slot*one);
+            if(active.includes(slot)&&!present.includes(slot))values.set(input.subarray(first[Math.floor(slot/2)]*one,(first[Math.floor(slot/2)]+1)*one),slot*one);
             if(!active.includes(slot))values.fill(0,slot*one,(slot+1)*one);
             values.fill(Number(active.includes(slot)),(3*manifest.framesPerInput+slot)*plane,(3*manifest.framesPerInput+slot+1)*plane);
           }

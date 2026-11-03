@@ -94,6 +94,7 @@ async function inference(context, pixels) {
 function describe(context, options) {
   return {format: 'optical-decoder-report', version: 1, modelStatus: context.manifest.status,
     modelProfile: context.manifest.modelProfile, inputLayout:context.manifest.inputLayout,
+    outputLabelSpace:context.manifest.outputLabelSpace,phaseMasks:context.manifest.phaseMasks,
     frameCounts:context.manifest.frameCounts, minFramesPerInput:context.manifest.minFramesPerInput, networkInputClip: context.manifest.networkInputClip,
     checkpointSha256: context.manifest.checkpointSha256 ?? null, size: options.size, framesPerInput:context.manifest.framesPerInput,
     requestedBackend: options.backend, effectiveBackend: context.effectiveBackend, fallbackReason: context.fallbackReason,
@@ -123,30 +124,40 @@ async function benchmark(options, progress) {
 }
 async function capture(options, progress, image, runId, mediaTime, presentedFrames) {
   if (!Number.isSafeInteger(runId)||runId<1||!Number.isFinite(mediaTime)||mediaTime<0||!Number.isSafeInteger(presentedFrames)||presentedFrames<1) throw Error('Capture needs a fresh run and video frame identity.');
-  progress('Validating the monochrome header and rectifying the current exposure…');
-  const input = extractLearnedInput(image);
-  if (!input.ok) { cameraBurst=null; throw new Error(input.error || 'No supported 64/128-cell matrix was found.'); }
-  if (input.info.size !== options.size) { cameraBurst=null; throw new Error(`Camera sees ${input.info.size} cells; select that model size first.`); }
   const context = await load(options, progress), frames=options.captureFrames||context.manifest.framesPerInput;
   if(!context.manifest.frameCounts.includes(frames))throw Error(`The prepared model supports ${context.manifest.frameCounts.join('/')} captures; choose model default or a supported count.`);
-  if (!cameraBurst||cameraBurst.frames!==frames) cameraBurst=new CameraBurst(frames);
-  const stacked=cameraBurst.add(input,{context:`${context.key}/${runId}/${frames}`,mediaTime,presentedFrames});
+  const phaseGrouped=context.manifest.inputLayout==='phase-paired-rgb-presence-planes';
+  if (!cameraBurst||cameraBurst.frames!==frames||cameraBurst.phaseGrouped!==phaseGrouped) cameraBurst=new CameraBurst(frames,{phaseGrouped});
+  const identity={context:`${context.key}/${runId}/${frames}`,mediaTime,presentedFrames};
+  progress('Validating the monochrome header and rectifying the current exposure…');
+  const input = extractLearnedInput(image);
+  if (!input.ok) {
+    if(!phaseGrouped){cameraBurst=null;throw new Error(input.error || 'No supported 64/128-cell matrix was found.');}
+    // A display transition can temporarily invalidate the header. Keep prior
+    // phases from this run, bounded by collection attempts and a 60 s age limit.
+    const waiting=cameraBurst.miss(identity);
+    progress('Waiting for a clear phase header; previous captures are retained.');
+    return {operation:'capture',waiting:true,collected:waiting.collected,framesPerInput:context.manifest.framesPerInput,
+      requiredCaptures:frames,phaseGrouped:true,phaseCounts:waiting.phaseCounts,skippedExposure:true};
+  }
+  if (input.info.size !== options.size) { cameraBurst=null; throw new Error(`Camera sees ${input.info.size} cells; select that model size first.`); }
+  const stacked=cameraBurst.add(input,identity);
   if (!stacked.ready) {
-    progress(`Collected ${stacked.collected}/${frames} same-phase exposures. Keep the matrix steady.`);
-    return {operation:'capture',waiting:true,collected:stacked.collected,framesPerInput:context.manifest.framesPerInput,requiredCaptures:frames};
+    progress(phaseGrouped?`Collected phases ${stacked.phaseCounts.join('/')}; show all four phases of this matrix.`:`Collected ${stacked.collected}/${frames} same-phase exposures. Keep the matrix steady.`);
+    return {operation:'capture',waiting:true,collected:stacked.collected,framesPerInput:context.manifest.framesPerInput,requiredCaptures:frames,phaseGrouped,phaseCounts:stacked.phaseCounts};
   }
   progress(`Running the selected model on ${frames} camera exposure${frames===1?'':'s'}…`);
   try {
-    const packed=packFrameStack(stacked.input,context.manifest,options.size);
+    const packed=packFrameStack(stacked.input,context.manifest,options.size,phaseGrouped?{phases:stacked.phases,slots:stacked.slots}:undefined);
     const result = await inference(context, packed);
     if (result.values.some(value => !Number.isFinite(value))) throw new Error('Camera inference produced non-finite logits.');
     const description=describe(context, options);
     return {...description, operation: 'capture', inputStats:{...input.stats,preprocessMs:stacked.preprocessMs}, inferenceMs: result.ms,
-      requiredCaptures:frames, memory:{...description.memory,cameraStackBytes:stacked.input.byteLength,
+      requiredCaptures:frames,phaseGrouped,phaseCounts:stacked.phaseCounts, memory:{...description.memory,cameraStackBytes:stacked.input.byteLength,cameraCollectionBytes:stacked.bufferBytes??0,
         packedInputBytes:packed===stacked.input?0:packed.byteLength,
         note:'The camera stack and optional packed input are additional to cached numerical fixtures. These are known buffer sizes, not peak memory; camera preprocessing, runtime working memory and GPU allocations are not measured.'},
       paletteColors: input.info.colors, logitsFinite: true, inputCaptures:frames, mediaTimes:stacked.mediaTimes,presentedFrames:stacked.presentedFrames,
-      note: 'Same-phase crop inference only. Assess symbol and payload recovery with the offline evaluation tools.'};
+      note: `${phaseGrouped?'Four-phase canonical-output':'Same-phase'} crop inference only. Assess symbol and payload recovery with the offline evaluation tools.`};
   } finally { cameraBurst=null; }
 }
 self.onmessage = async event => {

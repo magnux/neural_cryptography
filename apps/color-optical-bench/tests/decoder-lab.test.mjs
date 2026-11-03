@@ -10,10 +10,10 @@ function manifest(frames=1,profile='normalized-tube') {
   const [base,perFrame]={'normalized-tube':[140112,864],longtube:[275472,864],'attention-tube':[432848,0]}[profile];
   const channels=attention?32:3*frames;
   const count=base+perFrame*frames;
-  return {format:'optical-decoder',version:1,status:'untrained',modelProfile:profile,framesPerInput:frames,inputLayout:attention?'rgb-presence-planes':'stacked-rgb',
-    minFramesPerInput:attention?5:frames,frameCounts:attention?[5,6,7,8]:[frames],parameterCount:count,pixelsPerCell:4,channels,classes:16,
+  return {format:'optical-decoder',version:1,status:'untrained',modelProfile:profile,framesPerInput:frames,inputLayout:attention?'phase-paired-rgb-presence-planes':'stacked-rgb',
+    minFramesPerInput:attention?4:frames,frameCounts:attention?[4,5,6,7,8]:[frames],outputLabelSpace:attention?'logical':'physical',phaseMasks:attention?[0,15,7,8]:[],parameterCount:count,pixelsPerCell:4,channels,classes:16,
     normalization:{divisor:127.5,offset:-1,clip:[-1.5,1.5]},networkInputClip:[-1,1],
-    inputName:'pixels',outputName:'logits',seed:7,opset:17,versions:{torch:'test'},cases:(attention?[64]:[64,128]).map(size=>({size,framesAvailable:attention?5:frames,
+    inputName:'pixels',outputName:'logits',seed:7,opset:17,versions:{torch:'test'},cases:(attention?[64]:[64,128]).map(size=>({size,framesAvailable:attention?4:frames,
       inputShape:[1,channels,4*size,4*size],outputShape:[1,16,size,size],model:entry(`model-${size}.onnx`,500000),
       input:entry(`input-${size}.f32`,channels*16*size*size*4),expected:entry(`expected-${size}.f32`,16*size*size*4)}))};
 }
@@ -46,7 +46,7 @@ test('trained exports require checkpoint provenance and the current format',()=>
 });
 test('bounded benchmark choices reject oversized workloads',()=>{
   assert.deepEqual(validateOptions(),{size:64,backend:'auto',iterations:10,captureFrames:0});
-  for(const options of [{size:32},{backend:'webgl'},{iterations:31},{iterations:0},{iterations:NaN},{iterations:2.5},{captureFrames:4},{captureFrames:9},{captureFrames:5.5}]) assert.throws(()=>validateOptions(options));
+  for(const options of [{size:32},{backend:'webgl'},{iterations:31},{iterations:0},{iterations:NaN},{iterations:2.5},{captureFrames:3},{captureFrames:9},{captureFrames:5.5}]) assert.throws(()=>validateOptions(options));
 });
 test('parity checks every logit including a late mismatch and non-finite values',()=>{
   const expected=new Float32Array(1000).fill(.25),actual=expected.slice();
@@ -185,12 +185,12 @@ test('camera burst rejects duplicate timestamps and malformed inputs without fab
 });
 
 
-test('attention manifest describes fixed eight slots, five-to-eight observations and G64 only',()=>{
+test('attention manifest describes fixed eight slots, four-to-eight phase-grouped observations and G64 only',()=>{
   const value=manifest(8,'attention-tube');assert.equal(validateManifest(value),value);
   assert.equal(value.parameterCount,432848);assert.equal(value.channels,32);
   for(const mutate of [m=>m.framesPerInput=5,m=>m.channels=24,m=>m.inputLayout='stacked-rgb',
     m=>m.minFramesPerInput=1,m=>m.frameCounts=[5,6,8],m=>m.cases[0].size=128,
-    m=>m.cases[0].framesAvailable=4,m=>m.parameterCount++,m=>delete m.inputLayout]) {
+    m=>m.cases[0].framesAvailable=3,m=>m.outputLabelSpace='physical',m=>m.phaseMasks=[0,1,2,3],m=>m.parameterCount++,m=>delete m.inputLayout]) {
     const wrong=manifest(8,'attention-tube');mutate(wrong);assert.throws(()=>validateManifest(wrong));
   }
   for(const mutate of [m=>delete m.frameCounts,m=>m.minFramesPerInput=4,m=>m.inputLayout='rgb-presence-planes']) {
@@ -198,12 +198,12 @@ test('attention manifest describes fixed eight slots, five-to-eight observations
   }
 });
 
-test('camera packing distinguishes zero-valued captures from absent slots at all supported counts',()=>{
-  const model=manifest(8,'attention-tube'),plane=256*256,one=3*plane,order=[6,1,4,0,7,2,5,3];
-  for(const count of [5,6,7,8]) {
+test('camera packing preserves phase pairs and distinguishes zero captures from padding',()=>{
+  const model=manifest(8,'attention-tube'),plane=256*256,one=3*plane,order=[6,1,4,2,7,0,5,3];
+  for(const count of [4,5,6,7,8]) {
     const stack=new Float32Array(count*one);
     for(let i=0;i<count;i++)stack.fill(i*.2,i*one,(i+1)*one);
-    const before=stack.slice(),slots=order.slice(0,count),packed=packFrameStack(stack,model,64,slots);
+    const before=stack.slice(),slots=order.slice(0,count),phases=slots.map(slot=>Math.floor(slot/2)),packed=packFrameStack(stack,model,64,{slots,phases});
     assert.deepEqual(stack,before);assert.equal(packed.length,32*plane);
     assert.deepEqual(inputPresence(packed,model,64),slots.slice().sort((a,b)=>a-b));
     for(let slot=0;slot<8;slot++) {
@@ -212,21 +212,81 @@ test('camera packing distinguishes zero-valued captures from absent slots at all
       assert.ok(packed.subarray((24+slot)*plane,(25+slot)*plane).every(x=>x===Number(capture>=0)));
     }
   }
-  assert.throws(()=>packFrameStack(new Float32Array(4*one),model,64),/capture count/);
-  assert.throws(()=>packFrameStack(new Float32Array(5*one),model,64,[0,1,2,3,3]),/slots/);
+  assert.throws(()=>packFrameStack(new Float32Array(3*one),model,64),/capture count/);
+  assert.throws(()=>packFrameStack(new Float32Array(4*one),model,64),/phase ID/);
+  assert.throws(()=>packFrameStack(new Float32Array(4*one),model,64,{phases:[0,1,2,2]}),/every phase/);
+  assert.throws(()=>packFrameStack(new Float32Array(5*one),model,64,{phases:[0,1,2,3,3],slots:[0,1,2,3,3]}),/slots/);
+  assert.throws(()=>packFrameStack(new Float32Array(6*one),model,64,{phases:[0,0,0,1,2,3]}),/every phase/);
   const fixed=manifest(5),rgb=new Float32Array(5*one);
   assert.equal(packFrameStack(rgb,fixed,64),rgb);
   assert.deepEqual(inputPresence(rgb,fixed,64),[0,1,2,3,4]);
 });
 
-test('presence validation rejects malformed masks and clipping changes RGB only',()=>{
+test('presence validation rejects missing phases, malformed masks and clips RGB only',()=>{
   const model=manifest(8,'attention-tube'),plane=256*256;
-  const packed=packFrameStack(new Float32Array(5*3*plane).fill(1.25),model,64);
+  const packed=packFrameStack(new Float32Array(5*3*plane).fill(1.25),model,64,{phases:[0,1,2,3,0]});
   const clipped=clipNetworkInput(packed,model,64);
   assert.equal(clipped[0],1);assert.equal(packed[0],1.25);
   assert.deepEqual(clipped.subarray(24*plane),packed.subarray(24*plane));
   for(const mutate of [p=>p[24*plane]=.5,p=>p[24*plane+1]=0,
-    p=>p.fill(0,24*plane),p=>p[0]=NaN]) {
+    p=>p.fill(0,24*plane),p=>p[0]=NaN,
+    p=>{p.fill(0,30*plane,31*plane);p.fill(1,27*plane,28*plane); }]) {
     const bad=packed.slice();mutate(bad);assert.throws(()=>inputPresence(bad,model,64));
   }
+});
+
+test('phase camera burst can infer from first four distinct phases and ignores duplicate-phase excess',()=>{
+  const burst=new CameraBurst(4,{phaseGrouped:true});let result;
+  const phaseOrder=[2,2,2,0,0,3,1];
+  phaseOrder.forEach((phase,i)=>{
+    result=burst.add(cameraCrop(phase*.25,{phase,permute:true}),{context:'group/run',mediaTime:i,presentedFrames:i+1});
+    assert.equal(result.ready,i===phaseOrder.length-1);
+    if(!result.ready)assert.equal(result.input,null);
+  });
+  assert.deepEqual(result.phases,[0,1,2,3]);assert.deepEqual(result.slots,[0,2,4,6]);
+  assert.deepEqual(result.phaseCounts,[1,1,1,1]);assert.equal(result.input.length,4*3*256*256);
+  for(let i=0;i<4;i++)assert.equal(result.input[i*3*256*256],i*.25);
+  assert.throws(()=>burst.add(cameraCrop(0,{permute:true}),{context:'group/run',mediaTime:9,presentedFrames:10}),/complete/);
+});
+
+test('phase camera burst keeps at most two captures per phase and needs coverage at all counts',()=>{
+  for(const count of [5,6,7,8]) {
+    const burst=new CameraBurst(count,{phaseGrouped:true});let result,frame=0;
+    for(const phase of [0,0,0,1,1,2,2,3,3]) {
+      result=burst.add(cameraCrop(phase*.25,{phase,permute:true}),{context:'run',mediaTime:frame++,presentedFrames:frame});
+      assert.ok(burst.rows.length<=8);
+      if(result.ready)break;
+    }
+    assert.equal(result.ready,true);assert.equal(result.input.length,count*3*256*256);
+    assert.equal(result.phases.length,count);assert.ok(result.phaseCounts.every(c=>c>=1&&c<=2));
+    const packed=packFrameStack(result.input,manifest(8,'attention-tube'),64,{phases:result.phases,slots:result.slots});
+    assert.equal(inputPresence(packed,manifest(8,'attention-tube'),64).length,count);
+  }
+});
+
+test('phase camera burst resets logical frame changes and rejects invalid phase profiles',()=>{
+  const burst=new CameraBurst(4,{phaseGrouped:true});
+  const add=(phase,t,extra={})=>burst.add(cameraCrop(0,{phase,permute:true,...extra}),{context:'run',mediaTime:t,presentedFrames:t});
+  add(0,1);add(1,2);assert.equal(add(2,3,{index:1,count:2}).collected,1);
+  assert.equal(add(3,4,{index:1,count:2}).collected,2);
+  assert.throws(()=>add(0,5,{permute:false}),/four-phase/);
+  assert.equal(burst.rows.length,0);
+  assert.throws(()=>new CameraBurst(3,{phaseGrouped:true}),/four to eight/);
+});
+
+
+test('phase capture survives undetected transition frames but expires stale evidence and resets contexts',()=>{
+  const burst=new CameraBurst(4,{phaseGrouped:true});
+  const identity=t=>({context:'run',mediaTime:t,presentedFrames:t+1});
+  burst.add(cameraCrop(0,{phase:0,permute:true}),identity(0));
+  assert.deepEqual(burst.miss(identity(1)).phaseCounts,[1,0,0,0]);
+  burst.add(cameraCrop(0,{phase:1,permute:true}),identity(2));
+  assert.deepEqual(burst.miss(identity(3)).phaseCounts,[1,1,0,0]);
+  burst.add(cameraCrop(0,{phase:2,permute:true}),identity(4));
+  const ready=burst.add(cameraCrop(0,{phase:3,permute:true}),identity(5));
+  assert.equal(ready.ready,true);assert.deepEqual(ready.mediaTimes,[0,2,4,5]);
+  assert.deepEqual(burst.miss(identity(61)).phaseCounts,[0,0,0,0]);
+  burst.add(cameraCrop(0,{phase:0,permute:true}),identity(62));
+  assert.deepEqual(burst.miss({...identity(0),context:'newrun'}).phaseCounts,[0,0,0,0]);
+  assert.throws(()=>burst.miss({...identity(0),context:'newrun'}),/distinct/);
 });

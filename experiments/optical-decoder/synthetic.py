@@ -19,9 +19,10 @@ import torch
 from torch.nn import functional as F
 
 from data import DATASET_FORMAT, Dataset, digest, local_path
+from phases import canonical_labels, phase_neutral_info
 
 
-CORRUPTION_KIND = "correlated-calibrated-crop-v7"
+CORRUPTION_KIND = "correlated-calibrated-crop-v8"
 
 
 @dataclass(frozen=True)
@@ -424,13 +425,43 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
         raise ValueError("Input violates the finite normalized crop contract")
     if not 1 <= frames <= 16 or not 0 <= severity <= 1 or not 0 <= seed <= 0xffffffff:
         raise ValueError("Frames 1–16, severity 0–1, uint32 seed required")
+    return _corrupt_sequence(clean[None], np.zeros(frames, dtype=np.int64), seed, severity,
+                             photometric=photometric, resolution=resolution)
+
+
+def corrupt_phase_group(clean: np.ndarray, seed: int, frames: int = 7, severity: float = .65,
+                        *, photometric: PhotometricConfig | None = None,
+                        resolution: CaptureResolutionConfig | None = None) -> np.ndarray:
+    """Return [4,T,3,256,256] from one coherent phase-cycling camera trajectory.
+
+    Slow optical conditions are drawn once. Frame p of each four-phase cycle
+    sees the corresponding clean palette assignment; motion, moire, exposure
+    drift and sensor noise advance continuously rather than resetting per phase.
+    `frames` retains its CLI meaning: captures per phase, not total inputs.
+    """
+    clean = np.asarray(clean, dtype=np.float32)
+    if clean.shape != (4, 3, 256, 256) or not np.isfinite(clean).all() or np.max(np.abs(clean)) > 1.50001:
+        raise ValueError("Phase grouping requires four finite normalized [3,256,256] crops")
+    if type(frames) is not int or not 2 <= frames <= 16:
+        raise ValueError("Phase grouping requires 2–16 captures per phase")
+    if not 0 <= severity <= 1 or not 0 <= seed <= 0xffffffff:
+        raise ValueError("Severity 0–1 and uint32 seed required")
+    phases = np.tile(np.arange(4, dtype=np.int64), frames)
+    observed = _corrupt_sequence(clean, phases, seed, severity,
+                                photometric=photometric, resolution=resolution)
+    return np.ascontiguousarray(observed.reshape(frames, 4, 3, 256, 256).transpose(1, 0, 2, 3, 4))
+
+
+def _corrupt_sequence(clean, views, seed, severity, *, photometric=None, resolution=None):
+    """Shared simulator for one clean view or a scheduled four-phase group."""
+    frames = len(views)
     photometric = photometric or PhotometricConfig()
     if severity == 0:
-        return np.repeat(clean[None], frames, axis=0).copy()
+        return clean[views].copy()
     rng = np.random.default_rng(seed)
     side = clean.shape[-1]
     capture = sample_capture_resolution(side, seed, severity, resolution or CaptureResolutionConfig())
-    rgb = torch.from_numpy(np.clip((clean+1)/2, 0, 1))[None]
+    rgb = torch.from_numpy(np.clip((clean+1)/2, 0, 1))
     high = F.interpolate(rgb, scale_factor=2, mode="nearest")
     hy, hx = torch.meshgrid(torch.arange(2*side, dtype=torch.float32),
                            torch.arange(2*side, dtype=torch.float32), indexing="ij")
@@ -465,7 +496,8 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
     glare = sample_glare(glare_rng, severity, photometric)
     outputs = []
     for t in range(frames):
-        blurred = gaussian_blur(high, base_sigma + severity*.15*np.sin(t*.6+phase0))
+        view = int(views[t])
+        blurred = gaussian_blur(high[view:view+1], base_sigma + severity*.15*np.sin(t*.6+phase0))
         shift = np.clip(base_shift + np.sin(t*.55)*drift + rng.normal(0, .04, 2)*severity, -.9, .9)
         shutter_gains, row_offsets = rolling_shutter_maps(side, shutter, t)
         grid = torch.stack((x+2*(float(shift[0])+row_offsets)/side,
@@ -486,17 +518,59 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
         observed = apply_glare(observed, glare, t)
         # Shot variance follows intensity; read noise is independent per capture.
         std = severity*(.008 + .025*observed.sqrt())
-        noise = torch.from_numpy(rng.normal(size=clean.shape).astype(np.float32))
+        noise = torch.from_numpy(rng.normal(size=clean.shape[1:]).astype(np.float32))
         observed = (observed + noise*std).clamp(0, 1)
         observed = apply_capture_resolution(observed, capture).clamp(0, 1)
         outputs.append((observed*2-1).numpy())
     return np.stack(outputs).astype(np.float32, copy=False)
 
 
+def clean_phase_groups(samples):
+    """Validate complete clean phase sets before creating any output files.
+
+    Group identity is the receiver/sender session, split, payload and complete
+    phase-neutral frame header. Equal checksums alone do not establish a group.
+    """
+    groups = {}
+    for sample in samples:
+        row = sample.metadata
+        info = phase_neutral_info(row["info"])
+        key = json.dumps([row["sessionId"], row.get("senderSessionId"), row["payloadId"],
+                          row["split"], info], sort_keys=True, separators=(",", ":"))
+        phase = row["info"]["phase"]
+        phases = groups.setdefault(key, {})
+        if phase in phases:
+            raise ValueError("Duplicate clean phase in one physical session/frame")
+        phases[phase] = sample
+    ordered = []
+    for key, phases in sorted(groups.items()):
+        if set(phases) != set(range(4)):
+            raise ValueError("Phase grouping requires a complete set of four clean phases per session/frame")
+        members = tuple(phases[phase] for phase in range(4))
+        reference = None
+        for phase, sample in enumerate(members):
+            _, labels, mask = sample.tensors()
+            canonical = canonical_labels(labels, mask, phase)
+            expected = sample.read("expected", "u1")
+            sample.read("baseline", "<f4")
+            if reference is not None and any(not np.array_equal(a, b) for a, b in
+                    zip((canonical, mask, expected), reference)):
+                raise ValueError("Clean phase targets disagree on canonical labels, mask or payload bytes")
+            reference = canonical, mask, expected
+        ordered.append((key, members))
+    return ordered
+
+
 def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
              max_output_mib=2**20, node="node", photometric: PhotometricConfig | None = None,
              bursts_per_target=1, severity_min=None,
-             resolution: CaptureResolutionConfig | None = None):
+             resolution: CaptureResolutionConfig | None = None, phase_grouped=False):
+    if type(phase_grouped) is not bool:
+        raise ValueError("phase-grouped must be boolean")
+    if type(frames) is not int or not (2 if phase_grouped else 1) <= frames <= 16:
+        raise ValueError("frames must be 2–16 per phase for grouped data, otherwise 1–16")
+    if type(seed) is not int or not 0 <= seed <= 0xffffffff:
+        raise ValueError("seed must be uint32")
     if not isinstance(max_output_mib, int) or isinstance(max_output_mib, bool) or max_output_mib < 0:
         raise ValueError("max-output-mib must be a nonnegative integer; zero disables the estimate limit")
     if type(bursts_per_target) is not int or not 1 <= bursts_per_target <= 2**20:
@@ -511,11 +585,14 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
     recipe = {"kind": CORRUPTION_KIND, "seed": seed, "severity": severity,
               "severityMin": severity_min,
               "captureResolution": asdict(resolution),
-              "frames": frames, "burstsPerTarget": bursts_per_target, "photometric": asdict(photometric)}
+              "frames": frames, "phaseGrouped": phase_grouped,
+              "phaseSchedule": "round-robin-continuous" if phase_grouped else None,
+              "burstsPerTarget": bursts_per_target, "photometric": asdict(photometric)}
     recipe_hash = hashlib.sha256(json.dumps(recipe, sort_keys=True, allow_nan=False).encode()).hexdigest()
     dataset = Dataset(clean_directories)
     if any(sample.metadata["source"] != "synthetic" or "synthetic" in sample.metadata for sample in dataset.samples):
         raise ValueError("Generate corruptions from canonical synthetic clean datasets only; real captures remain unchanged")
+    groups = clean_phase_groups(dataset.samples) if phase_grouped else [(s.id, (s,)) for s in dataset.samples]
     estimated = sum(sum(local_path(s.root, s.metadata[field]).stat().st_size
                         for field in ("input", "labels", "mask", "baseline", "expected"))
                     for s in dataset.samples)*frames*bursts_per_target
@@ -526,46 +603,54 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
         raise ValueError("Choose an empty output directory")
     out.mkdir(parents=True, exist_ok=True)
     records = []
-    for sample in dataset.samples:
-        pixels, _, _ = sample.tensors()
-        sample.read("baseline", "<f4")
-        sample.read("expected", "u1")
+    for group_key, members in groups:
+        pixels = np.stack([sample.tensors()[0] for sample in members])
+        for sample in members:
+            sample.read("baseline", "<f4")
+            sample.read("expected", "u1")
         for burst_index in range(bursts_per_target):
             derived = int.from_bytes(hashlib.sha256(
-                f"{seed}/{sample.id}/{burst_index}".encode()).digest()[:4], "little")
-            # One strength per trajectory, not independently per frame. Its own
-            # stream keeps selecting strength independent from all artifact RNGs.
+                f"{seed}/{group_key}/{burst_index}".encode()).digest()[:4], "little")
+            # Every phase of a group shares one severity, capture scale and
+            # physical trajectory. Sensors still produce fresh noise per frame.
             severity_rng = np.random.default_rng(np.random.SeedSequence([derived, 0x53455652]))
             burst_severity = (severity if severity_min is None else
                               float(severity_rng.uniform(severity_min, severity)))
             capture = sample_capture_resolution(pixels.shape[-1], derived, burst_severity, resolution)
-            burst = corrupt_burst(pixels, derived, frames, burst_severity,
-                                  photometric=photometric, resolution=resolution)
-            burst_id = hashlib.sha256(f"{sample.id}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
-            for index, value in enumerate(burst):
-                identifier = hashlib.sha256(f"{burst_id}/{index}".encode()).hexdigest()[:24]
-                directory = out / identifier
-                directory.mkdir()
-                record = {**sample.metadata, "id": identifier, "hashes": {},
-                          "source": "synthetic", "burstId": f"synthetic-{burst_id}",
-                          "synthetic": {"seed": derived, "frame": index, "burst": burst_index,
-                          "frames": frames, "severity": burst_severity, "parentId": sample.id,
-                          "captureResolution": capture,
-                          "kind": CORRUPTION_KIND, "recipeSha256": recipe_hash},
-                          "baselineMode": "canonical-from-corrupted-input"}
-                for field in ("input", "labels", "mask", "baseline", "expected"):
-                    suffix = {"input": "f32", "baseline": "f32", "expected": "bin"}.get(field, "u8")
-                    path = directory / f"{field}.{suffix}"
-                    if field == "input":
-                        path.write_bytes(np.ascontiguousarray(value, dtype="<f4").tobytes())
-                    else:
-                        shutil.copyfile(local_path(sample.root, sample.metadata[field]), path)
-                    record[field] = path.relative_to(out).as_posix()
-                    record["hashes"][field] = digest(path)
-                # Other source-only file paths would point outside this new bundle.
-                record.pop("samples", None)
-                record.pop("original", None)
-                records.append(record)
+            bursts = (corrupt_phase_group(pixels, derived, frames, burst_severity,
+                                         photometric=photometric, resolution=resolution)
+                      if phase_grouped else corrupt_burst(pixels[0], derived, frames, burst_severity,
+                                                         photometric=photometric, resolution=resolution)[None])
+            phase_group_id = hashlib.sha256(f"{group_key}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
+            for sample, burst in zip(members, bursts):
+                burst_id = hashlib.sha256(f"{sample.id}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
+                for index, value in enumerate(burst):
+                    identifier = hashlib.sha256(f"{burst_id}/{index}".encode()).hexdigest()[:24]
+                    directory = out / identifier
+                    directory.mkdir()
+                    record = {**sample.metadata, "id": identifier, "hashes": {},
+                              "source": "synthetic", "burstId": f"synthetic-{burst_id}",
+                              "synthetic": {"seed": derived, "frame": index, "burst": burst_index,
+                              "frames": frames, "severity": burst_severity, "parentId": sample.id,
+                              "captureResolution": capture,
+                              "kind": CORRUPTION_KIND, "recipeSha256": recipe_hash},
+                              "baselineMode": "canonical-from-corrupted-input"}
+                    if phase_grouped:
+                        record["synthetic"].update(phaseGroupId=f"phase-group-{phase_group_id}",
+                            timelineFrame=index*4+sample.metadata["info"]["phase"])
+                    for field in ("input", "labels", "mask", "baseline", "expected"):
+                        suffix = {"input": "f32", "baseline": "f32", "expected": "bin"}.get(field, "u8")
+                        path = directory / f"{field}.{suffix}"
+                        if field == "input":
+                            path.write_bytes(np.ascontiguousarray(value, dtype="<f4").tobytes())
+                        else:
+                            shutil.copyfile(local_path(sample.root, sample.metadata[field]), path)
+                        record[field] = path.relative_to(out).as_posix()
+                        record["hashes"][field] = digest(path)
+                    # Other source-only file paths would point outside this bundle.
+                    record.pop("samples", None)
+                    record.pop("original", None)
+                    records.append(record)
     manifest = {"format": DATASET_FORMAT, "version": 1, "samples": records,
                 "generator": {**recipe, "recipeSha256": recipe_hash,
                               "sourceManifestSha256": dataset.manifest_hash,
@@ -586,7 +671,9 @@ def main():
     parser.add_argument("--clean", nargs="+", required=True, type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--frames", type=int, default=7)
+    parser.add_argument("--frames", type=int, default=7, help="captures per phase burst, 1–16 (2–16 with --phase-grouped)")
+    parser.add_argument("--phase-grouped", action="store_true",
+                        help="joint four-phase G64/16-color trajectories for attention-tube")
     parser.add_argument("--bursts-per-target", type=int, default=1,
                         help="independent corruption bursts per clean target (default: 1)")
     parser.add_argument("--severity", type=float, default=.65)
@@ -651,7 +738,7 @@ def main():
         result = generate(args.clean, args.out, seed=args.seed, frames=args.frames,
                           severity=args.severity, max_output_mib=args.max_output_mib, node=args.node,
                           photometric=photometric, bursts_per_target=args.bursts_per_target,
-                          severity_min=args.severity_min,
+                          severity_min=args.severity_min, phase_grouped=args.phase_grouped,
                           resolution=CaptureResolutionConfig(probability=args.capture_probability,
                               min_scale=args.capture_min_scale, max_scale=args.capture_max_scale,
                               blur_sigma=args.capture_blur_sigma))
