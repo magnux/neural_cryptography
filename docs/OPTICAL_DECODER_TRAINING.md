@@ -136,10 +136,98 @@ offline. Unreadable headers are kept as diagnostics, optionally with an original
 image, and receive no inherited labels. For the PC, resolve marker/header
 acquisition before expecting this payload classifier to help.
 
-## Join labels offline
+## Organize recordings and rebuild datasets
 
-The receiver never loads the sender manifest. Move both exports to the training
-computer and join them with the canonical JavaScript codec:
+Sender and receiver downloads now start with the **eight-digit hexadecimal
+CRC32 of the first logical matrix's payload**. This is `info.chunkCRC`, already
+present in both JSON files. Palette phases share it; the header checksum changes
+between phases and is deliberately not used. The original sequence-ID and
+receiver session/timestamp suffixes distinguish downloads. A receiver batch containing only
+diagnostics uses `unpaired` because it has no decoded matrix header. If a batch
+contains several sequences, its prefix describes the first retained matrix;
+the offline join still considers every record's full header.
+
+The prefix is an organizational aid, not a unique identity or authentication
+check. Pairing still validates the full header and sender payload. Recording
+JSON content, versions, session identities and capture timestamps are unchanged.
+
+Put both devices' exports under these directories:
+
+| Directory | Contents | Dataset split |
+| --- | --- | --- |
+| `local-data/phone/train/` | Sender and receiver exports saved on the phone | Training |
+| `local-data/pc/train/` | Sender and receiver exports saved on the PC | Training |
+| `local-data/phone/val/` | Held-out exports saved on the phone | Validation |
+| `local-data/pc/val/` | Held-out exports saved on the PC | Validation |
+
+In the current collection, prefixes **6, 7, 8, d, e, f** belong to `val` on
+both devices and the other prefixes belong to `train`. Keep this arrangement
+when renaming. For future collections, assign splits before removing manual labels. Keep
+whole physical sessions and payloads in one split. Filesystem creation dates
+and the original manual prefixes do not participate in joining or grouping.
+
+Rename existing downloads using their JSON contents:
+
+```sh
+node scripts/rename-decoder-recordings.mjs --dry-run
+node scripts/rename-decoder-recordings.mjs --apply
+```
+
+The command scans the `phone` and `pc` trees recursively. It replaces only the
+leading manual/checksum prefix, preserving the rest of each filename exactly,
+including any existing timestamp. Files stay in the same split/device directory;
+file bytes are preserved, conflicting destinations are refused, and rerunning
+is safe. No recording-format conversion is performed. For example,
+`6_decoder-sender-7b37095e6b0768e7.json` becomes
+`<crc32>_decoder-sender-7b37095e6b0768e7.json` in the same `pc/val` directory.
+
+Once the current training job has finished, rebuild the standard datasets:
+
+```sh
+node scripts/rebuild-decoder-data.mjs --python python --dry-run
+node scripts/rebuild-decoder-data.mjs --python python
+```
+
+Use the active training virtual environment for `python`. Do not rebuild while
+a training/evaluation process is reading these paths. The command checks raw
+inputs, pairing, split ownership and dependencies before replacing outputs.
+It rejects unmatched captures and conflicting/duplicate records instead of
+silently shrinking the dataset. Captures in `phone` map to **PC→phone**; captures
+in `pc` map to **phone→PC**, with the sender required on the opposite device.
+
+Only these generated outputs are replaced:
+
+| Output under `local-data/` | Purpose |
+| --- | --- |
+| `real-train`, `real-validation` | Joined calibrated captures with original burst/session identities |
+| `target-clean-train`, `target-clean-validation` | Canonical clean targets reconstructed from sender truth |
+| `target-synthetic-train`, `target-synthetic-validation` | Corrupted views paired with those exact targets |
+| `session-groups.json` | Current receiver-session direction labels |
+
+Other datasets, raw recordings and checkpoints are left alone. Generation
+reuses these names on each run; no numbered or dated dataset copies accumulate.
+After preflight, the previous managed outputs are removed to avoid requiring
+space for two synthetic corpora. A later processing/disk failure leaves an
+incomplete rebuild; fix the cause and rerun before training.
+
+The training corpus uses the current harder recipe, including glare, native
+capture-resolution loss and RGB-offset motion blur, with **32 bursts × 12 frames
+per clean target**, seed 41. Validation synthetics use **4 bursts × 12 frames**,
+seed 42, and remain in the validation split. Model selection should still use
+`real-validation`; synthetic validation is an additional diagnostic. The command
+exposes `--frames`, `--bursts-per-target`, `--validation-bursts-per-target`,
+`--seed`, severity and output-budget controls in `--help`. Training `--frames 5` remains
+independent of the number of generated exposures per burst.
+
+Existing real burst IDs are preserved; neither renaming nor rebuilding makes
+temporally correlated captures into independent physical sessions. The model
+continues to draw random distinct captures inside each burst. Newly added
+sessions enter the next rebuild without any handwritten sender/capture lists.
+
+## Join labels offline manually
+
+The receiver never loads the sender manifest. The rebuild command above uses
+the canonical JavaScript codec. For an individual custom join, run:
 
 ```sh
 node scripts/decoder-dataset.mjs join \
@@ -464,9 +552,9 @@ next experiment; live transport must still be tested separately.
 
 ## Generate the updated paired synthetic corpus
 
-Reuse `target-clean-train`, or reconstruct it once with the first command below.
-Generate the new RGB-offset corpus into the empty `target-synthetic-rgb-train`
-directory. This keeps seed 41 and the existing resolution/glare settings while
+The rebuild command already performs this step. For a manual regeneration,
+reuse `target-clean-train`, or reconstruct it once with the first command below.
+Generate the RGB-offset corpus into an empty `target-synthetic-train` directory. This keeps seed 41 and the existing resolution/glare settings while
 adding the new color-motion effect. Original recordings and joined real data
 remain unchanged.
 
@@ -478,7 +566,7 @@ node scripts/decoder-dataset.mjs targets \
 
 python experiments/optical-decoder/synthetic.py \
   --clean local-data/target-clean-train \
-  --out local-data/target-synthetic-rgb-train \
+  --out local-data/target-synthetic-train \
   --bursts-per-target 32 --frames 12 --seed 41 \
   --severity-min .45 --severity .9 \
   --glare-probability .7 --glare-strength .65 \
@@ -529,7 +617,7 @@ not an additional model input or a browser decoding oracle.
 ## Recommended next training run
 
 **Train `longtube` from scratch**, with five frames at `1e-4` for 32,000 updates.
-Use `real-train`, `real-validation`, the new `target-synthetic-rgb-train` and the
+Use `real-train`, `real-validation`, the new `target-synthetic-train` and the
 existing direction sidecar. Keep ordinary masked cross-entropy and mild real
 augmentation. Use **batch 8 × accumulation 4 = effective batch 32**, matching the
 successful tube run's batch 16 × 2 while reducing the microbatch for the deeper
@@ -538,25 +626,14 @@ The new output directory is `longtube5`. Do not pass `--initialize`: tube weight
 cannot initialize a different residual architecture. Retain the current tube
 checkpoint for comparison and continued same-profile training if wanted.
 
-Reuse the existing direction sidecar. If it does not exist, create it once:
-
-```sh
-python experiments/optical-decoder/session_groups.py \
-  --pc-to-phone local-data/phone/*decoder-captures*.json \
-  --phone-to-pc local-data/pc/*decoder-captures*.json \
-  --datasets local-data/real-train local-data/real-validation \
-  --out local-data/session-groups.json
-```
-
-The paths follow the existing capture organization: captures recorded on the
-phone are PC→phone, and captures recorded on the PC are phone→PC. Verify those
-assignments; filenames/UUIDs are not used to infer direction. The helper refuses
-to overwrite an existing sidecar. The mapping is optional for generic training,
-but the following run uses it to balance and report both directions.
+The rebuild command creates `session-groups.json` automatically from receiver
+locations and validates both directions. Use that regenerated sidecar when
+adding sessions. For custom datasets outside the folder workflow, the standalone
+`session_groups.py --help` describes explicit direction assignments.
 
 ```sh
 python experiments/optical-decoder/train.py \
-  --train local-data/real-train local-data/target-synthetic-rgb-train \
+  --train local-data/real-train local-data/target-synthetic-train \
   --validation local-data/real-validation \
   --model longtube \
   --session-groups local-data/session-groups.json \

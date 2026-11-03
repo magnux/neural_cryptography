@@ -26,6 +26,11 @@ function flags(args) {
   return result;
 }
 function only(options,names){for(const key of Object.keys(options))if(!names.includes(key))throw Error(`Unknown option --${key}`);}
+function fileList(value) {
+  const paths=Array.isArray(value)?value:typeof value==='string'?value.split(','):[];
+  if(!paths.length||paths.some(path=>typeof path!=='string'||!path))throw Error('Expected nonempty input file paths.');
+  return paths;
+}
 function safePath(root,name) {
   if(typeof name!=='string'||!name||isAbsolute(name)||name.includes('\\')||name.split('/').some(part=>!part||part==='.'||part==='..'))throw Error('Unsafe dataset path.');
   const target=resolve(root,name);if(!target.startsWith(resolve(root)+sep))throw Error('Dataset path escapes root.');return target;
@@ -96,7 +101,7 @@ export async function joinCaptures(options) {
   only(options,['out','senders','captures','split','exclude']);
   if(!options.out||!options.senders||!options.captures)throw Error('join requires --out DIRECTORY --senders FILE[,FILE] --captures FILE[,FILE].');
   const out=resolve(options.out),split=splitName(options.split),senders=new Map(),senderIds=new Map();
-  for(const path of options.senders.split(',')) {
+  for(const path of fileList(options.senders)) {
     const manifest=await jsonFile(path,1024*1024),frames=await senderFrames(manifest);
     for(const frame of frames) {
       const key=captureKey(frame),signature=JSON.stringify({payloadId:manifest.payloadId,sessionId:manifest.sessionId,header:Buffer.from(frame.header).toString('hex')});
@@ -108,7 +113,7 @@ export async function joinCaptures(options) {
   let exclusions=[];if(options.exclude){exclusions=await jsonFile(options.exclude,65536);if(!Array.isArray(exclusions)||exclusions.some(x=>typeof x!=='string'))throw Error('Exclusions must be capture IDs in a JSON array.');}
   const dataset={format:DATASET_FORMAT,version:1,created:new Date().toISOString(),samples:[],excluded:[],diagnostics:[]},ids=new Set();
   await freshDirectory(out);
-  for(const path of options.captures.split(',')) {
+  for(const path of fileList(options.captures)) {
     const bundle=await jsonFile(path,MAX_CAPTURE_JSON);if(bundle.format!=='optical-decoder-captures'||bundle.version!==1||!Array.isArray(bundle.records)||bundle.records.length>MAX_RECORDS)throw Error('Unsupported receiver capture bundle.');
     validateSessionId(bundle.sessionId);
     for(let i=0;i<bundle.records.length;i++) {
@@ -147,7 +152,7 @@ export async function targets(options) {
   if(!options.dataset||!options.out)throw Error('targets requires --dataset DIRECTORY[,DIRECTORY] --out DIRECTORY.');
   const grouped=new Map(),ids=new Set(),owners={sessionId:new Map(),payloadId:new Map()},sources=[];
   let captures=0;
-  for(const location of options.dataset.split(',')) {
+  for(const location of fileList(options.dataset)) {
     const root=resolve(location),manifestPath=await safeReadPath(root,'manifest.json'),manifest=await jsonFile(manifestPath);
     if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length)throw Error('Unsupported joined dataset manifest.');
     sources.push({manifestSha256:hash(await readFile(manifestPath))});

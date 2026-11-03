@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createSender,captureKey} from '../dist/js/dataset/contract.js';
 import {captureFrame} from '../dist/js/dataset/capture.js';
+import {recordingFilename} from '../dist/js/dataset/filenames.js';
 import {meanCaptureDistance} from '../dist/js/dataset/diversity.js';
 import {renderFrame} from '../dist/js/format.js';
 
@@ -12,7 +13,7 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
   const css=await readFile(new URL('../dist/js/dataset/style.css',import.meta.url),'utf8');
   const sender=await createSender({seed:90,sessionId:'flow'});
   const record=captureFrame(renderFrame(sender.frames[0],1024),{signature:true});
-  let phase=0,clock=1000,media=1,stopped=0,filled=0,replacementChoice=null,holdSelection=false,lateSelection=null,download=null;
+  let phase=0,clock=1000,media=1,stopped=0,filled=0,replacementChoice=null,holdSelection=false,lateSelection=null,download=null,downloadName=null;
   const timers=new Map();let timerId=0;const operations=[],cameraInputs=[],draws=[];
   const rawPixels=Uint8ClampedArray.from({length:4096},(_,i)=>(i*17+Math.floor(i/128))%256);
   const context={clearRect(){},drawImage(...args){draws.push(args);},getImageData:()=>({width:32,height:32,data:rawPixels.slice()}),
@@ -20,7 +21,7 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
   class Element{
     constructor(id){this.id=id;this.value='';this.disabled=false;this.hidden=false;this.handlers={};this.attributes={};this.options=[];this.width=32;this.height=32;}
     addEventListener(type,handler){this.handlers[type]=handler;}
-    setAttribute(name,value){this.attributes[name]=value;}getAttribute(name){return this.attributes[name];}removeAttribute(name){delete this.attributes[name];}getContext(){return context;}click(){}
+    setAttribute(name,value){this.attributes[name]=value;}getAttribute(name){return this.attributes[name];}removeAttribute(name){delete this.attributes[name];}getContext(){return context;}click(){downloadName=this.download;}
     replaceChildren(...children){this.options=children;}add(child){this.options.push(child);}
     async fire(type='click'){if(type==='click')assert.equal(this.disabled,false,`${this.id} is enabled`);await this.handlers[type]?.();}
   }
@@ -102,6 +103,8 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     assert.equal(timers.size,0);assert.equal(stopped,2);assert.equal(get('sampleCount').textContent,count);
     await get('downloadCaptures').fire();
     const exported=JSON.parse(await download.text());
+    assert.equal(downloadName,recordingFilename(exported));
+    assert.ok(downloadName.startsWith(`${record.info.chunkCRC.toString(16).padStart(8,'0')}_`));
     assert.equal(exported.format,'optical-decoder-captures');assert.equal(exported.version,1);
     assert.equal(exported.records.length,33);assert.equal(exported.collection.keepRandom,0);
     assert.equal(exported.collection.scanIntervalMs,100);

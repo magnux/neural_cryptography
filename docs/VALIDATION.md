@@ -710,3 +710,39 @@ exact clipping parity. Maximum absolute differences from PyTorch were
 **3.13e-6** and **2.62e-6**, respectively. This checks exported computation,
 not trained recognition or phone performance. Single-thread Node median
 inference times were approximately **763 ms** (G64) and **3,171 ms** (G128).
+
+## 2026-11-03 — recording names and repeatable dataset rebuild
+
+Capture downloads share the first logical matrix's payload CRC32 as an
+eight-digit filename prefix. Palette phases retain the same prefix; header
+CRCs are not used. The new filename-only migration scans existing device/split
+folders recursively and replaces only the leading manual/checksum prefix.
+Original filename suffixes, timestamps inside names, JSON bytes and folder
+placement are preserved. Diagnostics-only bundles use `unpaired`; full header
+and payload checks, rather than filename prefixes, remain the join authority.
+
+The rebuild CLI reads `local-data/{phone,pc}/{train,val}`. It validates current
+recordings, tensors, stable-header evidence, complete sender/receiver matching,
+device direction, duplicates and whole-session/payload split isolation before
+removing only six fixed generated directories and `session-groups.json`.
+Python dependency/configuration failures also precede removal. Raw files are
+read one bundle at a time; large capture tensors are not retained across files.
+It rebuilds real burst identities, canonical paired targets, direction groups
+and separate training/validation synthetics. Defaults use 32/4 independent
+bursts per target, 12 frames, seeds 41/42 and the current harder RGB-offset
+recipe. Existing differently named datasets and checkpoints remain untouched.
+Rebuild must run after any training/evaluation job using those generated paths.
+
+**76 affected JavaScript tests passed, with no skips**, including the actual
+Python synthetic-generation integration. The small fixture produced two real
+captures, one clean target and two synthetic captures per split; target hashes,
+burst identities, direction groups and split membership were checked. Paths
+containing commas exercised array-based joins/target reconstruction. Raw-file
+hashes, an unrelated dataset and a checkpoint sentinel were preserved, while
+the previous managed dataset was removed. Negative tests cover unmatched and
+duplicate exports, wrong-side captures, malformed tensors, split leakage,
+symlink paths, unavailable Python and insufficient configured output budget.
+Filename checks cover exact suffix preservation, JSON/date independence,
+phase agreement, overwrite refusal, dry runs and idempotent reruns. Whitespace
+checks passed. No actual user recordings were migrated here and no site was
+deployed or reactivated.

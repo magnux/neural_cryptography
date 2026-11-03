@@ -21,7 +21,11 @@ camera samples with automatic filled alignment feedback, and export the sender
 manifest and receiver captures separately. Collection keeps per-phase pools
 (default 32 samples), continuously replaces redundant captures with a randomized
 distance heuristic, and shows within-phase RGB distance and replacement counters
-above the camera. Recording file formats are unchanged.
+above the camera. Recording file formats are unchanged. Both exports use the
+first matrix's payload CRC32 as a matching filename prefix; the offline join
+still validates full header/payload identities. The
+[recording workflow](../../docs/OPTICAL_DECODER_TRAINING.md#organize-recordings-and-rebuild-datasets)
+includes filename migration and one-command rebuilding from `phone/pc` split folders.
 **Mirror preview** flips the visible camera image and its alignment overlay
 together; capture tensors and optional original PNGs retain the camera's original
 orientation. This display preference persists while changing roles or restarting

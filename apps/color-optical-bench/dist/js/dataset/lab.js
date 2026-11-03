@@ -1,6 +1,7 @@
 import {CaptureClient} from './client.js';
 import {CaptureBuffer} from './capture.js';
 import {ScanLoop} from './scan-loop.js';
+import {recordingFilename} from './filenames.js';
 import {project} from '../vision.js';
 
 const $=id=>document.getElementById(id),client=new CaptureClient(),buffer=new CaptureBuffer();
@@ -249,7 +250,7 @@ document.addEventListener('keydown',event=>{
   if(event.key==='Escape')closeFocus();
   else if(event.key==='Tab'){event.preventDefault();$('closeFocus').focus();}
 });
-$('downloadSender').addEventListener('click',()=>{if(sender)saveJSON(sender.manifest,`decoder-sender-${sender.manifest.sequenceId}.json`);});
+$('downloadSender').addEventListener('click',()=>{if(sender)saveJSON(sender.manifest,recordingFilename(sender.manifest));});
 $('newSenderSession').addEventListener('click',()=>{senderSession=session('sender');sender=null;phase=0;$('senderCanvasWrap').hidden=true;$('senderStatus').textContent='New physical session. Create and save a fresh sequence.';refresh();});
 $('startCamera').addEventListener('click',startCamera);$('stopCamera').addEventListener('click',stopCamera);
 // CSS mirrors the displayed video and alignment overlay together. The camera
@@ -260,9 +261,10 @@ $('phaseMaximum').addEventListener('change',changePoolSize);
 $('scanInterval').addEventListener('change',()=>{if(stream)restartScanner();});
 $('clearCaptures').addEventListener('click',()=>{receiverEpoch++;scanner.stop();buffer.reset();budgetFull=false;distances.clear();originalAttempts.clear();phaseActivity.clear();activeKey=null;activeInfo=null;if(stream)scanner.start();status('Batch cleared. The physical session ID is retained for the next capture file.');refresh();});
 $('newReceiverSession').addEventListener('click',()=>{receiverEpoch++;scanner.stop();buffer.reset();budgetFull=false;distances.clear();originalAttempts.clear();phaseActivity.clear();activeKey=null;activeInfo=null;receiverSession=session('receiver');if(stream)scanner.start();status('Samples cleared. A new physical receiver session is ready.');refresh();});
-$('downloadCaptures').addEventListener('click',()=>saveJSON({...buffer.export({notes:$('captureNotes').value,sessionId:receiverSession,camera:cameraInfo()}),
+$('downloadCaptures').addEventListener('click',()=>{const recording={...buffer.export({notes:$('captureNotes').value,sessionId:receiverSession,camera:cameraInfo()}),
   collection:{maxPerPhase:phaseMaximum(),keepRandom:0,scanIntervalMs:Number($('scanInterval').value),
-    distances:[...distances].map(([key,value])=>({key,...value.result,current:value.revision===buffer.revision(key),beforeThinning:value.previous}))}},`decoder-captures-${receiverSession}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`));
+    distances:[...distances].map(([key,value])=>({key,...value.result,current:value.revision===buffer.revision(key),beforeThinning:value.previous}))}};
+  saveJSON(recording,recordingFilename(recording));});
 window.addEventListener('pagehide',shutdown);document.addEventListener('visibilitychange',()=>{if(document.hidden)shutdown();});
 if(!supported)showError('Use a current browser with Web Workers and Web Crypto on trusted HTTPS or localhost.');
 refresh();enumerateCameras();

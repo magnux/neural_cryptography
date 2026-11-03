@@ -52,7 +52,7 @@ The [next training recipe](../../docs/OPTICAL_DECODER_TRAINING.md#recommended-ne
 trains **`--model longtube --frames 5` fresh** at `1e-4` for 32,000 updates into
 `longtube5`, with **batch 8 × accumulation 4 = effective 32** to preserve the successful
 update size while allowing for larger activation memory. Generate
-`target-synthetic-rgb-train` using the existing clean training targets, seed 41,
+`target-synthetic-train` using the existing clean training targets, seed 41,
 32 bursts × 12 frames, the resolution/glare recipe and
 `--rgb-offset-probability .6 --rgb-offset-pixels .5`. Keep paired 50:50 real/synthetic
 sampling, direction balancing, ordinary masked cross-entropy and the same mild
@@ -100,6 +100,13 @@ their initial checkpoint if continuation fails to improve it. The
 [capture/training guide](../../docs/OPTICAL_DECODER_TRAINING.md) contains all commands.
 
 ## Setup and export
+
+To add recorded sessions, use the
+[folder-based rebuild workflow](../../docs/OPTICAL_DECODER_TRAINING.md#organize-recordings-and-rebuild-datasets).
+It joins `local-data/{phone,pc}/{train,val}` recordings, reconstructs paired clean
+targets, regenerates the standard synthetic corpora and writes direction groups.
+Run it after active training finishes; the standard generated directories are
+replaced. Raw recordings and checkpoints remain intact.
 
 From the repository root, in your Python virtual environment:
 
@@ -249,6 +256,11 @@ load time, backend, model hash, and UI responsiveness.
   canonical JS decoder.
 - `../../scripts/decoder-dataset.mjs`: canonical clean random/recorded targets,
   offline joins, baseline refresh, and CRC/RS evaluation.
+- `../../scripts/rename-decoder-recordings.mjs`: checksum-prefixed filenames for
+  current sender/receiver exports, without rewriting recording contents.
+- `../../scripts/rebuild-decoder-data.mjs`: discover split folders, validate
+  pairing and isolation, and rebuild the fixed real/paired-synthetic datasets
+  and receiver-direction sidecar.
 - `tests/test_training.py`, `tests/test_export_checkpoint.py`: training/decoder integration, split isolation, masking, and checkpoint export checks.
 
 Without optional model/export packages, the tests explicitly skip those portions
