@@ -119,7 +119,11 @@ npm run test:decoder:wasm
 Current exports declare required `framesPerInput` and matching channel counts;
 regenerate local bundles after updating. A five-frame G128 input is 15 MiB of
 float32 pixels before runtime working memory (192 MiB at 64 frames). Both grid
-sizes use the same weights: normalized-compact has 125,600 parameters at five frames. The
+exports check numerical shape support with the same weights; this does not
+establish cross-size recognition. The default full-resolution `normalized-tube`
+has 144,432 parameters at five frames; `longtube` has 279,792. The current training
+target is G64. A future G128 experiment should train separate weights with a
+512-pixel input and a 128-cell bottleneck. The
 frame count is fixed in an export; the lab follows that model rather than reshaping it.
 
 The last command requires the exported/prepared assets and runs the same ONNX
@@ -137,4 +141,5 @@ its existing wider storage bounds are preserved.
 Regenerate and prepare the export together after updating; previous bundles
 without the explicit contract are rejected. The Node WASM check also compares an
 overshoot fixture against its explicitly clipped copy and requires identical
-outputs. The default model is `normalized-compact`.
+outputs. Only `normalized-tube` and `longtube` are supported; removed architecture
+profiles are rejected. The default is `normalized-tube`.

@@ -1,10 +1,10 @@
 # Learned color-matrix decoder: design and training plan
 
-Status: **G64 device feasibility established; normalized decoder evaluated; full-resolution normalized tube implemented as the current optional tube experiment**, 2026-11-02.
-The submitted reports establish phone WebGPU and PC WASM parity and speed at G64. PC crop acquisition and G128 device
+Status: **full-resolution normalized-tube is the default; longtube residual experiment implemented**, 2026-11-03.
+The submitted M1 reports establish phone WebGPU and PC WASM feasibility at G64; each new model still needs device timing. PC crop acquisition and G128 device
 measurements remain open. Use [the M2 guide](OPTICAL_DECODER_TRAINING.md) for capture, synthetic generation, training,
-and held-out evaluation, and [Decoder Lab](DECODER_LAB.md) for checkpoint parity/device timing. Real-data model
-improvement and live learned recovery remain unvalidated. The immediate goal is browser-to-browser authentication
+and held-out evaluation, and [Decoder Lab](DECODER_LAB.md) for checkpoint parity/device timing. Recorded real-data recovery
+has improved; live learned recovery remains unvalidated. The immediate goal is browser-to-browser authentication
 using the existing Neural ZKBoo engine and color optical transport. This receiver improvement belongs to the shortest
 path in [ROADMAP.md](ROADMAP.md); cryptanalytic research remains future work in
 [RESEARCH_CONNECTIONS.md](RESEARCH_CONNECTIONS.md).
@@ -16,8 +16,9 @@ optimize the appearance of a cleaned photograph. Keep finder detection, monochro
 Reed–Solomon (RS), CRC checks, and multipart acknowledgments. Neural inference supplies better color evidence to these
 existing mechanisms. It never decides whether a proof is valid.
 
-Start with 64×64 and 128×128 physical grids, 16 colors, and a 4-color control. Grid dimensions include reference cells.
-Keep grid-8 references and RS32 while reducing phases and capture requirements experimentally. 256/512 grids, learned
+Focus on the **64×64 physical grid**, 16 colors, and a 4-color control. Grid dimensions include reference cells.
+Keep grid-8 references and RS32 while reducing phases and capture requirements experimentally. A future G128 decoder
+should be trained separately with 512×512 inputs and a 128×128 bottleneck; no multi-size routing is planned now. 256/512 grids, learned
 geometry, ViTs, Conv3D, and resolution-specific inlet/outlet branches are deferred. Both optical directions matter; the
 phone's smaller display may need a different profile. There is no requirement to use identical settings on the two
 devices. Keep 32×32/four-color control packets on the current classical decoder
@@ -43,177 +44,80 @@ is required.
 
 ### Implemented architectures
 
-All current profiles use biased 3×3 convolutions with padding 1 and ReLU,
-nearest-neighbor decoder upsampling, concatenated learned-feature skips, and an
-unnormalized 1×1 classification head. T is the number of RGB exposures (1–64).
-Input is `[N,3T,4G,4G]`; output is `[N,16,G,G]`. The grid includes references,
-which are excluded from the training loss and payload recovery.
+Only two profiles are supported: **`normalized-tube` is the default**, and
+**`longtube` is the deeper experiment**. Both accept `[N,3T,4G,4G]` and produce
+`[N,16,G,G]`, where T is 1–64 RGB exposures. They use 32-channel hidden features,
+biased 3×3 convolutions, ReLU, nearest-neighbor decoder upsampling and learned
+feature skips. Concatenations have 64 channels before returning to 32. The final
+1×1 head emits physical-palette logits without normalization or softmax. Neither
+model has a direct RGB path.
 
-| Property | Current compact | Current wide |
+**Spatial design rule:** the outside of the U matches the rectified crop (4G),
+and its bottleneck matches the target grid (G). Output reduction follows the
+full-resolution decoder. For G64 this is **256→128→64→128→256**, then
+**256→128→64** at the outlet. The random payload has no intended semantic
+structure across groups of cells; this motivates preserving cell-level spatial
+features at the bottleneck. It does not prove that coarser representations must
+overfit: illumination, channel distortions and the reference grid can have
+larger-scale correlations. We test this design empirically.
+
+```mermaid
+flowchart TD
+  I["T calibrated RGB crops · 256×256"] --> N["Clip to −1…1 · inlet →32 channels"]
+  N --> E0["Encoder block · 256×256"]
+  E0 --> E1["Encoder block · 128×128"]
+  E1 --> B["Bottleneck · 64×64"]
+  B --> D1["Upsample + concat · decoder 128×128"]
+  E1 --> D1
+  D1 --> D0["Upsample + concat · decoder 256×256"]
+  E0 --> D0
+  D0 --> O["Normalized outlet · 256→128→64"]
+  O --> H["1×1 head · 16 logits per cell"]
+```
+
+| Property | Default `normalized-tube` | `longtube` |
 | --- | --- | --- |
-| Inlet | 3T→8→16, two stride-2 convolutions | 3T→16→32, two stride-2 convolutions |
-| Encoder widths | 16 / 32 / 64 | 32 / 64 / 128 |
-| Decoder widths | 32 / 16 | 64 / 32 |
-| Hidden normalization | None | Channel LayerNorm after the ten encoder/decoder convolutions; inlet remains unnormalized |
-| Direct calibrated-RGB readout | None | Average-pool RGB to cells, 1×1 3T→16→16, add to spatial logits |
-| Parameters at T=5 | 122,656 | 489,024 |
-| Parameter formula | 121576 + 216T | 486624 + 480T |
+| Inlet | Two 3×3 convolutions, each with LayerNorm/ReLU | Two 3×3 convolutions with ReLU; one LayerNorm after the pair |
+| Each encoder/decoder resolution block | Two normalized 3×3 convolutions | Four main 3×3 convolutions in two residual pairs; one LayerNorm after the block |
+| Bottleneck | Two normalized 3×3 convolutions | Eight main 3×3 convolutions in four residual pairs; one LayerNorm after the block |
+| Outlet | Two stride-2 convolutions, each with LayerNorm/ReLU | Same |
+| Hidden 3×3 convolutions / LayerNorms | 14 / 14 | 28 / 8 |
+| Additional shortcut projections | None | Four learned 1×1 projections |
+| Parameters | `140112 + 864T` | `275472 + 864T` |
+| Parameters at T=5 / T=64 | 144,432 / 195,408 | 279,792 / 330,768 |
+| G64/T=5 convolution MACs | 4,928,307,200 | 8,363,442,176 |
 
-Channel LayerNorm normalizes learned feature channels independently at each
-spatial position. It does not normalize across the batch or image positions.
-Input affine scaling/clipping is separate from this feature normalization.
-
-The following diagrams show **T=5, G=64**; node sizes are channels × height ×
-width. Every E/B/D block contains two convolutions. E1 and B downsample on their
-first convolution. Each D block upsamples ×2, concatenates its skip, then
-convolves. Both grid sizes use the same weights.
-
-**Current compact — implemented**
-
-```mermaid
-flowchart TD
-  I["5 RGB crops · 15×256×256"] --> C["Final input clip: -1 to 1"]
-  C --> S["Inlet · 8×128×128 → 16×64×64"]
-  S --> E0["E0 · 16×64×64"]
-  E0 --> E1["E1 · 32×32×32"]
-  E1 --> B["Bottleneck · 64×16×16"]
-  B --> D1["Upsample + concat + D1 · 32×32×32"]
-  E1 -->|feature skip| D1
-  D1 --> D0["Upsample + concat + D0 · 16×64×64"]
-  E0 -->|feature skip| D0
-  D0 --> H["1×1 head · 16×64×64 logits"]
-```
-
-**Current wide — implemented**
+LayerNorm normalizes the 32 learned channels at each spatial location, with
+learned scale/bias and no batch statistics. In longtube, every residual pair
+computes `ReLU(shortcut(x) + Conv(ReLU(Conv(x))))`. The first pair uses a 1×1
+projection when entering a lower resolution or combining 64-channel skips;
+otherwise the shortcut is identity. **Normalization follows the complete block**,
+not each pair. The inlet and two outlet transitions bring the total to eight
+LayerNorms. This adds nonlinear depth while keeping width fixed and parameters
+below 500k even at T=64.
 
 ```mermaid
 flowchart TD
-  I["5 RGB crops · 15×256×256"] --> C["Final input clip: -1 to 1"]
-  C --> S["Inlet · 16×128×128 → 32×64×64"]
-  S --> E0["E0 + channel LN · 32×64×64"]
-  E0 --> E1["E1 + channel LN · 64×32×32"]
-  E1 --> B["Bottleneck + channel LN · 128×16×16"]
-  B --> D1["Upsample + concat + D1 + LN · 64×32×32"]
-  E1 -->|feature skip| D1
-  D1 --> D0["Upsample + concat + D0 + LN · 32×64×64"]
-  E0 -->|feature skip| D0
-  D0 --> H["1×1 spatial head · 16×64×64"]
-  C --> R["Average-pool ×4 · 1×1 15→16→16 · no LN"]
-  H --> A["Add · 16×64×64 logits"]
-  R --> A
+  X["Block input"] --> C1["3×3 conv · ReLU"]
+  C1 --> C2["3×3 conv"]
+  X --> S["Identity or 1×1 projection"]
+  C2 --> A["Add · ReLU"]
+  S --> A
+  A --> R["Repeat pair: 2 total; 4 at bottleneck"]
+  R --> N["One channel LayerNorm · ReLU"]
 ```
 
-The RGB branch receives calibrated, fixed-range input, not unprocessed camera
-RGB. It bypasses learned feature normalization and contextual mixing. At T=5 it
-contains only **528 parameters**: removing it changes the information path but
-barely reduces capacity. Most wide parameters are in the spatial backbone.
+Longtube has about **1.70×** the convolution MACs of tube at G64/T=5 and higher
+activation memory. These counts exclude normalization, resampling and memory
+traffic; they are not browser timings. Measure the selected export on both devices.
+The retained full-resolution tube implementation and checkpoint tensors are
+unchanged. It remains loadable for evaluation or continued training. Longtube
+requires fresh weights; cross-profile initialization is rejected. Earlier decoder
+profiles have been removed, without format readers or migration code.
 
-### Normalized compact — implemented default
-
-`--model normalized-compact` is the fresh-training/export default. It keeps the
-dense input, output grid, skip topology and convolution depth. The 16-channel
-first inlet retains wide's initial width; the backbone narrows to **16/32/64**.
-The existing ChannelLayerNorm follows **every hidden convolution**, including
-both inlet layers, before ReLU. There is no direct RGB branch. Normalized learned
-feature skips remain, and the final logits have no normalization or activation.
-
-```mermaid
-flowchart TD
-  I["5 RGB crops · 15×256×256"] --> C["Final input clip: -1 to 1"]
-  C --> S["Conv + LN + ReLU twice · 16×128×128 → 16×64×64"]
-  S --> E0["E0 + channel LN · 16×64×64"]
-  E0 --> E1["E1 + channel LN · 32×32×32"]
-  E1 --> B["Bottleneck + channel LN · 64×16×16"]
-  B --> D1["Upsample + concat + D1 + LN · 32×32×32"]
-  E1 -->|normalized feature skip| D1
-  D1 --> D0["Upsample + concat + D0 + LN · 16×64×64"]
-  E0 -->|normalized feature skip| D0
-  D0 --> H["1×1 head · 16×64×64 logits"]
-```
-
-| Stage | Channel operations | Output spatial size |
-| --- | --- | --- |
-| Inlet | 3T→16→16, stride 2 each | 4G→2G→G |
-| E0 | 16→16→16 | G |
-| E1 | 16→32→32, first stride 2 | G/2 |
-| Bottleneck | 32→64→64, first stride 2 | G/4 |
-| D1 | Concatenate 64+32; 96→32→32 | G/2 |
-| D0 | Concatenate 32+16; 48→16→16 | G |
-| Head | 16→16, 1×1, no normalization/activation | G |
-
-Exact parameter count, including biases and LayerNorm affine weights:
-**123440 + 432T**, hence **125,600 at five frames** and **151,088 at 64**.
-At five frames this is **74.3% fewer parameters** than wide. The profile is
-implemented in training, strict checkpoint loading, ONNX export and the browser
-contract. The input clamp adds no trainable parameters.
-
-The architecture targets capacity and photometric shortcuts. Its first five-frame
-run recovered 19/144 validation groups (13.19%), all PC→phone; phone→PC remained
-0/48. This is progress, not reliable transport. Feature normalization can reduce dependence on feature scale, but
-does not guarantee white-balance invariance. Do not normalize the raw RGB triplet
-to unit variance: absolute color/luminance differences carry palette information.
-The input calibration and reference grid remain available to learned convolutions.
-Changing the internal widths needs a fresh model; wide weights cannot be loaded
-unchanged. This model uses no per-frame encoder, attention or additional training objective.
-
-### Normalized tube — full-resolution experiment
-
-`--model normalized-tube` now processes the **full dense crop before reducing to
-the matrix grid**. Both inlet convolutions have stride 1. The 32-channel U-Net
-starts at 4G×4G, downsamples twice, and returns to 4G×4G using learned feature
-skips. Two normalized stride-2 outlet convolutions then reduce to G×G before the
-32→16 prediction head. All **fourteen hidden convolutions** have channel LayerNorm
-and ReLU; there is no direct RGB readout. Skip concatenation briefly produces
-64 channels before each decoder block returns to 32. The input clamp remains
-unchanged, and `normalized-compact` remains the default.
-
-```mermaid
-flowchart TD
-  I["5 RGB crops · 15×256×256"] --> C["Final input clip: -1 to 1"]
-  C --> S["Stride-1 inlet twice · 32×256×256"]
-  S --> E0["E0 · 32×256×256"]
-  E0 --> E1["E1 · 32×128×128"]
-  E1 --> B["Bottleneck · 32×64×64"]
-  B --> D1["Upsample + concat 64 → D1 · 32×128×128"]
-  E1 -->|normalized feature skip| D1
-  D1 --> D0["Upsample + concat 64 → D0 · 32×256×256"]
-  E0 -->|normalized feature skip| D0
-  D0 --> O["Stride-2 outlet twice · 32×128×128 → 32×64×64"]
-  O --> H["1×1 head · 16×64×64 logits"]
-```
-
-| Property | `normalized-compact` | `normalized-tube` |
-| --- | ---: | ---: |
-| Inlet channels | 3T→16→16 | 3T→32→32 |
-| Inlet stride / output side | 2, 2 / G | 1, 1 / 4G |
-| E0 / E1 / bottleneck widths | 16 / 32 / 64 | 32 / 32 / 32 |
-| D1 / D0 widths | 32 / 16 | 32 / 32 |
-| U-Net spatial sides, G64 | 64→32→16→32→64 | 256→128→64→128→256 |
-| Outlet | None | Two 3×3 stride-2 convolutions, 32→32→32 |
-| Hidden normalized convolutions | 12 | 14 |
-| Parameters, T=5 | 125,600 | 144,432 |
-| Parameter formula | 123440 + 432T | 140112 + 864T |
-| Parameters, T=64 | 151,088 | 195,408 |
-| Convolution MACs, G64/T=5 | 168,558,592 | 4,928,307,200 |
-
-At G128 the U-Net sides are 512→256→128→256→512, followed by outlet reductions
-to 256 then 128. Inputs and physical-color outputs retain their existing shapes.
-
-This tests whether processing subcell detail at full resolution before output
-reduction helps recognition. It increases parameters modestly and activation
-memory substantially; it is not a capacity or compute reduction. Convolution
-multiply-accumulates are about **29.24×** normalized-compact at G64/T=5 because
-most operations now run on larger maps. Counts exclude normalization, activation,
-resizing and memory movement; they are not browser latency measurements. Both
-models remain below 500k parameters through 64 frames. Start training with batch
-2 and accumulation 8 to retain effective batch 16 while limiting peak memory.
-
-This is the current `normalized-tube` definition, replacing the earlier tube
-that reduced resolution in its inlet. Its checkpoints must contain the outlet;
-the loader rejects earlier tube weights rather than reinterpreting them with
-new strides. Train this model from scratch. Normalized-compact and wide weights
-also cannot initialize it. A full-resolution path is a recognition hypothesis,
-not a guaranteed solution to the remaining direction-specific generalization gap.
+G128 still has a structural export/shape case, using 512→256→128→256→512 and
+outlet 512→256→128. Exporting G64-trained weights at that shape does not establish
+G128 accuracy. Train a separate G128 model if that experiment becomes necessary.
 
 ### Burst sampling and evaluation
 
@@ -242,46 +146,31 @@ RGB-facing weights across slots and divides by T. Loading/exporting a checkpoint
 uses its exact validated width. Recording formats and synthetic `--frames`
 semantics are unchanged.
 
-### Remaining generalization hypotheses
+### Latest validation and remaining gap
 
-The earlier wide five-frame run lowers validation CE to .917 at 3k, then raises it
-to 3.160 at 32k while real-training CE falls .946→.071. Chronological grouping
-was a mismatched evaluation condition; rerun the existing checkpoint with the
-corrected grouping before attributing a precise amount of loss to overfitting.
-Checkpoint ranking is not an explanation for the rising validation-loss curve.
+The submitted full-resolution tube run uses five frames, 32,000 updates at
+`1e-4`, and **batch 16 × accumulation 2 = effective batch 32**. Its selected
+checkpoint is step 29,000; evaluation uses the fixed random groups described above.
 
-Two further concrete design observations motivate the smaller model:
+| Validation group | Selected 29k: CE / cell error / exact | Final 32k: CE / cell error / exact |
+| --- | --- | --- |
+| All | 0.4661 / 17.31% / 68 of 144 | 0.4709 / 17.34% / 68 of 144 |
+| PC→phone | 0.0851 / 2.49% / 68 of 96 | 0.0846 / 2.44% / 68 of 96 |
+| Phone→PC | 1.2282 / 46.94% / 0 of 48 | 1.2436 / 47.14% / 0 of 48 |
 
-- Wide already normalizes internal features, but its inlet and additive RGB
-  branch bypass that normalization. The branch can exploit session-specific
-  color mappings. The normalized model removes that path and normalizes the inlet.
-- Nonzero-severity synthetics already occupy [-1,1], while stored calibrated
-  crops can occupy [-1.5,1.5]. The model now clips both at [-1,1] before learned
-  processing, fixing this input-range mismatch while preserving the recordings.
-  Artifact distributions can still differ: synthetic generation approximates
-  residual calibrated distortions rather than refitting a camera calibration
-  per generated exposure. Common input clipping alone does not close that gap.
+Classical fusion recovered zero groups with the same exposures. This is substantial
+progress on the recorded PC→phone conditions, but the opposite direction still
+fails. The final phone→PC interval training CE is .8144 versus validation CE
+1.2436; synthetic training CE is .0840 versus .4898 for real captures. More capacity
+and more realistic motion artifacts are hypotheses to test, not established fixes.
+The earlier runs used effective batch 16, so this result is **not a controlled
+architecture-only ablation**. Historical metrics are in [VALIDATION.md](VALIDATION.md).
 
-Paired synthetics add nuisance variation without adding new payload content.
-Limited recorded sessions/targets remain another plausible generalization limit;
-random combinations cannot create new physical capture conditions. The sampling
-audit found no RNG reset, missing frame-slot coverage, cross-phase pairing or
-optimizer/loss arithmetic error. A narrowly reproducible unused-capture selection
-bias was fixed, but the supplied run did not exercise that reuse path.
-
-The newer fresh normalized-compact history reaches 20,000 updates: validation
-CE 1.0514, cell error 32.759%, and 8/144 exact groups. At the same 20k point, the
-original normalized run had CE 1.1657, cell error 32.995%, and the same 8/144 exact
-groups. The new overall CE minimum is .96655 at 14k and its lowest cell error is
-32.416% at 19k. Phone→PC remains the clear gap: its validation CE rises from
-1.6223 at 7k to 2.1400 at 20k while training CE falls 1.4106→.8879; validation
-cell error rises 60.10%→63.42%, with zero exact recovery. This supports a
-direction-specific generalization problem even though the overall loss improves.
-Only the supplied 20k history is available for this update; there is no new
-completed-run or tube result. The tube experiment moves feature processing to
-full resolution before output reduction while reusing the current data and
-objective; additional physical sessions remain
-necessary to test generalization beyond the existing capture conditions.
+Paired synthetics add artifact variation without adding new physical capture
+conditions. More held-out sessions remain necessary. Input clipping, randomized
+burst sampling and normalization already address the known pipeline mismatches;
+full-resolution processing does not remove the remaining domain gap. A sampling
+audit found no RNG reset, cross-phase pairing or optimizer/loss arithmetic error.
 
 ## Integrating probabilities with the existing receiver
 
@@ -367,8 +256,10 @@ frames inside each burst:
   approximate aliasing; add curved/chirped channel-dependent moiré.
 - Evolve texture, subcell motion and focus across frames. Integrate centered
   exposure samples with arbitrary-direction linear, rotational and radial-zoom
-  motion blur; include illumination gradients, affine color mixing, gamma, clipping, shot/read
-  noise, and residual exposure/white-balance changes.
+  motion blur; optionally offset RGB exposure windows along that same trajectory
+  to approximate motion-related color fringing. Include illumination gradients,
+  affine color mixing, gamma, clipping, shot/read noise, and residual
+  exposure/white-balance changes.
 - Approximate rolling-shutter/screen-flicker interaction using row-dependent,
   drifting exposure/color bands and a small bounded row-wise skew. Do not label
   a transition between different payloads as one static target.
@@ -401,34 +292,36 @@ only held-out real recovery can demonstrate useful optical generalization.
 
 Train on the user's RTX 4090 using plain PyTorch and NumPy; CPU supports small
 pipeline checks. The current trainer has one ordinary masked cross-entropy path,
-AdamW weight decay `.01`, effective batch 16, a 32,000-update default, and learning
-rate `1e-4` fresh or `5e-5` initialized. The unsuccessful adaptation recipe and its
+AdamW weight decay `.01`, default effective batch 16, a 32,000-update default, and learning
+rate `1e-4` fresh or `5e-5` initialized. The next run explicitly uses effective batch 32
+to match the successful tube run. The unsuccessful adaptation recipe and its
 extra objective and plateau machinery have been removed. Real stacks now receive
 mild shared tint/exposure and independent noise during training only, through
 three explicit controls. The augmentation keeps calibration overshoot until the
 model input clamp and leaves files, synthetic inputs and validation unchanged.
 Keep useful source/group metrics and initialized-checkpoint baseline protection.
 
-For the next experiment, train **`normalized-tube` from scratch** at `1e-4` for
-32,000 updates, with `--frames 5 --paired-targets`. Reuse `real-train`,
-`real-validation`, `target-synthetic-resolution-train` and the existing direction
-sidecar; no synthetic regeneration is required. Keep mild real augmentation and
-write to `normalized-tube5-fullres`, using `--batch-size 2 --accumulate 8`.
-Do not pass `--initialize`: this full-resolution tube adds an outlet and is
-incompatible with earlier tube and normalized-compact checkpoints. The earlier resolution/glare generation settings
-remain documented as a corpus reference, not an additional run to perform.
-Each real stack receives a synthetic stack of the exact
-same session/payload/frame/phase and target hashes. The 50:50 source quota applies
-to each complete optimizer update; an optional session sidecar balances real
-acquisition directions. Full real validation every 1,000 updates selects by exact
-recovery, then ordinary CE. Per-direction results remain essential when one
-direction recovers nothing. Compare models on the same fixed-random validation
-groups and at matched training stages; no tube improvement is established yet.
-See the [training guide](OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
-for training/evaluation commands and the retained corpus recipe.
+For the next experiment, generate `target-synthetic-rgb-train` from the existing
+training targets with seed 41 and the resolution/glare recipe, adding
+`--rgb-offset-probability .6 --rgb-offset-pixels .5`. Selected motion bursts
+receive centered, bounded per-channel exposure offsets; the new independent
+random stream leaves other nuisance draws unchanged. This approximates color
+misregistration, not a claim that every RGB camera captures channels at different
+times. Clean target labels, recording formats and splits remain unchanged.
 
-Mask reference cells and inactive palette classes from the objective. Batch
-G64/G128 profiles separately by shape. The architecture still predicts physical
+Train **`longtube` from scratch** at `1e-4` for 32,000 updates with five frames,
+paired 50:50 real/synthetic sampling and the existing mild real augmentation.
+Use **batch 8 × accumulation 4 = effective batch 32**: this preserves the user's
+successful update size while allowing for larger activation memory. Do not pass
+`--initialize`; tube and longtube have different weights. Retain the trained tube
+checkpoint for comparison. Full real validation every 1,000 updates selects by
+per-direction mean exact recovery, then CE. Compare both directions on the same
+fixed-random groups; do not infer live throughput from offline recovery.
+See the [training guide](OPTICAL_DECODER_TRAINING.md#recommended-next-training-run)
+for generation, training and evaluation commands.
+
+Mask reference cells and inactive palette classes from the objective. Focus this
+run on G64; future G128 training should use a separate network. The architecture still predicts physical
 palette classes from T calibrated crops; no reconstruction head or
 consistency loss is needed for this paired-data experiment. Measure cell confusion
 and calibration as diagnostics, and validate exact CRC recovery at equal capture
@@ -457,7 +350,7 @@ The reusable authentication boundary is the session/envelope API in
 M3 will preserve session and proof semantics while providing a color-link adapter. M1 does not duplicate that engine.
 
 Milestones follow [the POC plan](ROADMAP.md): M1 browser smoke and interfaces, then M2 capture/generator/burst
-training alongside M3 optical authentication integration, followed by M4 first color authentication. Four-frame
+training alongside M3 optical authentication integration, followed by M4 first color authentication. Multiframe
 learning now belongs to M2 because single-frame training has not solved the hard direction. At each decoder comparison, report
 cell error rate/confusions, raw CRC and RS/erasure-assisted exact passes, accepted wrong payloads, phases/captures/time
 to recovery, p50/p95 latency, memory, and failures. Use identical recorded bursts and equal elapsed optical budgets for
@@ -472,7 +365,7 @@ beating QR or decoding 256×256 before completing the color-authentication POC.
 
 ## References
 
-- [U-Net, Ronneberger et al. (2015)](https://arxiv.org/abs/1505.04597): encoder/decoder skip connections; our compact classifier is a proposed adaptation.
+- [U-Net, Ronneberger et al. (2015)](https://arxiv.org/abs/1505.04597): encoder/decoder skip connections; our palette classifier adapts the encoder/decoder structure.
 - [PyTorch ONNX exporter](https://docs.pytorch.org/docs/stable/onnx.html).
 - [ONNX Runtime WebGPU](https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html), [operator table](https://github.com/microsoft/onnxruntime/blob/main/js/web/docs/webgpu-operators.md), and [worker/WASM/session options](https://onnxruntime.ai/docs/tutorials/web/env-flags-and-session-options.html).
 - Existing [color format](../apps/color-optical-bench/FORMAT.md), [transport](../apps/color-optical-bench/LINK_TRANSPORT.md), and [receiver source](../apps/color-optical-bench/dist/js/vision.js).

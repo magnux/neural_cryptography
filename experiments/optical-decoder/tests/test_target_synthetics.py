@@ -16,7 +16,7 @@ if HAS_TORCH:
     import torch
     from data import Dataset, assert_disjoint
     from sampling import BalancedSampler
-    from synthetic import CaptureResolutionConfig, generate
+    from synthetic import CaptureResolutionConfig, PhotometricConfig, generate
     torch.set_num_threads(1)
 
 
@@ -47,19 +47,22 @@ class TargetSyntheticTests(unittest.TestCase):
             node("targets", "--dataset", root/"real", "--out", root/"clean")
             real, clean = Dataset([root/"real"]), Dataset([root/"clean"])
             resolution = CaptureResolutionConfig(probability=1, min_scale=.25, max_scale=.25)
+            photometric = PhotometricConfig(motion_probability=1, rgb_offset_probability=1)
             first = generate([root/"clean"], root/"corrupted", frames=2,
                              bursts_per_target=2, seed=71, severity=.4, severity_min=.25,
-                             resolution=resolution)
+                             resolution=resolution, photometric=photometric)
             repeated = generate([root/"clean"], root/"repeat", frames=2,
                                 bursts_per_target=2, seed=71, severity=.4, severity_min=.25,
-                                resolution=resolution)
+                                resolution=resolution, photometric=photometric)
             self.assertEqual(len(first["samples"]), 8)
             self.assertEqual(first["samples"], repeated["samples"])
             self.assertEqual(first["generator"]["burstsPerTarget"], 2)
             self.assertEqual(first["generator"]["severityMin"], .25)
             self.assertEqual(first["generator"]["severity"], .4)
-            self.assertEqual(first["generator"]["kind"], "correlated-calibrated-crop-v6")
+            self.assertEqual(first["generator"]["kind"], "correlated-calibrated-crop-v7")
             self.assertEqual(first["generator"]["photometric"]["glare_probability"], .65)
+            self.assertEqual(first["generator"]["photometric"]["rgb_offset_probability"], 1)
+            self.assertEqual(first["generator"]["photometric"]["rgb_offset_pixels"], .5)
             self.assertEqual(first["generator"]["captureResolution"],
                 {"probability": 1, "min_scale": .25, "max_scale": .25, "blur_sigma": .35})
             by_target = {sample.id: [] for sample in clean.samples}
@@ -92,10 +95,10 @@ class TargetSyntheticTests(unittest.TestCase):
             self.assertTrue({row["id"] for row in fixed["samples"]}.isdisjoint(row["id"] for row in first["samples"]))
             # Strength selection is stable under changed glare settings; its RNG
             # does not belong to the glare trajectory or main sensor-noise stream.
-            from synthetic import PhotometricConfig
             no_glare = generate([root/"clean"], root/"no-glare", frames=2, bursts_per_target=2,
                                 seed=71, severity=.4, severity_min=.25,
-                                photometric=PhotometricConfig(glare_probability=0))
+                                resolution=resolution, photometric=PhotometricConfig(
+                                    glare_probability=0, motion_probability=1, rgb_offset_probability=1))
             self.assertEqual([row["synthetic"]["severity"] for row in first["samples"]],
                              [row["synthetic"]["severity"] for row in no_glare["samples"]])
             self.assertTrue({row["id"] for row in no_glare["samples"]}.isdisjoint(row["id"] for row in first["samples"]))

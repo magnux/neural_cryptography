@@ -4,10 +4,9 @@ import {validateManifest, validateOptions, compareLogits, accumulateParity, summ
 import {CameraBurst} from '../dist/js/decoder-lab/burst.js';
 import {DecoderClient} from '../dist/js/decoder-lab/client.js';
 
-function manifest(frames=1,profile='compact') {
+function manifest(frames=1,profile='normalized-tube') {
   const entry=(file,bytes)=>({file,bytes,sha256:'a'.repeat(64)});
-  const [base,perFrame]={compact:[121576,216],wide:[486624,480],
-    'normalized-compact':[123440,432],'normalized-tube':[140112,864]}[profile];
+  const [base,perFrame]={'normalized-tube':[140112,864],longtube:[275472,864]}[profile];
   const count=base+perFrame*frames;
   return {format:'optical-decoder',version:1,status:'untrained',modelProfile:profile,framesPerInput:frames,parameterCount:count,pixelsPerCell:4,channels:3*frames,classes:16,
     normalization:{divisor:127.5,offset:-1,clip:[-1.5,1.5]},networkInputClip:[-1,1],
@@ -25,7 +24,7 @@ test('decoder manifest accepts only bounded current shape/artifact contracts',()
   }
 });
 test('manifest distinguishes retained capture range from the mandatory in-graph input clip',()=>{
-  for (const profile of ['compact','wide','normalized-compact','normalized-tube']) {
+  for (const profile of ['normalized-tube','longtube']) {
     const valid=manifest(5,profile); assert.equal(validateManifest(valid),valid);
     for (const mutate of [m=>delete m.networkInputClip,m=>m.networkInputClip=[-1.5,1.5],
       m=>m.networkInputClip=[-1,1,0],m=>m.networkInputClip=['-1','1'],
@@ -104,17 +103,18 @@ test('cancel terminates inference and late messages cannot resolve a new request
 });
 
 test('active model profiles validate exact parameter counts without changing tensor shapes',()=>{
-  const compact={...manifest(),modelProfile:'compact'};validateManifest(compact);
-  const wide={...manifest(),modelProfile:'wide',parameterCount:487104};validateManifest(wide);
-  assert.throws(()=>validateManifest({...wide,modelProfile:'compact'}),/profile/);
-  assert.throws(()=>validateManifest({...wide,modelProfile:undefined}),/profile/);
-  assert.throws(()=>validateManifest({...wide,parameterCount:487105}),/profile/);
+  const tube=manifest(),long=manifest(1,'longtube');validateManifest(tube);validateManifest(long);
+  for (const obsolete of ['compact','wide','normalized-compact',undefined]) {
+    assert.throws(()=>validateManifest({...tube,modelProfile:obsolete}),/profile/);
+  }
+  assert.throws(()=>validateManifest({...long,modelProfile:'normalized-tube'}),/profile/);
+  assert.throws(()=>validateManifest({...long,parameterCount:276337}),/profile/);
 });
 
 
 test('arbitrary frame stacks require exact channels/counts through the G128/64-frame bound',()=>{
   assert.equal(MAX_INPUT_FRAMES,64);assert.equal(MAX_INPUT_BYTES,192*1024*1024);
-  for (const profile of ['compact','wide','normalized-compact','normalized-tube']) for (const frames of [1,4,5,32,64]) {
+  for (const profile of ['normalized-tube','longtube']) for (const frames of [1,4,5,32,64]) {
     const value=manifest(frames,profile);
     assert.equal(validateManifest(value),value);
     assert.equal(value.cases[1].input.bytes,3*frames*512*512*4);
@@ -124,14 +124,12 @@ test('arbitrary frame stacks require exact channels/counts through the G128/64-f
       const bad=manifest(frames,profile);mutate(bad);assert.throws(()=>validateManifest(bad));
     }
   }
-  assert.equal(manifest(5,'wide').parameterCount,489024);
   assert.equal(manifest(5,'normalized-tube').parameterCount,144432);
   assert.throws(()=>validateManifest({...manifest(5,'normalized-tube'),parameterCount:125808}),/profile/);
-  assert.equal(manifest(64,'wide').parameterCount,517344);
-  assert.equal(manifest(64,'compact').parameterCount,135400);
-  assert.equal(manifest(1,'normalized-compact').parameterCount,123872);
-  assert.equal(manifest(5,'normalized-compact').parameterCount,125600);
-  assert.equal(manifest(64,'normalized-compact').parameterCount,151088);
+  assert.equal(manifest(64,'normalized-tube').parameterCount,195408);
+  assert.equal(manifest(1,'longtube').parameterCount,276336);
+  assert.equal(manifest(5,'longtube').parameterCount,279792);
+  assert.equal(manifest(64,'longtube').parameterCount,330768);
   assert.equal(manifest(64).cases[1].input.bytes,MAX_INPUT_BYTES);
 });
 test('camera assembly retains calibrated overshoot until the model graph clips it',()=>{

@@ -71,7 +71,7 @@ class TrainingWorkflowTests(unittest.TestCase):
         cls.validation = Dataset([cls.root/"validation"], "validation")
         cls.initial = cls.root/"fixture-pilot.pt"
         torch.manual_seed(311)
-        save_checkpoint(cls.initial, OpticalDecoder("compact"), {
+        save_checkpoint(cls.initial, OpticalDecoder(), {
             "steps": 1, "seed": 311, "samples": 1, "selectionStep": 1,
             "selection": "validation-exact", "datasetFormat": "optical-decoder-dataset",
             "trainSessionIds": ["fixture-pilot-train"], "trainPayloadIds": ["1"*64],
@@ -327,30 +327,30 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertEqual(checkpoint["training"]["initialCheckpointSha256"], self.initial_hash)
         self.assertEqual(digest(self.initial), self.initial_hash)
 
-    def test_tube_five_frame_cli_trains_and_loads_its_own_profile(self):
-        directories = self.burst_directories("tube", overshoot=True)
-        sidecar = self.root/"tube-session-groups.json"
+    def test_longtube_five_frame_cli_trains_and_loads_its_own_profile(self):
+        directories = self.burst_directories("longtube", overshoot=True)
+        sidecar = self.root/"longtube-session-groups.json"
         sidecar.write_text(json.dumps({"format": "optical-decoder-session-groups",
                                       "version": 1, "sessions": self.mapping}))
-        out = self.root/"cli-tube"
+        out = self.root/"cli-longtube"
         process = subprocess.run([sys.executable, str(EXPERIMENT/"train.py"),
             "--train", str(directories["train"]), "--validation", str(directories["validation"]),
-            "--model", "normalized-tube", "--frames", "5", "--paired-targets",
+            "--model", "longtube", "--frames", "5", "--paired-targets",
             "--session-groups", str(sidecar), "--steps", "1", "--lr", ".0001",
-            "--batch-size", "4", "--accumulate", "1", "--device", "cpu",
+            "--batch-size", "2", "--accumulate", "2", "--device", "cpu",
             "--eval-every", "1", "--no-progress", "--out", str(out)],
             capture_output=True, text=True, timeout=90)
         self.assertEqual(process.returncode, 0, process.stderr[-3000:])
         history = json.loads((out/"history.json").read_text())
         self.assertEqual(history["completedSteps"], 1)
-        self.assertEqual(history["settings"]["modelProfile"], "normalized-tube")
+        self.assertEqual(history["settings"]["modelProfile"], "longtube")
         self.assertGreater(history["history"][-1]["trainLoss"], 0.)
         model, checkpoint = load_model_checkpoint(out/"best.pt")
-        self.assertEqual((model.profile, model.frames), ("normalized-tube", 5))
-        self.assertEqual(parameter_count(model), 144432)
+        self.assertEqual((model.profile, model.frames), ("longtube", 5))
+        self.assertLess(parameter_count(model), 500000)
         self.assertNotIn("initialCheckpointSha256", checkpoint["training"])
         torch.manual_seed(7)
-        initial = OpticalDecoder("normalized-tube", frames=5)
+        initial = OpticalDecoder("longtube", frames=5)
         self.assertFalse(torch.equal(initial.head.weight, model.head.weight))
 
     def test_fresh_five_frame_default_trains_normalized_model_without_rewriting_crops(self):
@@ -371,7 +371,7 @@ class TrainingWorkflowTests(unittest.TestCase):
         history = json.loads((out/"history.json").read_text())
         settings = history["settings"]
         self.assertEqual(history["completedSteps"], 1)
-        self.assertEqual(settings["modelProfile"], "normalized-compact")
+        self.assertEqual(settings["modelProfile"], "normalized-tube")
         self.assertEqual(settings["framesPerInput"], 5)
         self.assertEqual(settings["networkInputClip"], [-1., 1.])
         self.assertEqual(settings["initialLearningRate"], 1e-4)
@@ -379,7 +379,7 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertEqual(settings["evaluationSeed"], 7)
         model, checkpoint = load_model_checkpoint(out/"best.pt")
         self.assertEqual(model.profile, DEFAULT_MODEL_PROFILE)
-        self.assertEqual(parameter_count(model), 125600)
+        self.assertEqual(parameter_count(model), 144432)
         self.assertFalse(hasattr(model, "local_color"))
         self.assertEqual(checkpoint["training"]["networkInputClip"], [-1., 1.])
         self.assertEqual(checkpoint["training"]["modelProfile"], model.profile)

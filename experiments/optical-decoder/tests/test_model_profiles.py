@@ -1,4 +1,4 @@
-"""Architecture ablations preserve color evidence, checkpoint identity, and ONNX I/O."""
+"""Current full-resolution profiles preserve spatial evidence and checkpoint identity."""
 
 import importlib.util
 from pathlib import Path
@@ -6,15 +6,12 @@ import sys
 import tempfile
 import unittest
 
-import numpy as np
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 HAS_TORCH = importlib.util.find_spec("torch") is not None
-HAS_EXPORT = HAS_TORCH and importlib.util.find_spec("onnx") is not None
 if HAS_TORCH:
     import torch
-    from model import MODEL_PROFILES, ChannelLayerNorm, OpticalDecoder, parameter_count
+    from model import MODEL_PROFILES, DEFAULT_MODEL_PROFILE, OpticalDecoder, parameter_count, profile_from_state
     from checkpoint import load_model_checkpoint, validate_split_provenance, training_provenance
     torch.set_num_threads(1)
 
@@ -43,30 +40,45 @@ class ProfileTests(unittest.TestCase):
                 torch.nn.functional.cross_entropy(logits, torch.randint(16, (1, 64, 64))).backward()
                 self.assertGreater(float(model.inlet[0][0].weight.grad.abs().sum()), 0)
                 self.assertGreater(float(model.head.weight.grad.abs().sum()), 0)
-                if profile == "wide":
-                    self.assertTrue(any(isinstance(m, ChannelLayerNorm) for m in model.modules()))
-                    self.assertGreater(float(model.local_color[0].weight.grad.abs().sum()), 0)
                 model.eval()
                 with torch.inference_mode():
                     single = model(pixels)
                     batch = model(torch.cat((pixels, torch.randn_like(pixels)), dim=0))[:1]
                 torch.testing.assert_close(single, batch, rtol=1e-4, atol=1e-5)
-        self.assertEqual(parameter_count(OpticalDecoder("compact")), 121792)
-        self.assertLess(parameter_count(OpticalDecoder("wide")), 600000)
+                self.assertLess(parameter_count(model), 500000)
+        self.assertEqual(DEFAULT_MODEL_PROFILE, "normalized-tube")
+        self.assertEqual(OpticalDecoder().profile, DEFAULT_MODEL_PROFILE)
 
-    def test_local_color_readout_preserves_absolute_brightness(self):
-        # Isolate the unnormalized path: feature normalization must not erase
-        # every way for the model to distinguish differently exposed colors.
-        model = OpticalDecoder("wide").eval()
-        with torch.no_grad():
-            for parameter in model.parameters():
-                parameter.zero_()
-            model.local_color[0].weight[0, 0, 0, 0] = 1
-            model.local_color[2].weight[0, 0, 0, 0] = 1
-        with torch.inference_mode():
-            dark = model(torch.full((1, 3, 256, 256), .1))
-            light = model(torch.full((1, 3, 256, 256), .6))
-        torch.testing.assert_close(light[:, 0] - dark[:, 0], torch.full((1, 64, 64), .5))
+    def test_residual_pairs_keep_identity_projection_and_trainable_branches(self):
+        torch.manual_seed(29)
+        model = OpticalDecoder("longtube")
+        for stage, channels in (("e0", 32), ("e1", 32), ("d1", 64)):
+            with self.subTest(stage=stage):
+                pair = getattr(model, stage).pairs[0]
+                pixels = torch.randn(2, channels, 16, 16, requires_grad=True)
+                output = pair(pixels)
+                (output * torch.randn_like(output)).sum().backward()
+                self.assertGreater(float(pair.conv1.weight.grad.abs().sum()), 0)
+                self.assertGreater(float(pair.conv2.weight.grad.abs().sum()), 0)
+                self.assertGreater(float(pixels.grad.abs().sum()), 0)
+                if isinstance(pair.shortcut, torch.nn.Conv2d):
+                    self.assertGreater(float(pair.shortcut.weight.grad.abs().sum()), 0)
+                with torch.no_grad():
+                    pair.conv2.weight.zero_()
+                    pair.conv2.bias.zero_()
+                    expected = torch.relu(pair.shortcut(pixels))
+                    torch.testing.assert_close(pair(pixels), expected, rtol=0, atol=0)
+
+    def test_only_current_full_resolution_profiles_are_constructible(self):
+        self.assertEqual(MODEL_PROFILES, ("normalized-tube", "longtube"))
+        for obsolete in ("compact", "wide", "normalized-compact", "unknown"):
+            with self.subTest(profile=obsolete), self.assertRaises(ValueError):
+                OpticalDecoder(obsolete)
+        state = OpticalDecoder().state_dict()
+        # No outlet is the signature of an unsupported spatial computation.
+        with self.assertRaises(ValueError):
+            profile_from_state({name: value for name, value in state.items()
+                                if not name.startswith("outlet.")})
 
     def test_same_checkpoint_format_selects_exact_profile_without_parameter_migration(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -81,24 +93,27 @@ class ProfileTests(unittest.TestCase):
                 self.assertEqual(checkpoint["version"], 1)
                 for name, tensor in original.state_dict().items():
                     torch.testing.assert_close(loaded.state_dict()[name], tensor, rtol=0, atol=0)
-                if profile == "normalized-tube":
-                    # Strides are absent from state_dict. The current learned
-                    # outlet must be present so an earlier inlet-reducing tube
-                    # cannot silently acquire different spatial semantics.
-                    value["modelState"] = {name: tensor for name, tensor in original.state_dict().items()
-                                           if not name.startswith("outlet.")}
-                    torch.save(value, path)
-                    with self.assertRaisesRegex(ValueError, "supported decoder profile"):
-                        load_model_checkpoint(path)
-                    value["modelState"] = original.state_dict()
-                value["training"]["modelProfile"] = "wide" if profile != "wide" else "compact"
+                value["modelState"] = {name: tensor for name, tensor in original.state_dict().items()
+                                       if not name.startswith("outlet.")}
+                torch.save(value, path)
+                with self.assertRaises(ValueError):
+                    load_model_checkpoint(path)
+                # Identity inference is followed by strict full-state checking;
+                # an extra RGB bypass must never become accepted model weights.
+                value["modelState"] = {**original.state_dict(),
+                                       "local_color.0.weight": torch.zeros(16, 3, 1, 1)}
+                torch.save(value, path)
+                with self.assertRaises(ValueError):
+                    load_model_checkpoint(path)
+                value["modelState"] = original.state_dict()
+                value["training"]["modelProfile"] = "longtube" if profile == "normalized-tube" else "normalized-tube"
                 torch.save(value, path)
                 with self.assertRaisesRegex(ValueError, "profile metadata disagrees"):
                     load_model_checkpoint(path)
                 value["training"]["modelProfile"] = profile
                 value["modelState"]["head.weight"] = torch.zeros(16, 17, 1, 1)
                 torch.save(value, path)
-                with self.assertRaisesRegex(ValueError, "supported decoder profile"):
+                with self.assertRaises(ValueError):
                     load_model_checkpoint(path)
 
     def test_large_dataset_provenance_is_not_capped_at_one_mib_or_100k_identities(self):
@@ -108,32 +123,6 @@ class ProfileTests(unittest.TestCase):
         validate_split_provenance(metadata)
         self.assertNotIn("trainPayloadIds", public)
         self.assertEqual(public["steps"], 1)
-
-
-@unittest.skipUnless(HAS_EXPORT, "PyTorch and ONNX are required for wide export tests")
-class WideExportTests(unittest.TestCase):
-    def test_wide_export_static_graph_and_torch_fixtures(self):
-        import onnx
-        from export import export_smoke, ALLOWED_OPERATORS
-        from contract import fixture_input
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            manifest = export_smoke(directory, sizes=(64, 128), check_ort=False, profile="wide")
-            self.assertEqual(manifest["modelProfile"], "wide")
-            torch.manual_seed(7)
-            model = OpticalDecoder("wide").eval()
-            self.assertEqual(manifest["parameterCount"], parameter_count(model))
-            for case in manifest["cases"]:
-                graph = onnx.load(directory / case["model"]["file"])
-                onnx.checker.check_model(graph, full_check=True)
-                operators = {node.op_type for node in graph.graph.node}
-                self.assertTrue(operators <= ALLOWED_OPERATORS)
-                self.assertIn("ReduceMean", operators)
-                self.assertIn("AveragePool", operators)
-                expected = np.fromfile(directory / case["expected"]["file"], dtype="<f4").reshape(case["outputShape"])
-                with torch.inference_mode():
-                    actual = model(torch.from_numpy(fixture_input(case["size"], 7))).numpy()
-                np.testing.assert_array_equal(actual, expected)
 
 
 if __name__ == "__main__":

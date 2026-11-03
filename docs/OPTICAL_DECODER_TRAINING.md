@@ -2,10 +2,10 @@
 
 The software for collecting examples, generating synthetic interference,
 training the small U-Net, evaluating recovery, and exporting a checkpoint is
-implemented. **Real-device improvement is still an acceptance test**, requiring
-new capture sessions and a trained checkpoint. Start with G64/16 colors, using
-G64/4 colors as a control. G128 remains supported for experiments, but the
-submitted M1 reports only establish inference feasibility at G64.
+implemented. The full-resolution tube has improved recorded PC→phone recovery;
+phone→PC recovery and live learned transport remain open. Focus on G64/16 colors,
+using G64/4 colors as a control. G128 remains a structural export case; train a
+separate network with a 128×128 bottleneck if that experiment becomes necessary.
 
 The [design](OPTICAL_DECODER.md) and [roadmap](ROADMAP.md) describe how this feeds
 the Neural ZKBoo color-authentication POC. M2 now supports single captures and
@@ -171,11 +171,10 @@ independent decoding to measure whether accepted output is exact.
 
 Use the experiment's pinned dependencies in a virtual environment. Select an
 appropriate PyTorch CUDA build for the 4090; CPU works for small smoke runs.
-**For the recommended tube run, skip this optional pilot generation
-and use the [target-paired run below](#recommended-next-training-run).** That
-run starts fresh `normalized-tube` weights using the existing paired dataset;
-neither wide nor normalized-compact checkpoints can initialize its different
-internal architecture.
+**For the recommended longtube run, skip this optional pilot generation
+and use the [target-paired run below](#recommended-next-training-run).** It
+starts fresh longtube weights with the updated paired synthetics. The existing
+full-resolution tube checkpoint remains available as the comparison model.
 
 For a fresh pilot, reuse existing clean corpora or generate them below. Generate
 corrupted corpora into empty directories. Real recordings and joined datasets
@@ -241,6 +240,8 @@ enabled by default:
 | `--rotation-blur-degrees` | `.35` | Full rotational sweep around a varying center, before severity scaling. |
 | `--zoom-blur-fraction` | `.006` | Full radial scale change during an exposure, before severity scaling. |
 | `--motion-samples` | `7` | Temporal samples averaged per simulated exposure. |
+| `--rgb-offset-probability` | `.6` | Probability of channel-offset exposure windows, conditional on motion being active. |
+| `--rgb-offset-pixels` | `.5` | Maximum channel displacement along the exposure trajectory in dense-crop pixels, before severity scaling. |
 
 Photometric and motion strengths are scaled by `--severity`; at `.65`, a `.65`-stop rolling-shutter
 limit becomes `.4225` stops. Zero strength disables its effect; set rolling-shutter
@@ -294,9 +295,18 @@ sigma to zero still permits downsampling.
 
 Motion blur now integrates several centered exposure samples with arbitrary-
 direction linear travel, rotation around an off-center pivot and radial zoom.
-The old two-position horizontal smear is removed. Strength/direction evolve
+Strength/direction evolve
 coherently within a burst; zero controls disable the respective effects. This
 models image evidence spread, not a changed class label or integer-cell shift.
+
+RGB-offset blur shifts each channel's exposure window along the same linear,
+rotational and radial trajectory. Centered channel offsets keep the mean window
+aligned, and a dense-crop pixel bound limits the displacement. The sampled offsets
+remain correlated within a burst; their independent random stream leaves other
+artifact draws unchanged. This approximates motion-related color misregistration
+and fringing, without assuming that every RGB camera exposes its channels at
+different times. It acts only when motion is active; setting either new control
+to zero disables it, and severity zero remains clean. Labels and masks do not move.
 
 These are **calibrated-crop approximations**, not a full camera/display/readout
 simulation. They do not reproduce detection, recalibration, or header failures.
@@ -337,7 +347,7 @@ For a fresh synthetic pilot:
 python experiments/optical-decoder/train.py \
   --train local-data/synthetic-train \
   --validation local-data/synthetic-validation \
-  --model normalized-compact --frames 5 --device cuda --out checkpoints/optical-decoder/normalized-pilot
+  --frames 5 --device cuda --out checkpoints/optical-decoder/tube-pilot
 ```
 
 Microbatches share a grid size and palette. Reference cells and inactive palette
@@ -391,120 +401,74 @@ remain mandatory. Keep sender/receiver identities intact when generating paired
 targets. Use untouched test sessions only after selecting the model and receiver
 settings on validation.
 
-## Model profiles and the latest training result
+## Current models and latest result
 
-| Profile | Parameters | Structure |
-| --- | ---: | --- |
-| `normalized-compact`, five frames | **125,600** | 16→16 inlet, 16/32/64 features, all hidden convolutions normalized, no RGB readout |
-| `normalized-tube`, five frames | **144,432** | Full-resolution 32-channel U-Net, stride-1 inlet, two stride-2 output reductions, all hidden convolutions normalized |
-| `normalized-tube`, 64 frames | 195,408 | Same full-resolution backbone; wider multiframe input only |
-| `compact`, one frame | 121,792 | Plain U-Net baseline |
-| `wide`, one frame | 487,104 | Doubled widths, feature-channel LayerNorm, unnormalized pooled-RGB readout |
-| `wide`, five frames | **489,024** | Same backbone, 15-channel RGB inlet and local-color path |
-| `wide`, 32 / 64 frames | 501,984 / 517,344 | Fixed widths; input weights grow linearly |
-| `compact`, 64 frames | 135,400 | Fixed compact widths |
+Only the default **`normalized-tube`** and experimental **`longtube`** profiles
+remain. Both keep 32-channel feature streams and process the full 256×256 crop
+for G64: **256→128→64→128→256**, followed by **256→128→64** at the outlet. The
+bottleneck therefore matches the target matrix instead of discarding cell-level
+spatial features. A future G128 model should be trained separately with 512×512
+inputs and a 128×128 bottleneck. No multi-size routing is introduced.
 
-Models take `[N,3T,4G,4G]` calibrated pixels, integer T=1…64, and output
-`[N,16,G,G]` physical-color logits. LayerNorm does not normalize raw RGB or depend on batch statistics.
-`--initialize` keeps the checkpoint's profile. Explicit `--frames T` can warm-start
-from one-frame weights of the same profile by repeating its RGB-facing kernels across slots and
-dividing by T; all other weights/biases are copied. Identical repeated inputs
-preserve the initial function within floating-point tolerance. No implicit shape
-migration occurs when loading/exporting checkpoints. An incompatible profile or
-multiframe→different-count conversion fails: use the original single-frame pilot
-for a new T, or keep the checkpoint's existing count. Omitting `--frames` infers
-the checkpoint count, or defaults to one for a fresh model. Recording crops
-still have three channels each.
+| Profile | Five-frame parameters | 64-frame parameters | Hidden structure |
+| --- | ---: | ---: | --- |
+| `normalized-tube` (default) | 144,432 | 195,408 | Two convs per resolution block; fourteen hidden convs, each normalized |
+| `longtube` | 279,792 | 330,768 | Four main convs per resolution block; eight at bottleneck, residual pairs, one normalization per complete block |
 
-Wide uses a `3T→16→32` inlet, `32/64/128` feature encoder, `64→32`
-decoder and a `3T→16→16` local-color path. Compact uses a `3T→8→16`
-inlet and `16/32/64` features. Parameter counts are `486624 + 480T` for
-wide and `121576 + 216T` for compact. Wide is below 500k through T=27;
-compact, normalized-compact and normalized-tube stay below that budget through
-64 frames. Tube has `140112 + 864T` parameters. At G64/T=5 its convolution MAC
-count is 4,928,307,200 versus 168,558,592 for normalized-compact (about 29.24×).
-Its U-Net operates at 256→128→64→128→256 before a normalized outlet reduces to
-128 then 64. At G128 these sides double. This preserves full-resolution features
-until the output reduction, with fourteen hidden LayerNorm/ReLU convolutions;
-there is no direct RGB branch. It increases activation memory and computation,
-not just parameters. MACs are operation counts, not measured runtime. See the
-[tube diagram and comparison](OPTICAL_DECODER.md#normalized-tube--full-resolution-experiment).
+Longtube has 28 main hidden 3×3 convolutions plus four learned 1×1 shortcut
+projections. Its inlet has two convolutions and one normalization; the two
+stride-2 outlet transitions each retain normalization. Total LayerNorm count is
+eight. Both models have a plain 32→16 head and no direct RGB readout. Channel
+LayerNorm works on hidden features at each position without batch statistics.
+See the [architecture diagrams](OPTICAL_DECODER.md#implemented-architectures).
 
-This current `normalized-tube` replaces the earlier inlet-downsampling definition.
-Earlier tube checkpoints lack the required outlet and are rejected, not silently
-loaded into a different computation. The full-resolution run must start fresh.
+Parameter formulas are `140112 + 864T` for tube and `275472 + 864T` for longtube.
+At G64/T5, convolution MAC counts are 4,928,307,200 and 8,363,442,176 respectively
+(about 1.70×). Normalization, resampling and memory traffic are excluded; this is
+not a browser-speed measurement. Activation memory also grows with depth.
 
-Raw float32 input memory per example is `0.75 × T` MiB at G64 and `3 × T`
-MiB at G128. At 64 frames that is 48/192 MiB before batches, activations and
-runtime copies. Increasing T changes the inlet channels automatically; it does
-not widen the backbone. Reduce batch size if necessary and increase accumulation
-to preserve the effective batch.
+Models take `[N,3T,4G,4G]` calibrated pixels, integer T=1…64, and emit
+`[N,16,G,G]` physical-color logits. Both clip inputs to [-1,1] before learned
+processing; stored captures retain [-1.5,1.5] calibration overshoot. The existing
+full-resolution tube architecture and checkpoint tensors are unchanged and can
+be evaluated or continued. Cross-profile initialization is rejected; train
+longtube fresh. Removed architectures have no loading or migration path.
 
-The submitted paired single-frame run selected step 22,000 on the same 768
-validation captures. It improves over the discarded adaptation run's 62 exact
-recoveries but does not beat the retained `wide-real` checkpoint:
+`--initialize` infers the checkpoint profile/frame count. An explicit `--frames T`
+can expand a single-frame checkpoint of the same profile by repeating its inlet
+RGB kernels across slots and dividing by T. It cannot convert one multiframe
+count to another. Omitting `--frames` defaults to one for fresh training.
+The recordings still store separate RGB crops. Raw input memory per example is
+`0.75 × T` MiB at G64 and `3 × T` MiB at G128, before activations and runtime
+copies; increasing T changes inlet channels, not hidden width.
 
-| Validation metric | `wide-real` | Paired selected | Paired final (32k) |
-| --- | ---: | ---: | ---: |
-| Exact recoveries | 69/768 | 68/768 | 55/768 |
-| Cell error | 39.32% | 43.07% | 44.18% |
-| CE | 1.1050 | 2.1346 | 2.7111 |
-| Phone→PC exact | 0/256 | 0/256 | 0/256 |
-| Phone→PC cell error | 68.43% | 79.14% | 80.35% |
+The submitted full-resolution tube run used five frames, LR `1e-4`, 32,000
+updates, and **batch 16 × accumulation 2 = effective batch 32**. Selection chose
+step 29,000:
 
-Phone→PC validation CE is 1.847 at step 3k, 4.934 at 22k and 6.495 at 32k,
-while its unaugmented interval training CE falls from 1.745 to .349 to .182.
-This supports overfitting to training sessions. Both selected models recover only
-the same two PC→phone sessions. Multiple observations offer new visual evidence, but
-are not by themselves a solution to this generalization failure. Keep `wide-real`
-as a historical result.
+| Validation group | Selected 29k CE | Cell error | Exact recovery | Final 32k CE / cell error / exact |
+| --- | ---: | ---: | ---: | --- |
+| All | .4661 | 17.31% | 68/144 (47.22%) | .4709 / 17.34% / 68/144 |
+| PC→phone | .0851 | 2.49% | 68/96 (70.83%) | .0846 / 2.44% / 68/96 |
+| Phone→PC | 1.2282 | 46.94% | 0/48 | 1.2436 / 47.14% / 0/48 |
 
-The fresh-training/export default is `normalized-compact`; see its
-[implemented architecture and diagrams](OPTICAL_DECODER.md#normalized-compact--implemented-default).
-Its parameter count is `123440 + 432T`. The first operation of every model clips
-inputs to [-1,1], including stored captures whose calibration retained values
-within [-1.5,1.5]. Data files stay unchanged. The Clip is exported inside ONNX;
-regenerate prepared model bundles after updating the code.
+Classical fusion recovered zero groups with the same five observations. The
+result is encouraging on PC→phone, while phone→PC remains the limiting direction.
+The final interval's phone→PC training CE is .8144, compared with 1.2436 on
+validation; real/synthetic training CE is .4898/.0840. Depth and more realistic
+color-motion artifacts are the next hypotheses, not established remedies.
+Earlier runs used effective batch 16, so the improvement cannot be attributed
+solely to architecture. Historical results are in [VALIDATION.md](VALIDATION.md).
+The existing validation groups, loss and real augmentation remain fixed for the
+next experiment; live transport must still be tested separately.
 
-The submitted normalized five-frame run selected step **31,000**, recovering
-**19/144 fixed-random validation groups (13.19%)**, with **32.43% cell error**,
-CE **1.3507** and zero wrong acceptances. Classical fusion recovered 0/144 from
-identical observations. All successes were PC→phone (19/96); phone→PC remained
-0/48, with 65.60% cell error. Final step 32,000 recovered 18/144. Synthetic
-training CE was already .053 versus .510 on real captures at the selected step.
-These results motivate harder paired synthetics and mild real augmentation;
-they do not establish reliable transport. Earlier wide results used different
-grouping/input clipping, so they are not a controlled architecture comparison.
+## Generate the updated paired synthetic corpus
 
-The newly supplied fresh normalized-compact history ends at **20,000 updates**.
-At that point, validation CE is **1.0514**, cell error **32.759%**, and exact
-recovery **8/144**. The original normalized run at the same 20k point had CE
-1.1657, cell error 32.995%, and 8/144 exact groups. The new run reaches its lowest
-overall CE (.96655) at 14k and lowest cell error (32.416%) at 19k.
-
-Phone→PC still recovers no groups. From 7k to 20k its validation CE rises
-1.6223→2.1400 and cell error rises 60.10%→63.42%, while its interval training CE
-falls 1.4106→.8879. The harder data has not removed this direction's
-generalization gap. These are partial-run observations, not final 32k results;
-only the available history is used here. The current tube proposal tests
-full-resolution feature processing before output reduction, within a modest
-parameter budget but with much higher computation. It does not establish a
-solution to the gap.
-
-## Paired synthetic corpus reference
-
-The following is the existing resolution/glare corpus recipe. **Reuse
-`target-synthetic-resolution-train` for the next tube run; no regeneration is
-required.** The earlier recommendation initialized normalized-compact from
-`normalized-burst5/best.pt` at `3e-5` for 32k updates into
-`normalized-burst5-resolution`. Keep any existing outputs as that experiment's
-record. The current recommendation below trains the different tube architecture
-from scratch.
-
-### Reconstruct clean targets and generate paired corruptions, if needed
-
-Skip these commands when the clean and resolution-synthetic corpora already
-exist. The generator requires an empty output directory.
+Reuse `target-clean-train`, or reconstruct it once with the first command below.
+Generate the new RGB-offset corpus into the empty `target-synthetic-rgb-train`
+directory. This keeps seed 41 and the existing resolution/glare settings while
+adding the new color-motion effect. Original recordings and joined real data
+remain unchanged.
 
 ```sh
 # Reuse target-clean-train if already generated; otherwise run:
@@ -514,14 +478,15 @@ node scripts/decoder-dataset.mjs targets \
 
 python experiments/optical-decoder/synthetic.py \
   --clean local-data/target-clean-train \
-  --out local-data/target-synthetic-resolution-train \
+  --out local-data/target-synthetic-rgb-train \
   --bursts-per-target 32 --frames 12 --seed 41 \
   --severity-min .45 --severity .9 \
   --glare-probability .7 --glare-strength .65 \
   --white-balance-stops .8 --exposure-stops 1.75 \
   --shade-opacity .55 --rolling-shutter-stops .8 \
   --capture-probability .75 --capture-min-scale .25 --capture-max-scale 1 \
-  --capture-blur-sigma .35
+  --capture-blur-sigma .35 \
+  --rgb-offset-probability .6 --rgb-offset-pixels .5
 ```
 
 `targets` reconstructs canonical clean matrices from the sender-derived bytes
@@ -536,18 +501,19 @@ app’s single logical frame with palette phases; it rejects incomplete multipar
 payloads rather than inventing missing target bytes.
 
 Thirty-two independent corruption bursts with twelve frames each provide **384
-synthetic observations per clean target**: twice as many independent trajectories
-and 2.67× the previous 144 observations. Frames of one burst remain correlated.
-Severity varies from .45 to .9 per burst. The range's mean (.675) is close to the
-previous .65; new glare and stronger white balance, exposure, shade and rolling
-shutter limits supply the main difficulty increase. This retains moderate cases
+synthetic observations per clean target**. Frames of one burst remain correlated.
+Severity varies from .45 to .9 per burst. Glare, white balance, exposure, shade,
+rolling shutter and resolution settings match the previous paired corpus; RGB
+exposure offsets add the new effect. This retains moderate cases
 rather than making every example maximally degraded. The resolution stage then
 applies to 75% of bursts, independently of severity: G64 uses a native side of
 64–256 pixels and blur sigma .175–.35 native pixels. Other bursts skip that stage.
 The mixture includes full-resolution evidence; it does not assume that all
 one-pixel-per-cell captures can be decoded. The generator reports the
 actual target/sample count and estimated disk budget before writing; G64 RGB
-tensors alone occupy 288 MiB per target at these settings.
+tensors alone occupy 288 MiB per target at these settings. Channel offsets apply
+to 60% of motion-active bursts, not 60% of all bursts, with a .5-pixel maximum
+before severity scaling. The separate RNG keeps the other seeded draws intact.
 
 Generate training targets **only from `real-train`**. Do not add validation or
 test target matrices to training, including through a pilot checkpoint. Synthetic
@@ -562,16 +528,15 @@ not an additional model input or a browser decoding oracle.
 
 ## Recommended next training run
 
-**Train the full-resolution `normalized-tube` from scratch**, with five frames,
-at `1e-4` for 32,000
-updates. Reuse `real-train`, `real-validation`, `target-synthetic-resolution-train`
-and the direction sidecar. Keep the existing mild real augmentation and ordinary
-masked cross-entropy. Use **batch 2 and accumulation 8**, retaining effective batch
-16 while reducing peak memory. The new output directory is
-`normalized-tube5-fullres`, avoiding any existing `normalized-tube5` run.
-`normalized-compact` remains the default, so select tube explicitly. Do not pass
-`--initialize`: this full-resolution model is incompatible with earlier tube,
-normalized-compact and wide checkpoints.
+**Train `longtube` from scratch**, with five frames at `1e-4` for 32,000 updates.
+Use `real-train`, `real-validation`, the new `target-synthetic-rgb-train` and the
+existing direction sidecar. Keep ordinary masked cross-entropy and mild real
+augmentation. Use **batch 8 × accumulation 4 = effective batch 32**, matching the
+successful tube run's batch 16 × 2 while reducing the microbatch for the deeper
+network's activation memory. If needed, batch 4 × 8 preserves the same update size.
+The new output directory is `longtube5`. Do not pass `--initialize`: tube weights
+cannot initialize a different residual architecture. Retain the current tube
+checkpoint for comparison and continued same-profile training if wanted.
 
 Reuse the existing direction sidecar. If it does not exist, create it once:
 
@@ -591,15 +556,15 @@ but the following run uses it to balance and report both directions.
 
 ```sh
 python experiments/optical-decoder/train.py \
-  --train local-data/real-train local-data/target-synthetic-resolution-train \
+  --train local-data/real-train local-data/target-synthetic-rgb-train \
   --validation local-data/real-validation \
-  --model normalized-tube \
+  --model longtube \
   --session-groups local-data/session-groups.json \
   --frames 5 --paired-targets --real-fraction .5 \
-  --batch-size 2 --accumulate 8 \
+  --batch-size 8 --accumulate 4 \
   --real-noise-std .008 --real-tint-stops .06 --real-exposure-stops .08 \
   --lr .0001 --steps 32000 --eval-every 1000 --validation-samples 0 \
-  --device cuda --out checkpoints/optical-decoder/normalized-tube5-fullres
+  --device cuda --out checkpoints/optical-decoder/longtube5
 ```
 
 Each effective update pairs every chosen real stack with one synthetic stack of its
@@ -607,12 +572,12 @@ exact session, payload, frame and phase, with identical label/mask/expected-byte
 hashes. Pairing applies across the complete optimizer update, so shuffled
 microbatches still have equal real/synthetic totals. Missing targets, mismatched
 labels, unrelated synthetic targets and incompatible split identities fail
-rather than silently falling back to unrelated images. Use only the existing paired
-synthetics for this run, not a random-payload corpus alongside them.
+rather than silently falling back to unrelated images. Use the newly generated
+paired synthetics for this run, without adding a random-payload corpus.
 
-With effective batch 16 and two mapped directions, an update contains four real
-PC→phone stacks, four real phone→PC stacks, and their eight matched synthetic
-counterparts: 16 model examples with 80 exposure inputs. Real draws remain
+With effective batch 32 and two mapped directions, an update contains eight real
+PC→phone stacks, eight real phone→PC stacks, and their sixteen matched synthetic
+counterparts: 32 model examples with 160 exposure inputs. Real draws remain
 balanced by group/session/payload/phase; the sampler avoids duplicate bursts where possible. Both sides of a pair use the
 same ordinary classification objective. Five distinct members are sampled within
 each selected burst without replacement and shuffled into RGB channel slots.
@@ -645,18 +610,20 @@ final update. All model selection uses the unchanged real validation set.
 ```sh
 python experiments/optical-decoder/evaluate.py \
   --dataset local-data/real-validation --split validation \
-  --checkpoint checkpoints/optical-decoder/normalized-tube5-fullres/best.pt \
+  --checkpoint checkpoints/optical-decoder/longtube5/best.pt \
   --session-groups local-data/session-groups.json \
   --max-samples 0 --device cuda \
-  --out local-results/optical-decoder/normalized-tube5-fullres-validation.json
+  --out local-results/optical-decoder/longtube5-validation.json
 ```
 
 Compare learned and classical recovery within this report: both receive the
 same five observations. For this fresh run, `baseline-validation.json` records
 random step-zero weights and is diagnostic; it does not contain a parent
 checkpoint. Compare selected `validation.json` and matched points in `history.json`
-with the normalized-compact results, keeping the same validation draw. Send those
-reports and `history.json`; reuse the existing generation summary. Earlier single-frame
+with the full-resolution tube results, keeping the same validation draw and
+effective batch. This run changes both architecture and one synthetic effect, so
+it tests the combined next candidate rather than isolating either contribution.
+Send those reports, `history.json` and the new generation summary. Earlier single-frame
 reports remain useful context but have a different observation budget. Keep
 untouched real test sessions for the selected model and settings. The goal remains
 better recovery in both directions with zero wrong accepted payloads.
@@ -665,7 +632,7 @@ better recovery in both directions with zero wrong accepted payloads.
 
 ```sh
 python experiments/optical-decoder/export.py \
-  --checkpoint checkpoints/optical-decoder/normalized-tube5-fullres/best.pt \
+  --checkpoint checkpoints/optical-decoder/longtube5/best.pt \
   --out experiments/optical-decoder/artifacts/selected
 npm ci --prefix experiments/optical-decoder/browser-runtime
 npm run prepare:decoder -- --artifacts experiments/optical-decoder/artifacts/selected
@@ -673,7 +640,8 @@ npm run test:decoder:wasm -- --artifacts experiments/optical-decoder/artifacts/s
 ```
 
 Export produces both G64 and G128 graphs using the selected weights, with fresh
-PyTorch numerical fixtures. The current `optical-decoder` manifest records
+PyTorch numerical fixtures. G128 is a structural/parity check; it does not make a
+G64-trained checkpoint a validated G128 decoder. Train that size separately. The current `optical-decoder` manifest records
 `trained` status, checkpoint hash, required `framesPerInput`/channel dimensions,
 required capture-normalization and `networkInputClip: [-1,1]` metadata,
 and bounded public training provenance.

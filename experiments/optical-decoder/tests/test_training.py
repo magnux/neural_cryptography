@@ -178,7 +178,7 @@ for (const count of [0, -1, 1.5, 2**20+1, 'x']) assert.throws(()=>generationCoun
         validation = Dataset([self.directory/"validation"], "validation")
         out = self.directory/"run"
         result = run_training(train, validation, out, steps=2, batch_size=1, accumulate=1,
-                              eval_every=2, validation_samples=1, seed=19, device="cpu", model_profile="compact")
+                              eval_every=2, validation_samples=1, seed=19, device="cpu")
         model = OpticalDecoder()
         checkpoint = load_checkpoint(result["checkpoint"], model)
         self.assertEqual(checkpoint["training"]["selection"], "validation-exact")
@@ -188,11 +188,11 @@ for (const count of [0, -1, 1.5, 2**20+1, 'x']) assert.throws(()=>generationCoun
         fine = run_training(train, validation, self.directory/"fine", initialize=result["checkpoint"],
                             steps=1, batch_size=1, accumulate=1, eval_every=1,
                             validation_samples=1, device="cpu")
-        fine_checkpoint = load_checkpoint(fine["checkpoint"], OpticalDecoder("compact"))
+        fine_checkpoint = load_checkpoint(fine["checkpoint"], OpticalDecoder())
         self.assertEqual(fine_checkpoint["training"]["learningRate"], 5e-5)
         with self.assertRaisesRegex(ValueError, "differs from.*checkpoint profile"):
             run_training(train, validation, self.directory/"wrong-profile", initialize=result["checkpoint"],
-                         model_profile="wide", steps=1, batch_size=1, accumulate=1)
+                         model_profile="longtube", steps=1, batch_size=1, accumulate=1)
         # Ground truth logits are a diagnostic of the downstream boundary only.
         # They never enter the model or any training/validation inference above.
         sample = validation.samples[0]

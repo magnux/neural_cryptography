@@ -637,3 +637,76 @@ Web WASM checks at G64/G128. Maximum absolute errors against PyTorch were
 **1.61e-6/1.55e-6**; original overshooting fixtures and explicitly clipped copies
 produced exactly identical logits. These establish numerical agreement, not
 recognition accuracy or phone performance.
+
+## Full-resolution result, longtube, and RGB motion offsets — 2026-11-03
+
+The submitted full-resolution tube history selects step **29,000**: validation
+CE **.46612**, cell error **17.3069%**, and **68/144 exact groups (47.22%)**.
+PC→phone recovers **68/96 (70.83%)**, with 2.4919% cell error; phone→PC remains
+**0/48**, with 46.9368% cell error. Final step 32k also recovers 68/144, with CE
+.47093 and 17.3421% cell error. Classical recovery remains zero. This is a
+substantial measured improvement, but the history also records batch 16 and
+accumulation 2 (effective batch **32**, twice the earlier recommendation), so it
+is not a controlled architecture-only comparison. The user reports stopping a
+low-rate initialized refinement; no history for that separate run was supplied.
+
+The full-resolution **normalized-tube is now the default**, including the model
+constructor, training and export. Its state keys and seeded parameter tensors
+are unchanged, retaining the working trained model. Compact, wide and
+normalized-compact implementations and active recipes have been removed. Only
+normalized-tube and **longtube** are supported by Python and browser manifests.
+
+Longtube keeps the 32-channel, 4G→2G→G→2G→4G U and output reduction. E0, E1,
+D1 and D0 each contain **four 3×3 convolutions in two residual pairs**; the
+bottleneck contains **eight in four residual pairs**. Each resolution block has
+one channel LayerNorm after all its pairs. The inlet retains two full-resolution
+convolutions with one final normalization; each of the two outlet reduction
+stages has one normalization. This gives 28 main hidden 3×3 convolutions, four
+1×1 shortcut projections, and eight normalizations, followed by the logit head.
+There is no direct RGB shortcut. Five-frame parameter count is **279,792**
+(`275472 + 864T`, 330,768 at T=64); G64/T5 convolution work is **8,363,442,176
+MACs**, about 1.697× the default tube. These counts are not device timings.
+
+The design rule is that the U's outer resolution matches the rectified crop and
+its bottleneck matches the target grid: **256/64 for the current G64 task**.
+Existing G128 shape checks use **512/128**; they do not establish cross-size
+recognition. Any future G128 recognition experiment should train separate
+weights. Conditional-depth multi-size routing remains deferred. Random symbols
+motivate preserving cell-level evidence, but do not prove that every coarse
+feature must overfit: illumination, references and optical artifacts can have
+larger-scale correlations.
+
+Synthetic recipe v7 adds **RGB-offset motion blur**. In selected motion-blurred
+bursts, each color integrates a slightly shifted exposure window along the same
+linear/rotational/zoom trajectory. Relative displacements are centered across
+RGB and bounded in dense-crop pixels. Defaults are probability **.6** conditional
+on motion and maximum offset **.5 pixels** before severity scaling. No-motion
+and zero-strength cases retain common-blur behavior. A dedicated RNG preserves
+the other corruption draws; labels, masks, target identities and recording
+formats remain unchanged. This approximates color-fringed motion without
+asserting that all cameras acquire colors at different times.
+
+The next experiment generates fresh paired synthetics from the existing clean
+training targets and trains longtube from scratch at `1e-4`. Recommended batch
+8 with accumulation 4 preserves the user's effective batch 32 while allowing
+for the deeper network's additional activations. Tube weights are not silently
+expanded into longtube. No new full GPU run or real recovery result is claimed.
+
+**110 Python tests passed, one native ONNX Runtime check skipped** (111 total),
+and **61 JavaScript tests passed**. Coverage includes the new default, removed
+profile rejection, exact retained tube states, both current checkpoint/export
+identities, full-resolution/target-grid spatial hooks, residual identity and
+projection gradients, one normalization per residual block, frame expansion,
+and actual fresh longtube training. Synthetic checks verify color-centroid
+separation, centered bounded offsets, no-motion/disabled identity, independent
+RNG streams, target hashes and split ownership. An actual CLI run generated
+**40 captures** with motion and RGB offsets forced on; canonical baselines and
+recipe metadata were produced successfully. Model preparation and whitespace
+checks passed. No site was deployed.
+
+The untrained five-frame longtube export also passed ONNX Runtime Web's WASM
+provider in Node for G64 and G128, including all ten measured parity runs and
+exact clipping parity. Maximum absolute differences from PyTorch were
+**3.13e-6** and **2.62e-6**, respectively. This checks exported computation,
+not trained recognition or phone performance. Single-thread Node median
+inference times were approximately **763 ms** (G64) and **3,171 ms** (G128).

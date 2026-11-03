@@ -44,8 +44,8 @@ class NetworkInputExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             manifest = export_smoke(directory, sizes=(64,), check_ort=False, frames=5)
-            self.assertEqual(manifest["modelProfile"], "normalized-compact")
-            self.assertEqual(manifest["parameterCount"], 125600)
+            self.assertEqual(manifest["modelProfile"], "normalized-tube")
+            self.assertEqual(manifest["parameterCount"], 144432)
             self.assertEqual(manifest["normalization"],
                              {"divisor": 127.5, "offset": -1., "clip": [-1.5, 1.5]})
             self.assertEqual(manifest["networkInputClip"], [-1., 1.])

@@ -18,6 +18,8 @@ sys.path.insert(0, str(ROOT))
 from contract import (ATOL, MAX_FRAMES, PARAMETER_COUNT, fixture_input, normalize_rgb,
                       parity_metrics, shapes, write_f32)
 
+LONGTUBE_SINGLE_FRAME_COUNT = 276336
+
 HAS_TORCH = importlib.util.find_spec("torch") is not None
 HAS_EXPORT = HAS_TORCH and importlib.util.find_spec("onnx") is not None
 if HAS_TORCH:
@@ -104,69 +106,66 @@ class ModelTests(unittest.TestCase):
                 self.assertTrue(torch.isfinite(a).all())
                 self.assertGreater(float(torch.max(torch.abs(a - b))), 1e-7)
 
-    def test_five_frame_wide_stays_small_and_each_slot_affects_logits(self):
-        torch.manual_seed(7)
-        model = OpticalDecoder("wide", frames=5).eval()
-        self.assertEqual(parameter_count(model), 489_024)
-        self.assertLess(parameter_count(model), 500_000)
-        self.assertEqual(frames_from_state(model.state_dict()), 5)
-        for size in (64, 128):
-            with torch.inference_mode():
-                pixels = torch.from_numpy(fixture_input(size, 7, frames=5))
+    def test_five_frame_profiles_stay_small_and_each_slot_affects_logits(self):
+        for profile in MODEL_PROFILES:
+            with self.subTest(profile=profile), torch.inference_mode():
+                torch.manual_seed(7)
+                model = OpticalDecoder(profile, frames=5).eval()
+                self.assertLess(parameter_count(model), 500_000)
+                self.assertEqual(frames_from_state(model.state_dict()), 5)
+                # Full G64/G128 geometry is checked separately; a small spatial
+                # sample isolates whether each input exposure contributes.
+                pixels = torch.randn(1, 15, 32, 32).clamp(-1., 1.)
                 expected = model(pixels)
-                self.assertEqual(tuple(expected.shape), shapes(size, 5)[1])
-                self.assertTrue(torch.isfinite(expected).all())
                 for slot in range(5):
                     changed = pixels.clone()
                     changed[:, slot*3:(slot+1)*3] = 0
                     self.assertGreater(float((model(changed)-expected).abs().max()), 1e-6)
 
-    def test_normalized_profiles_preserve_resolution_with_no_rgb_readout(self):
-        for profile, count, width in (("normalized-compact", 125600, 16),
-                                      ("normalized-tube", 144432, 32)):
+    def test_profiles_preserve_full_resolution_and_target_sized_bottleneck(self):
+        for profile in MODEL_PROFILES:
             with self.subTest(profile=profile):
                 torch.manual_seed(7)
                 model = OpticalDecoder(profile, frames=5).eval()
-                self.assertEqual(parameter_count(model), count)
-                self.assertEqual(model.inlet[0][0].out_channels, width)
-                self.assertEqual(model.inlet[1][0].out_channels, width)
-                self.assertEqual(sum(isinstance(layer, ChannelLayerNorm) for layer in model.modules()),
-                                 14 if profile == "normalized-tube" else 12)
+                self.assertEqual(model.inlet[0][0].out_channels, 32)
+                self.assertEqual(model.inlet[1][0].out_channels, 32)
                 self.assertFalse(hasattr(model, "local_color"))
                 self.assertEqual(profile_from_state(model.state_dict()), profile)
-                if profile == "normalized-tube":
-                    hidden = [layer for layer in model.modules()
-                              if isinstance(layer, torch.nn.Conv2d) and layer is not model.head]
-                    self.assertEqual(len(hidden), 14)
-                    self.assertEqual({layer.out_channels for layer in hidden}, {32})
-                    self.assertEqual((model.d1[0][0].in_channels, model.d0[0][0].in_channels), (64, 64))
+                self.assertEqual(sum(isinstance(layer, ChannelLayerNorm) for layer in model.modules()),
+                                 14 if profile == "normalized-tube" else 8)
+                if profile == "longtube":
+                    for name in ("e0", "e1", "bottleneck", "d1", "d0"):
+                        block = getattr(model, name)
+                        self.assertEqual(len(block.pairs), 4 if name == "bottleneck" else 2)
+                        self.assertEqual(sum(isinstance(layer, ChannelLayerNorm)
+                                             for layer in block.modules()), 1)
+                        spatial_convs = [layer for layer in block.modules()
+                                         if isinstance(layer, torch.nn.Conv2d) and layer.kernel_size == (3, 3)]
+                        self.assertEqual(len(spatial_convs), 8 if name == "bottleneck" else 4)
+                        self.assertEqual({layer.out_channels for layer in spatial_convs}, {32})
                 for size in (64, 128):
                     with self.subTest(size=size), torch.inference_mode():
                         pixels = torch.from_numpy(fixture_input(size, 7, frames=5))
                         spatial = {}
                         stages = ("inlet.0", "inlet.1", "e0", "e1", "bottleneck", "d1", "d0",
-                                  "outlet.0", "outlet.1", "head") if profile == "normalized-tube" else ()
+                                  "outlet.0", "outlet.1", "head")
                         handles = [model.get_submodule(name).register_forward_hook(
                             lambda _module, _args, output, name=name: spatial.__setitem__(name, tuple(output.shape)))
                             for name in stages]
                         try:
-                            expected = model(pixels)
+                            output = model(pixels)
                         finally:
                             for handle in handles:
                                 handle.remove()
-                        if profile == "normalized-tube":
-                            for name in ("inlet.0", "inlet.1", "e0", "d0"):
-                                self.assertEqual(spatial[name], (1, 32, 4*size, 4*size))
-                            for name in ("e1", "d1", "outlet.0"):
-                                self.assertEqual(spatial[name], (1, 32, 2*size, 2*size))
-                            for name in ("bottleneck", "outlet.1"):
-                                self.assertEqual(spatial[name], (1, 32, size, size))
-                            self.assertEqual(spatial["head"], (1, 16, size, size))
-                        self.assertEqual(tuple(expected.shape), shapes(size, 5)[1])
-                        self.assertTrue(torch.isfinite(expected).all())
-                        changed = pixels.clone()
-                        changed[:, -3:] = 0
-                        self.assertGreater(float((model(changed)-expected).abs().max()), 1e-6)
+                        for name in ("inlet.0", "inlet.1", "e0", "d0"):
+                            self.assertEqual(spatial[name], (1, 32, 4*size, 4*size))
+                        for name in ("e1", "d1", "outlet.0"):
+                            self.assertEqual(spatial[name], (1, 32, 2*size, 2*size))
+                        for name in ("bottleneck", "outlet.1"):
+                            self.assertEqual(spatial[name], (1, 32, size, size))
+                        self.assertEqual(spatial["head"], (1, 16, size, size))
+                        self.assertEqual(tuple(output.shape), shapes(size, 5)[1])
+                        self.assertTrue(torch.isfinite(output).all())
 
     def test_every_profile_clips_before_learned_layers_without_mutating_captures(self):
         torch.manual_seed(19)
@@ -199,7 +198,7 @@ class ModelTests(unittest.TestCase):
                                            rtol=2e-5, atol=2e-6)
             for name, value in original.state_dict().items():
                 torch.testing.assert_close(value, before[name], rtol=0, atol=0)
-                if name not in ("inlet.0.0.weight", "local_color.0.weight"):
+                if name != "inlet.0.0.weight":
                     torch.testing.assert_close(expanded.state_dict()[name], before[name], rtol=0, atol=0)
             self.assertIs(initialize_frames(expanded, 5), expanded)
             for frames in (1, 4, 32):
@@ -207,13 +206,13 @@ class ModelTests(unittest.TestCase):
                     initialize_frames(expanded, frames)
         for frames in (False, True, 0, MAX_FRAMES+1, 4.0):
             with self.subTest(frames=frames), self.assertRaises(ValueError):
-                OpticalDecoder("wide", frames)
+                OpticalDecoder("longtube", frames)
             with self.subTest(initialization=frames), self.assertRaises(ValueError):
                 initialize_frames(original, frames)
 
     def test_larger_frame_counts_expand_only_input_weights(self):
-        for profile, baseline, per_frame in (("compact", 121_792, 216), ("wide", 487_104, 480),
-                                             ("normalized-compact", 123_872, 432), ("normalized-tube", 140_976, 864)):
+        for profile, baseline, per_frame in (("normalized-tube", 140_976, 864),
+                                             ("longtube", LONGTUBE_SINGLE_FRAME_COUNT, 864)):
             original = OpticalDecoder(profile).eval()
             for frames in (2, 3, 32, MAX_FRAMES):
                 with self.subTest(profile=profile, frames=frames):
@@ -243,7 +242,7 @@ class ExportTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary) / "bundle"
-            manifest = export_smoke(directory, check_ort=False, profile="compact")
+            manifest = export_smoke(directory, check_ort=False, profile="normalized-tube")
             self.assertEqual(manifest["status"], "untrained")
             self.assertEqual(manifest["parameterCount"], PARAMETER_COUNT)
             self.assertEqual(manifest["framesPerInput"], 1)
@@ -279,7 +278,7 @@ class ExportTests(unittest.TestCase):
     def test_five_frame_export_has_fixed_fifteen_channel_graph_and_exact_fixture(self):
         import onnx
         from export import export_smoke
-        for profile, count in (("normalized-compact", 125600), ("normalized-tube", 144432)):
+        for profile, count in (("normalized-tube", 144432), ("longtube", LONGTUBE_SINGLE_FRAME_COUNT+4*864)):
             with tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary)/"burst"
                 manifest = export_smoke(directory, frames=5, sizes=(64,), check_ort=False, profile=profile)

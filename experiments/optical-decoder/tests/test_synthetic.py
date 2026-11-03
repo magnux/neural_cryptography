@@ -16,7 +16,8 @@ if HAS_TORCH:
     from synthetic import (PhotometricConfig, apply_color_exposure, apply_overlays, apply_glare,
                            apply_motion_blur, corrupt_burst, motion_blur_grids,
                            overlay_alpha, rolling_shutter_maps, sample_motion_blur,
-                           sample_photometric, sample_rolling_shutter, sample_glare, glare_maps)
+                           sample_photometric, sample_rolling_shutter, sample_glare, glare_maps,
+                           sample_rgb_offset, rgb_motion_blur_grids)
     torch.set_num_threads(1)
 
 
@@ -219,6 +220,63 @@ class PhotometricTests(unittest.TestCase):
         center[:, 128, 128] = 1
         self.assertAlmostEqual(float(apply_motion_blur(center, self.motion(rotationDegrees=5.))[0, 128, 128]), 1., places=5)
 
+    def test_rgb_exposure_offsets_separate_blurred_color_centroids_without_common_shift(self):
+        image = torch.zeros((3, 65, 65))
+        image[:, 32, 32] = 1.
+        motion = self.motion(linearPixels=6.)
+        offset = {"timeOffsets": [-.1, 0., .1], "maxPixels": .5}
+        shifted = apply_motion_blur(image, motion, rgb_offset=offset)
+        x = torch.arange(65, dtype=image.dtype)[None, :]
+        centers = (shifted*x).sum(dim=(1, 2))/shifted.sum(dim=(1, 2))
+        self.assertGreater(float(centers.max()-centers.min()), .9)
+        self.assertAlmostEqual(float(centers.mean()), 32., places=4)
+        self.assertTrue(torch.all(shifted.amax(dim=(1, 2)) < .5))
+        self.assertTrue(torch.isfinite(shifted).all())
+        torch.testing.assert_close(image[:, 32, 32], torch.ones(3), rtol=0, atol=0)
+        self.assertIs(apply_motion_blur(image, None, rgb_offset=offset), image)
+        torch.testing.assert_close(apply_motion_blur(image, motion,
+            rgb_offset={**offset, "maxPixels": 0}), apply_motion_blur(image, motion), rtol=0, atol=0)
+
+    def test_rgb_offset_grids_are_centered_bounded_and_follow_the_shared_motion(self):
+        config = PhotometricConfig(rgb_offset_probability=1, rgb_offset_pixels=.5)
+        motion = self.motion(linearPixels=4., rotationDegrees=2., zoomFraction=.02)
+        sampled = sample_rgb_offset(np.random.default_rng(7), .65, config, motion)
+        self.assertEqual(sampled, sample_rgb_offset(np.random.default_rng(7), .65, config, motion))
+        self.assertAlmostEqual(sum(sampled["timeOffsets"]), 0., places=14)
+        self.assertLessEqual(max(map(abs, sampled["timeOffsets"])), .25)
+        previous = None
+        for frame in (0, 1, 2):
+            common = motion_blur_grids(65, motion, frame)
+            rgb = rgb_motion_blur_grids(65, motion, sampled, frame)
+            torch.testing.assert_close(rgb.mean(dim=0), common, rtol=0, atol=2e-7)
+            delta = rgb-common[None]
+            self.assertLessEqual(float(torch.linalg.vector_norm(delta*32, dim=-1).max()),
+                                 .65*.5+1e-5)
+            self.assertGreater(float(delta.abs().max()), 0.)
+            if previous is not None:
+                self.assertFalse(torch.equal(delta, previous))
+            previous = delta
+        for conf, severity, path in ((config, 0, motion), (config, 1, None),
+                (config, 1, self.motion()),
+                (PhotometricConfig(rgb_offset_probability=0), 1, motion),
+                (PhotometricConfig(rgb_offset_pixels=0), 1, motion)):
+            self.assertIsNone(sample_rgb_offset(np.random.default_rng(7), severity, conf, path))
+
+    def test_rgb_offset_controls_have_an_independent_random_stream(self):
+        clean = np.random.default_rng(4).uniform(-1, 1, (3, 256, 256)).astype(np.float32)
+        enabled = PhotometricConfig(motion_probability=1, rgb_offset_probability=1)
+        probability_off = PhotometricConfig(motion_probability=1, rgb_offset_probability=0)
+        strength_off = PhotometricConfig(motion_probability=1, rgb_offset_pixels=0)
+        baseline = corrupt_burst(clean, 17, 3, .8, photometric=probability_off)
+        np.testing.assert_array_equal(baseline, corrupt_burst(clean, 17, 3, .8, photometric=strength_off))
+        def common_only(image, motion, frame=0, *, rgb_offset=None):
+            return apply_motion_blur(image, motion, frame)
+        with patch("synthetic.apply_motion_blur", side_effect=common_only):
+            np.testing.assert_array_equal(baseline, corrupt_burst(clean, 17, 3, .8, photometric=enabled))
+        changed = corrupt_burst(clean, 17, 3, .8, photometric=enabled)
+        self.assertFalse(np.array_equal(baseline, changed))
+        np.testing.assert_array_equal(changed, corrupt_burst(clean, 17, 3, .8, photometric=enabled))
+
     def test_motion_trajectories_and_centered_grids_have_known_bounds(self):
         config = PhotometricConfig(motion_probability=1)
         saw = [False, False, False]
@@ -292,7 +350,8 @@ class PhotometricTests(unittest.TestCase):
                               ("rolling_shutter_skew", .75), ("motion_probability", 1),
                               ("linear_blur_pixels", 12), ("rotation_blur_degrees", 5),
                               ("zoom_blur_fraction", .05), ("glare_probability", 1),
-                              ("glare_strength", 1)):
+                              ("glare_strength", 1), ("rgb_offset_probability", 1),
+                              ("rgb_offset_pixels", 1)):
             for value in (-.1, maximum+.01, np.nan, np.inf, -np.inf, True):
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                     PhotometricConfig(**{name: value})

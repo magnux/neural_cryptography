@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 HAS_EXPORT = importlib.util.find_spec("torch") is not None and importlib.util.find_spec("onnx") is not None
 if HAS_EXPORT:
     import torch
-    from model import OpticalDecoder
+    from model import MODEL_PROFILES, OpticalDecoder
     from export import export_smoke, load_checkpoint
     from checkpoint import training_provenance, load_model_checkpoint
     torch.set_num_threads(1)
@@ -70,50 +70,50 @@ class CheckpointExportTests(unittest.TestCase):
                 expected = model(torch.from_numpy(pixels)).numpy()
             np.testing.assert_array_equal(exported, expected)
 
-    def test_normalized_five_frame_checkpoint_and_export_preserve_exact_profile(self):
+    def test_five_frame_checkpoint_and_export_preserve_exact_profile(self):
         import onnx
-        _, value = self.checkpoint()
-        model = OpticalDecoder("normalized-compact", frames=5).eval()
-        value["modelState"] = model.state_dict()
-        value["training"]["framesPerInput"] = 5
-        value["training"].update(modelProfile="normalized-compact", networkInputClip=[-1., 1.])
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary)/"burst.pt"
-            torch.save(value, path)
-            loaded, _ = load_model_checkpoint(path)
-            self.assertEqual((loaded.profile, loaded.frames), ("normalized-compact", 5))
-            for name, tensor in loaded.state_dict().items():
-                torch.testing.assert_close(tensor, model.state_dict()[name], rtol=0, atol=0)
-            manifest = export_smoke(Path(temporary)/"bundle", sizes=(64,), check_ort=False, checkpoint=path)
-            self.assertEqual(manifest["framesPerInput"], 5)
-            self.assertEqual(manifest["training"]["framesPerInput"], 5)
-            self.assertEqual(manifest["modelProfile"], "normalized-compact")
-            self.assertEqual(manifest["training"]["modelProfile"], "normalized-compact")
-            self.assertEqual(manifest["training"]["networkInputClip"], [-1, 1])
-            self.assertEqual(manifest["normalization"]["clip"], [-1.5, 1.5])
-            self.assertEqual(manifest["networkInputClip"], [-1, 1])
-            case = manifest["cases"][0]
-            graph = onnx.load(Path(temporary)/"bundle"/case["model"]["file"])
-            self.assertIn("Clip", {node.op_type for node in graph.graph.node})
-            pixels = np.fromfile(Path(temporary)/"bundle"/case["input"]["file"], dtype="<f4")
-            self.assertGreater(float(np.abs(pixels).max()), 1)
-            with self.assertRaisesRegex(ValueError, "frame count differs"):
-                export_smoke(Path(temporary)/"bad", sizes=(64,), check_ort=False, checkpoint=path, frames=1)
-            for profile in ("compact", "wide"):
-                with self.subTest(profile=profile), self.assertRaises(ValueError):
-                    load_checkpoint(path, OpticalDecoder(profile, frames=5))
-            with self.assertRaisesRegex(ValueError, "profile differs"):
-                export_smoke(Path(temporary)/"wrong-profile", sizes=(64,), check_ort=False,
-                             checkpoint=path, profile="compact")
-            value["training"]["modelProfile"] = "compact"
-            torch.save(value, path)
-            with self.assertRaisesRegex(ValueError, "profile metadata disagrees"):
-                load_model_checkpoint(path)
-            value["training"]["modelProfile"] = "normalized-compact"
-            value["training"]["framesPerInput"] = 1
-            torch.save(value, path)
-            with self.assertRaisesRegex(ValueError, "frame metadata disagrees"):
-                load_model_checkpoint(path)
+        for profile in MODEL_PROFILES:
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as temporary:
+                _, value = self.checkpoint()
+                model = OpticalDecoder(profile, frames=5).eval()
+                value["modelState"] = model.state_dict()
+                value["training"].update(framesPerInput=5, modelProfile=profile, networkInputClip=[-1., 1.])
+                path = Path(temporary)/"burst.pt"
+                torch.save(value, path)
+                loaded, _ = load_model_checkpoint(path)
+                self.assertEqual((loaded.profile, loaded.frames), (profile, 5))
+                for name, tensor in loaded.state_dict().items():
+                    torch.testing.assert_close(tensor, model.state_dict()[name], rtol=0, atol=0)
+                manifest = export_smoke(Path(temporary)/"bundle", sizes=(64,), check_ort=False, checkpoint=path)
+                self.assertEqual(manifest["framesPerInput"], 5)
+                self.assertEqual(manifest["training"]["framesPerInput"], 5)
+                self.assertEqual(manifest["modelProfile"], profile)
+                self.assertEqual(manifest["training"]["modelProfile"], profile)
+                self.assertEqual(manifest["training"]["networkInputClip"], [-1, 1])
+                self.assertEqual(manifest["normalization"]["clip"], [-1.5, 1.5])
+                self.assertEqual(manifest["networkInputClip"], [-1, 1])
+                case = manifest["cases"][0]
+                graph = onnx.load(Path(temporary)/"bundle"/case["model"]["file"])
+                self.assertIn("Clip", {node.op_type for node in graph.graph.node})
+                pixels = np.fromfile(Path(temporary)/"bundle"/case["input"]["file"], dtype="<f4")
+                self.assertGreater(float(np.abs(pixels).max()), 1)
+                with self.assertRaisesRegex(ValueError, "frame count differs"):
+                    export_smoke(Path(temporary)/"bad", sizes=(64,), check_ort=False, checkpoint=path, frames=1)
+                other = next(name for name in MODEL_PROFILES if name != profile)
+                with self.assertRaises(ValueError):
+                    load_checkpoint(path, OpticalDecoder(other, frames=5))
+                with self.assertRaisesRegex(ValueError, "profile differs"):
+                    export_smoke(Path(temporary)/"wrong-profile", sizes=(64,), check_ort=False,
+                                 checkpoint=path, profile=other)
+                value["training"]["modelProfile"] = other
+                torch.save(value, path)
+                with self.assertRaisesRegex(ValueError, "profile metadata disagrees"):
+                    load_model_checkpoint(path)
+                value["training"]["modelProfile"] = profile
+                value["training"]["framesPerInput"] = 1
+                torch.save(value, path)
+                with self.assertRaisesRegex(ValueError, "frame metadata disagrees"):
+                    load_model_checkpoint(path)
 
     def test_normalized_profile_rejects_missing_normalization_and_rgb_branch_mixtures(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -121,7 +121,7 @@ class CheckpointExportTests(unittest.TestCase):
             for defect in ("missing-inlet-norm", "missing-backbone-norm", "rgb-branch", "wrong-stem"):
                 with self.subTest(defect=defect):
                     _, value = self.checkpoint()
-                    state = OpticalDecoder("normalized-compact", frames=5).state_dict()
+                    state = OpticalDecoder("normalized-tube", frames=5).state_dict()
                     if defect == "missing-inlet-norm":
                         del state["inlet.0.1.weight"]
                     elif defect == "missing-backbone-norm":
@@ -137,7 +137,7 @@ class CheckpointExportTests(unittest.TestCase):
                         load_model_checkpoint(path)
 
     def test_sixty_four_frame_checkpoint_loads_without_shape_adaptation(self):
-        model = OpticalDecoder("wide", frames=64).eval()
+        model = OpticalDecoder("longtube", frames=64).eval()
         _, value = self.checkpoint()
         value["modelState"] = model.state_dict()
         value["training"]["framesPerInput"] = 64
@@ -149,7 +149,7 @@ class CheckpointExportTests(unittest.TestCase):
             for name, tensor in loaded.state_dict().items():
                 torch.testing.assert_close(tensor, model.state_dict()[name], rtol=0, atol=0)
             with self.assertRaisesRegex(ValueError, "Invalid checkpoint tensor"):
-                load_checkpoint(path, OpticalDecoder("wide", frames=32))
+                load_checkpoint(path, OpticalDecoder("longtube", frames=32))
 
     def test_wrong_shape_dtype_nonfinite_keys_and_metadata_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

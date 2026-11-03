@@ -21,7 +21,7 @@ from torch.nn import functional as F
 from data import DATASET_FORMAT, Dataset, digest, local_path
 
 
-CORRUPTION_KIND = "correlated-calibrated-crop-v6"
+CORRUPTION_KIND = "correlated-calibrated-crop-v7"
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,8 @@ class PhotometricConfig:
     motion_samples: int = 7
     glare_probability: float = .65
     glare_strength: float = .6
+    rgb_offset_probability: float = .6
+    rgb_offset_pixels: float = .5
 
     def __post_init__(self):
         for name, limit in (("white_balance_stops", 4), ("exposure_stops", 4),
@@ -50,7 +52,8 @@ class PhotometricConfig:
                             ("rolling_shutter_skew", .75), ("motion_probability", 1),
                             ("linear_blur_pixels", 12), ("rotation_blur_degrees", 5),
                             ("zoom_blur_fraction", .05), ("glare_probability", 1),
-                            ("glare_strength", 1)):
+                            ("glare_strength", 1), ("rgb_offset_probability", 1),
+                            ("rgb_offset_pixels", 1)):
             value = getattr(self, name)
             if isinstance(value, bool) or not np.isfinite(value) or not 0 <= value <= limit:
                 raise ValueError(f"{name.replace('_', '-')} must be finite and in [0, {limit}]")
@@ -287,7 +290,26 @@ def sample_motion_blur(rng, severity, config):
             "samples": config.motion_samples}
 
 
-def motion_blur_grids(side, motion, frame, *, device=None, dtype=torch.float32):
+def sample_rgb_offset(rng, severity, config, motion):
+    """Small relative exposure timing offsets along an existing motion path.
+
+    This approximates color-fringed camera/display motion artifacts; it does not
+    assume that real cameras universally expose their RGB channels sequentially.
+    There is no static channel misregistration when camera motion is absent.
+    """
+    if (motion is None or severity == 0 or config.rgb_offset_pixels == 0
+            or not any(motion[name] for name in ("linearPixels", "rotationDegrees", "zoomFraction"))
+            or rng.random() >= config.rgb_offset_probability):
+        return None
+    offsets = rng.uniform(-1, 1, 3)
+    offsets -= offsets.mean()
+    offsets /= max(1., float(np.max(np.abs(offsets))))
+    return {"timeOffsets": (offsets*.25).tolist(),
+            "maxPixels": float(severity*config.rgb_offset_pixels*rng.uniform(.4, 1.))}
+
+
+def motion_blur_grids(side, motion, frame, *, device=None, dtype=torch.float32,
+                      time_offset=0.):
     """Centered exposure grids [S,H,W,2], in grid_sample normalized coordinates.
 
     Linear travel is in dense-crop pixels, rotation in degrees and zoom as a
@@ -296,7 +318,7 @@ def motion_blur_grids(side, motion, frame, *, device=None, dtype=torch.float32):
     """
     axis = torch.linspace(-1, 1, side, device=device, dtype=dtype)
     y, x = torch.meshgrid(axis, axis, indexing="ij")
-    times = torch.linspace(-.5, .5, motion["samples"], device=device, dtype=dtype)[:, None, None]
+    times = torch.linspace(-.5, .5, motion["samples"], device=device, dtype=dtype)[:, None, None] + time_offset
     phase = motion["phase"]+frame*motion["velocity"]
     strength = .85+.15*np.sin(phase)
     angle = motion["angle"]+motion["angleDrift"]*np.sin(phase)
@@ -311,10 +333,38 @@ def motion_blur_grids(side, motion, frame, *, device=None, dtype=torch.float32):
     return torch.stack((gx, gy), dim=-1)
 
 
-def apply_motion_blur(image, motion, frame=0):
-    """Integrate a short linear/rotational/zoom exposure, using border extension."""
+def rgb_motion_blur_grids(side, motion, rgb_offset, frame, *, device=None, dtype=torch.float32):
+    """Return [RGB,S,H,W,2] exposure grids with centered, bounded color offsets.
+
+    Each channel follows the same path with a slightly shifted exposure window.
+    Centering relative displacements prevents a common image translation. The
+    cap applies after centering, in dense-crop pixels, even under rotation/zoom.
+    """
+    common = motion_blur_grids(side, motion, frame, device=device, dtype=dtype)
+    if rgb_offset is None or rgb_offset["maxPixels"] == 0:
+        return common[None].expand(3, -1, -1, -1, -1)
+    shifted = torch.stack([motion_blur_grids(side, motion, frame, device=device,
+        dtype=dtype, time_offset=offset) for offset in rgb_offset["timeOffsets"]])
+    delta = shifted-common[None]
+    delta = delta-delta.mean(dim=0, keepdim=True)
+    largest = float(torch.linalg.vector_norm(delta, dim=-1).max())*(side-1)/2
+    delta *= min(1., rgb_offset["maxPixels"]/max(largest, 1e-12))
+    return common[None]+delta
+
+
+def apply_motion_blur(image, motion, frame=0, *, rgb_offset=None):
+    """Integrate common or color-offset exposure windows once, with border extension."""
     if motion is None:
         return image
+    if rgb_offset is not None and rgb_offset["maxPixels"] > 0:
+        grids = rgb_motion_blur_grids(image.shape[-1], motion, rgb_offset, frame,
+                                      device=image.device, dtype=image.dtype)
+        channels, samples, side, _, _ = grids.shape
+        inputs = image[:, None, None].expand(channels, samples, 1, side, side)
+        observed = F.grid_sample(inputs.reshape(channels*samples, 1, side, side),
+            grids.reshape(channels*samples, side, side, 2), mode="bilinear",
+            padding_mode="border", align_corners=True)
+        return observed.reshape(channels, samples, side, side).mean(dim=1)
     grids = motion_blur_grids(image.shape[-1], motion, frame, device=image.device, dtype=image.dtype)
     observed = F.grid_sample(image[None].expand(grids.shape[0], -1, -1, -1), grids,
                              mode="bilinear", padding_mode="border", align_corners=True)
@@ -362,7 +412,7 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
 
     Labels are unaffected by less than half-cell registration jitter. Spatial
     aliasing, curved multi-channel bands, rolling-shutter exposure/skew,
-    integrated linear/rotational/radial-zoom exposure blur,
+    integrated linear/rotational/radial-zoom exposure blur with relative RGB timing,
     white balance, signed exposure, soft tinted shade/reflections, drifting
     highlight/veiling glare, effective capture resolution, and shot/read
     noise vary independently of payload symbols. Seed is public augmentation data.
@@ -409,6 +459,8 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
     shutter = sample_rolling_shutter(shutter_rng, severity, photometric)
     motion_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x4d4f544e]))
     motion = sample_motion_blur(motion_rng, severity, photometric)
+    rgb_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x5247424f]))
+    rgb_offset = sample_rgb_offset(rgb_rng, severity, photometric, motion)
     glare_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x474c4152]))
     glare = sample_glare(glare_rng, severity, photometric)
     outputs = []
@@ -425,7 +477,7 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
         bands = torch.stack([torch.sin(curved+phase+c*.63) + .35*torch.sin(secondary-phase*.7+c)
                              for c in range(3)])
         observed = observed + amplitudes*bands
-        observed = apply_motion_blur(observed, motion, t)
+        observed = apply_motion_blur(observed, motion, t, rgb_offset=rgb_offset)
         observed = torch.einsum("cd,dhw->chw", color_mix, observed) * illumination
         observed = observed*shutter_gains
         observed = apply_color_exposure(observed, lighting["whiteBalanceGains"][t],
@@ -576,6 +628,10 @@ def main():
                         help="max full radial zoom scale sweep at severity 1 (default: .006)")
     parser.add_argument("--motion-samples", type=int, default=7,
                         help="odd exposure integration samples, 3–15 (default: 7)")
+    parser.add_argument("--rgb-offset-probability", type=float, default=.6,
+                        help="fraction of motion-blurred bursts with relative RGB exposure offsets (default: .6); 0 disables")
+    parser.add_argument("--rgb-offset-pixels", type=float, default=.5,
+                        help="max per-channel offset from common motion path in dense-crop pixels at severity 1, 0–1 (default: .5)")
     parser.add_argument("--max-output-mib", type=int, default=2**20, help="estimated binary output budget in MiB (default: 1 TiB); 0 disables the limit")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--node", default="node")
@@ -590,7 +646,8 @@ def main():
                                          args.rolling_shutter_skew, args.motion_probability,
                                          args.linear_blur_pixels, args.rotation_blur_degrees,
                                          args.zoom_blur_fraction, args.motion_samples,
-                                         args.glare_probability, args.glare_strength)
+                                         args.glare_probability, args.glare_strength,
+                                         args.rgb_offset_probability, args.rgb_offset_pixels)
         result = generate(args.clean, args.out, seed=args.seed, frames=args.frames,
                           severity=args.severity, max_output_mib=args.max_output_mib, node=args.node,
                           photometric=photometric, bursts_per_target=args.bursts_per_target,

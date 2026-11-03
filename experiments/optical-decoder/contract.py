@@ -18,8 +18,8 @@ CAPTURE_INPUT_MIN = -1.5
 CAPTURE_INPUT_MAX = 1.5
 NETWORK_INPUT_MIN = -1.0
 NETWORK_INPUT_MAX = 1.0
-# Compact is an active ablation. Wide exports record their actual parameter count.
-PARAMETER_COUNT = 121_792
+# Default single-frame full-resolution tube; exports record their actual count.
+PARAMETER_COUNT = 140_976
 INPUT_NAME = "pixels"
 OUTPUT_NAME = "logits"
 # Native Python ONNX Runtime thresholds; the browser uses its documented,
