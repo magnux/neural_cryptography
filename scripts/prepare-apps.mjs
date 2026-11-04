@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Copy the one canonical crypto implementation into independently servable apps. */
+/** Copy the canonical crypto and authentication implementations into independently servable apps. */
 import { cp, mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -50,24 +50,28 @@ async function prepare() {
     await requirePath(join(fixtures, fixture.proofFile));
   }
   for (const name of workers) await requirePath(join(shared, 'worker', name));
+  for (const name of ['envelope.js', 'session.js']) await requirePath(join(shared, 'auth', name));
 
   for (const name of names) {
     const app = join(root, 'apps', name);
     await requirePath(join(app, 'dist', 'index.html'));
     const crypto = join(app, 'dist', 'js', 'crypto');
     const localFixtures = join(app, 'tests', 'fixtures', 'zk');
+    const authentication = join(app, 'dist', 'js', 'auth-core');
     // These directories contain only ignored generated files. Removing them
     // also removes obsolete modules when the canonical implementation changes.
     await rm(crypto, { recursive: true, force: true });
     await rm(localFixtures, { recursive: true, force: true });
+    await rm(authentication, { recursive: true, force: true });
     await cp(join(shared, 'crypto'), crypto, { recursive: true });
     await cp(fixtures, localFixtures, { recursive: true });
+    await cp(join(shared, 'auth'), authentication, { recursive: true });
     const worker = join(app, 'dist', 'js', applications[name]);
     if (name === 'qr-neural-key') await rm(worker, { recursive: true, force: true });
     await mkdir(worker, { recursive: true });
     // The color app keeps its own lab.js and reports.js beside these modules.
     for (const file of workers) await cp(join(shared, 'worker', file), join(worker, file));
-    console.log(`Prepared ${name}: shared crypto, worker, and public test fixtures.`);
+    console.log(`Prepared ${name}: shared crypto, authentication, worker, and public test fixtures.`);
   }
 }
 

@@ -9,9 +9,10 @@ The serving path already exists. The Python `.pt` file is the training
 checkpoint; the browser loads its **ONNX export**, a small manifest and the
 pinned ONNX Runtime Web assets. No inference endpoint or Flask application is
 needed. The static server never receives camera frames or performs inference.
-The current camera probe checks finite model outputs; connecting corrected
-scores to live CRC/RS recovery and displaying received content is the next app
-integration step, described below.
+The lab's camera probe checks finite model outputs. The separate
+[Neural-ZKBoo demo](NEURAL_ZKBOO_DEMO.md) now connects corrected scores to live
+CRC/RS recovery and a complete turn-based authentication exchange; physical
+testing with the trained checkpoint is the next validation step.
 
 See the [model family and masks](NEURAL_CORRECTOR.md),
 [capture and training guide](NEURAL_CORRECTOR_TRAINING.md), and
@@ -49,26 +50,47 @@ necessary. The pinned runtime is **ONNX Runtime Web 1.23.2**.
 
 Renaming a directory or `.pt` file does not change the profile name stored
 inside it. The successfully trained phase-grouped checkpoint still records
-`attention-tube`; the current name is `U-tube-2x-attn`. Before exporting it with
-the renamed code, make one explicit metadata-only copy. Adjust `source` if you
-have already moved the original file:
+`attention-tube`; the current name is `U-tube-2x-attn`. **Both export and further
+training with `--initialize` validate this field**, so update it once in each
+checkpoint you intend to use. Archived JSON reports need no edits.
+
+From the repository root, the following updates the checkpoint in your already
+renamed directory. Adjust `path` to your actual folder name. It writes and
+validates a temporary file before atomically replacing the original; a failed
+validation leaves the original intact:
 
 ```sh
 python - <<'PY'
 from pathlib import Path
+import os
+import sys
+import tempfile
 import torch
 
-source = Path('checkpoints/optical-decoder/attention-phase8/best.pt')
-target = Path('checkpoints/neural-corrector/U-tube-2x-attn/best.pt')
-if target.exists():
-    raise FileExistsError(f'Refusing to overwrite {target}')
-checkpoint = torch.load(source, map_location='cpu', weights_only=True)
+sys.path.insert(0, 'experiments/neural-corrector')
+from checkpoint import load_checkpoint
+
+path = Path('checkpoints/neural-corrector/U-tube-2x-attn/best.pt')
+checkpoint = torch.load(path, map_location='cpu', weights_only=True)
 assert checkpoint['format'] == 'optical-decoder-checkpoint'
-assert checkpoint['training']['modelProfile'] == 'attention-tube'
+profile = checkpoint['training']['modelProfile']
+if profile == 'U-tube-2x-attn':
+    load_checkpoint(path)
+    print(f'Already ready: {path}')
+    raise SystemExit
+assert profile == 'attention-tube', f'Unexpected profile: {profile}'
 checkpoint['training']['modelProfile'] = 'U-tube-2x-attn'
-target.parent.mkdir(parents=True, exist_ok=True)
-torch.save(checkpoint, target)
-print(target)
+with tempfile.NamedTemporaryFile(dir=path.parent, suffix='.pt', delete=False) as handle:
+    temporary = Path(handle.name)
+try:
+    torch.save(checkpoint, temporary)
+    verified = load_checkpoint(temporary)
+    assert all(torch.equal(value, verified['modelState'][name])
+               for name, value in checkpoint['modelState'].items())
+    os.replace(temporary, path)
+finally:
+    temporary.unlink(missing_ok=True)
+print(f'Ready for export or --initialize: {path}')
 PY
 ```
 
@@ -78,12 +100,32 @@ unchanged. For the other two models, the descriptive replacements are
 already write the current names. The runtime has no old-name aliases and this
 manual operation is not a checkpoint-format conversion.
 
-Persisted format identifiers such as `optical-decoder-checkpoint` and the
-recording/dataset format IDs intentionally remain stable. They identify stored
+**Keep `format: optical-decoder-checkpoint` unchanged**, along with the
+recording/dataset format IDs. These intentionally remain stable and identify stored
 structures, not the component's display name. Existing recording JSON needs no
 conversion, and its session/payload ownership information must remain intact.
 
+No retraining is needed for the browser test: export this relabeled checkpoint
+with the command above and prepare its ONNX bundle. The browser reads that bundle,
+not the `.pt` file. If you later want to refine its weights, for example:
 
+```sh
+python experiments/neural-corrector/train.py \
+  --train local-data/real-train local-data/target-synthetic-train \
+  --validation local-data/real-validation \
+  --initialize checkpoints/neural-corrector/U-tube-2x-attn/best.pt \
+  --model U-tube-2x-attn --frames 8 \
+  --session-groups local-data/session-groups.json \
+  --paired-targets --real-fraction .5 \
+  --batch-size 16 --accumulate 2 --lr .00001 --steps 32000 \
+  --device cuda --out checkpoints/neural-corrector/U-tube-2x-attn-refine
+```
+
+The output directory must be empty. `--initialize` loads the weights and their
+split provenance, then starts a **new AdamW optimizer and update counter**; it
+does not resume optimizer state. The architecture retains its eight phase-paired
+slots, random K=4–8 training inputs, phase permutations and spatial flips. Keep
+the same held-out sessions; initialization still rejects split leakage.
 
 ## What the demo server serves
 
@@ -191,7 +233,7 @@ counts. Known buffer sizes are partial accounting, not total worker/GPU memory.
 No camera images, payloads or keys are included. Reports stay in memory and are
 capped at 50 tests; hidden pages stop camera capture and pending worker work.
 
-## The next integration step
+## Live authentication integration
 
 The score adapter is implemented and tested: it excludes reference cells and
 inactive palette classes, converts physical outputs to logical scores for the
@@ -199,17 +241,20 @@ fixed-input models, and passes the phase-grouped model's canonical output
 through without a second palette inversion. Offline evaluation already sends
 these scores to the existing RS/CRC pipeline.
 
-The current lab's camera button performs crop preparation and finite-logit
-inference only. It does **not** yet display a recovered message or insert neural
-evidence into live optical transport. The next demo increment will:
+The lab's camera button remains a crop-preparation and finite-logit probe. The
+new **`neural-zkboo.html`** interface uses the same worker's transport operations
+to run the trained four-phase model, pass its logical scores through byte/RS/CRC
+recovery, and deliver accepted packets to the authentication channel. It attempts
+K=4 first, grows through K=8 when recovery fails, then replaces observations and
+retries within bounded retention and timeout limits.
 
-1. Run the selected trained model on a valid four-phase camera group.
-2. Pass its logical scores through the existing byte/RS/CRC decoder and show
-   accepted content plus correction/inference timings.
-3. Attempt K=4 first, add available observations through K=8 when CRC fails,
-   and then replace stale captures or time out with bounded memory.
-4. Compare acknowledged application-byte throughput in both directions, then
-   connect the working channel to the existing Neural ZKBoo authentication flow.
+The demo cycles DATA phases at 95 ms and targets distinct camera samples every
+100 ms, with both intervals configurable. Small classical ACK matrices and
+explicit turns let the user rotate the phone between receiving and displaying.
+See the [complete setup and device sequence](NEURAL_ZKBOO_DEMO.md) for the initial
+32-repetition exchange, pairing confirmation, final result acknowledgment and
+reports. Both devices load the trained ONNX bundle before the exchange; no
+server inference is involved.
 
 CRC acceptance remains mandatory; known sender payloads are only used in offline
 measurement after recovery. The camera path never receives labels or a clean

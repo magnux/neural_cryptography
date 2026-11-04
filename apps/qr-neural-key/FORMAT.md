@@ -9,7 +9,7 @@ authentication. See [AUTHENTICATION.md](AUTHENTICATION.md) for the trust model a
 | Layer / use case | Identifier | Source |
 | --- | --- | --- |
 | Arbitrary-byte multipart optical transfer | `QRT` | [protocol.js](dist/js/protocol.js), [session.js](dist/js/session.js) |
-| Paired neural-key authentication messages | `neural-qr-auth-v1`, binary prefix `NQA1` | [envelope.js](dist/js/auth/envelope.js), [session.js](dist/js/auth/session.js) |
+| Paired neural-key authentication messages | `neural-zkboo-auth-v1`, binary prefix `NZA1` | [envelope.js](dist/js/auth/envelope.js), [session.js](dist/js/auth/session.js) |
 | Public identities, challenges, and compact proofs | `NeuralPicnic-POC-MPC3-v2`, proof magic `NPZK0002` | [proof.js](../../shared/browser-crypto/crypto/proof.js), [circuit.js](../../shared/browser-crypto/crypto/circuit.js), [bytes.js](../../shared/browser-crypto/crypto/bytes.js) |
 | Live QR transport / scan diagnostics | `schema: "qr-optical-report-v1"` | [app.js](dist/js/app.js) |
 | Synthetic QR transport experiment | `schema: "qr-link-report-v1"` | [simulation.js](dist/js/simulation.js) |
@@ -60,7 +60,7 @@ of QRT, so other experiments can transmit their own byte formats.
 
 ## Authentication envelopes
 
-An envelope is `NQA1` (4 bytes), canonical JSON header length (`u32`, big-endian),
+An envelope is `NZA1` (4 bytes), canonical JSON header length (`u32`, big-endian),
 header bytes, then body bytes. The header is limited to 4,096 bytes and the whole
 envelope to 524,288 bytes. JSON must be the exact canonical serialization from
 `crypto/bytes.js`: sorted keys, compact separators, ASCII escapes, integer numbers
@@ -68,7 +68,7 @@ only. Noncanonical whitespace, duplicate keys, unknown fields, and invalid UTF-8
 are rejected.
 
 Every header has `protocol`, `type`, and `sessionId`; protocol is
-`neural-qr-auth-v1`, and the session ID is 16 bytes as lowercase hexadecimal.
+`neural-zkboo-auth-v1`, and the session ID is 16 bytes as lowercase hexadecimal.
 
 | Type | Additional exact header fields | Body |
 | --- | --- | --- |
@@ -89,7 +89,7 @@ A public document has exactly `protocol`, `circuit`, `minimum_repetitions`, and
 `rounds`, and `key_bits: 256`. Anchor outputs are packed bits expressed as hex;
 the authentication profile uses 32 bytes. A challenge has exactly `protocol`,
 `nonce`, `lock_id`, `action`, and `required_repetitions`. Its text fields contain
-1–256 UTF-8 bytes. In this app, `lock_id` is `qr:` followed by the full pairing
+1–256 UTF-8 bytes. In this app, `lock_id` is `neural-zkboo:` followed by the full pairing
 binding, and `action` is `authenticate`.
 
 Both repetition fields allow 1–512. The verifier requests the higher of its own

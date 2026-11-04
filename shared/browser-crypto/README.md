@@ -1,13 +1,16 @@
 # Shared browser cryptography
 
 This is the canonical JavaScript implementation used by the color Crypto Lab
-and QR authentication app. Edit it here, then run `npm run prepare:apps` at the
+and both the color-matrix and QR authentication apps. Edit it here, then run `npm run prepare:apps` at the
 repository root. The preparation script copies these modules into ignored
 app-local paths so each app's `dist/` directory remains independently servable.
 There is no bundler or runtime dependency download.
 
 - `crypto/`: exact binary circuit, compact prover/verifier, byte utilities, and
   locally bundled SHAKE implementation with its original license.
+- `auth/`: transport-independent Neural-ZKBoo application envelopes and session
+  state machine: identity exchange, pairing confirmation, fresh challenge, proof
+  verification and result. Preparation copies this to each app's `js/auth-core/`.
 - `worker/`: the worker boundary, client, operations, and public-only reference
   fixture. The color lab UI and reports remain in that app.
 - [`../fixtures/zk/`](../fixtures/zk/): deterministic Python↔JavaScript vectors.
@@ -23,3 +26,8 @@ Both app test commands prepare their generated files automatically. Run root
 NumPy reference cross-check. `npm --prefix apps/color-optical-bench run
 fixtures:zk` regenerates the canonical fixtures and refreshes that app's copies;
 run `npm run prepare:apps` before serving the other app after regeneration.
+
+The application envelope uses `neural-zkboo-auth-v1` / `NZA1`. This name does
+not change the circuit or compact proof format. QR and color apps have independent
+transport interfaces and reuse this same authentication implementation. Rebuild
+both endpoints together after an application format change.

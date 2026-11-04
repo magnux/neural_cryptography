@@ -1,6 +1,6 @@
 # Neural Key · Optical Bench, Crypto Lab and Live Demo
 
-Four browser-local workspaces share top-level navigation:
+Five browser-local workspaces share top-level navigation:
 
 - **Optical Bench** (`index.html`) tests optical transport of bytes, UTF-8,
   PNG/JPEG, and PCM WAV, with Live link and Image lab workspaces.
@@ -14,6 +14,11 @@ Four browser-local workspaces share top-level navigation:
   dedicated worker. It compares full outputs against Python fixtures and measures
   local inference, with an optional live camera crop. It does not decode payloads.
   Follow the [separate setup and device checklist](../../docs/CORRECTOR_LAB.md).
+- **Neural-ZKBoo** (`neural-zkboo.html`) performs the full authentication flow
+  through trained four-phase DATA reception and small classical ACKs. Each
+  matrix waits for acknowledgment; explicit turns let the phone change its
+  angle between receiving and displaying. Start with the 32-repetition profile
+  and follow the [model setup and device sequence](../../docs/NEURAL_ZKBOO_DEMO.md).
 
 **Capture Dataset** (`capture.html`), linked from Corrector Lab, adds the M2
 sender/receiver data collector. Display a static random matrix, collect bounded
@@ -44,14 +49,13 @@ The hosted test sites are intentionally blank. The source remains available for
 local use and reference. Crypto Lab now uses the compact v2 proof format; the
 color transport experiments remain available without a new deployment.
 
-The next planned increment is [Neural ZKBoo authentication over color
-matrices](../../docs/ROADMAP.md), reusing the QR experiment's authentication flow
-and this app's multipart channel. The [neural corrector design and training
-plan](../../docs/NEURAL_CORRECTOR.md) specifies a small U-Net receiver and labeled
-capture tooling. M1 supports a G64 profile on the tested phone/PC; M2 collection,
-synthetic generation, training, evaluation, and checkpoint export are implemented.
-Real-data recovery validation remains open. The current Live Demo still
-transfers bytes only. [Research connections](../../docs/RESEARCH_CONNECTIONS.md)
+The new [Neural-ZKBoo interface](../../docs/NEURAL_ZKBOO_DEMO.md) uses the shared
+authentication session through a dedicated color stop-and-wait channel. The
+[neural corrector](../../docs/NEURAL_CORRECTOR.md) completed phase-grouped
+training and passed the recorded recovery target. Its live worker now feeds
+CRC-valid packets into authentication; physical-device performance remains to
+be measured. The existing Live Demo still transfers bytes only and remains an
+independent transport workspace. [Research connections](../../docs/RESEARCH_CONNECTIONS.md)
 describe the exploratory background and later cryptanalytic work.
 
 The optical transport supports 8/16 palette phases, progressive reception, per-cell robust

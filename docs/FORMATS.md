@@ -13,7 +13,8 @@ fixtures when changing one.
 | Optical content descriptor | Eight bytes, `OC`, version 1, type, length | [OBM5 header](../apps/color-optical-bench/FORMAT.md); descriptor is in the monochrome header |
 | Multipart color message | `OLM1` | [Link transport](../apps/color-optical-bench/LINK_TRANSPORT.md), `dist/js/link/protocol.js` |
 | QR byte transport | `QRT` | [QR formats](../apps/qr-neural-key/FORMAT.md), `dist/js/protocol.js` |
-| QR authentication envelope | `NQA1`, `neural-qr-auth-v1` | [Authentication protocol](../apps/qr-neural-key/AUTHENTICATION.md), [QR formats](../apps/qr-neural-key/FORMAT.md) |
+| Neural-ZKBoo color packet container | `NZM1` | [Turn demo](NEURAL_ZKBOO_DEMO.md), `dist/js/neural-auth/optical.js`; length-delimited OLM1 packet plus random fill, inside OBM5 |
+| Neural-ZKBoo authentication envelope | `NZA1`, `neural-zkboo-auth-v1` | [Authentication protocol](../apps/qr-neural-key/AUTHENTICATION.md), [QR formats](../apps/qr-neural-key/FORMAT.md) |
 | Optical model bundle | `neural-corrector`, version 1 | [Model/export contract](../experiments/neural-corrector/README.md); untrained or trained status, hashed graphs and fixtures |
 | Neural-corrector checkpoint | `optical-decoder-checkpoint`, version 1 | [`checkpoint.py`](../experiments/neural-corrector/checkpoint.py); local state dict and training/split provenance |
 | Capture sender / receiver exports | `optical-decoder-sender` / `optical-decoder-captures`, version 1 | [M2 capture guide](NEURAL_CORRECTOR_TRAINING.md); independent exports joined offline |

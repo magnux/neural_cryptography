@@ -30,8 +30,8 @@ test('only the current format and consistent transport metadata are accepted',()
   }
   for(const version of [1,2,3,4,6]){const h=f.header.slice();h[4]=version;assert.throws(()=>parseHeader(h),/not recognized/);}
   assert.throws(()=>encodeSequence(new Uint8Array(),{phases:3}));assert.throws(()=>capacity(8,2,{gridBlock:8,parity:32}),/too small/);
-  for(const holdMs of [249,10001,1000.5,NaN])assert.throws(()=>make({holdMs}),/hold time/);
-  for(const holdMs of [250,10000]){const frame=make({holdMs});assert.equal(parseHeader(frame.header).holdMs,holdMs);assert.notEqual(sequenceKey(frame),sequenceKey(f));}
+  for(const holdMs of [49,10001,1000.5,NaN])assert.throws(()=>make({holdMs}),/hold time/);
+  for(const holdMs of [50,95,100,250,10000]){const frame=make({holdMs});assert.equal(parseHeader(frame.header).holdMs,holdMs);assert.notEqual(sequenceKey(frame),sequenceKey(f));}
 });
 test('permutations are bijections; reference cells remain known in every phase',()=>{
   for(const colors of [2,4,8,16])for(const phases of [2,4,8,16]){

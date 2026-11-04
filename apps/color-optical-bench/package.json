@@ -3,7 +3,7 @@
   "version": "0.9.0",
   "private": true,
   "type": "module",
-  "description": "Optical transport bench and browser NeuralPicnic Crypto Lab",
+  "description": "Optical transport bench and browser Neural-ZKBoo authentication",
   "scripts": {
     "prepare:app": "node ../../scripts/prepare-apps.mjs --app color-optical-bench",
     "pretest": "npm run prepare:app",
@@ -17,6 +17,8 @@
     "prebenchmark:crypto": "npm run prepare:app",
     "benchmark:crypto": "node scripts/crypto-size-benchmark.mjs",
     "fixtures:zk": "python3 scripts/zk-fixtures.py generate",
-    "postfixtures:zk": "npm run prepare:app"
+    "postfixtures:zk": "npm run prepare:app",
+    "pretest:auth": "npm run prepare:app",
+    "test:auth": "node --test tests/neural-auth-*.test.mjs"
   }
 }

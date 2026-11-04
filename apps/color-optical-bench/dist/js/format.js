@@ -46,7 +46,7 @@ export function encodeSequence(payload,{size=32,colors=4,maxFrames=1,id=randomBy
   if(!(id instanceof Uint8Array)||id.length!==8)throw Error('Sequence ID must be eight bytes.');
   if(!Number.isInteger(maxFrames)||maxFrames<1||maxFrames>8)throw Error('Frame limit must be 1..8.');
   if(![1,2,4,8,16].includes(phases)||typeof permute!=='boolean'||(phases===1&&permute))throw Error('Invalid palette phase profile.');
-  if(!Number.isInteger(holdMs)||holdMs<250||holdMs>10000)throw Error('Phase hold time must be 250..10000 ms.');
+  if(!Number.isInteger(holdMs)||holdMs<50||holdMs>10000)throw Error('Phase hold time must be 50..10000 ms.');
   if(![0,1,2,3].includes(probePattern)||!Number.isInteger(probeSeed)||probeSeed<0||probeSeed>0xffffffff||(!probePattern&&probeSeed))throw Error('Invalid diagnostic pattern.');
   const descriptor=contentDescriptor(payload,contentType),cap=capacity(size,colors,{gridBlock,parity}),count=Math.max(1,Math.ceil(payload.length/cap));
   if(count>maxFrames)throw Error(`Payload needs ${count} frames; the selected limit is ${maxFrames}.`);
@@ -67,7 +67,7 @@ export function parseHeader(header){
   const v=new DataView(header.buffer,header.byteOffset,header.byteLength);
   if(crc32(header.subarray(0,60))!==v.getUint32(60))throw Error('Header checksum failed. Hold the matrix steady.');
   const bits=header[5],size=v.getUint16(6),colors=2**bits,gridBlock=header[44],phase=header[45],phases=header[46],permute=Boolean(header[47]),parity=header[48],holdMs=v.getUint16(49);
-  if(![1,2,4,8,16].includes(phases)||phase>=phases||header[47]>1||(phases===1&&permute)||holdMs<250||holdMs>10000||v.getUint16(51)||v.getUint16(54))throw Error('Invalid transport header.');
+  if(![1,2,4,8,16].includes(phases)||phase>=phases||header[47]>1||(phases===1&&permute)||holdMs<50||holdMs>10000||v.getUint16(51)||v.getUint16(54))throw Error('Invalid transport header.');
   const cap=capacity(size,colors,{gridBlock,parity}),index=v.getUint16(16),count=v.getUint16(18),length=v.getUint32(20),total=v.getUint32(24);
   if(count<1||count>8||index>=count||count!==Math.max(1,Math.ceil(total/cap))||length!==Math.min(cap,Math.max(0,total-index*cap)))throw Error('Invalid frame lengths.');
   const content=parseContentDescriptor(header.subarray(36,44));if(content.length!==total)throw Error('Content length disagrees with the optical header.');

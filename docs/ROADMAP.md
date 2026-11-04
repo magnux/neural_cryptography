@@ -1,8 +1,8 @@
-# Plan: Neural ZKBoo authentication over color matrices
+# Plan: Neural-ZKBoo authentication over color matrices
 
 Planning baseline: **19 October 2026**. All work so far is the exploratory phase
 of this research. The immediate goal is a repeatable phone/computer POC that
-generates and verifies our existing Neural ZKBoo proofs, with the complete
+generates and verifies our existing Neural-ZKBoo proofs, with the complete
 exchange carried by **color-matrix optical transport**. This is a functional
 research demonstration, not a claim of production cryptographic security.
 
@@ -15,6 +15,8 @@ primitive, or comprehensive attack bench is required to reach this POC.
 
 - [Neural corrector design and training](NEURAL_CORRECTOR.md): model contract,
   capture data, synthetic examples, training, export, and browser integration.
+- [Neural-ZKBoo device demo](NEURAL_ZKBOO_DEMO.md): implemented turn-based
+  authentication interface, model setup and the next physical-device test.
 - [Research connections](RESEARCH_CONNECTIONS.md): relevant neural cryptography,
   cryptanalysis, and proof-friendly circuit literature; later experiments.
 - [Use cases](USE_CASES.md), [formats](FORMATS.md), and
@@ -27,9 +29,9 @@ primitive, or comprehensive attack bench is required to reach this POC.
 | Neural dynamics experiments | Recurrent CNN, rotating kernels, normalization, Feistel, and surrogate probes | Preserve as research/reference; no architecture redesign on the delivery path |
 | Python/browser crypto | Exact binary circuit, compact NPZK0002 proof, configurable repetitions, workers, parity and tamper tests | Keep one canonical proof engine |
 | Color optical bench | Detection, rectification, reference colors, palette phases, bounded temporal fusion, RS recovery, and CRC | Add learned classification at the receiver; preserve framing and recovery |
-| Color multipart link | OLM1 sender/receiver, selective retries, completion receipts, deadlines, and local fault simulation | Carry authentication envelopes and raw proof bytes |
+| Color multipart link | Existing OLM1 link plus a dedicated stop-and-wait adapter for authentication | Carry authentication messages with an ACK after START and every chunk; preserve final ACK until explicit handoff |
 | QR authentication | Local identities, explicit pairing confirmation, fresh challenge, proof, result, and optical acknowledgments | Reuse the application flow and tests through a color-link adapter |
-| Neural corrector | U-tube-2x-attn completed training; recorded validation recovered 100% at K=7/8 in both directions | Export the trained checkpoint, measure browser inference, then connect corrected scores to live CRC recovery |
+| Neural corrector | U-tube-2x-attn completed training; recorded validation recovered 100% at K=7/8 in both directions; live worker now connects scores to CRC recovery | Test the trained export in the Neural-ZKBoo interface on both physical devices |
 
 Single-matrix reception does not establish reliable multipart communication.
 The particularly difficult direction is often **phone display to PC webcam**,
@@ -38,8 +40,8 @@ on both directions from the start.
 
 ## Smallest useful end-to-end demonstration
 
-1. Load the static application and model assets on both devices; disconnect the
-   server/network before starting the attempt.
+1. Start the application on both devices and wait until their model and camera
+   are ready; then disconnect the server/network while keeping both pages open.
 2. Generate ephemeral keys locally in workers, exchange public identities over
    color matrices, and compare/confirm the pairing fingerprint on both screens.
 3. The verifier creates a fresh challenge with its required proof repetitions.
@@ -61,10 +63,12 @@ without changing the circuit. Envelopes and transport add overhead. Keep circuit
 rounds, proof repetitions, and optical settings separate; the verifier's policy
 and the identity's minimum still govern acceptance.
 
-Use **64×64/16-color DATA** as the first learned-decoder target and evaluate
-128×128 when it helps. Keep small **32×32/four-color control matrices** and
-independent outgoing settings for each device. Use the existing conservative
-phase/hold settings initially, then shorten them based on measured recovery.
+The implemented demo uses **64×64/16-color DATA**, four permuted phases and the
+G64 model; larger matrices require another trained contract. Keep small
+**32×32/four-color ACK matrices** and configurable timing on each device.
+Start with **95 ms phase display / 100 ms capture**; try longer display holds
+when physical measurements show missed phases. The explicit turn control lets
+the phone alternate between receiving DATA and displaying its ACK.
 256/512 grids, fewer phases, and a particular throughput number are not gates
 for the first completed authentication.
 
@@ -73,42 +77,43 @@ for the first completed authentication.
 Earlier G64 device reports established phone WebGPU and PC WASM fixture parity.
 The **4 November 2026** training report now clears the recorded recovery target:
 U-tube-2x-attn recovers every validation candidate at K=7/8 in both directions.
-Next, export that trained checkpoint, measure its browser inference on both
-devices, and connect its corrected scores to live CRC/content recovery. These
-recorded results do not yet establish live transport goodput. See the
+The **Neural-ZKBoo** page now connects corrected scores to live CRC recovery,
+turn-based multipart transfer and the shared authentication session. Next,
+export the trained checkpoint and run the exchange on both physical devices.
+Recorded validation and clean-render integration tests do not yet establish live
+transport goodput. See the
 [serving and device guide](CORRECTOR_LAB.md) and [validation record](VALIDATION.md).
-Authentication integration can proceed alongside these trained-device checks.
 
 | Milestone | Work | Completion criterion |
 | --- | --- | --- |
 | **M1 — Interfaces and browser feasibility** | Define the rectified-raster/model/score contract. Export a tiny untrained 2D U-Net and run it in a worker on the real phone and PC. Identify the reusable authentication-session boundary. | Browser/Python outputs agree within recorded tolerance; model loads locally with WebGPU or WASM; latency, memory, and UI responsiveness recorded at 64/128 targets. Unsupported operators are replaced before training. |
 | **M2 — Capture and trained neural corrector** | Capture both directions, generate coherent phase-grouped synthetic observations, and train the full-resolution U-tube family in plain PyTorch. The phase-grouped model has now passed the recorded recovery target; export its trained weights next. | Failed payloads retain independently verified labels. Session-disjoint evaluation improves exact CRC-valid recovery at equal observation budgets. Browser parity, latency and live recovery still need trained-device checks. |
-| **M3 — Authentication integration** | Extract the reusable QR authentication session/envelope code into one shared component as needed; add a color OLM1 adapter and a simple authentication view. Preserve the QR lab as a reference. | In-memory/fault tests complete identity exchange, pairing, challenge, proof, verification, result, and completion receipts. Test cancellation, expiry, duplicates, invalid proof, and stale challenge. Physical 1 KiB transfers complete with acknowledgments in both directions. |
-| **M4 — First color authentication** | Connect the trained neural corrector to existing symbol recovery and multipart transport; use conservative device-specific profiles. | Complete the 32-repetition exchange on the actual phone and PC, with every application/control message using color matrices. Repeat with roles swapped; export both reports, including failures. A model-assisted receive path is exercised and its use recorded. |
-| **M5 — Repeatability and larger proof** | Tune phases, holds, confidence, and retries. Add five-frame fusion only if the single-frame model leaves a measured limitation. | Three consecutive 32-repetition authentications in each role arrangement; one 219-repetition run in each arrangement. Obstruction recovers or reaches a bounded timeout, stale/invalid proofs fail, and an attempt succeeds after server disconnection. Publish device-specific timing and settings. |
+| **M3 — Authentication integration** | Implemented: shared authentication session/envelopes, dedicated color stop-and-wait adapter, and `neural-zkboo.html`. The QR interface remains separate. | Automated identity/pairing/challenge/proof/result and matrix-recovery checks pass; physical ACK behavior still needs device validation. |
+| **M4 — First color authentication** | Current next test: load the trained corrector and use the new turn-based interface with 32 repetitions. | Complete the exchange on the actual phone and PC, with every application/control message using color matrices. Repeat with roles swapped; export both reports, including failures. A model-assisted receive path is exercised and its use recorded. |
+| **M5 — Repeatability and larger proof** | Tune phase holds and capture cadence from measured K4–K8 recovery, inference latency and ACK readability. | Three consecutive 32-repetition authentications in each role arrangement; one 219-repetition run in each arrangement. Obstruction recovers or reaches a bounded timeout, stale/invalid proofs fail, and an attempt succeeds after server disconnection. Publish device-specific timing and settings. |
 
-If the classical receiver can complete an exchange first, record that useful
-integration result while model work continues. If an exported model regresses,
-keep an explicit classical-decoder selection available; do not silently claim
-that an untested learned path produced the result. Reduce grid size or use a
-single-frame model when that reaches M4 sooner. No new cryptographic design is
-needed to compensate for optical failures.
+The authentication demo deliberately requires the trained phase-grouped DATA
+path; only ACKs use the classical receiver. The separate Optical Bench remains
+available for classical diagnostics. Record which path produced every result;
+do not silently replace a failed model with a different receiver and count it as
+a model-assisted success. No new cryptographic design is needed to compensate
+for optical failures.
 
-### Work allocation and planned source boundaries
+### Source boundaries and remaining validation
 
 | Work | Location / execution |
 | --- | --- |
 | Model, generator, training, evaluation, export | Implemented in `experiments/neural-corrector/`; phase-grouped training completed on the project owner's RTX 4090 |
 | Capture and replay UI | `capture.html` collects bounded samples; canonical Node tools join labels and evaluate recorded inputs |
-| Learned inference and score adapter | Separate Corrector Lab worker and `learned-input.js` exist; trained browser measurement and live CRC/content integration are next |
-| Authentication application logic | Extract from `apps/qr-neural-key/dist/js/auth/` into planned `shared/browser-auth/` where reusable; retain transport-specific adapters |
+| Learned inference and score adapter | Corrector Lab worker and `learned-input.js`; the Neural-ZKBoo transport operations now perform progressive phase-grouped inference and CRC recovery |
+| Authentication application logic | Shared browser authentication source, prepared into app-local `auth-core/`; separate QR and color transport adapters |
 | Proof generation and verification | Existing `shared/browser-crypto/`, unchanged canonical engine |
 
-The reusable authentication boundary is `auth/session.js` and `auth/envelope.js`;
-`auth/link.js` is the current QR adapter. M3 extracts only what the color integration needs.
+The reusable authentication boundary is the shared session and envelope code;
+the QR `auth/link.js` and color `neural-auth/` modules provide transport-specific behavior.
 The owner has completed full phase-grouped training on the RTX 4090; local
 implementation checks use CPU PyTorch and Node WASM. The recorded recovery
-improvement is reported by the owner; trained live-device inference remains
+improvement is reported by the owner; trained live-device authentication remains
 the next check. Training and capture data stay out of source control.
 Record model provenance, export settings, runtime version, and metrics;
 package only the selected runtime model/assets when implementing integration.

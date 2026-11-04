@@ -892,3 +892,48 @@ profile, the common full-resolution design, input variants and all four mask
 mechanisms. The serving guide describes local `.pt` to ONNX export, prepared
 same-origin static assets, trusted HTTPS, backend selection and the remaining
 live corrected-score/CRC integration. No site was deployed or reactivated.
+
+## 2026-11-04 — Neural-ZKBoo color authentication integration
+
+Implemented the separate `neural-zkboo.html` interface with the shared
+Neural-ZKBoo authentication session, a stop-and-wait OLM1 channel, four-phase
+trained-corrector data reception, and small classical ACK matrices. The default
+is 32 repetitions, 95 ms phase display and 100 ms requested camera sampling.
+Public identities, pairing confirmation, a fresh challenge, proof verification,
+result delivery and the final ACK are exercised as one authentication attempt.
+
+Checks completed:
+
+- All **36 new demo tests** passed: bounded progressive phase collection,
+  canonical logical-score/CRC recovery, rendered ACKs, packet padding, turn
+  scheduling, cancellation, timeout and complete real-proof exchanges.
+- The end-to-end tests use the actual 32-repetition proof engine and rendered
+  DATA/ACK matrices. Deliberately lost final ACKs are retried without duplicate
+  application delivery. Tampered proofs and replayed messages are rejected.
+  Another case uses the actual `TurnChannel` with explicit manual handoffs while
+  the next application response is queued behind its sticky final ACK.
+- **303 color-app regression tests** passed; two unrelated dataset rebuild
+  checks skipped because their Python dependency probe was unavailable. Ten
+  additional content tests passed. The two JPEG-fixture cases were not run: this
+  workspace could not materialize the existing binary JPEG through the text-only
+  repository reader. The repository's JPEG remains unchanged.
+- **223 QR regression tests** passed after moving authentication to canonical
+  shared source. The public circuit and compact proof format are unchanged.
+- The documented metadata-only checkpoint relabel was tested on a matching
+  fixture checkpoint; weights remain bitwise identical and repeating the command
+  safely reports that the profile is already current.
+- JavaScript syntax, local DOM/asset bindings and whitespace checks passed.
+  A browser preview could not start because this environment's managed preview
+  service was unavailable; no visual/device-camera validation is claimed.
+
+No trained user checkpoint or physical cameras were available here. The clean
+render tests use the classical image decoder as a test harness; separate
+corrector tests inject ideal logits only at the score/codec boundary. Neither
+result establishes live trained-model recovery. The production data path
+requires a trained `U-tube-2x-attn` bundle and never accepts sender truth or ideal
+logits. Trained device performance, capture timing and a full physical exchange
+remain the next check in [the demo guide](NEURAL_ZKBOO_DEMO.md).
+
+Model assets are fetched during explicit initialization and then retained in the
+worker. Repeated transport scans do not fetch the manifest or model. No hosted
+site was deployed or reactivated.

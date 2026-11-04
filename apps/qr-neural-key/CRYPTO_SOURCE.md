@@ -2,12 +2,13 @@
 
 This app and the color Crypto Lab use one canonical browser implementation in
 [`shared/browser-crypto/`](../../shared/browser-crypto/). It contains the exact
-binary circuit, compact prover/verifier, worker operations, and worker client.
+binary circuit, compact prover/verifier, worker operations, worker client, and transport-independent Neural-ZKBoo
+authentication session/envelope.
 The authentication integration does not change the circuit or proof format.
 
 Run `npm run prepare:app` in this app directory, or `npm run prepare:apps` at the
 repository root. Preparation copies the canonical modules to ignored
-`dist/js/crypto/` and `dist/js/crypto-worker/` outputs. The resulting `dist/` is
+`dist/js/crypto/`, `dist/js/crypto-worker/`, and `dist/js/auth-core/` outputs. The resulting `dist/` is
 independently servable without another site, CDN, or runtime package download.
 Edit the shared sources, not these generated copies.
 

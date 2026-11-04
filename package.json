@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "Neural cryptography and optical transport research experiments",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "prepare:apps": "node scripts/prepare-apps.mjs",
     "prepare:corrector": "node scripts/prepare-corrector.mjs",
@@ -16,6 +18,7 @@
     "test:qr": "npm --prefix apps/qr-neural-key test",
     "test:parity": "npm --prefix apps/color-optical-bench run test:parity",
     "benchmark:crypto": "npm --prefix apps/color-optical-bench run benchmark:crypto",
-    "benchmark:qr": "npm --prefix apps/qr-neural-key run benchmark:speed"
+    "benchmark:qr": "npm --prefix apps/qr-neural-key run benchmark:speed",
+    "test:neural-zkboo": "npm --prefix apps/color-optical-bench run test:auth"
   }
 }

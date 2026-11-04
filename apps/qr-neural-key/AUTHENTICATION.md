@@ -44,7 +44,12 @@ The browser may retain a device UUID; this identifies an installation for the
 experiment and is not a credential. Proof bytes travel directly in binary QR
 packets rather than as Base64 text. Dependencies are bundled locally.
 
-The single application format is `neural-qr-auth-v1`: an `NQA1` prefix, a bounded
+The transport-independent session and envelope live in
+[`shared/browser-crypto/auth/`](../../shared/browser-crypto/auth/). Both this QR
+interface and the separate color-matrix Neural-ZKBoo interface use the same
+implementation; each retains its own transport and screen/camera controller.
+
+The single application format is `neural-zkboo-auth-v1`: an `NZA1` prefix, a bounded
 canonical JSON header, and a raw body only for PROOF messages. Headers are limited
 to 4,096 bytes and complete envelopes to 512 KiB. The underlying `QRT` packet
 format now includes an explicit RESTART packet for reducing DATA chunks during

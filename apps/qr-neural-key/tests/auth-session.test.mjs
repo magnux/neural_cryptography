@@ -103,7 +103,7 @@ test('challenge policy/action/binding changes do not trigger proof generation', 
   const { sessions, queues, clients, deliver } = await pair();
   await sessions[0].confirmPairing(); await sessions[1].confirmPairing(); await settle();
   const challenge = queues[1][0];
-  for (const changed of [{ required_repetitions: 1 }, { required_repetitions: 3 }, { action: 'unlock' }, { lock_id: 'qr:wrong' }]) {
+  for (const changed of [{ required_repetitions: 1 }, { required_repetitions: 3 }, { action: 'unlock' }, { lock_id: 'neural-zkboo:wrong' }]) {
     const mutation = editHeader(challenge, header => ({ ...header, challenge: { ...header.challenge, ...changed } }));
     assert.equal((await sessions[1].receive(mutation)).accepted, false);
   }
@@ -130,7 +130,7 @@ test('proof for another public key is rejected against the already paired key', 
   const outsider = client();
   await outsider.request('createKey', { profile: { side: 8, rounds: 16, repetitions: 32 } });
   const { header } = decodeEnvelope(queues[0][0]);
-  const challenge = { protocol: 'NeuralPicnic-POC-MPC3-v2', nonce: header.nonce, lock_id: `qr:${header.binding}`, action: 'authenticate', required_repetitions: 32 };
+  const challenge = { protocol: 'NeuralPicnic-POC-MPC3-v2', nonce: header.nonce, lock_id: `neural-zkboo:${header.binding}`, action: 'authenticate', required_repetitions: 32 };
   const result = await outsider.request('prove', { challenge });
   await deliver(0, () => encodeEnvelope(header, result.proof));
   assert.equal(sessions[0].snapshot().result, false);
@@ -237,4 +237,6 @@ test('envelope carries raw proof bytes and rejects malformed, noncanonical and o
   new DataView(duplicated.buffer).setUint32(4, duplicate.length); duplicated.set(duplicate, 8); duplicated.set(body, 8 + duplicate.length);
   assert.throws(() => decodeEnvelope(duplicated), /Noncanonical/);
   assert.equal(header.protocol, AUTH_PROTOCOL);
+  assert.equal(AUTH_PROTOCOL, 'neural-zkboo-auth-v1');
+  assert.equal(new TextDecoder().decode(bytes.subarray(0, 4)), 'NZA1');
 });

@@ -27,7 +27,7 @@ The eight-byte content descriptor stays here, outside colored data cells.
 | 46 | Phase count: 1, 2, 4, 8, 16 |
 | 47 | Palette permutation enabled: 0 or 1; zero for one phase |
 | 48 | RS parity bytes per block: 0, 16, 32 |
-| 49–50 | Intended phase hold in milliseconds: 250–10,000; default 4,000 |
+| 49–50 | Intended phase hold in milliseconds: 50–10,000; bench default 4,000, Neural-ZKBoo demo default 95 |
 | 51–52 | Reserved, must be zero |
 | 53 | Diagnostic pattern: 0 ordinary, 1 random, 2 runs, 3 alternating |
 | 54–55 | Reserved, must be zero |

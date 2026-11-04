@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f5f1">
+  <title>Neural-ZKBoo · Color authentication</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./js/neural-auth/style.css">
+</head>
+<body class="neural-auth">
+  <header class="site-header">
+    <a class="brand" href="./neural-zkboo.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M2 12V2h10M20 2h10v10M30 20v10H20M12 30H2V20"/><path d="M11 11h10v10H11z"/></svg><span>NEURAL KEY<span class="brand-divider">/</span><strong>NEURAL-ZKBOO</strong></span></a>
+    <span class="local-badge"><i></i> Browser-local</span>
+  </header>
+  <nav class="app-nav" aria-label="Application"><a href="./index.html">Optical Bench</a><a href="./crypto.html">Crypto Lab</a><a href="./link.html">Live Demo</a><a href="./corrector.html">Corrector Lab</a><a href="./neural-zkboo.html" aria-current="page">Neural-ZKBoo</a></nav>
+  <main id="authApp" data-mode="idle">
+    <section class="auth-intro"><div><div class="eyebrow">COLOR MATRICES · TURN-BASED AUTHENTICATION</div><h1>One exchange. One turn at a time.</h1><p>Exchange public keys, compare the pairing code, and prove possession of the neural key.</p></div><span class="auth-profile">64 × 64 / 16 colors<br>4 palette phases</span></section>
+    <noscript><p class="notice">Enable JavaScript to run this browser-local experiment.</p></noscript>
+    <div id="error" class="notice auth-error" role="alert" hidden></div>
+    <details class="panel auth-settings" id="settings" open>
+      <summary><strong>Device &amp; test settings</strong><span class="summary-action">Configure</span></summary>
+      <fieldset id="settingsFields">
+        <legend class="sr-only">Authentication and camera settings</legend>
+        <div class="auth-fields">
+          <label for="role">This device<select id="role"><option value="verifier">Verifier · sends first</option><option value="prover">Key holder · receives first</option></select></label>
+          <label for="repetitions">Proof repetitions<select id="repetitions"><option value="32">32 · quick test</option><option value="64">64</option><option value="110">110</option><option value="160">160</option><option value="219">219</option></select></label>
+          <label for="camera">Camera<select id="camera"><option value="">Default camera</option></select></label>
+          <label for="resolution">Requested resolution<select id="resolution"><option value="720">720p</option><option value="1080">1080p</option><option value="480">480p</option></select></label>
+          <label for="backend">Corrector backend<select id="backend"><option value="auto">Auto · GPU, then CPU</option><option value="wasm">WASM · CPU</option><option value="webgpu">WebGPU · GPU</option></select></label>
+          <label for="phaseMs">Phase display interval (ms)<input id="phaseMs" type="number" min="50" max="10000" step="1" value="95" inputmode="numeric"></label>
+          <label for="captureMs">Camera sampling interval (ms)<input id="captureMs" type="number" min="50" max="2000" step="1" value="100" inputmode="numeric"></label>
+        </div>
+        <p class="auth-help">Choose one verifier and one key holder. Start both devices with 32 repetitions. Short proofs are for development; increasing repetitions increases proof size and work. Sampling and processing may take longer than the selected intervals.</p>
+      </fieldset>
+      <p class="auth-model" id="modelStatus" role="status">The trained neural corrector will be checked when you start.</p>
+    </details>
+    <div class="auth-actions">
+      <button id="start" class="button primary">Start authentication →</button>
+      <button id="stop" class="small-button" disabled>Stop / reset</button>
+      <span id="cameraStatus">Camera is off</span>
+    </div>
+    <section class="panel auth-session" aria-labelledby="status">
+      <div class="auth-turn" role="status" aria-live="polite" aria-atomic="true"><span class="auth-state-dot" aria-hidden="true"></span><div><h2 id="status">Ready for a new exchange</h2><p id="instruction">Open this page on both devices, select their roles, and start.</p></div><strong id="result"></strong></div>
+      <div class="auth-stage" id="stage" data-mirror="false" style="--matrix-scale:100%">
+        <div class="auth-matrix-panel">
+          <div class="auth-matrix-meta"><span id="matrixStatus">Waiting for an outgoing matrix</span><span id="phaseStatus">—</span></div>
+          <div class="auth-matrix-holder"><canvas id="matrix" width="1024" height="1024" aria-label="Outgoing optical matrix"></canvas></div>
+        </div>
+        <div class="auth-camera-panel">
+          <div class="auth-camera-title"><span>Camera alignment</span><button id="mirrorCamera" type="button" aria-pressed="false">Mirror</button></div>
+          <div class="auth-camera-view"><video id="video" autoplay muted playsinline></video><canvas id="overlay" aria-hidden="true"></canvas><div id="cameraPlaceholder"><span class="auth-finder" aria-hidden="true"></span><strong>Camera is off</strong><p>Keep all four matrix corners in view.</p></div></div>
+        </div>
+        <canvas id="captureCanvas" hidden></canvas>
+      </div>
+      <div class="auth-stage-controls"><span id="transferStatus">No transfer yet</span><label for="displaySize">Display size <output id="displaySizeValue" for="displaySize">100%</output><input id="displaySize" type="range" min="50" max="100" step="1" value="100"></label></div>
+      <div class="auth-next-turn"><p>When an ACK appears, turn the phone so the sender can read it. Keep the ACK visible until the sender confirms delivery.</p><button id="nextTurn" class="button primary" disabled>Send next turn →</button></div>
+      <div class="auth-pairing" id="pairingPanel" hidden><div><span class="eyebrow">COMPARE ON BOTH DEVICES</span><code id="pairingCode">—</code><p id="pairingNote">Confirm only when the pairing codes match.</p></div><button id="confirmPairing" class="button secondary" disabled>Codes match · confirm</button></div>
+      <dl class="auth-metrics"><div><dt>Received matrices</dt><dd id="receivedCount">0</dd></div><div><dt>Last inference</dt><dd id="inferenceMs">—</dd></div><div><dt>Proof size</dt><dd id="proofBytes">—</dd></div><div><dt>Elapsed</dt><dd id="elapsed">0 s</dd></div></dl>
+    </section>
+    <details class="panel auth-report"><summary><strong>Session notes &amp; report</strong><span class="summary-action">Details</span></summary><div class="auth-report-body"><label for="reportNotes">Device and test notes<textarea id="reportNotes" rows="2" maxlength="1000" placeholder="Phone/PC model, cameras, alignment, and anything that stalled…"></textarea></label><button id="downloadReport" class="button secondary" disabled>Download JSON report ↓</button><ol id="eventLog" aria-label="Recent session events"></ol><p>Reports contain settings, outcomes and timings. Camera images and private keys stay out of the report.</p></div></details>
+    <footer class="page-footer"><span>NEURAL-ZKBOO · COLOR AUTHENTICATION</span><p>Research POC · keys and proof computation stay on the device.</p><a href="./corrector.html">Corrector Lab →</a></footer>
+  </main>
+  <script type="module" src="./js/neural-auth/app.js"></script>
+</body>
+</html>

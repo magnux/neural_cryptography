@@ -1,10 +1,14 @@
 import {validateManifest, validateOptions, verifyArtifact, decodeFloat32, compareLogits, accumulateParity, summarizeTimings, inputPresence, packFrameStack} from './runtime.js';
 import {extractLearnedInput} from '../learned-input.js';
 import {CameraBurst} from './burst.js';
+import {extractCapture} from '../vision.js';
+import {LivePhaseBurst,requireTransportModel,isTransportData,recoverCorrectedPayload,recoverACKCapture} from './live-burst.js';
 
 const assetRoot = new URL('../../models/neural-corrector/', import.meta.url);
 const vendorRoot = new URL('../../vendor/onnxruntime/', import.meta.url);
 let ort, cached = null, busy = false, cameraBurst=null;
+let transportContext=null,transportMode=null;
+const liveBurst=new LivePhaseBurst();
 
 async function fetchBounded(url, maximum) {
   const response = await fetch(url, {cache: 'no-cache'});
@@ -37,10 +41,11 @@ async function runtime() {
   }
   return ort;
 }
-async function load(options, progress) {
+async function load(options, progress, {transport=false}={}) {
   const started = performance.now();
   progress('Checking local model and fixture hashes…');
   const manifest = validateManifest(JSON.parse(new TextDecoder().decode(await fetchBounded(new URL('manifest.json', assetRoot), 65536))));
+  if(transport)requireTransportModel(manifest);
   const entry = manifest.cases.find(c => c.size === options.size);
   if(!entry)throw Error(`The prepared ${manifest.modelProfile} model supports ${manifest.cases.map(c=>c.size).join('/')} cells; choose a supported matrix size.`);
   const key = `${entry.model.sha256}/${options.backend}`;
@@ -107,6 +112,7 @@ function describe(context, options) {
       note: 'Known buffer sizes only; runtime working memory and GPU allocations are not measured.'}};
 }
 async function benchmark(options, progress) {
+  transportContext=null;transportMode=null;liveBurst.reset();
   cameraBurst=null;
   const context = await load(options, progress);
   progress('Warming up the model (2 runs)…');
@@ -123,6 +129,7 @@ async function benchmark(options, progress) {
     timingScope: 'session.run plus CPU output copy; excludes fixture comparison and camera preprocessing'};
 }
 async function capture(options, progress, image, runId, mediaTime, presentedFrames) {
+  transportContext=null;transportMode=null;liveBurst.reset();
   if (!Number.isSafeInteger(runId)||runId<1||!Number.isFinite(mediaTime)||mediaTime<0||!Number.isSafeInteger(presentedFrames)||presentedFrames<1) throw Error('Capture needs a fresh run and video frame identity.');
   const context = await load(options, progress), frames=options.captureFrames||context.manifest.framesPerInput;
   if(!context.manifest.frameCounts.includes(frames))throw Error(`The prepared model supports ${context.manifest.frameCounts.join('/')} captures; choose model default or a supported count.`);
@@ -160,6 +167,56 @@ async function capture(options, progress, image, runId, mediaTime, presentedFram
       note: `${phaseGrouped?'Four-phase canonical-output':'Same-phase'} crop inference only. Assess symbol and payload recovery with the offline evaluation tools.`};
   } finally { cameraBurst=null; }
 }
+
+async function initializeTransport(options,progress) {
+  cameraBurst=null;liveBurst.reset();transportMode=null;transportContext=null;
+  const context=await load(options,progress,{transport:true});
+  requireTransportModel(context.manifest);
+  if(options.size!==64)throw Error('Neural-ZKBoo transport requires the G64 model.');
+  transportContext=context;
+  return {...describe(context,options),operation:'transport-init',ready:true};
+}
+
+async function scanTransport(options,progress,raw) {
+  const context=transportContext;
+  // load() returns a description copy; compare the underlying session identity.
+  if(!context||context.session!==cached?.session||context.entry.size!==options.size||context.key!==`${context.entry.model.sha256}/${options.backend}`)
+    throw Error('Initialize the trained corrector before starting the camera receiver.');
+  requireTransportModel(context.manifest);
+  const {image,runId,mediaTime,presentedFrames,expected}=raw;
+  if(!['data','ack'].includes(expected)||!Number.isSafeInteger(runId)||runId<1)throw Error('Invalid Neural-ZKBoo capture request.');
+  const identity={context:`${context.key}/${runId}/${expected}`,mediaTime,presentedFrames};
+  if(transportMode!==expected){liveBurst.reset();transportMode=expected;}
+  const before=liveBurst.status();
+  const capture=extractCapture(image,{preview:false,spatial:'cross'});
+  const base={operation:'transport-scan',expected,info:capture.info??null,corners:capture.corners??[],
+    markers:capture.markers??[],phaseCounts:before.phaseCounts,collected:before.collected,
+    effectiveBackend:context.effectiveBackend,stats:capture.stats??{}};
+  if(!capture.transform||!capture.samples)return {...base,...liveBurst.miss(identity),ok:false,waiting:true,stage:capture.stage,error:capture.error};
+  if(expected==='ack') {
+    const state=liveBurst.miss(identity);
+    if(state.duplicateExposure)return {...base,...state,ok:false,waiting:true};
+    const decoded=recoverACKCapture(capture);
+    return {...base,...decoded,waiting:!decoded.ok,inputCaptures:1,inferenceMs:0,
+      stats:{...base.stats,...decoded.stats},method:'classical-ack'};
+  }
+  if(!isTransportData(capture.info))return {...base,...liveBurst.miss(identity),ok:false,waiting:true,stage:'profile',error:'Waiting for a 64×64, 16-color, four-phase data matrix with grid 8 and RS32.'};
+  const crop=extractLearnedInput(image,capture);
+  if(!crop.ok)return {...base,...liveBurst.miss(identity),ok:false,waiting:true,stage:crop.stage,error:crop.error};
+  const state=liveBurst.add(crop,identity);
+  if(!state.ready||state.duplicateExposure)return {...base,...state,ok:false,waiting:true,stage:'collect',error:null};
+  const burst=liveBurst.snapshot();
+  progress(`Correcting ${burst.inputCaptures} captures (${burst.phaseCounts.join('/')})…`);
+  const packed=packFrameStack(burst.input,context.manifest,64,{phases:burst.phases,slots:burst.slots});
+  const result=await inference(context,packed);
+  const decoded=recoverCorrectedPayload(result.values,burst.info);
+  const response={...base,...decoded,waiting:!decoded.ok,info:burst.info,inputCaptures:burst.inputCaptures,
+    phaseCounts:burst.phaseCounts,collected:state.collected,replacements:state.replacements,
+    bufferBytes:state.bufferBytes,inferenceMs:result.ms,preprocessMs:crop.stats.preprocessMs,
+    stats:{...base.stats,...decoded.stats},method:'neural-corrector'};
+  if(decoded.ok)liveBurst.reset();
+  return response;
+}
 self.onmessage = async event => {
   const {id, operation, options = {}} = event.data || {};
   if (busy) { self.postMessage({id, type: 'error', error: 'Worker is busy.'}); return; }
@@ -170,8 +227,11 @@ self.onmessage = async event => {
     let result;
     if (operation === 'benchmark') result = await benchmark(validated, progress);
     else if (operation === 'capture') result = await capture(validated, progress, options.image, options.runId, options.mediaTime, options.presentedFrames);
+    else if (operation === 'transport-init') result = await initializeTransport(validated,progress);
+    else if (operation === 'transport-scan') result = await scanTransport(validated,progress,options);
+    else if (operation === 'transport-reset') {liveBurst.reset();transportMode=null;result={operation,ready:Boolean(transportContext)};}
     else throw new Error('Unknown corrector operation.');
     self.postMessage({id, type: 'result', result});
-  } catch (error) { cameraBurst=null; self.postMessage({id, type: 'error', error: error.message || String(error)}); }
+  } catch (error) { cameraBurst=null;liveBurst.reset(); self.postMessage({id, type: 'error', error: error.message || String(error)}); }
   finally { busy = false; }
 };
