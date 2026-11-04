@@ -1,6 +1,6 @@
 import {frameKey} from '../format.js';
 import {logitsToLogicalScores} from '../learned-input.js';
-import {decodeScores,decodeSamples} from '../vision.js';
+import {decodeScores} from '../vision.js';
 
 const RGB_LENGTH=3*256*256;
 
@@ -18,25 +18,11 @@ export const isTransportData = info => Boolean(info&&info.size===64&&info.colors
   Number.isInteger(info.phase)&&info.phase>=0&&info.phase<4&&info.count===1&&info.index===0&&
   info.content?.type==='raw'&&info.probePattern===0);
 
-export const isTransportACK = info => Boolean(info&&info.size===32&&info.colors===4&&
-  info.gridBlock===0&&[16,32].includes(info.parity)&&info.phases===1&&info.phase===0&&info.permute===false&&
-  info.count===1&&info.index===0&&info.content?.type==='raw'&&info.probePattern===0);
-
 /** The corrector already emits canonical logical labels. Never invert twice. */
 export function recoverCorrectedPayload(logits,info) {
   if(!isTransportData(info))throw Error('Unexpected Neural-ZKBoo data matrix profile.');
   const scores=logitsToLogicalScores(logits,info,{labelSpace:'logical'});
   const decoded=decodeScores(info,scores,{}, {recovery:'erasures'});
-  return {ok:decoded.ok,stage:decoded.stage,error:decoded.error,stats:decoded.stats,
-    ...(decoded.ok?{chunk:decoded.chunk}: {})};
-}
-
-/** ACKs are sparse ordinary optical payloads and do not need neural inference. */
-export function recoverACKCapture(capture) {
-  if(!isTransportACK(capture?.info)||!(capture.samples instanceof Float32Array)) {
-    return {ok:false,stage:'profile',error:'Waiting for a 32×32, four-color ACK matrix.',stats:{}};
-  }
-  const decoded=decodeSamples(capture.info,capture.samples,{recovery:'erasures'});
   return {ok:decoded.ok,stage:decoded.stage,error:decoded.error,stats:decoded.stats,
     ...(decoded.ok?{chunk:decoded.chunk}: {})};
 }

@@ -1,8 +1,8 @@
 /** Live transfer targets, not guarantees of camera decoding speed. */
 import { DATA_OVERHEAD } from './protocol.js';
+import { QR_BYTE_CAPACITIES } from './qr-capacities.js';
+export { QR_BYTE_CAPACITIES } from './qr-capacities.js';
 
-// Maximum binary Byte-mode payloads for a version 40 QR at each correction level.
-export const QR_BYTE_CAPACITIES = Object.freeze({ L: 2953, M: 2331, Q: 1663, H: 1273 });
 export const DEFAULT_PRESET = 'slow';
 export const SPEED_PRESETS = Object.freeze([
   { id: 'slow', label: 'Slow', description: 'Small codes; wait for each acknowledgment.', chunkBytes: 128, ecc: 'Q', windowSize: 1, dwellMs: 350, retryMs: 2500 },
@@ -36,3 +36,4 @@ export function validateProfile(profile = {}) {
   const retryMs = integer(profile.retryMs ?? defaults.retryMs, Math.max(500, dwellMs), 10000, 'retryMs');
   return { ...profile, chunkBytes, ecc, windowSize, dwellMs, retryMs };
 }
+

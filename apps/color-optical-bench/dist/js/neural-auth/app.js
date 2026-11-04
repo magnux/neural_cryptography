@@ -5,6 +5,8 @@ import {renderFrame,sameBytes} from '../format.js';
 import {decodePacket} from '../link/protocol.js';
 import {TurnChannel} from './channel.js';
 import {packetFrames,unpackOptical} from './optical.js';
+import {renderACK} from './qr-ack.js';
+import {captureFeedback} from './feedback.js';
 
 const $=id=>document.getElementById(id);
 const supported=isSecureContext&&Boolean(globalThis.crypto?.subtle)&&typeof Worker==='function'&&Boolean(navigator.mediaDevices?.getUserMedia);
@@ -63,17 +65,19 @@ function renderCurrent(){
   if(!bytes){shown=null;rendered=[];phaseIndex=-1;clearTimeout(displayTimer);return;}
   if(shown&&sameBytes(shown,bytes))return;
   shown=bytes.slice();
-  rendered=packetFrames(bytes,{phaseMs:config.phaseMs}).map(frame=>renderFrame(frame,1024));
   const packet=decodePacket(bytes);
-  $('matrixStatus').textContent=packet.kind==='ack'?'ACK · keep visible':packet.kind==='start'?'Message start':`Data chunk ${packet.index+1}`;
+  rendered=packet.kind==='ack'?[renderACK(bytes)]:packetFrames(bytes,{phaseMs:config.phaseMs}).map(frame=>renderFrame(frame,1024));
+  $('matrixStatus').textContent=packet.kind==='ack'?'QR ACK · keep visible':packet.kind==='start'?'Message start':`Data chunk ${packet.index+1}`;
   phaseStarted=performance.now();phaseIndex=-1;paintPhase();schedulePhase(epoch);
 }
 function paintPhase(){
   if(!active||!rendered.length)return;
   const next=Math.floor((performance.now()-phaseStarted)/config.phaseMs)%rendered.length;
   if(next===phaseIndex)return;phaseIndex=next;
-  const image=rendered[next];$('matrix').getContext('2d').putImageData(new ImageData(image.data,image.width,image.height),0,0);
-  $('phaseStatus').textContent=rendered.length===1?'32 × 32 / 4 · ACK':`Phase ${next+1}/4 · ${config.phaseMs} ms`;
+  const image=rendered[next],canvas=$('matrix');
+  if(canvas.width!==image.width||canvas.height!==image.height){canvas.width=image.width;canvas.height=image.height;}
+  canvas.getContext('2d').putImageData(new ImageData(image.data,image.width,image.height),0,0);
+  $('phaseStatus').textContent=rendered.length===1?'Static QR · ECC M':`Phase ${next+1}/4 · ${config.phaseMs} ms`;
 }
 function schedulePhase(token){
   clearTimeout(displayTimer);
@@ -87,12 +91,20 @@ async function populateCameras(){
   $('camera').replaceChildren(new Option('Default camera',''),...devices.filter(d=>d.kind==='videoinput').map((d,i)=>new Option(d.label||`Camera ${i+1}`,d.deviceId)));
   if([...$('camera').options].some(option=>option.value===selected))$('camera').value=selected;
 }
-function overlay(corners,width,height){
+function overlay(feedback,width,height){
   const canvas=$('overlay');canvas.width=width;canvas.height=height;
   const ctx=canvas.getContext('2d');ctx.clearRect(0,0,width,height);
-  if(!Array.isArray(corners)||corners.length!==4)return;
-  ctx.beginPath();for(let i=0;i<4;i++){const point=corners[i];if(!Array.isArray(point)||point.length!==2||!point.every(Number.isFinite))return;ctx[i?'lineTo':'moveTo'](...point);}
-  ctx.closePath();ctx.fillStyle='rgba(87,214,138,.20)';ctx.strokeStyle='#79e9a1';ctx.lineWidth=3;ctx.fill();ctx.stroke();
+  const {corners,markers,validated}=feedback;
+  ctx.fillStyle=validated?'rgba(87,214,138,.20)':'rgba(255,153,47,.24)';ctx.strokeStyle=validated?'#79e9a1':'#ff992f';ctx.lineWidth=3;
+  if(Array.isArray(corners)&&corners.length===4&&corners.every(point=>Array.isArray(point)&&point.length===2&&point.every(Number.isFinite))){
+    ctx.beginPath();for(let i=0;i<4;i++)ctx[i?'lineTo':'moveTo'](...corners[i]);
+    ctx.closePath();ctx.fill();ctx.stroke();
+  }
+  if(!validated)for(const marker of markers){
+    if(!Number.isFinite(marker.x)||!Number.isFinite(marker.y))continue;
+    const radius=Number.isFinite(marker.module)?Math.max(5,marker.module*3.5):8;
+    ctx.beginPath();ctx.arc(marker.x,marker.y,radius,0,2*Math.PI);ctx.fill();ctx.stroke();
+  }
 }
 function scheduleCapture(token){
   if(!active||token!==epoch||scanning)return;
@@ -119,19 +131,22 @@ async function scan(metadata,token){
   const result=await corrector.call('transport-scan',{size:64,backend:config.backend,image,expected,
     runId:token,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames},[image.data.buffer]);
   if(!active||token!==epoch)return;
-  overlay(result.corners,canvas.width,canvas.height);
-  if(result.phaseCounts)$('cameraStatus').textContent=`Phases ${result.phaseCounts.join(' / ')} · ${result.inputCaptures??result.collected??0} captures`;
+  const feedback=captureFeedback(result);overlay(feedback,canvas.width,canvas.height);
+  $('cameraStatus').textContent=feedback.label;
+  const stage=result.ok?'decoded':result.stage??'unknown',counts=report.captureStages[expected];
+  counts[stage]=(counts[stage]??0)+1;
+  if(result.stats?.geometrySource==='previous')report.geometryReuses++;
   if(result.method==='neural-corrector'&&Number.isFinite(result.inferenceMs)){
     $('inferenceMs').textContent=`${result.inferenceMs.toFixed(0)} ms`;report.inferenceCount++;
     report.inferenceMs.push(result.inferenceMs);if(report.inferenceMs.length>256)report.inferenceMs.shift();
   }
   if(!result.ok){report.captureMisses++;return;}
-  let bytes;try{bytes=unpackOptical(result.chunk,expected);}catch{report.rejectedContainers++;return;}
+  let bytes;try{bytes=unpackOptical(result.chunk,expected);}catch{report.rejectedContainers++;$('cameraStatus').textContent='Code read · packet rejected';return;}
   report.crcAcceptedMatrices++;$('receivedCount').textContent=String(report.crcAcceptedMatrices);
   const accepted=await channel.receive(bytes);
   if(!active||token!==epoch)return;
-  if(accepted.accepted){report.transportAcceptedMatrices++;if(accepted.delivered)event('Outgoing message fully acknowledged.');}
-  else report.transportRejectedMatrices++;
+  if(accepted.accepted){report.transportAcceptedMatrices++;$('cameraStatus').textContent=expected==='ack'?'QR ACK matched · continuing':'Data packet accepted';if(accepted.delivered)event('Outgoing message fully acknowledged.');}
+  else {report.transportRejectedMatrices++;$('cameraStatus').textContent='Code read · waiting for the matching transfer packet';}
 }
 function startLoops(token){
   heartbeat=setInterval(()=>{
@@ -152,7 +167,7 @@ async function start(){
   lastCapture=-Infinity;lastPresented=0;scanning=false;$('result').textContent='';$('receivedCount').textContent='0';$('inferenceMs').textContent='—';$('elapsed').textContent='0 s';
   report={format:'neural-zkboo-color-auth-report',version:1,started:new Date().toISOString(),settings:{...config,cameraId:undefined},
     captureAttempts:0,captureMisses:0,crcAcceptedMatrices:0,transportAcceptedMatrices:0,transportRejectedMatrices:0,
-    rejectedContainers:0,inferenceCount:0,inferenceMs:[],model:null,camera:null,authentication:null,transport:null};
+    rejectedContainers:0,inferenceCount:0,inferenceMs:[],captureStages:{data:{},ack:{}},geometryReuses:0,model:null,camera:null,authentication:null,transport:null};
   corrector=new CorrectorClient({onProgress:text=>{if(active&&token===epoch)$('modelStatus').textContent=text;}});
   cryptoClient=new CryptoClient({onInvalidate:e=>{if(active&&token===epoch)fail(e);}});
   update();

@@ -1,6 +1,6 @@
 import qrcodegen from '../vendor/qrcodegen.js';
 import jsQR from '../vendor/jsQR.js';
-import { QR_BYTE_CAPACITIES } from './profiles.js';
+import { QR_BYTE_CAPACITIES } from './qr-capacities.js';
 
 export const MAX_QR_BYTES = QR_BYTE_CAPACITIES.L;
 export const MAX_DECODE_PIXELS = 8_000_000;
@@ -78,3 +78,4 @@ export function fitDecodeDimensions(width, height, {maxSide = 1920, maxPixels = 
   const ratio = Math.min(1, maxSide / Math.max(width, height), Math.sqrt(maxPixels / (width * height)));
   return {width: Math.max(1, Math.floor(width * ratio)), height: Math.max(1, Math.floor(height * ratio))};
 }
+

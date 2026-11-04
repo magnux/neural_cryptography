@@ -15,10 +15,13 @@ Five browser-local workspaces share top-level navigation:
   local inference, with an optional live camera crop. It does not decode payloads.
   Follow the [separate setup and device checklist](../../docs/CORRECTOR_LAB.md).
 - **Neural-ZKBoo** (`neural-zkboo.html`) performs the full authentication flow
-  through trained four-phase DATA reception and small classical ACKs. Each
+  through trained four-phase DATA reception and static QR ACKs. Each
   matrix waits for acknowledgment; explicit turns let the phone change its
   angle between receiving and displaying. Start with the 32-repetition profile
   and follow the [model setup and device sequence](../../docs/NEURAL_ZKBOO_DEMO.md).
+  Defaults are 150 ms phases and 100 ms acquisition. Orange marker feedback
+  indicates an unreadable header; green indicates a validated header. Recent
+  geometry is tried first, with current-exposure header validation and bounded reuse.
 
 **Capture Dataset** (`capture.html`), linked from Corrector Lab, adds the M2
 sender/receiver data collector. Display a static random matrix, collect bounded

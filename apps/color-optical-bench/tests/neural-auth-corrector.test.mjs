@@ -1,9 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {encodeSequence,phaseFrames,renderFrame,parseHeader} from '../dist/js/format.js';
-import {extractCapture} from '../dist/js/vision.js';
+import {encodeSequence,phaseFrames,parseHeader} from '../dist/js/format.js';
 import {paletteMap} from '../dist/js/grid.js';
-import {LivePhaseBurst,requireTransportModel,isTransportData,isTransportACK,recoverCorrectedPayload,recoverACKCapture} from '../dist/js/corrector-lab/live-burst.js';
+import {LivePhaseBurst,requireTransportModel,isTransportData,recoverCorrectedPayload} from '../dist/js/corrector-lab/live-burst.js';
 
 const ID=Uint8Array.of(1,2,3,4,5,6,7,8),ONE=3*256*256;
 const PAYLOAD=Uint8Array.from({length:500},(_,i)=>(17*i+9)&255);
@@ -108,16 +107,4 @@ test('logical neural scores recover exact bytes for any phase, CRC failure never
   assert.equal(invalid.ok,false);assert.equal(invalid.chunk,undefined);
 });
 
-test('small ACK matrices use ordinary RS/CRC recovery and reject data-profile confusion',()=>{
-  const bytes=Uint8Array.from({length:48},(_,i)=>i);
-  for(const parity of [16,32]) {
-    const frame=encodeSequence(bytes,{size:32,colors:4,parity,id:ID})[0];
-    assert.equal(isTransportACK(parseHeader(frame.header)),true);
-    const capture=extractCapture(renderFrame(frame,768),{preview:false});
-    const result=recoverACKCapture(capture);
-    assert.equal(result.ok,true,result.error);assert.deepEqual(result.chunk,bytes);
-    capture.samples.fill(127);const failed=recoverACKCapture(capture);
-    assert.equal(failed.ok,false);assert.equal(failed.chunk,undefined);
-  }
-  assert.equal(recoverACKCapture({info:parseHeader(frames()[0].header),samples:new Float32Array(100)}).ok,false);
-});
+

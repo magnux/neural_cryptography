@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {createTurnSender,TurnReceiver,TURN_LIMITS} from '../dist/js/neural-auth/transport.js';
 import {encodePacket,decodePacket,sha256} from '../dist/js/link/protocol.js';
 import {paletteMap} from '../dist/js/grid.js';
-import {capacity,encodeSequence,phaseFrames,decodeSymbols,chunkToSymbols} from '../dist/js/format.js';
+import {decodeSymbols} from '../dist/js/format.js';
+import {packetFrames,unpackOptical} from '../dist/js/neural-auth/optical.js';
+import {renderACK,readACK} from '../dist/js/neural-auth/qr-ack.js';
 
 const sessionId='ab'.repeat(16),messageId='cd'.repeat(8);
 const ids={sessionId,messageId,messageType:'raw'};
@@ -109,14 +111,15 @@ test('sender and receiver expose copies of packets, and sender snapshots caller 
   got.ack.fill(0);assert.notDeepEqual(r.ack(),got.ack);
 });
 
-test('data and ACK packets fit current optical profiles and survive codec roundtrip',async()=>{
+test('data survives color framing and its full ACK survives QR framing',async()=>{
   const s=await sender(),r=new TurnReceiver(),startBytes=s.next(1),ready=await r.receive(startBytes,1);s.receive(ready.ack,2);
   const data=s.next(3);
-  for(const [bytes,profile] of [[data,{size:64,colors:16,gridBlock:8,parity:32,phases:4,permute:true}],
-    [ready.ack,{size:32,colors:4,gridBlock:8,parity:32,phases:1,permute:false}]]) {
-    assert.ok(bytes.length<=capacity(profile.size,profile.colors,profile));
-    const frames=phaseFrames(encodeSequence(bytes,{...profile,maxFrames:1,holdMs:1000}));
-    assert.equal(frames.length,profile.phases);
-    for(const f of frames)assert.deepEqual(decodeSymbols(chunkToSymbols(bytes,f).map(value=>paletteMap(value,f)),f).chunk,bytes);
+  const frames=packetFrames(data);assert.equal(frames.length,4);
+  for(const f of frames){
+    const decoded=decodeSymbols(f.symbols.map(value=>paletteMap(value,f)),f);
+    assert.deepEqual(unpackOptical(decoded.chunk,'data'),data);
   }
+  const decoded=readACK(renderACK(ready.ack));assert.equal(decoded.ok,true,decoded.error);
+  assert.deepEqual(unpackOptical(decoded.chunk,'ack'),ready.ack);
 });
+

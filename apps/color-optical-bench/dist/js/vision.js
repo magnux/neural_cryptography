@@ -187,20 +187,42 @@ export function rectify(image,h,pixels=320){
   }
   return {width:pixels,height:pixels,data};
 }
-/** Rectify cell-center RGB samples and palette pilots, even if payload CRC fails. */
-export function extractCapture(image,{preview=true,spatial='cross'}={}){
-  const start=performance.now(),result={ok:false,stage:'detect',markers:[],stats:{},error:'Find all four corner markers. Move closer and keep the full frame visible.'};
+const frameCorners=h=>[[0,0],[256,0],[256,256],[0,256]].map(p=>project(h,...p));
+
+/** Rectify cell-center RGB samples and palette pilots, even if payload CRC fails.
+ * A geometry hint carries coordinates only. The current exposure must pass its
+ * own header CRC before either cached or newly detected geometry can be used.
+ */
+export function extractCapture(image,{preview=true,spatial='cross',previousGeometry=null}={}){
+  const start=performance.now(),result={ok:false,stage:'detect',markers:[],tentativeCorners:[],stats:{geometrySource:'none',previousGeometryTried:false},error:'Find all four corner markers. Move closer and keep the full frame visible.'};
   if(!image||!Number.isInteger(image.width)||!Number.isInteger(image.height)||image.width<32||image.height<32||image.width*image.height>20_000_000||image.data.length!==image.width*image.height*4){result.error='Unsupported image dimensions.';return result;}
-  const detection=findMarkers(image);result.markers=detection.markers;
-  const proposals=quadProposals(detection.markers,image.width,image.height);
   let h=null,info=null;
-  outer:for(const {q} of proposals)for(const direction of [1,-1])for(let rotation=0;rotation<4;rotation++){
-    const ordered=Array.from({length:4},(_,i)=>q[(rotation+direction*i+8)%4]);
-    try{const candidate=homography(FORMAT.centers,ordered),header=readHeader(image,candidate);h=candidate;info=header;break outer;}catch{/* A checksum-valid header chooses the correct corner order. */}
+  if(previousGeometry?.width===image.width&&previousGeometry?.height===image.height&&
+    Array.isArray(previousGeometry.transform)&&previousGeometry.transform.length===9&&previousGeometry.transform.every(Number.isFinite)) {
+    result.stats.previousGeometryTried=true;
+    try {
+      const candidate=previousGeometry.transform.slice(),header=readHeader(image,candidate);
+      if(!frameCorners(candidate).every(p=>p.every(Number.isFinite)))throw Error('Invalid geometry hint.');
+      h=candidate;info=header;result.stats.geometrySource='previous';
+    }catch{/* Movement or a transition: search this exposure normally. */}
   }
-  result.stats.markerCount=detection.markers.length;
-  if(!h){result.stage=detection.markers.length>=4?'header':'detect';if(result.stage==='header')result.error='Markers found, but the header could not be read. Hold steady or move closer.';result.stats.ms=performance.now()-start;return result;}
-  result.info=info;result.corners=[[0,0],[256,0],[256,256],[0,256]].map(p=>project(h,...p));result.transform=h;result.stage='calibration';
+  if(!h){
+    const detection=findMarkers(image);result.markers=detection.markers;
+    const proposals=quadProposals(detection.markers,image.width,image.height);
+    if(proposals.length){
+      // Orientation is not established yet. This polygon is feedback only and
+      // must never be used as a validated crop or phase observation.
+      try{result.tentativeCorners=frameCorners(homography(FORMAT.centers,proposals[0].q));}catch{}
+    }
+    outer:for(const {q} of proposals)for(const direction of [1,-1])for(let rotation=0;rotation<4;rotation++){
+      const ordered=Array.from({length:4},(_,i)=>q[(rotation+direction*i+8)%4]);
+      try{const candidate=homography(FORMAT.centers,ordered),header=readHeader(image,candidate);h=candidate;info=header;result.stats.geometrySource='detected';break outer;}catch{/* A checksum-valid header chooses the correct corner order. */}
+    }
+  }
+  result.stats.markerCount=result.markers.length;
+  if(!h){result.stage=result.markers.length>=4?'header':'detect';if(result.stage==='header')result.error='Markers found, but the header could not be read. Hold steady or move closer.';result.stats.ms=performance.now()-start;return result;}
+  result.info=info;result.corners=frameCorners(h);result.transform=h;result.stage='calibration';
+  result.geometry={width:image.width,height:image.height,transform:h.slice()};result.tentativeCorners=[];
   try{
     const p=FORMAT.payload,cell=p.side/info.size,values=new Float32Array(info.size*info.size*3+96);
     const horizontal=Math.hypot(...project(h,p.x+p.side,p.y).map((v,k)=>v-project(h,p.x,p.y)[k]))/info.size;

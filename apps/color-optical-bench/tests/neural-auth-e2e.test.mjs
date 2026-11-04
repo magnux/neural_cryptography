@@ -9,6 +9,7 @@ import { decodeEnvelope, encodeEnvelope } from '../dist/js/auth-core/envelope.js
 import { CryptoOperations } from '../dist/js/crypto-lab/operations.js';
 import { createTurnSender, TurnReceiver } from '../dist/js/neural-auth/transport.js';
 import { packetFrames, unpackOptical } from '../dist/js/neural-auth/optical.js';
+import { renderACK, readACK } from '../dist/js/neural-auth/qr-ack.js';
 import { decodePacket } from '../dist/js/link/protocol.js';
 import { renderFrame } from '../dist/js/format.js';
 import { decodeImage } from '../dist/js/vision.js';
@@ -20,7 +21,7 @@ const ids=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-22222
 class Pair {
   constructor({images=false,tamper=false,loseFinalAcks=false}={}) {
     this.images=images;this.tamper=tamper;this.loseFinalAcks=loseFinalAcks;
-    this.clock=0;this.pending=[];this.sent=[];this.deliveries=[];this.calls=[];this.sessions={};this.receivers={};this.phases=new Set();this.opticalPackets=0;this.finalRetries=0;
+    this.clock=0;this.pending=[];this.sent=[];this.deliveries=[];this.calls=[];this.sessions={};this.receivers={};this.phases=new Set();this.opticalPackets=0;this.qrACKs=0;this.finalRetries=0;
     for(const [index,role] of roles.entries()) {
       const operations=new CryptoOperations();
       this.sessions[role]=new AuthSession({role,deviceId:ids[index],repetitions:32,now:()=>this.clock,
@@ -33,13 +34,17 @@ class Pair {
   async start(){await this.sessions.prover.start();await this.sessions.verifier.start();await settle();}
   async channel(bytes) {
     if(!this.images)return bytes.slice();
-    const frames=await packetFrames(bytes,{phaseMs:95}),kind=decodePacket(bytes).kind;
-    assert.equal(frames.length,kind==='ack'?1:4);
-    const frame=frames[kind==='ack'?0:this.opticalPackets%4];
+    const kind=decodePacket(bytes).kind;
+    let decoded;
+    if(kind==='ack') {
+      decoded=readACK(renderACK(bytes));this.qrACKs++;
+    }else {
+      const frames=packetFrames(bytes),frame=frames[this.opticalPackets%4];
+      assert.equal(frames.length,4);assert.equal(frame.size,64);assert.equal(frame.colors,16);
+      assert.equal(frame.holdMs,150);this.phases.add(frame.phase);
+      decoded=decodeImage(renderFrame(frame,768),{preview:false,recovery:'erasures'});
+    }
     this.opticalPackets++;
-    if(kind!=='ack') {assert.equal(frame.size,64);assert.equal(frame.colors,16);assert.equal(frame.holdMs,95);this.phases.add(frame.phase);}
-    else {assert.equal(frame.size,32);assert.equal(frame.colors,4);}
-    const decoded=decodeImage(renderFrame(frame,768),{preview:false,recovery:'erasures'});
     assert.equal(decoded.ok,true,`${kind}: ${decoded.error}`);
     const packet=unpackOptical(decoded.chunk,kind==='ack'?'ack':'data');
     assert.deepEqual(packet,bytes);
@@ -103,7 +108,7 @@ test('both optical applications use identical prepared Neural-ZKBoo session and 
   }
 });
 
-test('32-repetition Neural-ZKBoo completes in turns through rendered color DATA and ACK matrices',async t=>{
+test('32-repetition Neural-ZKBoo completes through rendered color DATA and QR ACKs despite lost final ACKs',async t=>{
   const pair=new Pair({images:true,loseFinalAcks:true});t.after(()=>pair.close());
   const {verifier,prover}=await pair.run();
   assert.equal(verifier.state,'verified');assert.equal(verifier.result,true);assert.equal(verifier.resultDelivered,true);
@@ -111,6 +116,7 @@ test('32-repetition Neural-ZKBoo completes in turns through rendered color DATA 
   assert.equal(verifier.proofBytes,17474);assert.equal(verifier.proofDigest,prover.proofDigest);
   assert.deepEqual(pair.sent.map(m=>m.header.type),['HELLO','IDENTITY','CHALLENGE','PROOF','RESULT']);
   assert.equal(pair.deliveries.length,5);assert.equal(pair.finalRetries,10);
+  assert.ok(pair.qrACKs>5,'ACKs for the multipart proof pass through the actual QR codec.');
   assert.equal(pair.calls.filter(c=>c.type==='prove').length,1);assert.equal(pair.calls.filter(c=>c.type==='verify').length,1);
   assert.deepEqual([...pair.phases].sort(),[0,1,2,3]);
   const proof=pair.sent.find(m=>m.header.type==='PROOF');
@@ -180,3 +186,4 @@ test('the actual turn scheduler keeps final ACKs visible until the next manual h
   assert.equal(manualHandoffs,4);assert.equal(dropped.size,5);
   assert.deepEqual(delivered,['HELLO','IDENTITY','CHALLENGE','PROOF','RESULT']);
 });
+

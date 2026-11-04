@@ -6,21 +6,17 @@ import {decodePacket,DATA_OVERHEAD} from '../link/protocol.js';
 import {TURN_LIMITS} from './transport.js';
 
 export const DATA_PROFILE=Object.freeze({size:64,colors:16,gridBlock:8,parity:32,phases:4,permute:true});
-export const ACK_PROFILE=Object.freeze({size:32,colors:4,gridBlock:0,parity:16,phases:1,permute:false});
 const MAGIC=Uint8Array.of(78,90,77,49); // NZM1: current padded optical packet container.
 const HEADER_BYTES=6;
 const DATA_BYTES=capacity(DATA_PROFILE.size,DATA_PROFILE.colors,DATA_PROFILE);
-export function packetFrames(bytes,{phaseMs=95}={}) {
+export function packetFrames(bytes,{phaseMs=150}={}) {
   if(!Number.isInteger(phaseMs)||phaseMs<50||phaseMs>10000)throw Error('Phase time must be 50–10000 ms.');
-  const packet=decodePacket(bytes),isAck=packet.kind==='ack';
-  if(!isAck&&!['start','data'].includes(packet.kind))throw Error('Unsupported optical turn packet.');
+  const packet=decodePacket(bytes);
+  if(!['start','data'].includes(packet.kind))throw Error('Color matrices carry START and DATA; ACKs use QR.');
   if(bytes.length>TURN_LIMITS.chunkBytes+DATA_OVERHEAD)throw Error('Optical packet exceeds the turn limit.');
-  let payload=bytes;
-  if(!isAck){
-    if(bytes.length+HEADER_BYTES>DATA_BYTES)throw Error('Turn packet does not fit a data matrix.');
-    payload=randomBytes(DATA_BYTES);payload.set(MAGIC);new DataView(payload.buffer).setUint16(4,bytes.length);payload.set(bytes,HEADER_BYTES);
-  }
-  return phaseFrames(encodeSequence(payload,{...(isAck?ACK_PROFILE:DATA_PROFILE),holdMs:phaseMs,maxFrames:1}));
+  if(bytes.length+HEADER_BYTES>DATA_BYTES)throw Error('Turn packet does not fit a data matrix.');
+  const payload=randomBytes(DATA_BYTES);payload.set(MAGIC);new DataView(payload.buffer).setUint16(4,bytes.length);payload.set(bytes,HEADER_BYTES);
+  return phaseFrames(encodeSequence(payload,{...DATA_PROFILE,holdMs:phaseMs,maxFrames:1}));
 }
 export function unpackOptical(bytes,expected) {
   if(!(bytes instanceof Uint8Array)||!['data','ack'].includes(expected))throw Error('Invalid optical packet input.');

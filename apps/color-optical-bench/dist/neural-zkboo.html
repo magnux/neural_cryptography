@@ -29,7 +29,7 @@
           <label for="camera">Camera<select id="camera"><option value="">Default camera</option></select></label>
           <label for="resolution">Requested resolution<select id="resolution"><option value="720">720p</option><option value="1080">1080p</option><option value="480">480p</option></select></label>
           <label for="backend">Corrector backend<select id="backend"><option value="auto">Auto · GPU, then CPU</option><option value="wasm">WASM · CPU</option><option value="webgpu">WebGPU · GPU</option></select></label>
-          <label for="phaseMs">Phase display interval (ms)<input id="phaseMs" type="number" min="50" max="10000" step="1" value="95" inputmode="numeric"></label>
+          <label for="phaseMs">Phase display interval (ms)<input id="phaseMs" type="number" min="50" max="10000" step="1" value="150" inputmode="numeric"></label>
           <label for="captureMs">Camera sampling interval (ms)<input id="captureMs" type="number" min="50" max="2000" step="1" value="100" inputmode="numeric"></label>
         </div>
         <p class="auth-help">Choose one verifier and one key holder. Start both devices with 32 repetitions. Short proofs are for development; increasing repetitions increases proof size and work. Sampling and processing may take longer than the selected intervals.</p>
@@ -55,7 +55,7 @@
         <canvas id="captureCanvas" hidden></canvas>
       </div>
       <div class="auth-stage-controls"><span id="transferStatus">No transfer yet</span><label for="displaySize">Display size <output id="displaySizeValue" for="displaySize">100%</output><input id="displaySize" type="range" min="50" max="100" step="1" value="100"></label></div>
-      <div class="auth-next-turn"><p>When an ACK appears, turn the phone so the sender can read it. Keep the ACK visible until the sender confirms delivery.</p><button id="nextTurn" class="button primary" disabled>Send next turn →</button></div>
+      <div class="auth-next-turn"><p>When a QR ACK appears, turn the phone so the sender can read it. For color matrices, orange marks detected corners with an unreadable header; green marks a readable header. Keep the ACK visible until the sender confirms delivery.</p><button id="nextTurn" class="button primary" disabled>Send next turn →</button></div>
       <div class="auth-pairing" id="pairingPanel" hidden><div><span class="eyebrow">COMPARE ON BOTH DEVICES</span><code id="pairingCode">—</code><p id="pairingNote">Confirm only when the pairing codes match.</p></div><button id="confirmPairing" class="button secondary" disabled>Codes match · confirm</button></div>
       <dl class="auth-metrics"><div><dt>Received matrices</dt><dd id="receivedCount">0</dd></div><div><dt>Last inference</dt><dd id="inferenceMs">—</dd></div><div><dt>Proof size</dt><dd id="proofBytes">—</dd></div><div><dt>Elapsed</dt><dd id="elapsed">0 s</dd></div></dl>
     </section>

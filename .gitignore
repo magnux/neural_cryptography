@@ -39,6 +39,9 @@ neural_zkboo_results/
 /apps/color-optical-bench/dist/js/crypto-lab/worker.js
 /apps/*/tests/fixtures/zk/
 
+# QR ACKs reuse the QR app's canonical codec and locally bundled licensed dependencies.
+/apps/color-optical-bench/dist/js/qr-core/
+
 # Generated neural corrector exports and locally prepared inference runtime.
 /experiments/neural-corrector/artifacts/
 /apps/color-optical-bench/dist/models/neural-corrector/

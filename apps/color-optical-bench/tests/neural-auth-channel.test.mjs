@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {TurnChannel} from '../dist/js/neural-auth/channel.js';
-import {packetFrames,unpackOptical,DATA_PROFILE,ACK_PROFILE} from '../dist/js/neural-auth/optical.js';
+import {packetFrames,unpackOptical,DATA_PROFILE} from '../dist/js/neural-auth/optical.js';
+import {renderACK,readACK} from '../dist/js/neural-auth/qr-ack.js';
 import {decodePacket,encodePacket} from '../dist/js/link/protocol.js';
 import {createTurnSender,TURN_LIMITS} from '../dist/js/neural-auth/transport.js';
 import {capacity,parseHeader} from '../dist/js/format.js';
-import {isTransportData,isTransportACK} from '../dist/js/corrector-lab/live-burst.js';
+import {isTransportData} from '../dist/js/corrector-lab/live-burst.js';
 
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 async function prepared(channel) {
@@ -108,21 +109,21 @@ test('enqueue is bounded, and an application handler error closes cleanly after 
   await assert.rejects(fresh.enqueue(new Uint8Array()),/size/);fresh.close();
 });
 
-test('padded data uses the exact learned profile; ACKs remain small and match live classical acceptance',async()=>{
+test('padded data uses the learned profile and current turn ACKs round-trip through QR',async()=>{
   const sender=await createTurnSender(bytes(1),{now:0}),start=sender.next(1);
   const dataFrames=packetFrames(start),otherFrames=packetFrames(start);
   assert.equal(dataFrames.length,4);
   for(const frame of dataFrames) {
-    assert.equal(frame.holdMs,95);assert.equal(isTransportData(parseHeader(frame.header)),true);
+    assert.equal(frame.holdMs,150);assert.equal(isTransportData(parseHeader(frame.header)),true);
     assert.equal(frame.chunk.length,capacity(DATA_PROFILE.size,DATA_PROFILE.colors,DATA_PROFILE));
     assert.deepEqual(unpackOptical(frame.chunk,'data'),start);
   }
   assert.notDeepEqual(dataFrames[0].chunk,otherFrames[0].chunk);
   const receiver=new TurnChannel({now:()=>1});await receiver.receive(start);
-  const ack=receiver.current(),ackFrames=packetFrames(ack);
-  assert.equal(ackFrames.length,1);assert.equal(isTransportACK(parseHeader(ackFrames[0].header)),true);
-  assert.equal(ackFrames[0].chunk.length,ack.length);assert.deepEqual(unpackOptical(ackFrames[0].chunk,'ack'),ack);
-  assert.equal(ACK_PROFILE.gridBlock,0);receiver.close();
+  const ack=receiver.current(),decoded=readACK(renderACK(ack));
+  assert.equal(decoded.ok,true,decoded.error);assert.deepEqual(unpackOptical(decoded.chunk,'ack'),ack);
+  assert.throws(()=>packetFrames(ack),/ACKs use QR/);
+  assert.equal(sender.receive(decoded.chunk,2).accepted,true);receiver.close();
 });
 
 test('optical container rejects wrong lengths, packet kinds and damaged embedded packet checksums',async()=>{
@@ -136,3 +137,4 @@ test('optical container rejects wrong lengths, packet kinds and damaged embedded
   assert.throws(()=>packetFrames(start,{phaseMs:49}),/Phase/);
   assert.throws(()=>packetFrames(start,{phaseMs:95.5}),/Phase/);
 });
+

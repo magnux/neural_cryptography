@@ -27,7 +27,7 @@ for the original dynamical-systems exploration.
 | Browser Crypto Lab | [Color app](apps/color-optical-bench/README.md), `crypto.html` | Generate keys, prove, verify, reject tampering, and measure local performance in a worker. |
 | Color optical transport | [Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Color matrices, image simulations, temporal fusion, error correction, and multipart transfers. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
-| Neural-ZKBoo color authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | Trained four-phase matrix reception, small ACKs and explicit physical turns; starts with the 32-repetition proof. Ready for device validation. |
+| Neural-ZKBoo color authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | Trained four-phase matrix reception, static QR ACKs and explicit physical turns; starts with the 32-repetition proof. Ready for device validation. |
 | Neural corrector | [Model and training](experiments/neural-corrector/README.md), [capture/training guide](docs/NEURAL_CORRECTOR_TRAINING.md), `corrector.html` and `capture.html` | Full-resolution U-tube models, labeled captures, coherent synthetics, training, recovery evaluation and browser export. Phase-grouped training passed the recorded recovery target; the new authentication interface exercises live learned recovery. |
 
 Read [use cases](docs/USE_CASES.md), [format boundaries](docs/FORMATS.md), and
@@ -91,7 +91,7 @@ the capture page itself needs only the existing static app. To test the whole
 stack, export and prepare the trained checkpoint, then open **Neural-ZKBoo** on
 both devices using [the setup and turn sequence](docs/NEURAL_ZKBOO_DEMO.md).
 The original Optical Bench/Live Demo retain their classical receiver; the new
-authentication page requires the trained corrector for DATA and classical ACKs.
+authentication page requires the trained corrector for DATA and uses static QR ACKs.
 
 ## Status and scope
 
