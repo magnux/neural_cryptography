@@ -8,13 +8,13 @@ in the working tree; prior repository states remain in Git history.
 | --- | --- |
 | `experiments/neural-dynamics/` | Restored PyTorch recurrent CNN/rotating-convolution/Feistel experiment. |
 | `experiments/python-zkboo/` | Restored command-line experiment using the current NumPy compact ZKBoo core; no archived proof implementation alongside it. |
-| `experiments/optical-decoder/` | U-Net, current tensor/checkpoint contracts, synthetic generator, PyTorch training/evaluation, ONNX export, and pinned browser runtime. |
-| `scripts/decoder-dataset.mjs`, color app `js/dataset/` | Canonical clean examples, bounded browser capture, offline label joins, and exact classical/learned recovery comparison. |
+| `experiments/neural-corrector/` | U-Net, current tensor/checkpoint contracts, synthetic generator, PyTorch training/evaluation, ONNX export, and pinned browser runtime. |
+| `scripts/corrector-dataset.mjs`, color app `js/dataset/` | Canonical clean examples, bounded browser capture, offline label joins, and exact classical/learned recovery comparison. |
 | `shared/python/neural_optical.py` | Shared Python palette, packing, and simulated-camera utilities. |
 | `shared/browser-crypto/crypto/` | Single browser binary circuit, compact prover/verifier, byte helpers, and licensed SHAKE dependency. |
 | `shared/browser-crypto/worker/` | Single reusable crypto worker/client/operations and public reference fixture. |
 | `shared/fixtures/zk/` | Current deterministic Python↔JavaScript proof fixtures. |
-| `apps/color-optical-bench/` | Current OBM5 optical/image bench, Crypto Lab, color multipart transport, and separate M1 Decoder Lab. |
+| `apps/color-optical-bench/` | Current OBM5 optical/image bench, Crypto Lab, color multipart transport, and separate M1 Corrector Lab. |
 | `apps/qr-neural-key/` | Current QR transport and authentication, including independent outgoing settings and adaptive fallback. |
 | `tests/python/` | Python experiment tests. |
 | `notebooks/README.md` | Link to the existing Colab notebook; no duplicate `.ipynb`. |
@@ -45,3 +45,4 @@ already present before restoring the older CLI shell.
 See [FORMATS.md](FORMATS.md) for the current layer identifiers,
 [VALIDATION.md](VALIDATION.md) for checks, and [ROADMAP.md](ROADMAP.md) for device
 observations and future work.
+

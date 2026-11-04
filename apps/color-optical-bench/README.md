@@ -10,12 +10,12 @@ Four browser-local workspaces share top-level navigation:
 - **Live Demo** (`link.html`) tests reliable multipart optical messages, with a
   local fault simulation and a two-device camera transfer. Step 3.3a transfers
   bytes; pairing and authentication are not implemented in this tab yet.
-- **Decoder Lab** (`decoder.html`) tests the prepared optical model or checkpoint in a
+- **Corrector Lab** (`corrector.html`) tests the prepared optical model or checkpoint in a
   dedicated worker. It compares full outputs against Python fixtures and measures
   local inference, with an optional live camera crop. It does not decode payloads.
-  Follow the [separate setup and device checklist](../../docs/DECODER_LAB.md).
+  Follow the [separate setup and device checklist](../../docs/CORRECTOR_LAB.md).
 
-**Capture Dataset** (`capture.html`), linked from Decoder Lab, adds the M2
+**Capture Dataset** (`capture.html`), linked from Corrector Lab, adds the M2
 sender/receiver data collector. Display a static random matrix, collect bounded
 camera samples with automatic filled alignment feedback, and export the sender
 manifest and receiver captures separately. Collection keeps per-phase pools
@@ -24,14 +24,14 @@ distance heuristic, and shows within-phase RGB distance and replacement counters
 above the camera. Recording file formats are unchanged. Both exports use the
 first matrix's payload CRC32 as a matching filename prefix; the offline join
 still validates full header/payload identities. The
-[recording workflow](../../docs/OPTICAL_DECODER_TRAINING.md#organize-recordings-and-rebuild-datasets)
+[recording workflow](../../docs/NEURAL_CORRECTOR_TRAINING.md#organize-recordings-and-rebuild-datasets)
 includes filename migration and one-command rebuilding from `phone/pc` split folders.
 **Mirror preview** flips the visible camera image and its alignment overlay
 together; capture tensors and optional original PNGs retain the camera's original
 orientation. This display preference persists while changing roles or restarting
 the camera within the page.
 No model installation is needed to collect data. Follow the
-[capture and training guide](../../docs/OPTICAL_DECODER_TRAINING.md) for offline
+[capture and training guide](../../docs/NEURAL_CORRECTOR_TRAINING.md) for offline
 label joining, train/validation/test splits, and checkpoint evaluation.
 
 The reusable crypto engine and worker have one canonical source in
@@ -46,8 +46,8 @@ color transport experiments remain available without a new deployment.
 
 The next planned increment is [Neural ZKBoo authentication over color
 matrices](../../docs/ROADMAP.md), reusing the QR experiment's authentication flow
-and this app's multipart channel. The [optical decoder design and training
-plan](../../docs/OPTICAL_DECODER.md) specifies a small U-Net receiver and labeled
+and this app's multipart channel. The [neural corrector design and training
+plan](../../docs/NEURAL_CORRECTOR.md) specifies a small U-Net receiver and labeled
 capture tooling. M1 supports a G64 profile on the tested phone/PC; M2 collection,
 synthetic generation, training, evaluation, and checkpoint export are implemented.
 Real-data recovery validation remains open. The current Live Demo still

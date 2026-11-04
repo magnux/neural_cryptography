@@ -8,7 +8,7 @@ import {createSender,senderFrames,base64ToBytes,bytesToBase64,floatBytes,floatsF
 import {captureFrame,CaptureBuffer,validateCapture} from '../dist/js/dataset/capture.js';
 import {renderFrame,FORMAT,parseHeader} from '../dist/js/format.js';
 import {gridLayout} from '../dist/js/grid.js';
-import {generate,joinCaptures,targets,evaluate} from '../../../scripts/decoder-dataset.mjs';
+import {generate,joinCaptures,targets,evaluate} from '../../../scripts/corrector-dataset.mjs';
 import {extractLearnedInput,logitsToLogicalScores} from '../dist/js/learned-input.js';
 import {decodeScores} from '../dist/js/vision.js';
 

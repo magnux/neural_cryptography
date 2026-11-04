@@ -8,7 +8,7 @@
 </head>
 <body class="capture-lab">
   <header class="site-header"><a class="brand" href="./capture.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M2 12V2h10M20 2h10v10M30 20v10H20M12 30H2V20"/><path d="M11 11h10v10H11z"/></svg><span>NEURAL KEY<span class="brand-divider">/</span><strong>CAPTURE DATASET</strong></span></a><span class="local-badge"><i></i> Browser-local</span></header>
-  <nav class="app-nav" aria-label="Application"><a href="./index.html">Optical Bench</a><a href="./crypto.html">Crypto Lab</a><a href="./link.html">Live Demo</a><a href="./decoder.html">Decoder Lab</a><a href="./capture.html" aria-current="page">Capture Dataset</a></nav>
+  <nav class="app-nav" aria-label="Application"><a href="./index.html">Optical Bench</a><a href="./crypto.html">Crypto Lab</a><a href="./link.html">Live Demo</a><a href="./corrector.html">Corrector Lab</a><a href="./capture.html" aria-current="page">Capture Dataset</a></nav>
   <main>
     <section class="capture-intro"><div class="eyebrow">MILESTONE 2 · TRAINING DATA</div><h1>Capture the difficult frames.</h1><p>Display a known random matrix on one device. Collect camera samples on the other, then join the two files offline.</p></section>
     <div id="captureError" class="notice" role="alert" hidden></div>
@@ -62,7 +62,7 @@
         <p class="muted">The capture JSON contains calibrated pixels and may include the original camera view if selected. Save before clearing or leaving this page. Clearing a downloaded batch keeps the physical session ID; start a new physical session only after changing the device arrangement or returning later. Collection is capped at 128 samples and 160 MiB across all phase pools; G128 or optional originals may reach the byte budget first. Pause and save before clearing. These are export-size limits; browser memory use is higher; nothing is uploaded.</p>
       </div>
     </section>
-    <footer class="page-footer"><span>NEURAL KEY · CAPTURE DATASET</span><p>Save both files → join offline → train → evaluate held-out sessions</p><a href="https://github.com/magnux/neural_cryptography/blob/main/docs/OPTICAL_DECODER.md">Decoder plan ↗</a></footer>
+    <footer class="page-footer"><span>NEURAL KEY · CAPTURE DATASET</span><p>Save both files → join offline → train → evaluate held-out sessions</p><a href="https://github.com/magnux/neural_cryptography/blob/main/docs/NEURAL_CORRECTOR.md">Decoder plan ↗</a></footer>
   </main><script type="module" src="./js/dataset/lab.js"></script>
 </body>
 </html>

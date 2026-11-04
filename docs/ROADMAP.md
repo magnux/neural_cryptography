@@ -13,7 +13,7 @@ primitive, or comprehensive attack bench is required to reach this POC.
 
 ## Planning documents
 
-- [Optical decoder design and training](OPTICAL_DECODER.md): model contract,
+- [Neural corrector design and training](NEURAL_CORRECTOR.md): model contract,
   capture data, synthetic examples, training, export, and browser integration.
 - [Research connections](RESEARCH_CONNECTIONS.md): relevant neural cryptography,
   cryptanalysis, and proof-friendly circuit literature; later experiments.
@@ -29,11 +29,11 @@ primitive, or comprehensive attack bench is required to reach this POC.
 | Color optical bench | Detection, rectification, reference colors, palette phases, bounded temporal fusion, RS recovery, and CRC | Add learned classification at the receiver; preserve framing and recovery |
 | Color multipart link | OLM1 sender/receiver, selective retries, completion receipts, deadlines, and local fault simulation | Carry authentication envelopes and raw proof bytes |
 | QR authentication | Local identities, explicit pairing confirmation, fresh challenge, proof, result, and optical acknowledgments | Reuse the application flow and tests through a color-link adapter |
-| Learned decoder | G64 phone/PC fixture checks passed; capture, synthetic generation, training/evaluation, and checkpoint export implemented | Collect both directions, train on the 4090, validate real recovery before integration |
+| Neural corrector | U-tube-2x-attn completed training; recorded validation recovered 100% at K=7/8 in both directions | Export the trained checkpoint, measure browser inference, then connect corrected scores to live CRC recovery |
 
 Single-matrix reception does not establish reliable multipart communication.
 The particularly difficult direction is often **phone display to PC webcam**,
-including acknowledgments. The learned decoder and integration must be measured
+including acknowledgments. The neural corrector and integration must be measured
 on both directions from the start.
 
 ## Smallest useful end-to-end demonstration
@@ -70,20 +70,21 @@ for the first completed authentication.
 
 ## Implementation order and completion criteria
 
-As of **22 October 2026**, M1 device reports support proceeding at **G64**:
-phone WebGPU and PC WASM fixture parity passed within the inference target.
-Phone crop inference succeeded; PC crop acquisition and G128 device checks
-remain open. See [the validation record](VALIDATION.md). M2 capture and training
-software is the active increment; its real-data recovery criterion still needs
-collected sessions and a trained/evaluated checkpoint. M3 can proceed in
-parallel; integration should not wait for a polished model or dataset.
+Earlier G64 device reports established phone WebGPU and PC WASM fixture parity.
+The **4 November 2026** training report now clears the recorded recovery target:
+U-tube-2x-attn recovers every validation candidate at K=7/8 in both directions.
+Next, export that trained checkpoint, measure its browser inference on both
+devices, and connect its corrected scores to live CRC/content recovery. These
+recorded results do not yet establish live transport goodput. See the
+[serving and device guide](CORRECTOR_LAB.md) and [validation record](VALIDATION.md).
+Authentication integration can proceed alongside these trained-device checks.
 
 | Milestone | Work | Completion criterion |
 | --- | --- | --- |
 | **M1 — Interfaces and browser feasibility** | Define the rectified-raster/model/score contract. Export a tiny untrained 2D U-Net and run it in a worker on the real phone and PC. Identify the reusable authentication-session boundary. | Browser/Python outputs agree within recorded tolerance; model loads locally with WebGPU or WASM; latency, memory, and UI responsiveness recorded at 64/128 targets. Unsupported operators are replaced before training. |
-| **M2 — Capture and first trained decoder** | Extend the existing image/live bench with a bounded labeled-capture mode; build synthetic bursts, train a single-frame classifier in plain PyTorch, fine-tune on real captures, export a pinned model. | Failed payloads are retained with independently verified labels. Session-disjoint evaluation improves exact CRC-valid recovery or recovery time over the current decoder at equal observation budgets. Inspect overconfident failures, not only mean cell accuracy. |
+| **M2 — Capture and trained neural corrector** | Capture both directions, generate coherent phase-grouped synthetic observations, and train the full-resolution U-tube family in plain PyTorch. The phase-grouped model has now passed the recorded recovery target; export its trained weights next. | Failed payloads retain independently verified labels. Session-disjoint evaluation improves exact CRC-valid recovery at equal observation budgets. Browser parity, latency and live recovery still need trained-device checks. |
 | **M3 — Authentication integration** | Extract the reusable QR authentication session/envelope code into one shared component as needed; add a color OLM1 adapter and a simple authentication view. Preserve the QR lab as a reference. | In-memory/fault tests complete identity exchange, pairing, challenge, proof, verification, result, and completion receipts. Test cancellation, expiry, duplicates, invalid proof, and stale challenge. Physical 1 KiB transfers complete with acknowledgments in both directions. |
-| **M4 — First color authentication** | Connect the trained decoder to existing symbol recovery and multipart transport; use conservative device-specific profiles. | Complete the 32-repetition exchange on the actual phone and PC, with every application/control message using color matrices. Repeat with roles swapped; export both reports, including failures. A model-assisted receive path is exercised and its use recorded. |
+| **M4 — First color authentication** | Connect the trained neural corrector to existing symbol recovery and multipart transport; use conservative device-specific profiles. | Complete the 32-repetition exchange on the actual phone and PC, with every application/control message using color matrices. Repeat with roles swapped; export both reports, including failures. A model-assisted receive path is exercised and its use recorded. |
 | **M5 — Repeatability and larger proof** | Tune phases, holds, confidence, and retries. Add five-frame fusion only if the single-frame model leaves a measured limitation. | Three consecutive 32-repetition authentications in each role arrangement; one 219-repetition run in each arrangement. Obstruction recovers or reaches a bounded timeout, stale/invalid proofs fail, and an attempt succeeds after server disconnection. Publish device-specific timing and settings. |
 
 If the classical receiver can complete an exchange first, record that useful
@@ -97,18 +98,19 @@ needed to compensate for optical failures.
 
 | Work | Location / execution |
 | --- | --- |
-| Model, generator, training, evaluation, export | Implemented in `experiments/optical-decoder/`; full training planned on the project owner's RTX 4090 |
+| Model, generator, training, evaluation, export | Implemented in `experiments/neural-corrector/`; phase-grouped training completed on the project owner's RTX 4090 |
 | Capture and replay UI | `capture.html` collects bounded samples; canonical Node tools join labels and evaluate recorded inputs |
-| Learned inference and score adapter | Separate M1 Decoder Lab worker and `learned-input.js` exist; connect to the color receiver after training |
+| Learned inference and score adapter | Separate Corrector Lab worker and `learned-input.js` exist; trained browser measurement and live CRC/content integration are next |
 | Authentication application logic | Extract from `apps/qr-neural-key/dist/js/auth/` into planned `shared/browser-auth/` where reusable; retain transport-specific adapters |
 | Proof generation and verification | Existing `shared/browser-crypto/`, unchanged canonical engine |
 
 The reusable authentication boundary is `auth/session.js` and `auth/envelope.js`;
 `auth/link.js` is the current QR adapter. M3 extracts only what the color integration needs.
-Full model training is planned on the owner's GPU; model/export checks and a
-short pipeline training smoke run use CPU PyTorch here. No GPU training or
-real-device recovery improvement has been established. Training and capture data stay out of source
-control. Record model provenance, export settings, runtime version, and metrics;
+The owner has completed full phase-grouped training on the RTX 4090; local
+implementation checks use CPU PyTorch and Node WASM. The recorded recovery
+improvement is reported by the owner; trained live-device inference remains
+the next check. Training and capture data stay out of source control.
+Record model provenance, export settings, runtime version, and metrics;
 package only the selected runtime model/assets when implementing integration.
 
 Use one current format per layer, update both endpoints together when necessary,
@@ -135,7 +137,7 @@ attempts. Record:
 - Pairing/challenge/proving/transfer/verification/result timings, total attempt
   time, proof repetitions/bytes, final states, and cancellation/timeout reasons.
 
-Compare classical and learned decoders on the same recorded inputs and the same
+Compare classical and neural correctors on the same recorded inputs and the same
 observation budgets, then validate physical transfers. Measure both optical
 directions separately. Better average symbol accuracy is insufficient if exact
 frame recovery or completed-message goodput gets worse.
@@ -183,3 +185,4 @@ Completing the POC demonstrates functionality and measured device behavior.
 Cryptanalytic evaluation remains necessary before stronger security claims;
 optical proximity, low surrogate accuracy, or a previous long proof do not
 establish them.
+

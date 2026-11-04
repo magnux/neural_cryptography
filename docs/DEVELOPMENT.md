@@ -56,9 +56,9 @@ deterministic test material and must not be reused for enrollment.
 
 ### Optional learned-decoder lab
 
-Follow [Decoder Lab setup and device tests](DECODER_LAB.md) to install its pinned
+Follow [Corrector Lab setup and device tests](CORRECTOR_LAB.md) to install its pinned
 Python and browser-runtime dependencies, export the untrained model, and run
-`npm run prepare:decoder`. This is separate from `prepare:apps`; the original
+`npm run prepare:corrector`. This is separate from `prepare:apps`; the original
 transport/crypto workspaces keep their lightweight setup. Model export and asset
 preparation are local build steps, not a Python inference service. Generated
 assets and datasets are ignored by Git.
@@ -79,7 +79,7 @@ python -m http.server 8001 --bind 127.0.0.1 --directory apps/qr-neural-key/dist
 | `http://localhost:8000/` | Color optical bench and image lab |
 | `http://localhost:8000/crypto.html` | Browser Crypto Lab |
 | `http://localhost:8000/link.html` | Color multipart transport |
-| `http://localhost:8000/decoder.html` | Optional M1 Decoder Lab, after `prepare:decoder` |
+| `http://localhost:8000/corrector.html` | Optional M1 Corrector Lab, after `prepare:corrector` |
 | `http://localhost:8000/capture.html` | M2 dataset sender/receiver; model assets not required |
 | `http://localhost:8001/` | QR transport, scan check, and simulation |
 | `http://localhost:8001/auth.html` | QR neural-key authentication |
@@ -100,7 +100,7 @@ required. The hosted test sites remain blank; repository work does not deploy.
 
 ## Benchmarks and formats
 
-The [M2 capture/training guide](OPTICAL_DECODER_TRAINING.md) covers canonical
+The [M2 capture/training guide](NEURAL_CORRECTOR_TRAINING.md) covers canonical
 dataset generation, offline joining, CPU smoke checks, RTX 4090 training,
 held-out recovery evaluation, and browser checkpoint preparation. These tools
 use the current OBM5 renderer/decoder through Node; Python does not maintain a
@@ -125,3 +125,4 @@ tests must measure both optical directions, alignment, recovery, and expiry.
 See [USE_CASES.md](USE_CASES.md) and [FORMATS.md](FORMATS.md) before changing a
 protocol. Each layer accepts only its current format; changing the Python-only
 simulator is separate from changing browser optical framing.
+

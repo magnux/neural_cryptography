@@ -6,8 +6,8 @@ computation locally; their servers only serve static files.
 
 The immediate goal is **Neural ZKBoo authentication between a phone and computer
 using color-matrix optical transport**. The existing experiments are the
-exploratory foundation. The next increment adds a small learned optical decoder
-and reuses the working authentication flow with the color multipart channel.
+exploratory foundation. The next increment connects the trained neural corrector
+to the color receiver and reuses the working authentication flow with its multipart channel.
 Cryptanalytic comparisons and adversarial architecture experiments are future
 research, outside the shortest path to this functional POC.
 
@@ -26,7 +26,7 @@ for the original dynamical-systems exploration.
 | Browser Crypto Lab | [Color app](apps/color-optical-bench/README.md), `crypto.html` | Generate keys, prove, verify, reject tampering, and measure local performance in a worker. |
 | Color optical transport | [Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Color matrices, image simulations, temporal fusion, error correction, and multipart transfers. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
-| Learned optical decoder | [Model and training](experiments/optical-decoder/README.md), [capture/training guide](docs/OPTICAL_DECODER_TRAINING.md), `decoder.html` and `capture.html` | Small U-Net, labeled device capture, canonical synthetic examples, PyTorch training, exact recovery evaluation, checkpoint export, and browser parity. Real-device improvement still needs a trained checkpoint and held-out captures. |
+| Neural corrector | [Model and training](experiments/neural-corrector/README.md), [capture/training guide](docs/NEURAL_CORRECTOR_TRAINING.md), `corrector.html` and `capture.html` | Full-resolution U-tube models, labeled captures, coherent synthetics, training, recovery evaluation and browser export. Phase-grouped training passed the recorded recovery target; trained browser testing and live integration are next. |
 
 Read [use cases](docs/USE_CASES.md), [format boundaries](docs/FORMATS.md), and
 [development instructions](docs/DEVELOPMENT.md) before changing a protocol.
@@ -38,7 +38,7 @@ parameters: transport carries the serialized proof bytes.
 
 - [POC roadmap](docs/ROADMAP.md): browser feasibility, capture/training,
   authentication integration, first color exchange, and repeatable device tests.
-- [Optical decoder design](docs/OPTICAL_DECODER.md): architecture, input/output
+- [Neural corrector design](docs/NEURAL_CORRECTOR.md): architecture, input/output
   contract, dataset collection, RTX 4090 training, and browser inference.
 - [Connections to previous research](docs/RESEARCH_CONNECTIONS.md): neural
   synchronization, adversarial learning, neural cryptanalysis, SIMON, LowMC,
@@ -82,9 +82,9 @@ python experiments/neural-dynamics/neural_key_experiment.py --compare
 python experiments/python-zkboo/neural_zkboo_experiment.py --camera
 ```
 
-For the new **Decoder Lab**, follow [its optional setup](docs/DECODER_LAB.md).
+For the new **Corrector Lab**, follow [its optional setup](docs/CORRECTOR_LAB.md).
 It adds pinned PyTorch/ONNX build dependencies and a local browser runtime.
-[M2 capture and training](docs/OPTICAL_DECODER_TRAINING.md) is now implemented;
+[M2 capture and training](docs/NEURAL_CORRECTOR_TRAINING.md) is now implemented;
 the capture page itself needs only the existing static app. Live transport
 continues to use the classical decoder until a trained model passes evaluation.
 

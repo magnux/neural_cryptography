@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {createSender} from '../dist/js/dataset/contract.js';
 import {crc32} from '../dist/js/format.js';
 import {recordingPrefix,recordingFilename} from '../dist/js/dataset/filenames.js';
-import {renameRecordings} from '../../../scripts/rename-decoder-recordings.mjs';
+import {renameRecordings} from '../../../scripts/rename-corrector-recordings.mjs';
 
 const base=fileURLToPath(new URL('../../../validation/',import.meta.url));
 const {manifest,frames}=await createSender({seed:19,sessionId:'sender-filename-test'});

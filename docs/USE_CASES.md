@@ -8,7 +8,7 @@ a claimed post-quantum security level.
 
 The immediate delivery goal is the [color authentication POC](ROADMAP.md): reuse
 the current Neural ZKBoo engine and authentication flow over color multipart
-transport, with the [learned optical decoder](OPTICAL_DECODER.md) improving
+transport, with the [learned neural corrector](NEURAL_CORRECTOR.md) improving
 camera reception. The existing experiments are its exploratory foundation.
 [Cryptanalytic comparisons](RESEARCH_CONNECTIONS.md) remain future research.
 
@@ -23,11 +23,11 @@ camera reception. The existing experiments are its exploratory foundation.
 | Can color matrices carry a complete multipart message? | [Color multipart transport](../apps/color-optical-bench/LINK_TRANSPORT.md), page `link.html` | Local fault simulation and bidirectional camera transfer. This page does not perform authentication. |
 | How much data can standard QR codes carry reliably on these devices? | [QR transport lab](../apps/qr-neural-key/README.md), page `index.html` | Multipart bytes, outgoing profiles, pacing, acknowledgments, retries, and measurements. |
 | Can a device authenticate over an optical link? | [QR authentication](../apps/qr-neural-key/AUTHENTICATION.md), page `auth.html` | Local ephemeral keys, human pairing confirmation, a fresh challenge, optical proof transfer, and local verification. |
-| Can the decoder run on these devices? | [Decoder Lab](DECODER_LAB.md), page `decoder.html` | Untrained or trained checkpoint, full-logit Python parity, worker latency/UI reports, and validated camera crop inference. |
-| Can learned color decoding improve recovery? | [Capture/training guide](OPTICAL_DECODER_TRAINING.md), page `capture.html` | Export real captures, join labels offline, generate correlated synthetic examples, train in PyTorch, and compare exact CRC/RS recovery on held-out sessions. Real-device improvement remains to be measured. |
+| Can the decoder run on these devices? | [Corrector Lab](CORRECTOR_LAB.md), page `corrector.html` | Untrained or trained checkpoint, full-logit Python parity, worker latency/UI reports, and validated camera crop inference. |
+| Can learned color decoding improve recovery? | [Capture/training guide](NEURAL_CORRECTOR_TRAINING.md), page `capture.html` | Export real captures, join labels offline, generate correlated synthetic examples, train in PyTorch, and compare exact CRC/RS recovery on held-out sessions. Real-device improvement remains to be measured. |
 
 Paths to HTML pages are relative to the selected app's `dist/` directory. Both
-apps can be served as static files after `npm run prepare:apps`; Decoder Lab additionally needs its optional
+apps can be served as static files after `npm run prepare:apps`; Corrector Lab additionally needs its optional
 model/runtime preparation. Camera access on a phone requires a secure
 origin; see each app's serving instructions. Historical test deployments were
 blanked, so the repository is the starting point for running these experiments.
@@ -101,3 +101,4 @@ they do not require a different cryptographic circuit.
 The experiments accept their current formats only. Older encodings are not
 supported through compatibility readers or migrations. See the
 [source inventory](SOURCE_INVENTORY.md) for the current canonical components.
+

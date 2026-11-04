@@ -8,12 +8,12 @@ import {spawnSync} from 'node:child_process';
 import {createSender} from '../dist/js/dataset/contract.js';
 import {CaptureBuffer,captureFrame} from '../dist/js/dataset/capture.js';
 import {renderFrame} from '../dist/js/format.js';
-import {planRebuild,rebuild,MANAGED_OUTPUTS} from '../../../scripts/rebuild-decoder-data.mjs';
+import {planRebuild,rebuild,MANAGED_OUTPUTS} from '../../../scripts/rebuild-corrector-data.mjs';
 
 const repo=fileURLToPath(new URL('../../../',import.meta.url)),base=join(repo,'validation');
-const python=process.env.OPTICAL_DECODER_TEST_PYTHON??'python3';
+const python=process.env.NEURAL_CORRECTOR_TEST_PYTHON??'python3';
 const probe=spawnSync(python,['-c','import numpy, torch'],{encoding:'utf8'}),hasPython=probe.status===0;
-if(process.env.OPTICAL_DECODER_TEST_PYTHON&&!hasPython)throw Error(`OPTICAL_DECODER_TEST_PYTHON is unusable: ${probe.error?.message??probe.stderr}`);
+if(process.env.NEURAL_CORRECTOR_TEST_PYTHON&&!hasPython)throw Error(`NEURAL_CORRECTOR_TEST_PYTHON is unusable: ${probe.error?.message??probe.stderr}`);
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const fixtures=[];
 for(const [seed,session,receiver] of [[701,'sender-train','receiver-train'],[702,'sender-val','receiver-val']]) {

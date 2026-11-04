@@ -1,7 +1,7 @@
 # Reliable optical messages · step 3.3a
 
 The **Live Demo** tab (`link.html`) adds a multipart byte transport above the
-existing optical decoder. It supports a local fault simulation and a real
+existing neural corrector. It supports a local fault simulation and a real
 two-device camera transfer. It does not generate keys, pair devices, or perform
 neural proofs yet. All computation remains in the browsers; any static HTTPS
 host can serve the app. No Flask, enrollment endpoint, or server relay is needed.
@@ -194,7 +194,7 @@ The [current POC roadmap](../../docs/ROADMAP.md) uses this byte channel for loca
 identity exchange, explicit pairing confirmation, a fresh challenge, the existing
 compact Neural ZKBoo proof, and a result/completion acknowledgment. Reuse the QR
 authentication session through a color-link adapter and integrate the
-[planned learned receiver](../../docs/OPTICAL_DECODER.md). Begin with one-direction
+[planned learned receiver](../../docs/NEURAL_CORRECTOR.md). Begin with one-direction
 authentication and reverse roles in a new attempt. Mutual proofs in one session,
 ephemeral key agreement, fast authentication, and persistent identities are
 deferred. They are not implied by a successful transport result.

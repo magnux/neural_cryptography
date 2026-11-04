@@ -1,7 +1,7 @@
 import {extractDensePayload} from './vision.js';
 import {gridLayout,paletteMap} from './grid.js';
 
-/** M1 is deliberately bounded to the two exported single-frame models. */
+/** Per-capture preprocessing; corrector profiles assemble their supported inputs. */
 export const LEARNED_INPUT = Object.freeze({sizes:Object.freeze([64,128]),colors:Object.freeze([4,16]),
   pixelsPerCell:4,channels:3,classes:16});
 

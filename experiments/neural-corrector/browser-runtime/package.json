@@ -1,0 +1,9 @@
+{
+  "name": "neural-corrector-browser-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pinned optional inference runtime for the neural corrector feasibility lab",
+  "dependencies": {
+    "onnxruntime-web": "1.23.2"
+  }
+}
