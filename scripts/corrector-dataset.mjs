@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Canonical OBM5 data generation, offline label joining, and exact recovery. */
-import {readFile,writeFile,mkdir,stat,realpath,readdir} from 'node:fs/promises';
-import {resolve,dirname,join,sep,isAbsolute} from 'node:path';
+import {readFile,writeFile,mkdir,stat,lstat,realpath,readdir} from 'node:fs/promises';
+import {resolve,dirname,join,sep,isAbsolute,relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {createSender,senderFrames,captureKey,base64ToBytes,floatBytes,floatsFromBytes,DATASET_FORMAT,validateSessionId,canonicalJSON,MAX_RECORDS,MAX_CAPTURE_BYTES} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
@@ -20,6 +20,17 @@ export const MAX_GENERATION_COUNT=2**20;
 export function generationCount(value){return int(value,8,1,MAX_GENERATION_COUNT);}
 function int(value,def,min,max){const n=value===undefined?def:Number(value);if(!Number.isInteger(n)||n<min||n>max)throw Error('Invalid numeric argument.');return n;}
 function splitName(value='train'){if(!['train','validation','test'].includes(value))throw Error('Use split train, validation, or test.');return value;}
+function recordingSplit(bundle,split,path) {
+  if(bundle.datasetSplit!==undefined&&(splitName(bundle.datasetSplit)!==split))throw Error(`Recording split disagrees with selected split: ${path}`);
+}
+function capturePixelsPerCell(record) {
+  const value=record.pixelsPerCell??4;
+  if(![2,4].includes(value))throw Error('Unsupported capture pixels per cell.');
+  return value;
+}
+function requireEstablishedRaster(sample) {
+  if(capturePixelsPerCell(sample)!==4)throw Error('This training/synthetic operation requires 4x4-pixel cells. Multires 2x2 captures can be joined now; multires training/synthetic integration is separate.');
+}
 function flags(args) {
   const result={};
   for(let i=0;i<args.length;i++) {if(!args[i].startsWith('--')||!args[i+1]||args[i+1].startsWith('--'))throw Error('Options require values.');const key=args[i].slice(2);if(key in result)throw Error(`Duplicate option --${key}`);result[key]=args[++i];}
@@ -103,6 +114,7 @@ export async function joinCaptures(options) {
   const out=resolve(options.out),split=splitName(options.split),senders=new Map(),senderIds=new Map();
   for(const path of fileList(options.senders)) {
     const manifest=await jsonFile(path,1024*1024),frames=await senderFrames(manifest);
+    recordingSplit(manifest,split,path);
     for(const frame of frames) {
       const key=captureKey(frame),signature=JSON.stringify({payloadId:manifest.payloadId,sessionId:manifest.sessionId,header:Buffer.from(frame.header).toString('hex')});
       if(senders.has(key)&&senders.get(key).signature!==signature)throw Error('Conflicting sender manifests for an optical header.');
@@ -116,6 +128,7 @@ export async function joinCaptures(options) {
   for(const path of fileList(options.captures)) {
     const bundle=await jsonFile(path,MAX_CAPTURE_JSON);if(bundle.format!=='optical-decoder-captures'||bundle.version!==1||!Array.isArray(bundle.records)||bundle.records.length>MAX_RECORDS)throw Error('Unsupported receiver capture bundle.');
     validateSessionId(bundle.sessionId);
+    recordingSplit(bundle,split,path);
     for(let i=0;i<bundle.records.length;i++) {
       const captureId=`${bundle.sessionId}/${bundle.records[i].timestamp}`;
       if(ids.has(captureId))throw Error('Duplicate capture session/record across files.');ids.add(captureId);
@@ -128,12 +141,17 @@ export async function joinCaptures(options) {
       const info=parseHeader(sender.frame.header);
       // Exact canonical metadata match, not just a sequence ID or payload checksum.
       if(canonicalJSON(info)!==canonicalJSON(record.info))throw Error('Capture metadata disagrees with sender header.');
-      const input=floatsFromBytes(base64ToBytes(record.inputBase64),3*16*info.size**2),samples=floatsFromBytes(base64ToBytes(record.samplesBase64),info.size**2*3+96);
+      const pixelsPerCell=capturePixelsPerCell(record),side=pixelsPerCell*info.size;
+      const input=floatsFromBytes(base64ToBytes(record.inputBase64),3*side**2),samples=floatsFromBytes(base64ToBytes(record.samplesBase64),info.size**2*3+96);
       const baseline=new Float32Array(classifySamples(info,samples,{local:true}).scores);
       const original=record.original?base64ToBytes(record.original.base64,1024*1024):undefined;
-      dataset.samples.push(await putSample(out,dataset.samples.length,{sessionId:bundle.sessionId,senderSessionId:sender.manifest.sessionId,payloadId:sender.manifest.payloadId,split,source:'real',size:info.size,colors:info.colors,info,
+      dataset.samples.push(await putSample(out,dataset.samples.length,{sessionId:bundle.sessionId,senderSessionId:sender.manifest.sessionId,payloadId:sender.manifest.payloadId,split,source:'real',size:info.size,colors:info.colors,pixelsPerCell,inputShape:[3,side,side],info,
         burstId:`${bundle.sessionId}/${record.key}`,timestamp:record.timestamp,
-        provenance:{captureId,stats:record.stats,camera:record.camera,transform:record.transform,colorTransform:record.colorTransform,stability:record.stability,notes:bundle.notes??''}},
+        devicePair:{sender:sender.manifest.environment?.deviceId??null,receiver:bundle.environment?.deviceId??null},
+        provenance:{captureId,stats:record.stats,camera:record.camera??bundle.camera,
+          senderEnvironment:sender.manifest.environment,receiverEnvironment:bundle.environment,
+          senderDatasetSplit:sender.manifest.datasetSplit,receiverDatasetSplit:bundle.datasetSplit,
+          transform:record.transform,colorTransform:record.colorTransform,stability:record.stability,notes:bundle.notes??''}},
         {input,labels:sender.frame.symbols,mask:maskFor(info),baseline,expected:sender.frame.chunk,samples,original}));
     }
     for(const diagnostic of (bundle.diagnostics??[]).slice(0,100))dataset.diagnostics.push({sessionId:bundle.sessionId,...diagnostic});
@@ -141,6 +159,93 @@ export async function joinCaptures(options) {
   if(!dataset.samples.length)throw Error('No labeled captures matched; check headers/manifests and exclusions.');
   await writeFile(join(out,'manifest.json'),JSON.stringify(dataset,null,2)+'\n');
   return {dataset:out,samples:dataset.samples.length,excluded:dataset.excluded,diagnostics:dataset.diagnostics.length,split};
+}
+
+/** Join server uploads by declared split/grid without altering any recordings.
+ * Read all identities before creating outputs so leakage and missing counterparts
+ * fail early. Directory names organize uploads; complete headers still pair them.
+ */
+export async function joinUploads(options) {
+  only(options,['recordings-root','out']);
+  if(!options['recordings-root']||!options.out)throw Error('join-uploads requires --recordings-root DIRECTORY --out NEW_DIRECTORY.');
+  const root=resolve(options['recordings-root']),out=resolve(options.out);
+  if(out===root||out.startsWith(root+sep)||root.startsWith(out+sep))throw Error('Joined output and source recordings must be separate directories, not ancestors of one another.');
+  const rootInfo=await lstat(root);
+  if(rootInfo.isSymbolicLink()||!rootInfo.isDirectory()||await realpath(root)!==root)throw Error('Recordings root must be a real directory without symlink components.');
+  const paths=[];
+  async function scan(path) {
+    for(const entry of (await readdir(path,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))) {
+      const child=join(path,entry.name);
+      if(entry.isSymbolicLink())throw Error(`Recording symlinks are not supported: ${child}`);
+      if(entry.isDirectory())await scan(child);
+      else if(entry.isFile()&&entry.name.endsWith('.json'))paths.push(child);
+    }
+  }
+  for(const split of ['train','validation','test']) {
+    const folder=join(root,split);let info;
+    try{info=await lstat(folder);}catch(error){if(error.code==='ENOENT')continue;throw error;}
+    if(info.isSymbolicLink()||!info.isDirectory())throw Error(`Invalid upload split directory: ${folder}`);
+    await scan(folder);
+  }
+  const sessionOwners=new Map(),payloadOwners=new Map(),headers=new Map(),groups=new Map(),captures=new Set(),entries=[];
+  const own=(owners,id,split,label)=>{
+    if(owners.has(id)&&owners.get(id)!==split)throw Error(`${label} crosses dataset splits: ${id}`);
+    owners.set(id,split);
+  };
+  for(const path of paths) {
+    const parts=relative(root,path).split(sep),[split,grid,kind]=parts;
+    if(parts.length!==4||!['sender','receiver'].includes(kind)||!(/^(?:g(?:8|16|32|64|128|256)|unknown)$/.test(grid)))throw Error(`Unexpected upload location: ${path}`);
+    const bundle=await jsonFile(path,kind==='sender'?1024*1024:MAX_CAPTURE_JSON);
+    validateSessionId(bundle.sessionId);recordingSplit(bundle,split,path);
+    own(sessionOwners,bundle.sessionId,split,'Physical session');
+    const entry={path,split,grid,kind,records:[],sessionId:bundle.sessionId};
+    if(kind==='sender') {
+      const frames=await senderFrames(bundle);
+      if(grid!==`g${bundle.profile.size}`)throw Error(`Sender grid disagrees with upload folder: ${path}`);
+      own(payloadOwners,bundle.payloadId,split,'Payload');
+      for(const frame of frames) {
+        const key=captureKey(frame),signature=canonicalJSON([bundle.sessionId,bundle.payloadId,parseHeader(frame.header)]);
+        const previous=headers.get(key);
+        if(previous&&previous.signature!==signature)throw Error(`Conflicting sender header: ${path}`);
+        headers.set(key,{entry,signature,info:parseHeader(frame.header)});
+      }
+    }else {
+      if(bundle.format!=='optical-decoder-captures'||bundle.version!==1||!Array.isArray(bundle.records)||bundle.records.length>MAX_RECORDS)throw Error(`Unsupported capture bundle: ${path}`);
+      if(!bundle.records.length&&grid!=='unknown')throw Error(`Diagnostic-only capture requires unknown grid folder: ${path}`);
+      for(const raw of bundle.records) {
+        const record=validateCapture(raw),guard=record.stability;
+        if(!guard||!Number.isInteger(guard.guardMs)||guard.guardMs<500||guard.guardMs>5000||!Number.isFinite(guard.durationMs)||guard.durationMs<guard.guardMs||!Number.isInteger(guard.observations)||guard.observations<2)throw Error(`Capture has no stable-header guard evidence: ${path}`);
+        if(grid!==`g${record.info.size}`)throw Error(`Capture grid disagrees with upload folder: ${path}`);
+        const identity=`${bundle.sessionId}/${record.timestamp}`;
+        if(captures.has(identity))throw Error(`Duplicate capture across uploads: ${identity}`);
+        captures.add(identity);entry.records.push({key:record.key,info:record.info});
+      }
+    }
+    entries.push(entry);
+  }
+  let diagnosticFiles=0;
+  for(const entry of entries)if(entry.kind==='receiver') {
+    if(!entry.records.length){diagnosticFiles++;continue;}
+    const key=`${entry.split}/${entry.grid}`,group=groups.get(key)??{split:entry.split,grid:entry.grid,senders:new Set(),captures:[],records:0};
+    for(const record of entry.records) {
+      const sender=headers.get(record.key);
+      if(!sender)throw Error(`No matching uploaded sender for ${entry.path}; upload its sender manifest first.`);
+      if(sender.entry.split!==entry.split)throw Error(`Sender and receiver cross dataset splits: ${entry.path}`);
+      if(canonicalJSON(sender.info)!==canonicalJSON(record.info))throw Error(`Capture metadata disagrees with sender header: ${entry.path}`);
+      group.senders.add(sender.entry.path);group.records++;
+    }
+    group.captures.push(entry.path);groups.set(key,group);
+  }
+  if(!groups.size)throw Error('No matched uploaded captures to join. Upload sender manifests and receiver captures first.');
+  await freshDirectory(out);
+  const datasets=[];
+  for(const [key,group]of [...groups].sort(([a],[b])=>a.localeCompare(b))) {
+    const result=await joinCaptures({out:join(out,group.split,group.grid),split:group.split,senders:[...group.senders],captures:group.captures});
+    if(result.samples!==group.records||result.excluded.length)throw Error(`Unexpected join exclusions for ${key}; uploaded recordings changed during processing.`);
+    datasets.push({split:group.split,size:Number(group.grid.slice(1)),dataset:result.dataset,samples:result.samples});
+  }
+  return {recordings:root,datasetRoot:out,datasets,diagnosticFiles,
+    scope:'Joined evidence only. No recordings deleted; multires training/synthetic integration is separate from the established G64 recipe.'};
 }
 
 /** Re-render joined sender truth offline, once per physical session/frame/phase.
@@ -158,6 +263,7 @@ export async function targets(options) {
     sources.push({manifestSha256:hash(await readFile(manifestPath))});
     for(const sample of manifest.samples) {
       if(!sample||sample.source!=='real')throw Error('Target reconstruction requires joined real captures.');
+      requireEstablishedRaster(sample);
       validateSessionId(sample.sessionId);validateSessionId(sample.senderSessionId);
       const split=splitName(sample.split),info=sample.info;
       if(sample.split===undefined||typeof sample.id!=='string'||!sample.id||ids.has(sample.id))throw Error('Missing/duplicate joined sample identity or split.');
@@ -220,6 +326,7 @@ export async function baselines(options) {
   if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||manifest.samples.some(s=>s.source!=='synthetic'))throw Error('Baseline refresh accepts only a synthetic dataset.');
   if(new Set(manifest.samples.map(s=>s.id)).size!==manifest.samples.length)throw Error('Duplicate dataset sample ID.');
   for(const sample of manifest.samples) {
+    requireEstablishedRaster(sample);
     const g=sample.size,info=sample.info;
     if(![64,128].includes(g)||![4,16].includes(sample.colors)||info.size!==g||info.colors!==sample.colors)throw Error('Unsupported dataset shape.');
     const input=floatsFromBytes(await readSampleFile(root,sample,'input',3*16*g*g*4),3*16*g*g);
@@ -236,6 +343,7 @@ export async function evaluate(options) {
   if(new Set(manifest.samples.map(s=>s.id)).size!==manifest.samples.length)throw Error('Duplicate dataset sample ID.');
   if(options.split)splitName(options.split);
   const eligible=manifest.samples.filter(s=>!options.split||s.split===options.split),byId=new Map(eligible.map(s=>[s.id,s]));
+  for(const sample of eligible)requireEstablishedRaster(sample);
   const frames=predictions.framesPerInput,phaseGrouped=predictions.outputLabelSpace==='logical',used=new Set(),anchors=new Set(),selected=[];
   if(phaseGrouped&&(frames<4||frames>8))throw Error('Phase-grouped predictions require four to eight captures.');
   // Public capture identities define membership; no labels or successful decode
@@ -290,8 +398,9 @@ export async function evaluate(options) {
 
 async function main() {
   const [command,...args]=process.argv.slice(2),options=flags(args);
-  const action={generate,join:joinCaptures,targets,baselines,evaluate}[command];
-  if(!action)throw Error('Usage: corrector-dataset.mjs generate|join|targets|baselines|evaluate [--option value].');
+  const action={generate,join:joinCaptures,'join-uploads':joinUploads,targets,baselines,evaluate}[command];
+  if(!action)throw Error('Usage: corrector-dataset.mjs generate|join|join-uploads|targets|baselines|evaluate [--option value].');
   console.log(JSON.stringify(await action(options),null,2));
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))main().catch(error=>{console.error(`Corrector dataset failed: ${error.message}`);process.exitCode=1;});
+

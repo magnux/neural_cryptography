@@ -10,21 +10,28 @@
   <header class="site-header"><a class="brand" href="./capture.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M2 12V2h10M20 2h10v10M30 20v10H20M12 30H2V20"/><path d="M11 11h10v10H11z"/></svg><span>NEURAL KEY<span class="brand-divider">/</span><strong>CAPTURE DATASET</strong></span></a><span class="local-badge"><i></i> Browser-local</span></header>
   <nav class="app-nav" aria-label="Application"><a href="./index.html">Optical Bench</a><a href="./crypto.html">Crypto Lab</a><a href="./link.html">Live Demo</a><a href="./corrector.html">Corrector Lab</a><a href="./capture.html" aria-current="page">Capture Dataset</a><a href="./neural-zkboo.html">Neural-ZKBoo</a></nav>
   <main>
-    <section class="capture-intro"><div class="eyebrow">MILESTONE 2 · TRAINING DATA</div><h1>Capture the difficult frames.</h1><p>Display a known random matrix on one device. Collect camera samples on the other, then join the two files offline.</p></section>
+    <section class="capture-intro"><div class="eyebrow">MULTIRES · TRAINING DATA</div><h1>Capture the difficult frames.</h1><p>Collect one matrix size at a time. Upload both recordings to the demo server, or download them for offline processing.</p></section>
     <div id="captureError" class="notice" role="alert" hidden></div>
     <noscript><div class="notice">Enable JavaScript to collect local samples.</div></noscript>
     <div class="capture-role" role="group" aria-label="Device role"><button id="senderRole" class="role-button" aria-pressed="true">Display a matrix</button><button id="receiverRole" class="role-button" aria-pressed="false">Collect camera samples</button></div>
+    <div class="capture-collection-settings">
+      <div class="capture-fields collection-fields"><label>Dataset split<select id="datasetSplit"><option value="train">Train</option><option value="validation">Validation</option><option value="test">Test</option></select></label><label>Device label · optional<input id="deviceLabel" maxlength="80" placeholder="My phone / desktop webcam"></label></div>
+      <p class="muted" id="environmentSummary"></p><p class="muted">Use the same split on both devices. It stays fixed for a physical session; start a new session to change it.</p>
+      <p class="muted" id="uploadAvailability" role="status">Checking recording server…</p><button id="refreshUploads" class="small-button" type="button">Check upload server</button>
+      <progress id="uploadProgress" max="100" value="0" hidden aria-label="Recording upload progress"></progress>
+    </div>
     <section id="senderPanel" class="panel">
       <div class="panel-heading"><div><span class="section-number">01</span><h2>Sender</h2></div><span class="mode-label">STATIC DISPLAY</span></div>
       <div class="capture-body">
         <p>Create and save the sender manifest before recording. Keep the displayed matrix unchanged for the entire receiver burst. Advance manually after the receiver finishes.</p>
         <div class="capture-fields sender-fields">
-          <label>Grid<select id="senderSize"><option value="64">64 × 64</option><option value="128">128 × 128</option></select></label>
+          <label>Grid<select id="senderSize"><option value="8">8 × 8</option><option value="16">16 × 16</option><option value="32">32 × 32</option><option value="64" selected>64 × 64</option><option value="128">128 × 128</option><option value="256">256 × 256</option></select></label>
           <label>Palette<select id="senderColors"><option value="16">16 colors</option><option value="4">4 colors · control</option></select></label>
           <label>Palette phases<select id="senderPhases"><option value="4">4 phases</option><option value="1">1 phase</option><option value="8">8 phases</option><option value="16">16 phases</option></select></label>
         </div>
-        <div class="capture-actions"><button class="button primary" id="createSender">Create random sequence</button><button class="button secondary" id="downloadSender" disabled>Save sender manifest ↓</button><button class="small-button" id="nextPhase" disabled>Next phase →</button><button class="small-button" id="focusMatrix" aria-expanded="false" disabled>Focus matrix</button></div>
-        <p id="senderStatus" class="capture-status" role="status">Grid-8 references and RS32 are fixed for this capture profile.</p>
+        <div class="capture-actions"><button class="button primary" id="createSender">Create random sequence</button><button class="button secondary" id="uploadSender" disabled>Upload sender ↑</button><button class="button secondary" id="downloadSender" disabled>Save sender manifest ↓</button><button class="small-button" id="nextPhase" disabled>Next phase →</button><button class="small-button" id="focusMatrix" aria-expanded="false" disabled>Focus matrix</button></div>
+        <p id="senderUploadStatus" class="muted" role="status"></p>
+        <p id="senderStatus" class="capture-status" role="status">Grid-8 references; RS32 from G16 upward, no RS parity at G8. Capture crops use 2×2 pixels per cell.</p>
         <div id="senderCanvasWrap" class="sender-canvas-wrap" hidden><button id="closeFocus" class="small-button" hidden>Close focus · Esc</button><canvas id="senderCanvas" width="1024" height="1024" aria-label="Current training matrix"></canvas></div>
         <div class="capture-session sender-session-actions"><span id="senderSession"></span><button class="small-button" id="newSenderSession">New physical session</button></div>
         <p class="muted">Each new sequence has fresh random bytes. Keep one session for the same device arrangement; start a new session after changing devices or returning later. All phases of a payload stay in the same training split.</p>
@@ -39,7 +46,7 @@
             <div class="capture-fields capture-settings">
               <label>Camera<select id="camera"><option value="">Default camera</option></select></label>
               <label>Resolution<select id="resolution"><option value="720">720p</option><option value="1080">1080p</option><option value="480">480p</option></select></label>
-              <label>Pool per phase<select id="phaseMaximum"><option value="8">8 samples</option><option value="16">16 samples</option><option value="32" selected>32 samples</option><option value="64">64 samples</option></select></label>
+              <label>Pool per phase<select id="phaseMaximum"><option value="1">1 sample</option><option value="2">2 samples</option><option value="4">4 samples</option><option value="6">6 samples</option><option value="8">8 samples</option><option value="16">16 samples</option><option value="32" selected>32 samples</option><option value="64">64 samples</option></select></label>
               <label>Scan interval<select id="scanInterval"><option value="100" selected>100 ms</option><option value="250">250 ms</option><option value="500">500 ms</option><option value="1000">1 second</option><option value="2000">2 seconds</option></select></label>
             </div>
             <div class="capture-actions capture-live-actions"><button class="small-button" id="startCamera">Start camera</button><button class="small-button" id="stopCamera" disabled>Stop camera</button><button class="button primary" id="collectBurst" disabled>Record</button><button class="small-button" id="cancelBurst" disabled>Pause</button></div>
@@ -49,20 +56,21 @@
           <p class="capture-status" id="receiverStatus" role="status" aria-live="polite">Start the camera for automatic alignment.</p>
           <p class="muted" id="activePhase">No matrix detected yet</p>
         </div>
-        <p class="muted" id="cameraStatus">Camera images stay on this device until you download a capture file.</p>
+        <p class="muted" id="cameraStatus">Camera images stay on this device until you explicitly upload or download a capture file.</p>
         <label class="capture-checkbox"><input id="saveOriginal" type="checkbox">Include an original PNG when possible (maximum two snapshots per batch, 1 MiB each).</label>
         <p class="muted">The green fill marks a valid matrix. Record once; each phase fills its own pool after a stable-header check. At capacity, recording continues and a fast sampled-distance heuristic may replace a redundant capture. No manual cleanup is needed. Pause before changing the displayed matrix if you want to inspect the current pool.</p>
         <dl class="capture-metrics"><div><dt>All saved samples</dt><dd id="sampleCount">0 / 128</dd></div><div><dt>Diagnostics</dt><dd id="diagnosticCount">0</dd></div><div><dt>Export budget</dt><dd id="captureBytes">0 / 160 MiB</dd></div></dl>
         <p class="muted" id="distanceDetails">Needs at least two retained captures of this phase.</p>
         <p class="muted">Distance compares sampled pixels in aligned, color-corrected captures of the same phase. It helps measure variety, but blur and noise can also raise it. Keep the whole matrix visible and include both easy and difficult conditions.</p>
-        <div class="capture-actions"><button class="small-button" id="clearCaptures">Clear downloaded batch</button><button class="small-button" id="newReceiverSession">New physical session</button></div>
+        <div class="capture-actions"><button class="small-button" id="clearCaptures">Clear saved batch</button><button class="small-button" id="newReceiverSession">New physical session</button></div>
         <div class="capture-diagnostics"><h3>Latest capture</h3><p id="latestCapture">Start the camera; alignment checks run automatically.</p><p class="muted" id="latestDetails"></p></div>
         <label class="capture-notes">Session notes<textarea id="captureNotes" rows="3" maxlength="1000" placeholder="Phone / PC, direction, screen brightness, distance, motion or focus changes…"></textarea></label>
-        <div class="capture-actions"><button class="button secondary" id="downloadCaptures" disabled>Save receiver captures ↓</button><span id="receiverSession" class="muted"></span></div>
-        <p class="muted">The capture JSON contains calibrated pixels and may include the original camera view if selected. Save before clearing or leaving this page. Clearing a downloaded batch keeps the physical session ID; start a new physical session only after changing the device arrangement or returning later. Collection is capped at 128 samples and 160 MiB across all phase pools; G128 or optional originals may reach the byte budget first. Pause and save before clearing. These are export-size limits; browser memory use is higher; nothing is uploaded.</p>
+        <div class="capture-actions"><button class="button secondary" id="uploadCaptures" disabled>Upload receiver ↑</button><button class="button secondary" id="downloadCaptures" disabled>Save receiver captures ↓</button><span id="receiverSession" class="muted"></span></div>
+        <p id="receiverUploadStatus" class="muted" role="status"></p>
+        <p class="muted">Uploads contain calibrated pixels, device/browser/camera metadata and optional original PNGs. Recording stays local until you press Upload. Downloads remain available. Each batch contains one grid size; upload or download it before clearing. The physical session and split remain fixed across batches. Collection is capped at 128 samples and 160 MiB; the per-phase maximum is reduced for large grids or many phases so every phase can fit. For G256 with four phases, start with six samples per phase. Browser memory use is higher than the JSON size.</p>
       </div>
     </section>
-    <footer class="page-footer"><span>NEURAL KEY · CAPTURE DATASET</span><p>Save both files → join offline → train → evaluate held-out sessions</p><a href="https://github.com/magnux/neural_cryptography/blob/main/docs/NEURAL_CORRECTOR.md">Decoder plan ↗</a></footer>
+    <footer class="page-footer"><span>NEURAL KEY · CAPTURE DATASET</span><p>Upload or save both sides → join recordings → train → evaluate held-out sessions</p><a href="https://github.com/magnux/neural_cryptography/blob/main/docs/NEURAL_CORRECTOR.md">Corrector plan ↗</a></footer>
   </main><script type="module" src="./js/dataset/lab.js"></script>
 </body>
 </html>

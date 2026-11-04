@@ -7,100 +7,27 @@ optical codec converts corrected symbol evidence to bytes and checks RS/CRC.
 See [the architecture and mask definitions](NEURAL_CORRECTOR.md).
 
 The completed `U-tube-2x-attn` run reached **100% recorded validation recovery at
-K=7 and K=8 in both directions**, with phone→PC recovery of 70.8% at K=4. The
-immediate next step is trained browser inference and live recovery testing, not
-another architecture change. These results concern held-out recorded examples;
-real-time transport still needs device validation.
-
-Use G64/16 colors with four permuted phases for this model. The fixed-input
-profiles provide the G64/4-color control. G128 remains a separate training
-problem with a target-sized 128×128 bottleneck. Existing recording JSON stays
-unchanged. This guide covers data and training; [Corrector Lab](CORRECTOR_LAB.md)
-documents checkpoint naming, ONNX export, static HTTPS serving and browser tests.
+K=7 and K=8 in both directions** and subsequently completed a live Neural-ZKBoo
+exchange. The next architecture is `multires`; its separate size anchors and
+interleaved convolution/attention design are specified in the model guide.
 
 ## Collect real examples
 
-Prepare and serve the existing color app, with trusted HTTPS for the phone:
+Use the [multires recording guide](MULTIRES_COLLECTION.md) for the current collector:
+G8/G16/G32/G64/G128/G256, 2×2 pixels per cell, optional server uploads, automatic
+browser/device/camera metadata, and size-separated offline joining. Four palette
+phases are the intended multires input. Downloads remain available.
 
-```sh
-npm run prepare:apps
-python apps/color-optical-bench/serve.py --port 8000
-```
+The training and synthetic commands later in this document describe the
+**established 4×4-cell U-tube recipe**. They remain usable with existing recordings
+and datasets. New 2×2-cell collection is ready; production multires training/data
+augmentation support is a subsequent implementation step. The existing rebuild
+rejects the new sampling density before cleaning any output directories.
 
-Open **Capture Dataset** at `capture.html`, linked from Corrector Lab. Collection
-does not need PyTorch, model files, or ONNX Runtime. Use the existing
-[HTTPS serving instructions](DEVELOPMENT.md#local-serving) when using two devices.
-
-1. On the sender, select **64×64**, **16 colors**, **4 phases**, and **Create
-   random sequence**. Grid-8 references and RS32 are fixed for this collector.
-   Save the sender manifest immediately; a new sequence replaces the old one.
-2. Use **Focus matrix** to fit the complete marker into the screen. The display
-   stays static. Close focus to change phase after the receiver finishes.
-3. On the receiver, choose **Collect camera samples**, select the camera and
-   **720p**, and press **Start camera**. Alignment scans start automatically at
-   the selected interval (100 ms by default; 100/250/500/1000/2000 ms available).
-   There is only one in-flight worker task; slow processing lowers the actual
-   scan rate. The translucent green rectangle fills the detected matrix area.
-   An unreadable header clears the fill. The overlay is never part of saved pixels.
-   **Mirror preview** in the camera corner flips the video and alignment overlay
-   together. It affects only the display; recorded pixels, detection, labels and
-   optional originals retain their original orientation. The choice persists
-   across camera restarts within the page.
-4. The camera, scan interval, recording buttons, and live counters sit above
-   the camera in one compact viewport. Set **Pool per phase** to **32** and press
-   **Record**. Each new matrix/phase needs consecutive identical valid headers
-   over at least 500 ms before saving. Missing headers reset the guard. At 100 ms,
-   five accepted captures span about 400 ms after settling: roughly 900 ms from
-   initial detection if every scan succeeds. Slower processing stretches this
-   cadence; no concurrent scan jobs or queued frames are created. Payload
-   CRC failures remain useful examples.
-5. The first 32 captures fill the pool. Recording then continues automatically:
-   a randomized, sampled-distance heuristic compares each new capture to the
-   current phase pool and may replace a redundant observation. The count remains
-   32; **Seen** and **Replaced** show continuing activity. Small angle, distance,
-   focus, or white-balance changes can provide new examples. No manual thinning
-   action is required. The maximum choices are 8/16/32/64; reducing it below a
-   retained pool requires saving and clearing first.
-6. **Mean distance** summarizes the current phase pool. Watch it together with
-   replacement count and the live image. A larger value is not automatically
-   better; avoid collecting only damaged images. See the heuristic below.
-7. Advance the sender manually when ready. Recording remains armed and starts
-   a separate pool after the new phase passes the guard. **Pause** before
-   **Save receiver captures**, then **Clear downloaded batch** before resuming.
-   Clearing keeps the physical session ID. Download once per final batch: saving
-   overlapping copies and joining both creates duplicate capture IDs.
-8. Generate fresh sequences and save each sender manifest. More sessions should
-   also contain new payloads, not only more correlated frames of a few messages.
-   Keep each displayed phase static while collecting. The sender's physical-session
-   button is separated from the matrix by extra spacing and a divider.
-9. Record device/direction/brightness/conditions in the notes. Repeat with roles
-   reversed when alignment permits, and collect the 4-color control. Start a
-   **New physical session** when changing camera/device arrangement or returning
-   later; rear and front cameras should have distinct session IDs. Keep entire
-   sessions together in a split. Stopping the camera or hiding the page pauses
-   recording and preserves samples; reopening does not restart the camera.
-
-**Recording files are unchanged:** sender and receiver formats, versions, record
-fields, tensor normalization, and offline label joining remain the same. Existing
-recordings can be joined directly. Existing optional collection metadata keeps
-its shape (`keepRandom` is now 0; `recentThinning` is empty). The selection method
-value describes automatic distance replacement. No conversion is needed.
-
-An initial collection can use two training sessions and one validation session
-per direction, with two fresh payloads per session. Reserve a later session for
-the final test, before selecting model settings. This is a starting budget,
-not enough to establish generalization to other screen/camera pairs. Add data
-where the held-out failures show a gap.
-
-Each download is capped at **128 saved samples / 160 MiB** of encoded data
-across all phase pools, with at most 100 diagnostics within the same byte budget.
-The byte budget can stop a G128 batch before its requested sample counts; this
-pauses collection and asks you to save/clear. Use a smaller per-phase maximum
-on memory-constrained phones. Browser memory use is higher than export size,
-especially during JSON download. Optional original PNGs are limited to two per
-batch and 1 MiB each; oversized originals are omitted while tensor collection
-continues. The receiver file contains calibrated pixels and may contain the
-camera scene if originals are enabled. Store downloads in ignored `local-data/`.
+The sender/receiver recording format identifiers and version remain the same.
+New records explicitly carry their sampling density and additional environment
+metadata; established records retain their original four-pixels-per-axis meaning.
+No recorded file is rewritten or converted automatically.
 
 ### Interpreting diversity
 

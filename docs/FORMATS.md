@@ -25,7 +25,7 @@ rename existing stored capture/checkpoint identifiers.
 | Neural-ZKBoo authentication envelope | `NZA1`, `neural-zkboo-auth-v1` | [Authentication protocol](../apps/qr-neural-key/AUTHENTICATION.md), [QR formats](../apps/qr-neural-key/FORMAT.md) |
 | Optical model bundle | `neural-corrector`, version 1 | [Model/export contract](../experiments/neural-corrector/README.md); untrained or trained status, hashed graphs and fixtures |
 | Neural-corrector checkpoint | `optical-decoder-checkpoint`, version 1 | [`checkpoint.py`](../experiments/neural-corrector/checkpoint.py); local state dict and training/split provenance |
-| Capture sender / receiver exports | `optical-decoder-sender` / `optical-decoder-captures`, version 1 | [M2 capture guide](NEURAL_CORRECTOR_TRAINING.md); independent exports joined offline |
+| Capture sender / receiver exports | `optical-decoder-sender` / `optical-decoder-captures`, version 1 | [Multires collection](MULTIRES_COLLECTION.md); additive sampling/environment metadata, independent recordings downloaded or uploaded and joined offline |
 | Joined training dataset | `optical-decoder-dataset`, version 1 | [`data.py`](../experiments/neural-corrector/data.py), [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); hashed NCHW inputs, physical labels, mask, baseline, expected bytes |
 
 ## Content and transport

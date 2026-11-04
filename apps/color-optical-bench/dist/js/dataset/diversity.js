@@ -1,12 +1,14 @@
 /** Diagnostic only: fixed stratified pixels in the calibrated CHW crop. */
-export function captureSignature(input, size) {
-  const side=4*size, pixels=side*side;
-  if(!(input instanceof Float32Array)||![64,128].includes(size)||input.length!==3*pixels)throw Error('Invalid diversity input.');
+export function captureSignature(input, size, pixelsPerCell=4) {
+  const side=pixelsPerCell*size, pixels=side*side;
+  if(!(input instanceof Float32Array)||![8,16,32,64,128,256].includes(size)||![2,4].includes(pixelsPerCell)||side>512||input.length!==3*pixels)throw Error('Invalid diversity input.');
   const values=new Float32Array(32*32*3), bin=side/32;
   for(let i=0;i<1024;i++){
     // Deterministic jitter avoids sampling the same subcell offset everywhere.
     const h=Math.imul(i+1,2654435761)>>>0;
-    const x=(i%32)*bin+h%bin,y=Math.floor(i/32)*bin+(h>>>16)%bin;
+    // Fractional bins at G8 intentionally repeat source pixels while preserving
+    // the same bounded signature shape used by larger capture pools.
+    const x=Math.floor(((i%32)+(h&65535)/65536)*bin),y=Math.floor((Math.floor(i/32)+(h>>>16)/65536)*bin);
     for(let c=0;c<3;c++)values[3*i+c]=input[c*pixels+y*side+x];
   }
   return values;

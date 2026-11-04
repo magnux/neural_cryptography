@@ -23,6 +23,11 @@
 .capture-workbench #activePhase{padding:4px 14px 9px;margin:0;font-size:10px;line-height:1.3}
 .capture-lab .sender-session-actions{margin-top:64px;padding:28px 0 10px;border-top:1px solid #dce2d8;gap:24px}
 .capture-lab .sender-session-actions button{align-self:flex-end;min-height:44px;margin-top:8px}
+.capture-collection-settings{padding:14px 18px;background:#f6f8f2;border:1px solid #dce2d8;border-radius:8px;margin-bottom:20px}
+.capture-lab .collection-fields{grid-template-columns:minmax(120px,1fr) minmax(160px,2fr);margin:0 0 8px}
+.capture-collection-settings p{margin:5px 0;overflow-wrap:anywhere}
+.capture-collection-settings progress{display:block;width:100%;height:12px;margin-top:12px;accent-color:#274b37}
+.capture-lab #senderUploadStatus,.capture-lab #receiverUploadStatus{overflow-wrap:anywhere}
 @media(max-width:650px){
   .capture-toolbar{padding:10px}
   .capture-lab .capture-settings{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:8px}

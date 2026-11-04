@@ -1,5 +1,5 @@
 import {extractCapture} from '../vision.js';
-import {captureKey} from './contract.js';
+import {captureKey,captureProfile,CAPTURE_SIZES,CAPTURE_PIXELS_PER_CELL} from './contract.js';
 import {createSender} from './contract.js';
 import {captureFrame,validateCapture} from './capture.js';
 import {meanCaptureDistance,selectCaptureReplacement} from './diversity.js';
@@ -25,10 +25,10 @@ self.onmessage=async event=>{
     if(operation==='create'){
       // Public random training data only. This operation is never used by capture.
       const {size,colors,phases,sessionId}=options;
-      result=await createSender({size,colors,phases,sessionId,gridBlock:8,parity:32,holdMs:4000});
+      result=await createSender({...captureProfile(size,colors,phases),sessionId});
     }else if(operation==='render'){
       const {frame,pixels}=options;
-      if(![1024,2048].includes(pixels)||![64,128].includes(frame?.size)||![4,16].includes(frame?.colors))throw Error('Unsupported capture display profile.');
+      if(![1024,2048].includes(pixels)||!CAPTURE_SIZES.includes(frame?.size)||![4,16].includes(frame?.colors))throw Error('Unsupported capture display profile.');
       result=renderFrame(frame,pixels);transfer=[result.data.buffer];
     }else if(operation==='compare'){
       result=meanCaptureDistance(options.signatures);
@@ -42,12 +42,12 @@ self.onmessage=async event=>{
       // No sender manifest, labels, expected bytes, or sequence seed enters here.
       if(operation==='probe'){
         const detected=extractCapture(image,{preview:false});
-        const supported=[64,128].includes(detected.info?.size)&&[4,16].includes(detected.info?.colors);
+        const supported=CAPTURE_SIZES.includes(detected.info?.size)&&[4,16].includes(detected.info?.colors);
         result={timestamp,camera,probe:true,ok:Boolean(detected.samples)&&supported,
           info:detected.info,key:detected.info?captureKey(detected.info):null,
           transform:detected.transform,stats:detected.stats,stage:supported?detected.stage:(detected.info?'profile':detected.stage),
-          error:detected.info&&!supported?'Collection supports 64/128 grids and 4/16 colors.':detected.error};
-      }else result=await captureFrame(image,{timestamp,camera,signature:true});
+          error:detected.info&&!supported?'Collection supports 8/16/32/64/128/256 grids and 4/16 colors.':detected.error};
+      }else result=await captureFrame(image,{timestamp,camera,signature:true,pixelsPerCell:CAPTURE_PIXELS_PER_CELL});
       if(original){
         try{const snapshot=await originalPNG(image);if(snapshot.omitted)result.originalNote=snapshot.omitted;else result.original=snapshot;}
         catch(error){result.originalNote=`Original snapshot unavailable: ${error.message}`;}

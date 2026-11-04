@@ -30,6 +30,8 @@ they are not a requirement for future neural input preparation.
 
 The next model is **`multires`**, with a shared convolution/attention trunk and
 an independent learned positional anchor for every supported size, G8…G256.
+Its bottleneck alternates two convolutions, two attention blocks, two
+convolutions and two attention blocks.
 See [multires design](#multires-next-architecture).
 The production implementation and trained checkpoint are currently G64.
 The new design uses **2×2 pixels per cell (four pixels total)**. The currently
@@ -427,23 +429,30 @@ enlarged to 256×256. These biases condition the subsequent shared nonlinear
 computation on both resolution and position. They are part of the trained model,
 not optical corner markers or features inferred from the camera frame.
 
-### Convolution path and four attention blocks
+### Alternating convolution and attention bottleneck
 
 Remove the intermediate encoder/decoder level (`e1` and `d1`) from the earlier
 U-tube. The previous stride-only feasibility prototype retained both blocks;
 `multires` now makes the structural reduction explicit. Keep the full-resolution
-inlet and outer block `e0`, the deep bottleneck, reconstruction block `d0`,
-outlet and head. The bottleneck's first residual pair performs the one `2G→G`
-reduction and retains its learned stride-two shortcut. It still has four residual
-pairs (eight main convolutions). `d0` combines the upsampled bottleneck with the
-outer skip. The outlet uses stride 2 then stride 1, ending at G.
+inlet and outer block `e0`, the bottleneck, reconstruction block `d0`, outlet and
+head. The bottleneck now follows **2 convs → 2 attention blocks → 2 convs →
+2 attention blocks**. Here two convolutions mean one residual pair, not two
+residual pairs: the complete bottleneck has **four main convolutions and four
+attention blocks**.
 
-Double bottleneck attention from **two to four independently parameterized
-blocks**, each with 32 channels, four heads and 8×8-cell windows. Alternate
-unshifted/shifted windows with shifts **0, 4, 0, 4**. The deeper attention stack
-provides additional processing and communication between windows after removing
-the intermediate convolutional level; this is a capacity choice, not a proven
-equivalence between convolution and attention depth.
+The first convolution pair performs the one `2G→G` reduction and retains its
+learned stride-two shortcut. Its two convolutions are followed by one channel
+normalization and ReLU, then an unshifted/shifted attention pair. The second
+convolution pair stays at G with an identity residual shortcut, again followed
+by one channel normalization and ReLU, then the second attention pair. This uses
+one convolutional normalization per segment; attention retains its own norms.
+All bottleneck outputs after the first reduction remain at the target grid size.
+
+The four attention blocks have independent parameters, 32 channels, four heads
+and 8×8-cell windows, with shifts **0, 4, 0, 4**. Interleaving lets the second
+convolution pair transform features that already incorporate the first pair of
+attention operations. `d0` combines the upsampled final bottleneck with the outer
+skip. The outlet uses stride 2 then stride 1, ending at G.
 
 ```mermaid
 flowchart TD
@@ -452,9 +461,11 @@ flowchart TD
     I --> ADD["Add size-specific positional anchor"]
     P --> ADD
     ADD --> E["Outer block: 2 residual pairs at 2G"]
-    E --> B["Bottleneck: 4 residual pairs, reduce to G"]
-    B --> T["4 attention blocks at G; shifts 0 / 4 / 0 / 4"]
-    T --> D["Upsample, concatenate skip; 2 residual pairs at 2G"]
+    E --> C1["2 convs + residual + norm; reduce to G"]
+    C1 --> T1["2 attention blocks at G; shifts 0 / 4"]
+    T1 --> C2["2 convs + residual + norm; stay at G"]
+    C2 --> T2["2 attention blocks at G; shifts 0 / 4"]
+    T2 --> D["Upsample, concatenate skip; 2 residual pairs at 2G"]
     E --> D
     D --> O["Outlet: stride 2 then 1; 16-class head at G"]
 ```
@@ -477,24 +488,28 @@ the tensor contract and browser validation. All must be parameterized together.
 ### Parameter and export sizes
 
 With 32-channel anchors, `32 × sum(G²)` is **2,795,520 parameters** across the six
-sizes. The shared trunk with the reduced convolutional path and four attention
-blocks is **232,400**, for a combined training model of **3,027,920 parameters**.
+sizes. The shared trunk with the alternating bottleneck is **195,472**, for a
+combined training model of **2,990,992 parameters**.
 Each attention block has 8,544 parameters; the two additional blocks add 17,088.
 
 | Profile | Selected anchor parameters | Shared trunk + selected anchor |
 | --- | --- | --- |
-| G8 | 2,048 | 234,448 |
-| G16 | 8,192 | 240,592 |
-| G32 | 32,768 | 265,168 |
-| G64 | 131,072 | 363,472 |
-| G128 | 524,288 | 756,688 |
-| G256 | 2,097,152 | 2,329,552 |
+| G8 | 2,048 | 197,520 |
+| G16 | 8,192 | 203,664 |
+| G32 | 32,768 | 228,240 |
+| G64 | 131,072 | 326,544 |
+| G128 | 524,288 | 719,760 |
+| G256 | 2,097,152 | 2,292,624 |
 
-The earlier 500,000-parameter ceiling does not hold for the combined model or
-the G128/G256 profiles. This design keeps the requested full 32-channel anchors
-explicitly; no low-rank factorization, shared cross-size anchor or broadcast-only
-anchor is substituted. The complete float32 parameter bank is about 11.55 MiB;
-a G256 export's parameters are about 8.89 MiB, excluding graph metadata/masks.
+The **500,000-parameter guideline applies to the computational trunk**, not the
+anchors. Its 195,472 parameters are below that guideline. Keep the requested
+full 32-channel anchors without imposing that budget on them. Anchor use is a
+fixed local 2× interpolation plus elementwise addition; it does not repeatedly
+mix channels or tokens as convolution and attention do. Its arithmetic overhead
+is correspondingly small, although storing and reading its values still consumes
+memory and bandwidth. Track that separately from trunk capacity: the complete
+float32 parameter bank is about 11.41 MiB, and a G256 export's parameters are about
+8.75 MiB, excluding graph metadata/masks.
 
 ### ONNX/WASM deployment
 
@@ -519,9 +534,9 @@ capture pools. Test WASM parity at each exported size and measure WebGPU/phone
 performance separately. Successful CPU/WASM execution is not a phone benchmark.
 
 The revised scratch prototype was checked on 4 November 2026 with separate
-anchors, the reduced convolutional path and all four attention blocks. Numerical
-G8/G16 forwards and ONNX checks passed. ONNX Runtime Web 1.23.2, single-thread
-WASM, matched PyTorch with maximum logit errors 1.25×10⁻⁶ / 1.85×10⁻⁶, no
+anchors and the exact interleaved **C,C,A,A,C,C,A,A** bottleneck. Numerical G8/G16
+forwards and ONNX checks passed. ONNX Runtime Web 1.23.2, single-thread WASM,
+matched PyTorch with maximum logit errors 2.38×10⁻⁶ / 1.94×10⁻⁶, no
 tolerance failures and no changed argmax cells. Each exported graph contained
 only its selected anchor; the full anchor bank was not duplicated into each
 profile. This used random weights and establishes small-profile execution/parity,

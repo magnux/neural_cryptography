@@ -2,7 +2,8 @@
 
 Experiments in neural dynamical systems, a custom ZKBoo-style proof of knowledge,
 and camera-to-screen optical communication. The browser applications perform
-computation locally; their servers only serve static files.
+computation locally. The demo server serves static assets and can optionally
+store recording JSONs explicitly uploaded from the data collector.
 
 The goal is **fast, reliable and secure optical authentication between a phone
 and computer**. A complete Neural-ZKBoo device exchange has now succeeded using
@@ -50,6 +51,8 @@ parameters: transport carries the serialized proof bytes.
   identification, header-free neural acquisition, payload integrity and ACKs.
 - [Neural corrector design](docs/NEURAL_CORRECTOR.md): architecture, input/output
   contract, dataset collection, RTX 4090 training, and browser inference.
+- [Multires collection](docs/MULTIRES_COLLECTION.md): 8…256 grids, 2×2 pixels per
+  cell, server uploads and automatic device/camera metadata.
 - [Connections to previous research](docs/RESEARCH_CONNECTIONS.md): neural
   synchronization, adversarial learning, neural cryptanalysis, SIMON, LowMC,
   and Picnic, with primary references and future experiments.

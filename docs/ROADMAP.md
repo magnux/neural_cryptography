@@ -17,8 +17,9 @@ OBM5 color DATA and static standard QR ACKs.
 The model target is now **`multires`**, covering
 G8/G16/G32/G64/G128/G256 with **2×2 pixels per cell**. Small controls and larger
 data matrices share a convolution/attention trunk and select independent learned
-G×G anchors, enlarged exactly 2× at the inlet. The bottleneck has four attention
-blocks; the intermediate encoder/decoder level is removed. This replaces the separate-G128
+G×G anchors, enlarged exactly 2× at the inlet. The bottleneck alternates two
+convolutions, two attention blocks, two convolutions and two attention blocks;
+the intermediate encoder/decoder level is removed. This replaces the separate-G128
 model plan; layout, shared model support and integration can proceed together.
 
 ## What is established
@@ -44,7 +45,9 @@ path rather than treating model size or symbol accuracy alone as the objective.
 
 ## Reuse and scope
 
-Keep computation local in browser workers and serve only static app/model assets.
+Keep authentication and model computation local in browser workers and serve
+their app/model assets statically. The data collector optionally uploads its
+recordings to private server storage; it does not move inference to the server.
 Reuse the trained G64 checkpoint, U-tube family, capture/generation tools, shared
 authentication session and compact proof engine. No Flask service or server-held
 key distribution is necessary. No new cryptographic primitive is required for
@@ -90,8 +93,10 @@ The separate standard-QR experiment remains useful for comparison.
 - **Use `multires`.** Share the trunk and four attention blocks, with independent
   `[1,32,G,G]` anchors and size-specific attention/loss masks. Each anchor is
   enlarged exactly 2×; none is resized to serve another size. Static exports
-  include only the selected anchor. The complete model has about 3.03M parameters;
-  G128/G256 exceed the earlier 500k ceiling. Load only needed sessions.
+  include only the selected anchor. The shared processing layers have 195,472
+  parameters, below the approximate 500k computational guideline. The independent
+  anchors are budgeted separately: the full bank brings the total to 2,990,992.
+  Load only needed sessions.
 - **Fit controls to real capacity.** G8 has only 32 raw bytes before overhead.
   Select the smallest profile that fits the complete ACK and its binding/ECC;
   retain four phases initially rather than assuming single-frame recovery.

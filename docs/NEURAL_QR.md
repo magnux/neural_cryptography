@@ -23,7 +23,8 @@ phase patches and phase-permuted data colors change. Reference colors stay fixed
 
 The target is a **multi-resolution family**, G8/G16/G32/G64/G128/G256, read by
 **`multires`**: a shared convolution/attention trunk with one learned G×G anchor
-per size, enlarged exactly 2× at its inlet, and four attention blocks at G.
+per size, enlarged exactly 2× at its inlet. At G the bottleneck alternates
+**2 convolutions → 2 attention blocks → 2 convolutions → 2 attention blocks**.
 G64 is the existing trained starting point;
 small controls and larger data matrices can use different profiles. The
 [model design](NEURAL_CORRECTOR.md#multires-next-architecture)

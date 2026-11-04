@@ -243,7 +243,7 @@ export function extractCapture(image,{preview=true,spatial='cross',previousGeome
  * A supplied capture only saves marker detection; none of its RGB samples,
  * diagnostic fields, or previously decoded bytes are used as evidence here.
  */
-export function extractDensePayload(image,capture=null){
+export function extractDensePayload(image,capture=null,{pixelsPerCell:requestedPixelsPerCell=4}={}){
   const start=performance.now();let stage='detect';
   const failed=error=>({ok:false,stage,error,stats:{denseMs:performance.now()-start}});
   if(!image||!Number.isInteger(image.width)||!Number.isInteger(image.height)||
@@ -251,6 +251,7 @@ export function extractDensePayload(image,capture=null){
      !(image.data instanceof Uint8Array||image.data instanceof Uint8ClampedArray)||
      image.data.length!==image.width*image.height*4)return failed('Unsupported image dimensions.');
   try{
+    if(![2,4].includes(requestedPixelsPerCell))throw Error('Dense sampling requires 2 or 4 pixels per cell.');
     const detected=capture??extractCapture(image,{preview:false});
     if(!detected?.transform)return {ok:false,stage:detected?.stage??stage,
       error:detected?.error??'No validated payload geometry.',stats:{denseMs:performance.now()-start}};
@@ -259,15 +260,16 @@ export function extractDensePayload(image,capture=null){
     // Re-read rather than trust info from another exposure or a previous frame.
     stage='header';const info=readHeader(image,h);
     stage='profile';
-    if(![64,128].includes(info.size)||![4,16].includes(info.colors)){
-      return failed('Learned input supports 64/128 grids and 4/16 colors; use the classical decoder for this profile.');
+    const supportedSizes=requestedPixelsPerCell===2?[8,16,32,64,128,256]:[64,128];
+    if(!supportedSizes.includes(info.size)||![4,16].includes(info.colors)){
+      return failed(`Learned input supports ${supportedSizes.join('/')} grids and 4/16 colors at ${requestedPixelsPerCell} pixels/cell; use the classical decoder for this profile.`);
     }
     stage='calibration';
     const pilots=new Float32Array(96);let offset=0;
     for(const x of [22,234])for(let i=0;i<16;i++){
       pilots.set(patch(image,h,x,52+i*10,1.5),offset);offset+=3;
     }
-    const calibration=calibrate(pilots,0),p=FORMAT.payload,side=4*info.size;
+    const calibration=calibrate(pilots,0),p=FORMAT.payload,side=requestedPixelsPerCell*info.size;
     const horizontal=Math.hypot(...project(h,p.x+p.side,p.y).map((v,k)=>v-project(h,p.x,p.y)[k]))/info.size;
     const vertical=Math.hypot(...project(h,p.x,p.y+p.side).map((v,k)=>v-project(h,p.x,p.y)[k]))/info.size;
     const pixelsPerCell=Math.min(horizontal,vertical);
@@ -282,7 +284,7 @@ export function extractDensePayload(image,capture=null){
       if(!corrected.every(Number.isFinite))throw Error('Non-finite calibrated payload color.');
       rgb.set(corrected,3*(y*side+x));
     }
-    return {ok:true,info,rgb,width:side,height:side,colorTransform:calibration.coefficients,
+    return {ok:true,info,rgb,width:side,height:side,pixelsPerCell:requestedPixelsPerCell,colorTransform:calibration.coefficients,
       stats:{pixelsPerCell,colorRMSE:calibration.rmse,denseMs:performance.now()-start}};
   }catch(error){return failed(error.message);}
 }

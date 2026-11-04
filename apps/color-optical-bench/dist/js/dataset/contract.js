@@ -5,6 +5,21 @@ export const DATASET_FORMAT = 'optical-decoder-dataset';
 export const DATASET_VERSION = 1;
 export const MAX_CAPTURE_BYTES = 160 * 1024 * 1024;
 export const MAX_RECORDS = 128;
+export const CAPTURE_SIZES = Object.freeze([8,16,32,64,128,256]);
+export const CAPTURE_PIXELS_PER_CELL = 2;
+/** Recording profiles remain the current optical format. G8 cannot fit RS32. */
+export function captureProfile(size=64,colors=16,phases=4){
+  const profile={size,colors,phases,gridBlock:8,parity:size===8?0:32,holdMs:4000,pixelsPerCell:CAPTURE_PIXELS_PER_CELL};
+  validateProfile(profile);return profile;
+}
+/** Conservative JSON budget across all phases, including camera metadata and two PNGs. */
+export function recommendedPhaseMaximum(size,phases=4){
+  if(!CAPTURE_SIZES.includes(size)||![1,2,4,8,16].includes(phases))throw Error('Unsupported capture pool profile.');
+  const inputBytes=3*(CAPTURE_PIXELS_PER_CELL*size)**2*4,sampleBytes=(3*size*size+96)*4;
+  const perRecord=4*Math.ceil(inputBytes/3)+4*Math.ceil(sampleBytes/3)+8192;
+  const allowance=Math.min(Math.floor(MAX_RECORDS/phases),Math.floor((MAX_CAPTURE_BYTES-3*1024*1024)/(perRecord*phases)));
+  return [32,16,8,6,4,2,1].find(n=>n<=allowance)??1;
+}
 export const captureKey = info => `${frameKey(info)}/${info.phase}`;
 export function canonicalJSON(value) {
   if(Array.isArray(value))return `[${value.map(canonicalJSON).join(',')}]`;
@@ -50,9 +65,11 @@ export function validateSessionId(value) {
   return value;
 }
 export function validateProfile(profile) {
-  if(!profile||![64,128].includes(profile.size)||![4,16].includes(profile.colors)||
+  if(!profile||!CAPTURE_SIZES.includes(profile.size)||![4,16].includes(profile.colors)||
     ![1,2,4,8,16].includes(profile.phases)||![0,4,8,16].includes(profile.gridBlock)||
-    ![0,16,32].includes(profile.parity)||!Number.isInteger(profile.holdMs)||profile.holdMs<250||profile.holdMs>10000) throw Error('Unsupported capture profile.');
+    ![0,16,32].includes(profile.parity)||!Number.isInteger(profile.holdMs)||profile.holdMs<250||profile.holdMs>10000||
+    profile.pixelsPerCell!==undefined&&![2,4].includes(profile.pixelsPerCell)) throw Error('Unsupported capture profile.');
+  capacity(profile.size,profile.colors,profile);
   return profile;
 }
 function seededBytes(length,seed) {
@@ -62,9 +79,9 @@ function seededBytes(length,seed) {
 }
 
 /** One static logical frame; the UI advances phases manually, with a settling guard. */
-export async function createSender({size=64,colors=16,phases=4,gridBlock=8,parity=32,holdMs=4000,sessionId=crypto.randomUUID(),seed}={}) {
+export async function createSender({size=64,colors=16,phases=4,gridBlock=8,parity=size===8?0:32,holdMs=4000,pixelsPerCell=CAPTURE_PIXELS_PER_CELL,sessionId=crypto.randomUUID(),seed}={}) {
   validateSessionId(sessionId);
-  const profile=validateProfile({size,colors,phases,gridBlock,parity,holdMs});
+  const profile=validateProfile({size,colors,phases,gridBlock,parity,holdMs,pixelsPerCell});
   if(seed!==undefined&&(!Number.isInteger(seed)||seed<0||seed>0xffffffff)) throw Error('Invalid public synthetic seed.');
   const bytes=seed===undefined?randomBytes(capacity(size,colors,profile)+8):seededBytes(capacity(size,colors,profile)+8,seed);
   const id=bytes.slice(0,8),payload=bytes.slice(8);

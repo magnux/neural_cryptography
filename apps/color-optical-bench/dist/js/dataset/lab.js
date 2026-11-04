@@ -2,6 +2,9 @@ import {CaptureClient} from './client.js';
 import {CaptureBuffer} from './capture.js';
 import {ScanLoop} from './scan-loop.js';
 import {recordingFilename} from './filenames.js';
+import {captureProfile,recommendedPhaseMaximum} from './contract.js';
+import {collectionIdentity,environmentMetadata,cameraMetadata,saveDeviceLabel} from './metadata.js';
+import {recordingUploadConfig,uploadRecording} from './upload.js';
 import {project} from '../vision.js';
 
 const $=id=>document.getElementById(id),client=new CaptureClient(),buffer=new CaptureBuffer();
@@ -10,6 +13,10 @@ const session=prefix=>`${prefix}-${globalThis.crypto?.randomUUID?.()??'unavailab
 let senderSession=session('sender'),receiverSession=session('receiver'),sender=null,phase=0,role='sender';
 let busy=false,epoch=0,stream=null,cameraStarting=false,cameraEpoch=0;
 let previewMirrored=false;
+const identity=collectionIdentity();
+let uploadConfig={enabled:false},uploading=false,uploadController=null,uploadEpoch=0;
+let senderSplit=null,receiverSplit=null,senderSaved=false,receiverRevision=0,receiverSavedRevision=0;
+let receiverSnapshot=null,receiverEnvironment=null,lastCamera={},sessionCameraId=null;
 let lastMediaTime=-1,collecting=false,budgetFull=false,receiverEpoch=0,activeKey=null,activeInfo=null;
 const distances=new Map(),originalAttempts=new Set(),phaseActivity=new Map();
 let previousMaximum=32;
@@ -25,36 +32,83 @@ let previousFocus=null;
 function showError(message=''){$('captureError').textContent=message;$('captureError').hidden=!message;}
 function status(message){$('receiverStatus').textContent=message;}
 function cameraInfo(){
-  const settings=stream?.getVideoTracks()[0]?.getSettings();
-  return settings?{active:true,width:settings.width,height:settings.height,frameRate:settings.frameRate,
-    facingMode:settings.facingMode,requestedHeight:Number($('resolution').value)}:{active:false};
+  const track=stream?.getVideoTracks()[0];
+  const info=cameraMetadata(track,{requestedHeight:Number($('resolution').value),previous:lastCamera});
+  if(track)lastCamera=info;
+  return info;
+}
+function environment(){return environmentMetadata({...identity,deviceLabel:$('deviceLabel').value});}
+function invalidateReceiver(){receiverRevision++;receiverSnapshot=null;}
+function receiverDirty(){return (buffer.records.length||buffer.diagnostics.length)&&receiverRevision!==receiverSavedRevision;}
+function canDiscardReceiver(){return !receiverDirty()||confirm('This batch has not been uploaded or downloaded. Discard the retained recordings?');}
+function canDiscardSender(){return !sender||senderSaved||confirm('This sender manifest has not been uploaded or downloaded. Discard it?');}
+function snapshotReceiver(){
+  if(!receiverSnapshot)receiverSnapshot={...buffer.export({notes:$('captureNotes').value,sessionId:receiverSession,camera:cameraInfo()}),
+    datasetSplit:receiverSplit??$('datasetSplit').value,environment:receiverEnvironment??environment(),
+    collection:{maxPerPhase:phaseMaximum(),keepRandom:0,scanIntervalMs:Number($('scanInterval').value),
+      distances:[...distances].map(([key,value])=>({key,...value.result,current:value.revision===buffer.revision(key),beforeThinning:value.previous}))}};
+  return receiverSnapshot;
+}
+async function checkUploads(){
+  if(uploading)return;
+  $('refreshUploads').disabled=true;uploadConfig=await recordingUploadConfig();
+  $('uploadAvailability').textContent=uploadConfig.enabled
+    ? 'Recording server ready. Upload saves to the selected split and matrix-size folder. Files stay on this device until you choose Upload.'
+    :uploadConfig.reason;
+  $('refreshUploads').disabled=false;refresh();
+}
+async function upload(kind){
+  if(uploading||busy)return;
+  if(kind==='sender'&&!sender)return;
+  if(kind==='receiver'&&(!buffer.records.length&&!buffer.diagnostics.length))return;
+  collecting=false;receiverEpoch++;scanner.stop();
+  const recording=kind==='sender'?sender.manifest:snapshotReceiver(),revision=receiverRevision;
+  const target=$(kind==='sender'?'senderUploadStatus':'receiverUploadStatus');
+  uploading=true;const token=++uploadEpoch;uploadController=new AbortController();showError();refresh();
+  $('uploadProgress').hidden=false;target.textContent='Preparing recording upload…';
+  try{
+    const result=await uploadRecording(recording,{split:recording.datasetSplit,config:uploadConfig,signal:uploadController.signal,
+      onProgress:({loaded,total})=>{if(token!==uploadEpoch)return;$('uploadProgress').value=total?loaded/total*100:0;
+        target.textContent=loaded<total?`Uploading ${(loaded/1048576).toFixed(1)} / ${(total/1048576).toFixed(1)} MiB…`:'Upload sent. Waiting for the server to confirm storage…';}});
+    if(token!==uploadEpoch)return;
+    if(kind==='sender')senderSaved=true;else receiverSavedRevision=revision;
+    target.textContent=`${result.duplicate?'Already saved':'Saved'}: ${result.storedPath}`;
+    if(kind==='receiver')status('Recording saved on the server. Clear this saved batch to collect another matrix or size.');
+  }catch(error){if(token===uploadEpoch){target.textContent=error.message;showError(error.message);}}
+  finally{if(token===uploadEpoch){uploading=false;uploadController=null;$('uploadProgress').hidden=true;refresh();if(stream)scanner.start();}}
 }
 function refresh(){
-  const counts=buffer.summary();
-  $('senderRole').disabled=busy;$('receiverRole').disabled=busy;
+  const counts=buffer.summary(),locked=busy||uploading,split=role==='sender'?senderSplit:receiverSplit;
+  $('senderRole').disabled=locked;$('receiverRole').disabled=locked;
+  $('datasetSplit').disabled=locked||Boolean(split);if(split)$('datasetSplit').value=split;
+  $('deviceLabel').disabled=locked||Boolean(split);$('captureNotes').disabled=uploading;
+  $('environmentSummary').textContent=`Device: ${$('deviceLabel').value||identity.deviceId} · ${environment().deviceClass} (browser estimate). Camera labels and actual settings are recorded after camera permission.`;
   $('senderRole').setAttribute('aria-pressed',String(role==='sender'));
   $('receiverRole').setAttribute('aria-pressed',String(role==='receiver'));
   $('senderPanel').hidden=role!=='sender';$('receiverPanel').hidden=role!=='receiver';
-  for(const id of ['senderSize','senderColors','senderPhases','createSender','newSenderSession'])$(id).disabled=!supported||busy;
-  $('downloadSender').disabled=!sender||busy;$('nextPhase').disabled=!sender||sender.frames.length<2||busy;
-  $('focusMatrix').disabled=!sender||busy||$('senderCanvasWrap').hidden;
+  for(const id of ['senderSize','senderColors','senderPhases','createSender','newSenderSession'])$(id).disabled=!supported||locked;
+  $('downloadSender').disabled=!sender||locked;$('uploadSender').disabled=!sender||locked||!uploadConfig.enabled;
+  $('nextPhase').disabled=!sender||sender.frames.length<2||locked;
+  $('focusMatrix').disabled=!sender||locked||$('senderCanvasWrap').hidden;
   $('senderSession').textContent=`Session: ${senderSession}`;$('receiverSession').textContent=`Session: ${receiverSession}`;
-  $('startCamera').disabled=!supported||cameraStarting||Boolean(stream)||busy;
+  $('startCamera').disabled=!supported||cameraStarting||Boolean(stream)||locked;
   $('stopCamera').disabled=!stream&&!cameraStarting;
-  $('camera').disabled=Boolean(stream)||cameraStarting;$('resolution').disabled=Boolean(stream)||cameraStarting;
+  $('camera').disabled=Boolean(stream)||cameraStarting||uploading;$('resolution').disabled=Boolean(stream)||cameraStarting||uploading;
   $('cameraPreview').setAttribute('data-mirrored',String(previewMirrored));
   $('mirrorPreview').setAttribute('aria-pressed',String(previewMirrored));
   const phaseCount=buffer.phaseRecords(activeKey).length;
-  $('collectBurst').disabled=!stream||collecting||budgetFull;
+  $('collectBurst').disabled=!stream||collecting||budgetFull||uploading;
   $('cancelBurst').disabled=!collecting;
-  $('clearCaptures').disabled=collecting;$('newReceiverSession').disabled=collecting;
-  $('downloadCaptures').disabled=collecting||(!counts.records&&!counts.diagnostics);
-  $('phaseMaximum').disabled=collecting;
+  $('clearCaptures').disabled=collecting||uploading;$('newReceiverSession').disabled=collecting||uploading;
+  $('downloadCaptures').disabled=collecting||uploading||(!counts.records&&!counts.diagnostics);
+  $('uploadCaptures').disabled=uploading||!uploadConfig.enabled||(!counts.records&&!counts.diagnostics);
+  $('phaseMaximum').disabled=collecting||uploading;$('scanInterval').disabled=uploading;$('saveOriginal').disabled=uploading;
   $('phaseCount').textContent=`${phaseCount} / ${phaseMaximum()}`;
   const activity=phaseActivity.get(activeKey);
   $('seenCount').textContent=String(activity?.seen??0);
   $('replacementCount').textContent=String(activity?.replaced??0);
-  $('activePhase').textContent=activeInfo?`${activeInfo.id} · phase ${activeInfo.phase+1}/${activeInfo.phases}`:'No matrix detected yet';
+  const phaseCounts=activeInfo?Array.from({length:activeInfo.phases},(_,p)=>buffer.records.filter(row=>row.info.id===activeInfo.id&&row.info.phase===p).length):[];
+  $('activePhase').textContent=activeInfo?`${activeInfo.size}×${activeInfo.size} · phase ${activeInfo.phase+1}/${activeInfo.phases} · retained [${phaseCounts.join(', ')}] · ${activeInfo.id}`:'No matrix detected yet';
   const metric=distances.get(activeKey),mean=metric?.result.mean;
   $('meanDistance').textContent=mean==null?'—':`${mean.toFixed(2)}%`;
   $('distanceDetails').textContent=metric
@@ -80,7 +134,7 @@ function closeFocus(restore=true){
   if(restore)previousFocus?.focus();previousFocus=null;
 }
 async function displayPhase(index,token){
-  const frame=sender.frames[index],image=await client.call('render',{frame,pixels:frame.size===128?2048:1024});
+  const frame=sender.frames[index],image=await client.call('render',{frame,pixels:frame.size>=128?2048:1024});
   if(token!==epoch)return;
   phase=index;
   const canvas=$('senderCanvas');canvas.width=image.width;canvas.height=image.height;
@@ -89,17 +143,19 @@ async function displayPhase(index,token){
   $('senderStatus').textContent=`${frame.size}×${frame.size}, ${frame.colors} colors · phase ${phase+1}/${sender.frames.length} · sequence ${frame.id}. Keep this image unchanged while the receiver collects.`;
 }
 async function createSender(){
-  if(busy)return;showError();busy=true;const token=++epoch;$('senderCanvasWrap').hidden=true;refresh();
+  if(busy||uploading||!canDiscardSender())return;showError();busy=true;const token=++epoch;$('senderCanvasWrap').hidden=true;refresh();
   try{
-    const created=await client.call('create',{size:Number($('senderSize').value),colors:Number($('senderColors').value),
-      phases:Number($('senderPhases').value),sessionId:senderSession});
+    const created=await client.call('create',{...captureProfile(Number($('senderSize').value),Number($('senderColors').value),Number($('senderPhases').value)),sessionId:senderSession});
     if(token!==epoch)return;
-    sender=created;phase=0;await displayPhase(0,token);
+    senderSplit??=$('datasetSplit').value;
+    sender={...created,manifest:{...created.manifest,datasetSplit:senderSplit,environment:environment()}};
+    senderSaved=false;$('senderUploadStatus').textContent='Save this manifest once; it describes every palette phase.';
+    phase=0;await displayPhase(0,token);
   }catch(error){if(token===epoch)showError(error.message);}
   finally{if(token===epoch){busy=false;refresh();}}
 }
 async function nextPhase(){
-  if(busy||!sender)return;showError();busy=true;const token=++epoch;refresh();
+  if(busy||uploading||!sender)return;showError();busy=true;const token=++epoch;refresh();
   try{await displayPhase((phase+1)%sender.frames.length,token);}
   catch(error){if(token===epoch)showError(error.message);}finally{if(token===epoch){busy=false;refresh();}}
 }
@@ -145,8 +201,22 @@ async function scanOne(){
 }
 async function receiveScan({record,width,height}){
   const token=receiverEpoch;
+  if(uploading)return;
   overlay(record,width,height);showCapture(record);
   if(record.ok){activeKey=record.key;activeInfo=record.info;}else buffer.resetStability();
+  if(collecting&&record.ok){
+    const first=buffer.records[0];
+    if(first&&(first.info.size!==record.info.size||first.info.colors!==record.info.colors||first.info.phases!==record.info.phases)){
+      collecting=false;buffer.resetStability();
+      status(`Detected a different profile (G${record.info.size}, ${record.info.colors} colors, ${record.info.phases} phases). Save and clear this G${first.info.size} batch before changing profiles.`);
+      refresh();return;
+    }
+    if(first&&first.camera?.deviceId&&record.camera?.deviceId&&first.camera.deviceId!==record.camera.deviceId){
+      collecting=false;buffer.resetStability();status('Camera changed. Save this batch and start a new physical session before collecting.');refresh();return;
+    }
+    const maximum=recommendedPhaseMaximum(record.info.size,record.info.phases);
+    if(!first&&phaseMaximum()>maximum){$('phaseMaximum').value=String(maximum);previousMaximum=maximum;invalidateReceiver();}
+  }
   if(collecting&&!record.probe){
     let replaceIndex=null;
     if(record.ok){
@@ -163,10 +233,11 @@ async function receiveScan({record,width,height}){
       }
     }
     const outcome=buffer.add(record,{alreadyValidated:true,maxPerPhase:phaseMaximum(),replaceIndex});
+    if(outcome.stage!=='kept')invalidateReceiver();
     if(outcome.stage==='replaced')phaseActivity.get(record.key).replaced++;
     if(outcome.stage==='full'){
       collecting=false;budgetFull=true;
-      status('Export budget reached. Pause is automatic: save receiver captures, clear the downloaded batch, then resume.');
+      status('Export budget reached. Save or upload receiver captures, clear the saved batch, then resume.');
     }else if(!record.ok)status('Looking for a valid matrix. Collection is armed; failed payload CRCs are still useful.');
     else if(outcome.stage==='settling')status('Matrix detected. Waiting for a stable header before saving samples…');
     else status(buffer.phaseRecords(activeKey).length>=phaseMaximum()
@@ -176,10 +247,9 @@ async function receiveScan({record,width,height}){
     status(record.ok&&buffer.phaseRecords(activeKey).length>=phaseMaximum()
       ? 'Pool full: recording continues with automatic diversity selection.'
       : 'Collection armed. Waiting for stable captures of the detected phase…');
-  }else if(budgetFull)status('Export budget reached. Save receiver captures, clear the downloaded batch, then resume.');
+  }else if(budgetFull)status('Export budget reached. Save or upload receiver captures, clear the saved batch, then resume.');
   else if(record.ok)status('Matrix detected. Start / resume collection when ready.');
   else status('Looking for a matrix. Fit all four markers and the header in view.');
-  if(record.probe&&!record.ok)buffer.add(record,{alreadyValidated:true});
   refresh();
   const revision=buffer.revision(activeKey),previous=distances.get(activeKey);
   if(activeKey&&buffer.phaseRecords(activeKey).length&&previous?.revision!==revision){
@@ -190,7 +260,10 @@ async function receiveScan({record,width,height}){
   }
 }
 function collectBurst(){
-  if(!stream||collecting||budgetFull)return;showError();collecting=true;restartScanner();
+  if(!stream||collecting||budgetFull||uploading)return;
+  receiverSplit??=$('datasetSplit').value;receiverEnvironment??=environment();
+  sessionCameraId??=cameraInfo().deviceId??cameraInfo().label??null;
+  showError();collecting=true;restartScanner();
   status('Collection armed. Samples will be saved after the detected header stays stable.');refresh();
 }
 function cancel(){
@@ -205,7 +278,11 @@ function changePoolSize(){
     showError('The new maximum is smaller than a saved phase pool. Save and clear this batch before lowering it.');
     return;
   }
-  previousMaximum=maximum;showError();
+  const first=buffer.records[0];
+  if(first&&maximum>recommendedPhaseMaximum(first.info.size,first.info.phases)){
+    $('phaseMaximum').value=String(previousMaximum);showError('That pool size would leave insufficient room for the other phases of this matrix.');return;
+  }
+  previousMaximum=maximum;invalidateReceiver();showError();
   if(stream)restartScanner();refresh();
 }
 async function enumerateCameras(){
@@ -218,18 +295,23 @@ async function enumerateCameras(){
 }
 function stopCamera(){
   cameraEpoch++;receiverEpoch++;collecting=false;scanner.stop();
+  cameraInfo();
   stream?.getTracks().forEach(track=>track.stop());stream=null;cameraStarting=false;lastMediaTime=-1;buffer.resetStability();
-  $('video').srcObject=null;$('cameraPlaceholder').hidden=false;$('cameraStatus').textContent='Camera is off. Collected samples remain available for download.';
+  $('video').srcObject=null;$('cameraPlaceholder').hidden=false;$('cameraStatus').textContent='Camera is off. Its label and settings remain attached to collected samples.';
   const canvas=$('alignmentOverlay');canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);refresh();
 }
 async function startCamera(){
-  if(cameraStarting||stream||busy)return;showError();cameraStarting=true;const token=++cameraEpoch;refresh();
+  if(cameraStarting||stream||busy||uploading)return;showError();cameraStarting=true;const token=++cameraEpoch;refresh();
   try{
     if(!navigator.mediaDevices?.getUserMedia)throw Error('Camera access requires trusted HTTPS or localhost.');
     const height=Number($('resolution').value),width=height===480?640:Math.round(height*16/9);
     const acquired=await navigator.mediaDevices.getUserMedia({audio:false,video:{width:{ideal:width},height:{ideal:height},
       ...($('camera').value?{deviceId:{exact:$('camera').value}}:{facingMode:{ideal:'environment'}})}});
     if(token!==cameraEpoch){acquired.getTracks().forEach(track=>track.stop());return;}
+    const newCamera=cameraMetadata(acquired.getVideoTracks()[0],{requestedHeight:height}),newId=newCamera.deviceId??newCamera.label??null;
+    if(sessionCameraId&&newId&&sessionCameraId!==newId){
+      acquired.getTracks().forEach(track=>track.stop());throw Error('A different camera needs a new physical session. Save the current batch, then select New physical session before starting this camera.');
+    }
     stream=acquired;$('video').srcObject=stream;await $('video').play();if(token!==cameraEpoch)return;
     lastMediaTime=-1;$('cameraPlaceholder').hidden=true;const actual=cameraInfo();
     $('cameraStatus').textContent=`Actual capture ${actual.width}×${actual.height}, ${actual.frameRate?.toFixed(0)??'unknown'} fps. Fit all four markers and the top header in view.`;
@@ -238,8 +320,21 @@ async function startCamera(){
   }catch(error){if(token===cameraEpoch){stopCamera();showError(error.message);}}
   finally{if(token===cameraEpoch){cameraStarting=false;refresh();}}
 }
-function chooseRole(value){if(busy)return;if(value==='sender')stopCamera();role=value;showError();refresh();}
-function shutdown(){closeFocus(false);epoch++;busy=false;stopCamera();client.cancel();}
+function chooseRole(value){if(busy||uploading)return;if(value==='sender')stopCamera();role=value;showError();refresh();}
+function shutdown(){
+  closeFocus(false);epoch++;busy=false;
+  if(uploading){$(role==='sender'?'senderUploadStatus':'receiverUploadStatus').textContent='Upload interrupted. The recording remains available; retrying is safe.';}
+  uploadEpoch++;uploadController?.abort();uploadController=null;uploading=false;$('uploadProgress').hidden=true;
+  stopCamera();client.cancel();
+}
+function clearReceiver(newSession=false){
+  if(collecting||uploading||!canDiscardReceiver())return;
+  receiverEpoch++;scanner.stop();buffer.reset();budgetFull=false;distances.clear();originalAttempts.clear();phaseActivity.clear();
+  activeKey=null;activeInfo=null;invalidateReceiver();receiverSavedRevision=receiverRevision;
+  if(newSession){receiverSession=session('receiver');receiverSplit=null;receiverEnvironment=null;sessionCameraId=null;}
+  $('receiverUploadStatus').textContent='';if(stream)scanner.start();
+  status(newSession?'A new physical receiver session is ready. Select its split before recording.':'Saved batch cleared. The physical session and split are retained for the next recording.');refresh();
+}
 $('senderRole').addEventListener('click',()=>chooseRole('sender'));
 $('receiverRole').addEventListener('click',()=>chooseRole('receiver'));
 $('createSender').addEventListener('click',createSender);
@@ -250,21 +345,26 @@ document.addEventListener('keydown',event=>{
   if(event.key==='Escape')closeFocus();
   else if(event.key==='Tab'){event.preventDefault();$('closeFocus').focus();}
 });
-$('downloadSender').addEventListener('click',()=>{if(sender)saveJSON(sender.manifest,recordingFilename(sender.manifest));});
-$('newSenderSession').addEventListener('click',()=>{senderSession=session('sender');sender=null;phase=0;$('senderCanvasWrap').hidden=true;$('senderStatus').textContent='New physical session. Create and save a fresh sequence.';refresh();});
+$('downloadSender').addEventListener('click',()=>{if(sender&&!uploading){saveJSON(sender.manifest,recordingFilename(sender.manifest));senderSaved=true;}});
+$('newSenderSession').addEventListener('click',()=>{if(uploading||busy||!canDiscardSender())return;senderSession=session('sender');sender=null;senderSplit=null;senderSaved=false;phase=0;$('senderCanvasWrap').hidden=true;$('senderUploadStatus').textContent='';$('senderStatus').textContent='New physical session. Select its split, then create and save a fresh sequence.';refresh();});
+$('uploadSender').addEventListener('click',()=>upload('sender'));
+$('uploadCaptures').addEventListener('click',()=>upload('receiver'));
+$('refreshUploads').addEventListener('click',checkUploads);
+$('deviceLabel').value=identity.deviceLabel;
+$('deviceLabel').addEventListener('input',()=>{saveDeviceLabel($('deviceLabel').value);refresh();});
+$('datasetSplit').addEventListener('change',()=>{invalidateReceiver();refresh();});
+$('captureNotes').addEventListener('input',invalidateReceiver);
 $('startCamera').addEventListener('click',startCamera);$('stopCamera').addEventListener('click',stopCamera);
 // CSS mirrors the displayed video and alignment overlay together. The camera
 // source, currentImage() canvas, worker inputs, and exported pixels stay intact.
 $('mirrorPreview').addEventListener('click',()=>{previewMirrored=!previewMirrored;refresh();});
 $('collectBurst').addEventListener('click',collectBurst);$('cancelBurst').addEventListener('click',cancel);
 $('phaseMaximum').addEventListener('change',changePoolSize);
-$('scanInterval').addEventListener('change',()=>{if(stream)restartScanner();});
-$('clearCaptures').addEventListener('click',()=>{receiverEpoch++;scanner.stop();buffer.reset();budgetFull=false;distances.clear();originalAttempts.clear();phaseActivity.clear();activeKey=null;activeInfo=null;if(stream)scanner.start();status('Batch cleared. The physical session ID is retained for the next capture file.');refresh();});
-$('newReceiverSession').addEventListener('click',()=>{receiverEpoch++;scanner.stop();buffer.reset();budgetFull=false;distances.clear();originalAttempts.clear();phaseActivity.clear();activeKey=null;activeInfo=null;receiverSession=session('receiver');if(stream)scanner.start();status('Samples cleared. A new physical receiver session is ready.');refresh();});
-$('downloadCaptures').addEventListener('click',()=>{const recording={...buffer.export({notes:$('captureNotes').value,sessionId:receiverSession,camera:cameraInfo()}),
-  collection:{maxPerPhase:phaseMaximum(),keepRandom:0,scanIntervalMs:Number($('scanInterval').value),
-    distances:[...distances].map(([key,value])=>({key,...value.result,current:value.revision===buffer.revision(key),beforeThinning:value.previous}))}};
-  saveJSON(recording,recordingFilename(recording));});
+$('scanInterval').addEventListener('change',()=>{invalidateReceiver();if(stream)restartScanner();});
+$('clearCaptures').addEventListener('click',()=>clearReceiver());
+$('newReceiverSession').addEventListener('click',()=>clearReceiver(true));
+$('downloadCaptures').addEventListener('click',()=>{if(collecting||uploading)return;const recording=snapshotReceiver();saveJSON(recording,recordingFilename(recording));receiverSavedRevision=receiverRevision;});
+window.addEventListener('beforeunload',event=>{if(receiverDirty()||sender&&!senderSaved||uploading){event.preventDefault();event.returnValue='';}});
 window.addEventListener('pagehide',shutdown);document.addEventListener('visibilitychange',()=>{if(document.hidden)shutdown();});
 if(!supported)showError('Use a current browser with Web Workers and Web Crypto on trusted HTTPS or localhost.');
-refresh();enumerateCameras();
+refresh();enumerateCameras();checkUploads();

@@ -26,12 +26,12 @@ export function normalizeCalibratedRGB(rgb,width,height){
  * Returns {ok, info, input, dims, stats, colorTransform}; failures have no input.
  * An optional extractCapture result saves finder detection but is revalidated.
  */
-export function extractLearnedInput(image,capture=null){
-  const start=performance.now(),raster=extractDensePayload(image,capture);
+export function extractLearnedInput(image,capture=null,{pixelsPerCell=4}={}){
+  const start=performance.now(),raster=extractDensePayload(image,capture,{pixelsPerCell});
   if(!raster.ok)return {...raster,stats:{...raster.stats,preprocessMs:performance.now()-start}};
   try{
     const input=normalizeCalibratedRGB(raster.rgb,raster.width,raster.height);
-    return {ok:true,info:raster.info,input,dims:[1,3,raster.height,raster.width],
+    return {ok:true,info:raster.info,input,dims:[1,3,raster.height,raster.width],pixelsPerCell:raster.pixelsPerCell,
       colorTransform:raster.colorTransform,
       stats:{...raster.stats,inputBytes:input.byteLength,preprocessMs:performance.now()-start}};
   }catch(error){return {ok:false,stage:'normalize',error:error.message,

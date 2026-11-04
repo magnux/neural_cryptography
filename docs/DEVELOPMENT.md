@@ -98,6 +98,12 @@ trusted HTTPS static host. Keep tests, fixtures, and private results outside the
 served directory. No enrollment backend, server-side inference, or upload is
 required. The hosted test sites remain blank; repository work does not deploy.
 
+To enable explicit sender/capture uploads in **Capture Dataset**, add
+`--recordings-dir local-data/recordings` to the color server command. The directory
+must be outside `dist/`; the server does not serve uploaded recordings. The
+collector retains downloads for static hosts. See [multires collection](MULTIRES_COLLECTION.md)
+for the size/split layout, automatic metadata, budgets and offline joining.
+
 ## Benchmarks and formats
 
 The [M2 capture/training guide](NEURAL_CORRECTOR_TRAINING.md) covers canonical

@@ -35,12 +35,16 @@ Five browser-local workspaces share top-level navigation:
   geometry is tried first, with current-exposure header validation and bounded reuse.
 
 **Capture Dataset** (`capture.html`), linked from Corrector Lab, adds the M2
-sender/receiver data collector. Display a static random matrix, collect bounded
+sender/receiver data collector. It now supports G8/G16/G32/G64/G128/G256 with
+2×2 pixels per cell, optional uploads to the demo server, and automatic
+browser/device/camera metadata. Follow the [multires recording guide](../../docs/MULTIRES_COLLECTION.md)
+for collection budgets, server setup and size-separated joining. Display a static random matrix, collect bounded
 camera samples with automatic filled alignment feedback, and export the sender
 manifest and receiver captures separately. Collection keeps per-phase pools
-(default 32 samples), continuously replaces redundant captures with a randomized
+(up to 32 samples by default, reduced to 16 at G128 and six at G256 for four phases), continuously replaces redundant captures with a randomized
 distance heuristic, and shows within-phase RGB distance and replacement counters
-above the camera. Recording file formats are unchanged. Both exports use the
+above the camera. Recording versions are unchanged; new records explicitly
+declare their sampling density and include environment/split metadata. Both exports use the
 first matrix's payload CRC32 as a matching filename prefix; the offline join
 still validates full header/payload identities. The
 [recording workflow](../../docs/NEURAL_CORRECTOR_TRAINING.md#organize-recordings-and-rebuild-datasets)
@@ -49,7 +53,10 @@ includes filename migration and one-command rebuilding from `phone/pc` split fol
 together; capture tensors and optional original PNGs retain the camera's original
 orientation. This display preference persists while changing roles or restarting
 the camera within the page.
-No model installation is needed to collect data. Follow the
+No model installation is needed to collect data. Uploads require
+`--recordings-dir local-data/recordings` on `serve.py`; downloads work with any
+static host. The new 2×2-cell collection awaits production multires training
+integration. Follow the
 [capture and training guide](../../docs/NEURAL_CORRECTOR_TRAINING.md) for offline
 label joining, train/validation/test splits, and checkpoint evaluation.
 

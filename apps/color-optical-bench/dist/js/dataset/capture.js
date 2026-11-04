@@ -2,18 +2,18 @@
 import {extractCapture,classifySamples,decodeScores} from '../vision.js';
 import {captureSignature} from './diversity.js';
 import {extractLearnedInput} from '../learned-input.js';
-import {captureKey,bytesToBase64,floatBytes,base64ToBytes,floatsFromBytes,validateSessionId,MAX_CAPTURE_BYTES,MAX_RECORDS} from './contract.js';
+import {captureKey,bytesToBase64,floatBytes,base64ToBytes,floatsFromBytes,validateSessionId,MAX_CAPTURE_BYTES,MAX_RECORDS,CAPTURE_SIZES} from './contract.js';
 
-export function captureFrame(image,{timestamp=Date.now(),camera={},signature=false}={}) {
+export function captureFrame(image,{timestamp=Date.now(),camera={},signature=false,pixelsPerCell=4}={}) {
   if(!Number.isFinite(timestamp)||timestamp<0) throw Error('Invalid capture timestamp.');
   const capture=extractCapture(image,{preview:false}),base={timestamp,camera};
   if(!capture.samples) return {...base,ok:false,stage:capture.stage,error:capture.error,stats:capture.stats};
-  const learned=extractLearnedInput(image,capture);
+  const learned=extractLearnedInput(image,capture,{pixelsPerCell});
   if(!learned.ok) return {...base,ok:false,stage:learned.stage,error:learned.error,stats:learned.stats};
   const classified=classifySamples(learned.info,capture.samples,{local:true});
   const decoded=decodeScores(learned.info,classified.scores,{}, {recovery:'erasures'});
-  return {...base,ok:true,info:learned.info,key:captureKey(learned.info),
-    ...(signature?{signature:captureSignature(learned.input,learned.info.size)}:{}),
+  return {...base,ok:true,info:learned.info,key:captureKey(learned.info),pixelsPerCell,
+    ...(signature?{signature:captureSignature(learned.input,learned.info.size,pixelsPerCell)}:{}),
     inputBase64:bytesToBase64(floatBytes(learned.input)),samplesBase64:bytesToBase64(floatBytes(capture.samples)),
     stats:{...learned.stats,...capture.stats},colorTransform:learned.colorTransform,transform:capture.transform,
     observedPalette:classified.observedPalette,
@@ -21,10 +21,12 @@ export function captureFrame(image,{timestamp=Date.now(),camera={},signature=fal
 }
 
 export function validateCapture(record) {
-  if(!record||record.ok!==true||!record.info||![64,128].includes(record.info.size)||![4,16].includes(record.info.colors)||
+  if(!record||record.ok!==true||!record.info||!CAPTURE_SIZES.includes(record.info.size)||![4,16].includes(record.info.colors)||
     record.key!==captureKey(record.info)||!Number.isFinite(record.timestamp)||record.timestamp<0) throw Error('Invalid capture record.');
-  const g=record.info.size;
-  const input=floatsFromBytes(base64ToBytes(record.inputBase64,3*16*g*g*4),3*16*g*g);
+  const g=record.info.size,pixelsPerCell=record.pixelsPerCell===undefined?4:record.pixelsPerCell;
+  if(![2,4].includes(pixelsPerCell)||pixelsPerCell===4&&![64,128].includes(g))throw Error('Invalid capture raster profile.');
+  const values=3*(pixelsPerCell*g)**2;
+  const input=floatsFromBytes(base64ToBytes(record.inputBase64,values*4),values);
   for(const value of input) if(value < -1.5||value > 1.5) throw Error('Input tensor outside normalization bounds.');
   floatsFromBytes(base64ToBytes(record.samplesBase64,(g*g*3+96)*4),g*g*3+96);
   if(record.original!==undefined) {

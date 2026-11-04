@@ -21,8 +21,12 @@ static serving and browser tests.
 
 The next transport is [Neural-QR](../../docs/NEURAL_QR.md), designed to supply
 geometry, phase identity and normalized crops without a separately decoded dense
-header. Its first model contract remains G64/four phases so the trained corrector
-can be evaluated before deciding whether new-layout fine-tuning is needed.
+header. The next planned architecture is `multires`, with independent per-size
+anchors and an alternating convolution/attention bottleneck. The
+[multires collector](../../docs/MULTIRES_COLLECTION.md) already records G8…G256
+at 2×2 pixels per cell and supports server uploads. Its production training and
+browser model integration are pending; the implemented profiles below use their
+established four-pixels-per-axis inputs.
 
 ## Model family
 
@@ -186,6 +190,7 @@ observations while inference work stays approximately constant. No phone/WebGPU
 latency or live goodput is inferred from offline recovery percentages.
 
 The standalone Corrector Lab supports numerical parity and camera crop inference.
-The live optical receiver still needs the separate integration that feeds learned
-scores into its recovery and authentication flow. This boundary keeps model
-verification, byte acceptance and cryptographic authentication explicit.
+The Neural-ZKBoo demo now feeds learned G64 scores into packet recovery and has
+completed a physical-device exchange with QR ACKs. The next integration uses
+Neural-QR and `multires`; model verification, byte acceptance and cryptographic
+authentication remain distinct checks.

@@ -85,6 +85,7 @@ async function inspect(path,device,split) {
   const records=[];
   for(const record of bundle.records) {
     validateCapture(record);guard(record,path);
+    if((record.pixelsPerCell??4)!==4)throw Error(`This synthetic rebuild recipe requires 4x4-pixel cells. For multires uploads, use corrector-dataset.mjs join-uploads --recordings-root ROOT --out NEW_DIRECTORY; training/synthetic integration is separate. Recording: ${path}`);
     records.push({key:record.key,info:record.info,timestamp:record.timestamp});
   }
   return {...entry,kind:'capture',records,diagnostics:(bundle.diagnostics??[]).length};
@@ -273,3 +274,4 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   if(process.argv.slice(2).includes('--help'))console.log(HELP);
   else Promise.resolve().then(()=>rebuild(parse(process.argv.slice(2)))).catch(error=>{console.error(`Corrector rebuild failed: ${error.message}`);process.exitCode=1;});
 }
+
