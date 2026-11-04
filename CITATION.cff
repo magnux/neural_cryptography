@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software or its research designs, please cite the
+  Neural Cryptography project and its author using this metadata.
+type: software
+title: "Neural Cryptography: Neural-QR, Neural-Corrector and Neural-ZKBoo"
+authors:
+  - family-names: "Hernandez Ruiz"
+    given-names: "Alejandro"
+    website: "https://github.com/magnux"
+repository-code: "https://github.com/magnux/neural_cryptography"
+url: "https://github.com/magnux/neural_cryptography"
+license: Apache-2.0
+abstract: >-
+  Research prototypes for neural correction of camera-to-screen optical
+  transport and browser-local authentication using a custom ZKBoo-style
+  proof of knowledge. Neural-QR is the transport design being developed
+  for use with the neural corrector.
+keywords:
+  - optical communication
+  - neural cryptography
+  - neural corrector
+  - zero-knowledge proofs

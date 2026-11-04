@@ -1,193 +1,152 @@
-# Plan: Neural-ZKBoo authentication over color matrices
+# Roadmap: fast optical authentication with Neural-QR
 
-Planning baseline: **19 October 2026**. All work so far is the exploratory phase
-of this research. The immediate goal is a repeatable phone/computer POC that
-generates and verifies our existing Neural-ZKBoo proofs, with the complete
-exchange carried by **color-matrix optical transport**. This is a functional
-research demonstration, not a claim of production cryptographic security.
+Planning baseline: **4 November 2026**. The long-term goal is feasible, fast and
+safe optical authentication between devices. The immediate engineering goal is
+a repeatable **Neural-ZKBoo** POC carried entirely by **Neural-QR**, our custom
+optical format designed around the **neural-corrector**. The existing experiments
+are its exploratory foundation. Functional success does not establish audited
+cryptographic security.
 
-The original five development steps were guidelines. Reuse the current static
-browser apps, local key generation, crypto worker, compact proof format, and
-authentication flow. No Flask service, server-held keys, new cryptographic
-primitive, or comprehensive attack bench is required to reach this POC.
+Neural-QR is not standards-compatible QR. Its proposed acquisition path replaces
+the dense, separately decoded monochrome header with asymmetric geometry and
+large phase/reference cues; data and packet metadata pass through neural recovery.
+The [Neural-QR design](NEURAL_QR.md) defines this direction. It is **planned**, not
+the current runtime: the working [device demo](NEURAL_ZKBOO_DEMO.md) still uses
+OBM5 color DATA and static standard QR ACKs.
 
-## Planning documents
+## What is established
 
-- [Neural corrector design and training](NEURAL_CORRECTOR.md): model contract,
-  capture data, synthetic examples, training, export, and browser integration.
-- [Neural-ZKBoo device demo](NEURAL_ZKBOO_DEMO.md): implemented turn-based
-  authentication interface, model setup and the next physical-device test.
-- [Research connections](RESEARCH_CONNECTIONS.md): relevant neural cryptography,
-  cryptanalysis, and proof-friendly circuit literature; later experiments.
-- [Use cases](USE_CASES.md), [formats](FORMATS.md), and
-  [development](DEVELOPMENT.md): current runnable components and their boundaries.
+| Component | Evidence and role |
+| --- | --- |
+| Neural dynamics research | Recurrent/rotating convolution, normalization, Feistel and surrogate probes remain reference experiments |
+| Canonical crypto and authentication | Browser/Python circuit and compact proof implementation; local key generation, pairing confirmation, fresh challenge, proof, result and acknowledgments |
+| Trained neural-corrector | G64 U-tube-2x-attn with four phases and 4–8 captures; successful recorded evaluation and live device recovery |
+| Hybrid optical authentication | The 4 November device reports confirm local proof acceptance and final result delivery for 32 repetitions |
+| Optical engineering | Geometry, color references, temporal collection, ECC, CRC, multipart transfer and QR comparison tools are reusable |
 
-## What we can reuse
+The completed exchange took about **6 min 17 s**. A **17,474-byte** proof took
+about **160 seconds** to send and acknowledge, approximately **109 B/s** including
+alignment and turns. Earlier favorable QR-only transfers reportedly reached about
+1 kB/s in different conditions. The completed authentication and useful neural
+recovery are established; comparative throughput superiority needs matched tests.
 
-| Component | Current evidence | Role in the next POC |
-| --- | --- | --- |
-| Neural dynamics experiments | Recurrent CNN, rotating kernels, normalization, Feistel, and surrogate probes | Preserve as research/reference; no architecture redesign on the delivery path |
-| Python/browser crypto | Exact binary circuit, compact NPZK0002 proof, configurable repetitions, workers, parity and tamper tests | Keep one canonical proof engine |
-| Color optical bench | Detection, rectification, reference colors, palette phases, bounded temporal fusion, RS recovery, and CRC | Add learned classification at the receiver; preserve framing and recovery |
-| Color multipart link | Existing OLM1 link plus a dedicated stop-and-wait adapter for authentication | Carry authentication messages with an ACK after START and every chunk; preserve final ACK until explicit handoff |
-| QR authentication | Local identities, explicit pairing confirmation, fresh challenge, proof, result, and optical acknowledgments | Reuse the application flow and tests through a color-link adapter |
-| Neural corrector | U-tube-2x-attn completed training; recorded validation recovered 100% at K=7/8 in both directions; live worker now connects scores to CRC recovery | Test the trained export in the Neural-ZKBoo interface on both physical devices |
+The current PC report used single-threaded WASM after WebGPU initialization failed;
+the phone used WebGPU. Inference and geometry costs matter, but the end-to-end
+measurement also includes physical turns and acquisition. Improve the measured
+path rather than treating model size or symbol accuracy alone as the objective.
 
-Single-matrix reception does not establish reliable multipart communication.
-The particularly difficult direction is often **phone display to PC webcam**,
-including acknowledgments. The neural corrector and integration must be measured
-on both directions from the start.
+## Reuse and scope
 
-## Smallest useful end-to-end demonstration
+Keep computation local in browser workers and serve only static app/model assets.
+Reuse the trained G64 checkpoint, U-tube family, capture/generation tools, shared
+authentication session and compact proof engine. No Flask service or server-held
+key distribution is necessary. No new cryptographic primitive is required for
+the transport redesign.
 
-1. Start the application on both devices and wait until their model and camera
-   are ready; then disconnect the server/network while keeping both pages open.
-2. Generate ephemeral keys locally in workers, exchange public identities over
-   color matrices, and compare/confirm the pairing fingerprint on both screens.
-3. The verifier creates a fresh challenge with its required proof repetitions.
-4. The key holder generates the existing compact proof and sends its bytes through
-   color multipart transport. No diagnostic payload truth enters decoding.
-5. The verifier checks the proof against its saved challenge and pinned identity,
-   consumes the challenge once, and sends the result; transport completion is
-   acknowledged. Record both devices' outcomes and timings.
+The first QR-free run remains one-direction authentication with roles swapped in
+a second attempt. The key holder's received result is a peer report, not a proof
+of verifier identity. Persistent enrollment, simultaneous mutual proofs, session
+keys, OTPs and recency policies remain later work.
 
-The initial scope is **one-direction authentication per attempt**, with roles
-reversed in another attempt. The key holder's received result remains a peer
-report, not a proof of the verifier's identity. Persistent enrollment, simultaneous
-mutual proofs, session-key agreement, and OTPs are later work.
+Use the existing side-8, 16-circuit-round configuration and **32 proof repetitions**
+for development. Then exercise **219 repetitions** (119,249 raw proof bytes).
+These are configurable POC profiles, not certified security levels. Keep optical
+dimensions, circuit rounds and proof repetitions independent. The verifier's
+saved challenge, identity minimum and repetition policy continue to govern acceptance.
 
-Start with the existing side-8, 16-circuit-round crypto configuration and **32
-proof repetitions on both devices**: 17,474 raw proof bytes. This is explicitly a
-development profile. Then validate the 219-repetition profile, 119,249 raw bytes,
-without changing the circuit. Envelopes and transport add overhead. Keep circuit
-rounds, proof repetitions, and optical settings separate; the verifier's policy
-and the identity's minimum still govern acceptance.
-
-The implemented demo uses **64×64/16-color DATA**, four permuted phases and the
-G64 model; larger matrices require another trained contract. Keep small
-**32×32/four-color ACK matrices** and configurable timing on each device.
-Start with **95 ms phase display / 100 ms capture**; try longer display holds
-when physical measurements show missed phases. The explicit turn control lets
-the phone alternate between receiving DATA and displaying its ACK.
-256/512 grids, fewer phases, and a particular throughput number are not gates
-for the first completed authentication.
-
-## Implementation order and completion criteria
-
-Earlier G64 device reports established phone WebGPU and PC WASM fixture parity.
-The **4 November 2026** training report now clears the recorded recovery target:
-U-tube-2x-attn recovers every validation candidate at K=7/8 in both directions.
-The **Neural-ZKBoo** page now connects corrected scores to live CRC recovery,
-turn-based multipart transfer and the shared authentication session. Next,
-export the trained checkpoint and run the exchange on both physical devices.
-Recorded validation and clean-render integration tests do not yet establish live
-transport goodput. See the
-[serving and device guide](CORRECTOR_LAB.md) and [validation record](VALIDATION.md).
+## Prioritized implementation plan
 
 | Milestone | Work | Completion criterion |
 | --- | --- | --- |
-| **M1 — Interfaces and browser feasibility** | Define the rectified-raster/model/score contract. Export a tiny untrained 2D U-Net and run it in a worker on the real phone and PC. Identify the reusable authentication-session boundary. | Browser/Python outputs agree within recorded tolerance; model loads locally with WebGPU or WASM; latency, memory, and UI responsiveness recorded at 64/128 targets. Unsupported operators are replaced before training. |
-| **M2 — Capture and trained neural corrector** | Capture both directions, generate coherent phase-grouped synthetic observations, and train the full-resolution U-tube family in plain PyTorch. The phase-grouped model has now passed the recorded recovery target; export its trained weights next. | Failed payloads retain independently verified labels. Session-disjoint evaluation improves exact CRC-valid recovery at equal observation budgets. Browser parity, latency and live recovery still need trained-device checks. |
-| **M3 — Authentication integration** | Implemented: shared authentication session/envelopes, dedicated color stop-and-wait adapter, and `neural-zkboo.html`. The QR interface remains separate. | Automated identity/pairing/challenge/proof/result and matrix-recovery checks pass; physical ACK behavior still needs device validation. |
-| **M4 — First color authentication** | Current next test: load the trained corrector and use the new turn-based interface with 32 repetitions. | Complete the exchange on the actual phone and PC, with every application/control message using color matrices. Repeat with roles swapped; export both reports, including failures. A model-assisted receive path is exercised and its use recorded. |
-| **M5 — Repeatability and larger proof** | Tune phase holds and capture cadence from measured K4–K8 recovery, inference latency and ACK readability. | Three consecutive 32-repetition authentications in each role arrangement; one 219-repetition run in each arrangement. Obstruction recovers or reaches a bounded timeout, stale/invalid proofs fail, and an attempt succeeds after server disconnection. Publish device-specific timing and settings. |
+| **N1 — Neural-QR layout and acquisition** | Fixed G64/16-color/four-phase profile; four anchors with an oriented asymmetric corner; static high-contrast geometry, repeated phase-color cues and same-exposure references; remove the dense external header in the new codec | Correct rectification and phase selection under rotation, reflection, perspective, exposure/color changes and phase transitions; uncertain frames reject cleanly; no standard QR decoder in this acquisition path |
+| **N2 — Neural payload and capture association** | Put packet metadata and integrity checks inside ECC-protected payloads; implement bounded phase pools and old/new packet-transition handling; retain the existing neural input/output contract initially | Exact payload recovery without the old header; mixed packets/phases do not advance transport; duplicates, missing phases and capture restarts recover or time out within bounds; test existing weights before deciding whether to fine-tune |
+| **N3 — QR-free authentication** | Use Neural-QR for START, DATA and ACK; initially reuse the G64 neural envelope for controls; connect the unchanged authentication session | Complete identity/pairing/challenge/proof/result/final-ACK exchange with 32 repetitions on real devices in both role arrangements; no QR ACK or silent alternate reader; one exchange completes after server disconnection |
+| **N4 — Faster complete exchanges** | From measured costs, improve control profile, camera/inference scheduling and cumulative ACK windows with selective retry; investigate PC GPU availability and capture stability | Three consecutive completions per direction with repeatable goodput and timing; lost/duplicated/corrupted captures recover or time out; compare standard QR under matched devices, placement, payloads and ACK criteria |
+| **N5 — Larger payloads and proof** | Trial a separate G128 corrector, new-layout recordings, 512×512 inputs and 128×128 bottleneck/output; increase payload/chunk limits with the codec; validate 219-repetition operation | G128 improves acknowledged bytes/s or full authentication time over the working G64 profile in each tested direction; larger proof completes with suitable bounded deadlines; publish the settings and unsuccessful cases too |
 
-The authentication demo deliberately requires the trained phase-grouped DATA
-path; only ACKs use the classical receiver. The separate Optical Bench remains
-available for classical diagnostics. Record which path produced every result;
-do not silently replace a failed model with a different receiver and count it as
-a model-assisted success. No new cryptographic design is needed to compensate
-for optical failures.
+N1–N3 are the shortest path to the new all-Neural-QR POC. The current successful
+hybrid demo stays runnable while those pieces are developed. Activate the new
+format on both endpoints together; maintain one current format per layer and
+keep earlier implementations in Git history instead of adding compatibility readers.
+The separate standard-QR experiment remains useful for comparison.
 
-### Source boundaries and remaining validation
+### Important implementation decisions
 
-| Work | Location / execution |
-| --- | --- |
-| Model, generator, training, evaluation, export | Implemented in `experiments/neural-corrector/`; phase-grouped training completed on the project owner's RTX 4090 |
-| Capture and replay UI | `capture.html` collects bounded samples; canonical Node tools join labels and evaluate recorded inputs |
-| Learned inference and score adapter | Corrector Lab worker and `learned-input.js`; the Neural-ZKBoo transport operations now perform progressive phase-grouped inference and CRC recovery |
-| Authentication application logic | Shared browser authentication source, prepared into app-local `auth-core/`; separate QR and color transport adapters |
-| Proof generation and verification | Existing `shared/browser-crypto/`, unchanged canonical engine |
+- **Keep four anchors.** Replacing a corner with an oriented asymmetric finder
+  preserves perspective geometry; removing it requires additional constraints.
+- **Preserve geometry contrast.** Phase colors belong in separate large patches;
+  compare repeated cues with fixed references from that exposure.
+- **Make packet grouping explicit.** Phase labels do not identify a packet. Begin
+  with stop-and-wait and bounded latest-per-phase pools, resetting and replacing
+  evidence across transitions. Only valid full packet metadata can advance the
+  transfer. Add a coarse generation cue only if the measured transition behavior
+  needs it; defer windows until grouping is reliable.
+- **Do not assume a tiny ACK is free.** The current model expects G64/four phases.
+  Reusing it removes QR dependencies but may increase control latency. A compact
+  or single-frame neural control profile needs its own supported contract and tests.
+- **Try existing weights first.** Keep G64 palette, phase masks, payload grid and
+  normalization stable initially. Capture the new layout and fine-tune if needed;
+  do not require another long architecture search before testing the format.
+- **Bound long transfers.** The current ten-minute message limit would interrupt
+  a 219-repetition proof at the observed rate. Configure deadlines from message
+  size and tested throughput, with hard limits; duplicates must not extend them forever.
 
-The reusable authentication boundary is the shared session and envelope code;
-the QR `auth/link.js` and color `neural-auth/` modules provide transport-specific behavior.
-The owner has completed full phase-grouped training on the RTX 4090; local
-implementation checks use CPU PyTorch and Node WASM. The recorded recovery
-improvement is reported by the owner; trained live-device authentication remains
-the next check. Training and capture data stay out of source control.
-Record model provenance, export settings, runtime version, and metrics;
-package only the selected runtime model/assets when implementing integration.
+## Byte integrity and authentication gates
 
-Use one current format per layer, update both endpoints together when necessary,
-and do not add compatibility readers. A receiver-only model should not require
-changing OBM5 or the proof format. Reuse the current authentication envelope where
-possible; any transport-neutral rename must be coordinated with fixtures, not
-maintained as a second parallel implementation.
+The new design removes the header's CRC gate, not payload validation. Require ECC
+recovery, packet CRC, length/schema validation, full identifiers and sequence
+matching, and a complete-message digest before application delivery. Never use
+sender diagnostic truth to recover bytes. Neural confidence, CRC and physical
+proximity are not authentication.
 
-## Measurement and device-test plan
+Preserve current checks for pinned identities, explicit pairing confirmation,
+fresh challenge binding, minimum repetitions, consumed/stale challenges and
+tampered proofs. Keep final result delivery distinct from local proof verification.
+Exercise these cases through the new transport alongside cancellation, dropped
+ACKs, duplicate frames, interrupted capture and bounded timeout behavior. Passing
+these tests validates implementation behavior; it does not replace cryptanalysis.
 
-At every device milestone save reports from **both endpoints**, including failed
-attempts. Record:
+## Measurement and device tests
 
-- Phone/PC, browser, cameras, requested/actual resolution, screen arrangement,
-  display size/brightness, and direction; start with 720p as well as the current
-  working setting rather than assuming 1080p is better.
-- Model hash/runtime/backend, input size, frame count, inference median/p95,
-  queue drops, and actual retained-sample limits.
-- Matrix dimensions, palette, phase count/hold, grid references, RS parity,
-  chunk/window settings, ACK holds, retries, and decoder mode per device.
-- Exact recovered application bytes, CRC/RS outcomes, full-message digest,
-  elapsed transfer time, and **delivered application bytes per second** including
-  framing, capture, phases, inference, control traffic, and retransmission.
-- Pairing/challenge/proving/transfer/verification/result timings, total attempt
-  time, proof repetitions/bytes, final states, and cancellation/timeout reasons.
+Save compact reports from **both endpoints**, including failures. Record:
 
-Compare classical and neural correctors on the same recorded inputs and the same
-observation budgets, then validate physical transfers. Measure both optical
-directions separately. Better average symbol accuracy is insufficient if exact
-frame recovery or completed-message goodput gets worse.
+- Device/browser, camera, actual resolution/frame rate, direction, physical
+  placement, display size/brightness and relevant exposure/focus settings.
+- Model hash, input contract, backend, inference median/p95, queue/buffer bounds
+  and which processing path produced a recovered packet.
+- Optical profile, phase dwell, capture interval, unique packet and ACK counts,
+  ECC/CRC failures, acquisition time and packet-transition retries.
+- Delivered application bytes per second including phases, control traffic and
+  retries; separately record acquisition, collection, inference, ACK reading and
+  time waiting for a physical turn where measurable.
+- Complete authentication through final ACK, plus pairing/proving/transfer/
+  verification timing, proof repetitions/bytes, outcomes and stop reasons.
 
-The earlier roughly **1 kB/s QR** observation is a useful stretch comparison,
-not a prerequisite for authentication. A fair comparison requires the same
-device arrangement and bidirectional completion criteria. First establish a
-repeatable color POC, then improve its latency.
+Detection misses while a camera is pointed away and repeated reads of held ACKs
+are not packet-loss estimates. Use completed-message goodput and repeated runs,
+not only marginal cell accuracy or one favorable frame. Compare G64/G128 and
+standard QR with equivalent payloads and completion criteria. The working G64
+model remains the baseline if a larger profile is slower or less reliable.
 
-## Exploratory device observations retained as context
+## Later research
 
-- Color matrices reached **128×128/16 colors** with the existing recovery
-  mechanisms; 256×256 remained unreliable. Sustained proof-sized bidirectional
-  transfer was not established by those single-matrix results.
-- Favorable QR transfer tests reached roughly **1 kB/s** in their tested setup.
-- A separate 32-repetition QR authentication carried a **17,474-byte proof** and
-  completed in approximately **15 minutes 31 seconds**. Local verification took
-  about **30.7 ms**; the verifier report showed a final incoming 64-byte chunk,
-  one-chunk-per-ACK profile. Its proof-wait interval also included challenge
-  delivery and proof generation, so it is not a raw channel-rate measurement.
+The [research connections](RESEARCH_CONNECTIONS.md) motivate later cryptanalytic
+comparison, independent attacker ensembles, witness/key-recovery experiments and
+alternative proof-friendly circuits. Further proof compaction, persistent trust,
+mutual authentication, temporary credentials, proof chaining and broader model
+families are separate research directions. They do not block N1–N3, and no claim
+of production or post-quantum security follows from successful optical transport.
 
-These observations are not standardized benchmarks. See [VALIDATION.md](VALIDATION.md)
-for automated checks and their limits. The hosted sites remain intentionally
-blank; planning and repository maintenance do not reactivate them.
+## Documentation and licensing
 
-## Future research after the functional POC
+- [Neural-QR design](NEURAL_QR.md): next layout, phase cues, metadata, ACKs and tests.
+- [Neural-corrector](NEURAL_CORRECTOR.md): architecture and model contract.
+- [Current device demo](NEURAL_ZKBOO_DEMO.md): runnable hybrid setup and procedure.
+- [Current format boundaries](FORMATS.md): distinguish implemented formats from plans.
+- [Apache-2.0 license](../LICENSE), [NOTICE](../NOTICE), [licensing scope](LICENSING.md)
+  and [citation metadata](../CITATION.cff): original project materials are credited
+  to **Alejandro Hernandez Ruiz (magnux), Neural Cryptography**; third-party terms remain intact.
 
-The [research connections](RESEARCH_CONNECTIONS.md) motivate the following work,
-which does **not** block M1–M5:
-
-- A cryptanalytic comparison bench: differential distinguishers, direct secret
-  recovery on small instances, alternative-witness searches, and SIMON/LowMC
-  structural/cost baselines.
-- Adversarial architecture search, independent attacker ensembles, and a separate
-  tree parity machine synchronization experiment.
-- Further proof compaction or alternative proof-friendly circuits, evaluated
-  separately from the current end-to-end transport work.
-- Larger matrices, multi-inlet networks, feature-level temporal fusion, Conv3D,
-  transformers, and broader device generalization if simpler models leave a
-  demonstrated gap.
-- Persistent trust, mutual authentication in one session, temporary credentials,
-  recency-based repetition policies, proof chaining, and hidden-inverse schemes.
-
-Completing the POC demonstrates functionality and measured device behavior.
-Cryptanalytic evaluation remains necessary before stronger security claims;
-optical proximity, low surrogate accuracy, or a previous long proof do not
-establish them.
-
+Hosted sites remain parked unless deployment is separately requested. Source,
+documentation and current model tooling stay in the repository; private keys,
+recordings, training checkpoints and individual experiment logs stay out of it.

@@ -1,5 +1,11 @@
 # Neural corrector
 
+Original Neural-Corrector code and documentation are part of **Neural Cryptography**
+by **Alejandro Hernandez Ruiz (magnux)**, licensed under [Apache-2.0](../../LICENSE).
+Preserve the project [NOTICE](../../NOTICE) on redistribution; see
+[licensing scope](../../docs/LICENSING.md) for model/data releases and
+[citation metadata](../../CITATION.cff) for research use.
+
 A family of small PyTorch models that converts one or more rectified camera
 frames into a corrected optical matrix. The network predicts palette-class
 scores at each cell; the existing optical byte decoder remains responsible for
@@ -12,6 +18,11 @@ masks. The [training guide](../../docs/NEURAL_CORRECTOR_TRAINING.md) covers
 recordings, synthetic generation, training and evaluation. The
 [Corrector Lab guide](../../docs/CORRECTOR_LAB.md) describes checkpoint export,
 static serving and browser tests.
+
+The next transport is [Neural-QR](../../docs/NEURAL_QR.md), designed to supply
+geometry, phase identity and normalized crops without a separately decoded dense
+header. Its first model contract remains G64/four phases so the trained corrector
+can be evaluated before deciding whether new-layout fine-tuning is needed.
 
 ## Model family
 

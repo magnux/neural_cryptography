@@ -7,6 +7,16 @@ data and static standard QR codes for ACKs. The full QR transport interface rema
 separate experiment; both apps share its QR codec. **Neural-ZKBoo** is the protocol's project name; this naming
 change does not alter its existing proof bytes or circuit.
 
+The **4 November 2026** device reports confirm a complete 32-repetition exchange,
+including the final result ACK, in approximately 6 minutes 17 seconds. This page
+describes that working baseline. The [Neural-QR design](NEURAL_QR.md) defines the
+next transport, including replacement of the dense header and standard QR ACKs;
+those format changes are not implemented by this documentation update.
+
+The original Neural-ZKBoo implementation and documentation use
+[Apache-2.0](../LICENSE), with author/project attribution in [NOTICE](../NOTICE).
+See [licensing scope](LICENSING.md) and [citation metadata](../CITATION.cff).
+
 Automated checks exercise the real 32-repetition proof, clean rendered color
 matrices and QR ACKs, including lost-ACK retries; they do not
 establish live-camera reliability or speed with the trained checkpoint. The

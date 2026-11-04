@@ -1,5 +1,11 @@
 # Python ZKBoo experiment
 
+The original **Neural-ZKBoo** implementation is part of Neural Cryptography by
+**Alejandro Hernandez Ruiz (magnux)** and uses [Apache-2.0](../../LICENSE).
+Preserve [NOTICE](../../NOTICE); see [licensing scope](../../docs/LICENSING.md)
+and [citation metadata](../../CITATION.cff). Published ZKBoo research and other
+prior work retain their own attribution.
+
 This experiment has one canonical NumPy proof engine and a command-line wrapper:
 
 - `neural_zkboo_reference.py`: exact binary rotating-convolution Feistel circuit,

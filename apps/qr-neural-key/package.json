@@ -12,5 +12,7 @@
     "benchmark": "node scripts/benchmark.mjs",
     "prebenchmark:speed": "npm run prepare:app",
     "benchmark:speed": "node scripts/speed-benchmark.mjs"
-  }
+  },
+  "license": "Apache-2.0",
+  "author": "Alejandro Hernandez Ruiz (magnux)"
 }

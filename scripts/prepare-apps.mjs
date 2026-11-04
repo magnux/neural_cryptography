@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** Copy canonical crypto, authentication and QR codecs into independently servable apps. */
-import { cp, mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { cp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
@@ -8,6 +8,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const shared = join(root, 'shared', 'browser-crypto');
 const fixtures = join(root, 'shared', 'fixtures', 'zk');
 const qrSource = join(root, 'apps', 'qr-neural-key', 'dist');
+const projectNotices = ['LICENSE', 'NOTICE', 'CITATION.cff', 'THIRD_PARTY.md'];
 const qrFiles = ['js/qr.js', 'js/qr-capacities.js',
   'vendor/qrcodegen.js', 'vendor/jsQR.js', 'vendor/qrcodegen-LICENSE.txt',
   'vendor/jsQR-LICENSE.txt', 'vendor/README.md', 'vendor/manifest.json'];
@@ -35,6 +36,11 @@ async function prepare() {
   }
 
   // Validate all canonical inputs before replacing any generated output.
+  const notices = new Map();
+  for (const file of projectNotices) {
+    await requirePath(join(root, file));
+    notices.set(file, await readFile(join(root, file)));
+  }
   await requirePath(join(shared, 'crypto'), true);
   await requirePath(fixtures, true);
   for (const name of ['bytes.js', 'circuit.js', 'hashes.js', 'proof.js',
@@ -62,6 +68,7 @@ async function prepare() {
   for (const name of names) {
     const app = join(root, 'apps', name);
     await requirePath(join(app, 'dist', 'index.html'));
+    for (const [file, bytes] of notices) await writeFile(join(app, 'dist', file), bytes);
     const crypto = join(app, 'dist', 'js', 'crypto');
     const localFixtures = join(app, 'tests', 'fixtures', 'zk');
     const authentication = join(app, 'dist', 'js', 'auth-core');

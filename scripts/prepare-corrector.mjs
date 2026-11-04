@@ -23,6 +23,13 @@ async function prepare() {
   if (args.length && (args.length !== 2 || args[0] !== '--artifacts')) {
     throw Error('Usage: node scripts/prepare-corrector.mjs [--artifacts directory]');
   }
+  // These notices cover the project contribution, not independently licensed
+  // checkpoint content. Read all inputs before replacing any served assets.
+  const projectNotices = new Map();
+  for (const file of ['LICENSE', 'NOTICE']) {
+    try { projectNotices.set(file, await readFile(join(root, file))); }
+    catch { throw Error(`Missing project ${file}. Restore it from Git before preparing model assets.`); }
+  }
   const artifacts = args.length ? resolve(args[1]) : join(experiment, 'artifacts/smoke');
   const pkgPath = join(experiment, 'browser-runtime/node_modules/onnxruntime-web');
   let pkg;
@@ -62,6 +69,7 @@ async function prepare() {
   await mkdir(modelTarget, {recursive:true});
   await mkdir(runtimeTarget, {recursive:true});
   for (const [file, bytes] of modelAssets) await writeFile(join(modelTarget, file), bytes);
+  for (const [file, bytes] of projectNotices) await writeFile(join(modelTarget, file), bytes);
   for (const entry of runtime) await cp(entry.path, join(runtimeTarget, entry.file));
   for (const file of licenses) await cp(join(experiment, 'browser-runtime', file), join(runtimeTarget, file));
   await writeFile(join(runtimeTarget, 'manifest.json'), JSON.stringify({

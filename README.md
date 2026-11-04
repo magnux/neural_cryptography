@@ -4,13 +4,19 @@ Experiments in neural dynamical systems, a custom ZKBoo-style proof of knowledge
 and camera-to-screen optical communication. The browser applications perform
 computation locally; their servers only serve static files.
 
-The immediate goal is **Neural-ZKBoo authentication between a phone and computer
-using color-matrix optical transport**. The existing experiments are the
-exploratory foundation. The separate **`neural-zkboo.html`** interface now connects
-the trained neural corrector, CRC recovery and turn-based multipart channel to
-the shared authentication flow. The next milestone is its physical-device test.
-Cryptanalytic comparisons and adversarial architecture experiments are future
-research, outside the shortest path to this functional POC.
+The goal is **fast, reliable and secure optical authentication between a phone
+and computer**. A complete Neural-ZKBoo device exchange has now succeeded using
+the trained neural corrector for color data and standard QR ACKs. The next design
+is **Neural-QR**: our custom optical matrices built specifically for neural
+correction, with asymmetric geometric markers and phase cues instead of the
+current dense monochrome header. Neural-QR is not a standard QR code.
+
+The [Neural-QR design](docs/NEURAL_QR.md) and [roadmap](docs/ROADMAP.md) define the
+next implementation steps. The existing `neural-zkboo.html` remains the working
+baseline while that format is developed. Functional success does not establish
+cryptographic security or a controlled throughput advantage over QR; those are
+separate acceptance criteria. Earlier experiments remain available as research
+foundations.
 
 The repository keeps one current implementation of each experiment; earlier
 revisions belong in Git history. The hosted test sites are intentionally blank.
@@ -25,9 +31,9 @@ for the original dynamical-systems exploration.
 | Neural dynamics / symmetric neural key | [Python experiment](experiments/neural-dynamics/README.md) | Recurrent CNNs, rotating kernels, diffusion, bias, numerical agreement, and surrogate attacks. |
 | Python ZKBoo | [Python experiment and core](experiments/python-zkboo/README.md) | Exact binary circuit, compact prover/verifier, command-line provisioning and optical simulation, and Python↔JavaScript parity. |
 | Browser Crypto Lab | [Color app](apps/color-optical-bench/README.md), `crypto.html` | Generate keys, prove, verify, reject tampering, and measure local performance in a worker. |
-| Color optical transport | [Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Color matrices, image simulations, temporal fusion, error correction, and multipart transfers. |
+| Neural-QR transport research | [Design](docs/NEURAL_QR.md), [current Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Custom neural-readable matrices. The current executable transport remains OBM5; the replacement layout and acquisition pipeline are specified for the next implementation. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
-| Neural-ZKBoo color authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | Trained four-phase matrix reception, static QR ACKs and explicit physical turns; starts with the 32-repetition proof. Ready for device validation. |
+| Neural-ZKBoo authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | A 32-repetition phone/PC exchange completed with trained four-phase data reception and static QR ACKs. Baseline for Neural-QR integration. |
 | Neural corrector | [Model and training](experiments/neural-corrector/README.md), [capture/training guide](docs/NEURAL_CORRECTOR_TRAINING.md), `corrector.html` and `capture.html` | Full-resolution U-tube models, labeled captures, coherent synthetics, training, recovery evaluation and browser export. Phase-grouped training passed the recorded recovery target; the new authentication interface exercises live learned recovery. |
 
 Read [use cases](docs/USE_CASES.md), [format boundaries](docs/FORMATS.md), and
@@ -39,7 +45,9 @@ parameters: transport carries the serialized proof bytes.
 ## Plan and research context
 
 - [POC roadmap](docs/ROADMAP.md): browser feasibility, capture/training,
-  authentication integration, first color exchange, and repeatable device tests.
+  completed authentication, Neural-QR development, and repeatable device tests.
+- [Neural-QR specification plan](docs/NEURAL_QR.md): geometric anchors, phase
+  identification, header-free neural acquisition, payload integrity and ACKs.
 - [Neural corrector design](docs/NEURAL_CORRECTOR.md): architecture, input/output
   contract, dataset collection, RTX 4090 training, and browser inference.
 - [Connections to previous research](docs/RESEARCH_CONNECTIONS.md): neural
@@ -95,6 +103,13 @@ authentication page requires the trained corrector for DATA and uses static QR A
 
 ## Status and scope
 
+On **4 November 2026**, the owner completed a 32-repetition Neural-ZKBoo exchange
+using learned G64 data recovery and static QR ACKs. Verification and final result
+delivery completed in approximately **6 minutes 17 seconds**. The 17,474-byte
+proof took approximately **160 seconds** to transfer and acknowledge, or **109 B/s**
+including turns and alignment. This validates the integrated path, not a matched
+speed comparison with QR. No private report contents or recordings are published here.
+
 Real-device tests in this project reached 128×128 matrices with 16 colors using
 the color decoder's recovery mechanisms. QR transport was more reliable in the
 tested setup and reached roughly 1 kB/s in favorable transfer tests. A separate
@@ -108,5 +123,14 @@ CRC, Reed–Solomon correction, and transport digests detect/correct channel err
 they do not authenticate a sender. See each experiment's documentation for its
 actual checks and limits.
 
-The project has no selected top-level license yet. Existing third-party code
-retains its own licenses and provenance in [THIRD_PARTY.md](THIRD_PARTY.md).
+## License and attribution
+
+Original Neural Cryptography code and documentation, including **Neural-QR**,
+**Neural-Corrector** and **Neural-ZKBoo**, are licensed under
+[Apache-2.0](LICENSE). Copyright 2026 **Alejandro Hernandez Ruiz (magnux)**.
+Commercial use is permitted; the license disclaims warranties and requires
+preserving applicable license and attribution notices on redistribution.
+Keep the project's [NOTICE](NOTICE), and use [CITATION.cff](CITATION.cff) when
+citing the research. See [licensing scope](docs/LICENSING.md) for model releases
+and method descriptions. Dependencies retain their own terms in
+[THIRD_PARTY.md](THIRD_PARTY.md).

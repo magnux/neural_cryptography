@@ -86,6 +86,10 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
         raise ValueError("Seed must be an unsigned 32-bit integer")
     if not isinstance(threads, int) or isinstance(threads, bool) or not 1 <= threads <= 64:
         raise ValueError("Threads must be between 1 and 64")
+    # Preserve the project's licensing with independently distributed bundles.
+    # These notices do not override external checkpoint or dataset terms.
+    root = Path(__file__).resolve().parents[2]
+    project_notices = {name: (root / name).read_bytes() for name in ("LICENSE", "NOTICE")}
     torch.set_num_threads(threads)
     torch.manual_seed(seed)
     if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
@@ -139,6 +143,8 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
     }
     with tempfile.TemporaryDirectory(prefix=".optical-export-", dir=out.parent) as temporary:
         stage = Path(temporary)
+        for name, contents in project_notices.items():
+            (stage / name).write_bytes(contents)
         for size in sizes:
             input_shape, output_shape = shapes(size, model.frames, presence=model.variable_frames)
             pixels = fixture_input(size, seed, model.frames, presence=model.variable_frames,

@@ -1,5 +1,16 @@
 # Neural Key · Optical Bench, Crypto Lab and Live Demo
 
+Original project code and documentation are licensed under
+[Apache-2.0](../../LICENSE), with attribution to **Alejandro Hernandez Ruiz
+(magnux), Neural Cryptography** in [NOTICE](../../NOTICE). Prepared app bundles
+include these notices; third-party licenses remain unchanged. See
+[licensing scope](../../docs/LICENSING.md).
+
+The next custom optical format is [Neural-QR](../../docs/NEURAL_QR.md), designed
+around neural correction with asymmetric markers and phase cues instead of a
+dense external header. This is the next implementation plan; the running demo
+below still uses OBM5 DATA and QR ACKs.
+
 Five browser-local workspaces share top-level navigation:
 
 - **Optical Bench** (`index.html`) tests optical transport of bytes, UTF-8,
@@ -55,9 +66,10 @@ color transport experiments remain available without a new deployment.
 The new [Neural-ZKBoo interface](../../docs/NEURAL_ZKBOO_DEMO.md) uses the shared
 authentication session through a dedicated color stop-and-wait channel. The
 [neural corrector](../../docs/NEURAL_CORRECTOR.md) completed phase-grouped
-training and passed the recorded recovery target. Its live worker now feeds
-CRC-valid packets into authentication; physical-device performance remains to
-be measured. The existing Live Demo still transfers bytes only and remains an
+training and passed the recorded recovery target. Its live worker feeds
+CRC-valid packets into authentication; the 4 November 2026 device exchange
+completed proof verification and final result delivery. The existing Live Demo
+still transfers bytes only and remains an
 independent transport workspace. [Research connections](../../docs/RESEARCH_CONNECTIONS.md)
 describe the exploratory background and later cryptanalytic work.
 

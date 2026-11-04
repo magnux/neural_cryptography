@@ -17,7 +17,9 @@ at inference time. These files are separate from the existing transport and
 crypto dependencies; ordinary `prepare:apps` does not install them.
 
 NumPy and PyTorch are Python dependencies installed separately; neither is vendored.
-No project-wide license has been selected in this repository. These dependency
-licenses apply to their respective code and do not select a license for the
-project's original source.
+The project's original source and documentation use [Apache-2.0](LICENSE), with
+project/author attribution in [NOTICE](NOTICE). The dependency licenses above
+apply to their respective code and remain unchanged. The project license does
+not replace third-party licenses or grant rights in externally supplied data or
+checkpoints; see [licensing scope](docs/LICENSING.md).
 

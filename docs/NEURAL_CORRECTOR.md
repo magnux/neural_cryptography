@@ -18,6 +18,16 @@ commands, the [experiment README](../experiments/neural-corrector/README.md) for
 entry points, and the [Corrector Lab guide](CORRECTOR_LAB.md) for exporting and
 serving a trained model.
 
+Original Neural-Corrector code and documentation use [Apache-2.0](../LICENSE),
+with credit to Neural Cryptography and **Alejandro Hernandez Ruiz (magnux)** in
+[NOTICE](../NOTICE). See [licensing scope](LICENSING.md) for model releases.
+
+The next optical transport is [Neural-QR](NEURAL_QR.md). Its acquisition design
+replaces the current separately decoded header with geometric anchors and phase
+cues while initially preserving the trained G64 input/output contract. The
+header-based descriptions below document the currently implemented OBM5 path;
+they are not a requirement for future neural input preparation.
+
 ## Common input and output contract
 
 Let **G** be the matrix width in cells, **T** a fixed number of observations,
@@ -359,13 +369,14 @@ shared logical candidates**, not 560 independent matrices. The final selected
 score of **93.54%** averages directions equally and then capture counts; it
 therefore differs legitimately from the sample-weighted aggregate above.
 
-This meets the earlier phone→PC recovery target on the recorded validation set
-and supports proceeding to trained-model browser testing. It does not yet
-measure fresh-camera recovery, browser inference latency or optical goodput.
+This meets the earlier phone→PC recovery target on the recorded validation set.
+Those validation measurements alone do not measure fresh-camera recovery,
+browser inference latency or optical goodput. The subsequent live device
+exchange is described below.
 The changes combined phase evidence, architecture, augmentation and additional
 sessions, so this run does not isolate the contribution of each change.
 
-## Browser boundary and next integration step
+## Browser integration and the next transport
 
 The demo server serves static assets. Python loads the training `.pt` checkpoint
 and exports the selected network to ONNX together with a manifest and numerical
@@ -373,16 +384,17 @@ fixtures. The browser downloads that exported bundle and runs ONNX Runtime Web
 inside a worker. It does not load a PyTorch checkpoint or call a Python inference
 endpoint. See the [explicit serving workflow](CORRECTOR_LAB.md).
 
-The standalone Corrector Lab already checks numerical parity and performs camera
-crop inference. The live optical transport still uses its classical classifier;
-connecting corrected logical scores to its temporal recovery/session loop is a
-subsequent integration task. Acceptance must continue to require CRC/RS checks,
-and authentication must continue to verify the neural ZKBoo proof independently
-of transport recovery.
+The standalone Corrector Lab checks numerical parity and performs camera crop
+inference. The separate [Neural-ZKBoo demo](NEURAL_ZKBOO_DEMO.md) now connects
+corrected logical scores to packet recovery and the authentication session. The
+4 November 2026 device exchange completed proof verification and final result
+delivery using neural DATA reception and static QR ACKs. The Optical Bench's
+other transport workspaces remain separate experiments.
 
-For the next device test, export the selected trained checkpoint, check runtime
-agreement, then measure K4/K6/K8 capture and inference behavior in both directions.
-Use fresh optical conditions and report exact recovery, capture time, inference
-latency and failures separately. The broader goal remains neural ZKBoo
-authentication over the color-matrix transport; no larger matrix or new
-architecture is required before testing this trained model in the browser.
+The next step is [Neural-QR](NEURAL_QR.md): remove the dense external header,
+preserve the G64 model contract initially, and carry both DATA and controls
+through neural recovery. Test existing weights on the new layout before deciding
+whether to fine-tune. Acceptance still requires packet integrity and context
+checks; Neural-ZKBoo proof verification remains independent of transport recovery.
+Measure exact recovery, acquisition, inference, ACK time and complete authentication
+in both directions. A larger matrix or new architecture is not a prerequisite.

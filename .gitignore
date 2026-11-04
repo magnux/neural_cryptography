@@ -38,6 +38,10 @@ neural_zkboo_results/
 /apps/color-optical-bench/dist/js/crypto-lab/reference-fixture.js
 /apps/color-optical-bench/dist/js/crypto-lab/worker.js
 /apps/*/tests/fixtures/zk/
+/apps/*/dist/LICENSE
+/apps/*/dist/NOTICE
+/apps/*/dist/CITATION.cff
+/apps/*/dist/THIRD_PARTY.md
 
 # QR ACKs reuse the QR app's canonical codec and locally bundled licensed dependencies.
 /apps/color-optical-bench/dist/js/qr-core/

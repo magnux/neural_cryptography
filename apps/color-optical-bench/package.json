@@ -20,5 +20,7 @@
     "postfixtures:zk": "npm run prepare:app",
     "pretest:auth": "npm run prepare:app",
     "test:auth": "node --test tests/neural-auth-*.test.mjs"
-  }
+  },
+  "license": "Apache-2.0",
+  "author": "Alejandro Hernandez Ruiz (magnux)"
 }

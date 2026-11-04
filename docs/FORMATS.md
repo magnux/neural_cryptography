@@ -4,6 +4,14 @@ Each layer has one current POC format. There are no compatibility readers for
 previous experiment formats. Update both devices and regenerate affected
 fixtures when changing one.
 
+**Neural-QR** is the name of the next custom, neural-readable optical format.
+Its [design](NEURAL_QR.md) removes the separate dense monochrome header and
+standard QR ACK dependency. It is a planned replacement, not another accepted
+wire format today: the runnable demo still uses OBM5 data plus standard QR ACKs.
+The replacement will update both endpoints, capture tools and fixtures together,
+with one active format and no compatibility reader. Naming the design does not
+rename existing stored capture/checkpoint identifiers.
+
 | Layer | Current identifier | Canonical documentation / source |
 | --- | --- | --- |
 | Python optical simulation | `NPM1`, raw symbols, NPZ captures | [Shared Python formats](../shared/python/README.md); separate from browser transport |

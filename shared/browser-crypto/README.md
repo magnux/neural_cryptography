@@ -1,5 +1,10 @@
 # Shared browser cryptography
 
+Original Neural Cryptography / Neural-ZKBoo code by **Alejandro Hernandez Ruiz
+(magnux)** is licensed under [Apache-2.0](../../LICENSE), with attribution in
+[NOTICE](../../NOTICE). Dependencies retain their own licenses. See
+[licensing scope](../../docs/LICENSING.md) and [CITATION.cff](../../CITATION.cff).
+
 This is the canonical JavaScript implementation used by the color Crypto Lab
 and both the color-matrix and QR authentication apps. Edit it here, then run `npm run prepare:apps` at the
 repository root. The preparation script copies these modules into ignored
@@ -31,3 +36,4 @@ The application envelope uses `neural-zkboo-auth-v1` / `NZA1`. This name does
 not change the circuit or compact proof format. QR and color apps have independent
 transport interfaces and reuse this same authentication implementation. Rebuild
 both endpoints together after an application format change.
+

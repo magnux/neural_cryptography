@@ -6,11 +6,13 @@ changing the camera transport does not require changing the proof relation.
 These experiments do not establish a production cryptographic construction or
 a claimed post-quantum security level.
 
-The immediate delivery goal is the [color authentication POC](ROADMAP.md): reuse
-the current Neural ZKBoo engine and authentication flow over color multipart
-transport, with the [learned neural corrector](NEURAL_CORRECTOR.md) improving
-camera reception. The existing experiments are its exploratory foundation.
-[Cryptanalytic comparisons](RESEARCH_CONNECTIONS.md) remain future research.
+The integrated Neural-ZKBoo exchange has completed on the phone and PC using
+learned color DATA and QR ACKs. The [roadmap](ROADMAP.md) now targets fast, reliable
+optical authentication through [Neural-QR](NEURAL_QR.md), a custom format built
+for the [neural corrector](NEURAL_CORRECTOR.md). The next format replaces the
+dense header and standard QR ACK path; the current apps remain the working
+baseline until that implementation is ready. [Cryptanalytic comparisons](RESEARCH_CONNECTIONS.md)
+remain future research; functional success is not security validation.
 
 ## Choose an experiment
 
@@ -24,7 +26,8 @@ camera reception. The existing experiments are its exploratory foundation.
 | How much data can standard QR codes carry reliably on these devices? | [QR transport lab](../apps/qr-neural-key/README.md), page `index.html` | Multipart bytes, outgoing profiles, pacing, acknowledgments, retries, and measurements. |
 | Can a device authenticate over an optical link? | [QR authentication](../apps/qr-neural-key/AUTHENTICATION.md), page `auth.html` | Local ephemeral keys, human pairing confirmation, a fresh challenge, optical proof transfer, and local verification. |
 | Can the decoder run on these devices? | [Corrector Lab](CORRECTOR_LAB.md), page `corrector.html` | Untrained or trained checkpoint, full-logit Python parity, worker latency/UI reports, and validated camera crop inference. |
-| Can learned color decoding improve recovery? | [Capture/training guide](NEURAL_CORRECTOR_TRAINING.md), page `capture.html` | Export real captures, join labels offline, generate correlated synthetic examples, train in PyTorch, and compare exact CRC/RS recovery on held-out sessions. Real-device improvement remains to be measured. |
+| Can learned color decoding improve recovery? | [Capture/training guide](NEURAL_CORRECTOR_TRAINING.md), page `capture.html` | Recorded evaluation and a completed device authentication establish feasibility. Matched throughput comparisons remain to be measured. |
+| How will matrices designed for neural correction work? | [Neural-QR design](NEURAL_QR.md) | Planned asymmetric markers, repeated phase cues, neural payload recovery and QR-free control messages. |
 
 Paths to HTML pages are relative to the selected app's `dist/` directory. Both
 apps can be served as static files after `npm run prepare:apps`; Corrector Lab additionally needs its optional
@@ -96,7 +99,7 @@ they do not require a different cryptographic circuit.
 | Multipart color transport | [Link transport](../apps/color-optical-bench/LINK_TRANSPORT.md) |
 | Binary proof and public context | [Compact v2 proof format](../apps/color-optical-bench/CRYPTO_PARITY.md) |
 | QR packets and transport configuration | [QR transport lab](../apps/qr-neural-key/README.md) |
-| Authentication envelope | [`neural-qr-auth-v1` / `NQA1`](../apps/qr-neural-key/AUTHENTICATION.md) |
+| Authentication envelope | [`neural-zkboo-auth-v1` / `NZA1`](../apps/qr-neural-key/AUTHENTICATION.md) |
 
 The experiments accept their current formats only. Older encodings are not
 supported through compatibility readers or migrations. See the

@@ -1,0 +1,13 @@
+Neural Cryptography
+Copyright 2026 Alejandro Hernandez Ruiz (magnux)
+
+Original project: https://github.com/magnux/neural_cryptography
+
+This project includes the original Neural-QR optical transport design,
+Neural-Corrector models and implementation, and Neural-ZKBoo implementation
+and documentation developed within the Neural Cryptography project by
+Alejandro Hernandez Ruiz (magnux).
+
+Third-party software retains its own copyright and license notices.
+See THIRD_PARTY.md and the notices bundled with each dependency.
+The ZKBoo research and other cited prior work retain their original attribution.

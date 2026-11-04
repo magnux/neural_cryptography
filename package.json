@@ -20,5 +20,7 @@
     "benchmark:crypto": "npm --prefix apps/color-optical-bench run benchmark:crypto",
     "benchmark:qr": "npm --prefix apps/qr-neural-key run benchmark:speed",
     "test:neural-zkboo": "npm --prefix apps/color-optical-bench run test:auth"
-  }
+  },
+  "license": "Apache-2.0",
+  "author": "Alejandro Hernandez Ruiz (magnux)"
 }

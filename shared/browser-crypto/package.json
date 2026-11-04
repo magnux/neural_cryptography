@@ -1,5 +1,7 @@
 {
   "name": "neural-cryptography-browser-core",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Alejandro Hernandez Ruiz (magnux)"
 }
