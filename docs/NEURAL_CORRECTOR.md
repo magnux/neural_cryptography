@@ -28,9 +28,9 @@ cues while reusing the palette, phase grouping and logical-label conventions. Th
 header-based descriptions below document the currently implemented OBM5 path;
 they are not a requirement for future neural input preparation.
 
-The next model direction is **one shared multi-resolution U-tube-2x-attn** for
-G8…G256, replacing the earlier plan to train a separate G128 network. See
-[multi-resolution design](#multi-resolution-u-tube-2x-attn-next-design).
+The next model is **`multires`**, with a shared convolution/attention trunk and
+an independent learned positional anchor for every supported size, G8…G256.
+See [multires design](#multires-next-architecture).
 The production implementation and trained checkpoint are currently G64.
 The new design uses **2×2 pixels per cell (four pixels total)**. The currently
 implemented models documented below use 4×4; the new shape contract and spatial
@@ -384,10 +384,11 @@ exchange is described below.
 The changes combined phase evidence, architecture, augmentation and additional
 sessions, so this run does not isolate the contribution of each change.
 
-## Multi-resolution U-tube-2x-attn: next design
+## multires: next architecture
 
-Use one set of convolution, normalization, attention and classifier weights for
-G = **8, 16, 32, 64, 128, 256**. Use **2×2 rectified pixels per cell**, four
+The architecture name is **`multires`**. Share convolution, normalization,
+attention and classifier weights across G = **8, 16, 32, 64, 128, 256**, but
+give each size its own independently learned anchor. Use **2×2 rectified pixels per cell**, four
 pixels total. The U runs through **2G → G → 2G**, and its outlet reduces **2G → G**.
 The bottleneck never goes below the target symbol resolution. Phase-grouped
 input becomes `[N,32,2G,2G]`; output remains `[N,16,G,G]`, with four to eight
@@ -407,34 +408,62 @@ The work column compares sizes of this new 2×2-cell design, not the previous
 Window attention keeps 64 tokens per window; larger grids add windows, rather
 than attending globally across every cell. Convolution and attention work scale
 approximately as G² with fixed widths and window size. Parameters can remain
-**432,848**, but activations grow: one float32 `[1,32,512,512]` tensor alone is
+shared in the trunk, but the separate anchors increase the total count as shown
+below. Activations also grow: one float32 `[1,32,512,512]` tensor alone is
 32 MiB. At G256 one four-head attention-score tensor is another 64 MiB, before
 other intermediate tensors. G256 therefore
 needs device memory and latency measurement even if its model file is small.
 
-### Learned anchor and masks
+### Independent positional anchors
 
-Retain the learned `[1,32,64,64]` positional anchor and interpolate it to `2G×2G`
-after the inlet. It remains a learned global positional reference. This preserves
-the existing parameter shapes; it does not preserve the old G64 computation or allocate an
-independent full-resolution anchor for every size. A small learned size embedding
-could be added if size conditioning proves necessary, but is not required for
-the shared-weight architecture.
+Store **six distinct parameters** `A_G`, each shaped `[1,32,G,G]`. Select the
+anchor for the current target size, enlarge that anchor **exactly 2× per axis**
+with bilinear interpolation (`align_corners=False`), and add it after the inlet:
+`features = inlet(pixels) + upsample_2x(A_G)`.
 
-Keep the residual depth while changing spatial strides: `e1` reduces `2G→G`,
-the bottleneck stays at G (its first residual pair now has stride 1), and `d1`
-combines bottleneck and `e1` without upsampling. Only `d0` upsamples to 2G. The
-outlet's first convolution reduces to G; the second uses stride 1. This retains
-all learned convolution shapes and both attention blocks, while preventing a
-second reduction below the target grid. Existing weights are an initialization
-for fine-tuning, not a drop-in trained 2×2-cell model.
-Retain the bottleneck's learned 1×1 shortcut when changing its stride to 1;
-replacing that projection with Identity would discard a checkpoint parameter.
+An anchor is never resized to serve another target size. For example, G16 uses
+its own 16×16 anchor enlarged to 32×32; G128 uses a different 128×128 anchor
+enlarged to 256×256. These biases condition the subsequent shared nonlinear
+computation on both resolution and position. They are part of the trained model,
+not optical corner markers or features inferred from the camera frame.
+
+### Convolution path and four attention blocks
+
+Remove the intermediate encoder/decoder level (`e1` and `d1`) from the earlier
+U-tube. The previous stride-only feasibility prototype retained both blocks;
+`multires` now makes the structural reduction explicit. Keep the full-resolution
+inlet and outer block `e0`, the deep bottleneck, reconstruction block `d0`,
+outlet and head. The bottleneck's first residual pair performs the one `2G→G`
+reduction and retains its learned stride-two shortcut. It still has four residual
+pairs (eight main convolutions). `d0` combines the upsampled bottleneck with the
+outer skip. The outlet uses stride 2 then stride 1, ending at G.
+
+Double bottleneck attention from **two to four independently parameterized
+blocks**, each with 32 channels, four heads and 8×8-cell windows. Alternate
+unshifted/shifted windows with shifts **0, 4, 0, 4**. The deeper attention stack
+provides additional processing and communication between windows after removing
+the intermediate convolutional level; this is a capacity choice, not a proven
+equivalence between convolution and attention depth.
+
+```mermaid
+flowchart TD
+    X["Phase-paired input: 32 × 2G × 2G"] --> I["Inlet: 2 convs, 32 channels"]
+    A["Select learned A_G: 32 × G × G"] --> P["Upsample anchor exactly 2×"]
+    I --> ADD["Add size-specific positional anchor"]
+    P --> ADD
+    ADD --> E["Outer block: 2 residual pairs at 2G"]
+    E --> B["Bottleneck: 4 residual pairs, reduce to G"]
+    B --> T["4 attention blocks at G; shifts 0 / 4 / 0 / 4"]
+    T --> D["Upsample, concatenate skip; 2 residual pairs at 2G"]
+    E --> D
+    D --> O["Outlet: stride 2 then 1; 16-class head at G"]
+```
 
 Generate the attention boundary mask for the selected grid and partition by
 `G/8` windows per axis. At G8 the window covers the complete grid: disable the
-second block's shift and wraparound mask while retaining its learned projections.
-The two attention blocks remain present. Other multiples of eight are possible;
+shifted blocks' shifts and wraparound masks while retaining their learned
+projections. All four attention blocks remain present. Other multiples of eight
+would require their own anchor parameters;
 arbitrary widths require padding, attention masks and output cropping, so the
 initial profiles above deliberately avoid that additional machinery.
 
@@ -445,6 +474,28 @@ class masking remains independent of size. The current code hardcodes G64 in
 RGB reshaping, anchor interpolation, attention partition/reversal, mask creation,
 the tensor contract and browser validation. All must be parameterized together.
 
+### Parameter and export sizes
+
+With 32-channel anchors, `32 × sum(G²)` is **2,795,520 parameters** across the six
+sizes. The shared trunk with the reduced convolutional path and four attention
+blocks is **232,400**, for a combined training model of **3,027,920 parameters**.
+Each attention block has 8,544 parameters; the two additional blocks add 17,088.
+
+| Profile | Selected anchor parameters | Shared trunk + selected anchor |
+| --- | --- | --- |
+| G8 | 2,048 | 234,448 |
+| G16 | 8,192 | 240,592 |
+| G32 | 32,768 | 265,168 |
+| G64 | 131,072 | 363,472 |
+| G128 | 524,288 | 756,688 |
+| G256 | 2,097,152 | 2,329,552 |
+
+The earlier 500,000-parameter ceiling does not hold for the combined model or
+the G128/G256 profiles. This design keeps the requested full 32-channel anchors
+explicitly; no low-rank factorization, shared cross-size anchor or broadcast-only
+anchor is substituted. The complete float32 parameter bank is about 11.55 MiB;
+a G256 export's parameters are about 8.89 MiB, excluding graph metadata/masks.
+
 ### ONNX/WASM deployment
 
 These operations have a conventional ONNX representation: Conv, elementwise
@@ -453,33 +504,40 @@ Runtime Web documents broad WASM operator support and dynamic input dimensions.
 There is no fundamental ONNX/WASM obstacle to this architecture.
 
 The shortest deployment route is **one trained checkpoint with six static-shape
-exports**, loaded on demand. They share learned weights; they are not six
-independently trained networks. Static shapes simplify window masks and browser
+exports**, loaded on demand. Each export includes the shared trunk and only its
+selected anchor. They share trunk weights; they are not six independently trained
+networks. Static shapes simplify window masks and browser
 validation and can enable WebGPU graph capture when all kernels support it.
-A single dynamic-shape ONNX file is also feasible, with shape-derived reshapes
-and masks; it is not necessary to obtain shared multi-resolution behavior.
+A single dynamic-shape ONNX file would also need explicit selection among the
+six anchor tensors as well as shape-derived masks. It is not necessary for this
+deployment and cannot support unseen sizes without a matching trained anchor.
 
-Inspect exported initializers: keep the compact learned anchor plus Resize.
+Inspect exported initializers: keep only the selected G-sized anchor plus Resize.
 Pre-expanding it into a constant at G256 would add a 32 MiB tensor. Avoid
 loading every profile/session simultaneously; release unused sessions and bound
 capture pools. Test WASM parity at each exported size and measure WebGPU/phone
 performance separately. Successful CPU/WASM execution is not a phone benchmark.
 
-A scratch feasibility probe on 4 November 2026 implemented this exact 2×2-cell
-route with shared random weights and 432,848 parameters. The production-shaped
-state dictionary loaded strictly. Numerical PyTorch forwards passed at G8, G16,
-G32 and G64; G128/G256 passed shape-only propagation. Static G8/G16 exports ran
-in ONNX Runtime Web 1.23.2, single-thread WASM, with maximum logit errors
-1.13×10⁻⁶ / 1.73×10⁻⁶ against PyTorch and no tolerance failures or changed argmax
-cells. The compact anchor remained an initializer followed by Resize. These
-checks establish small-profile export/execution feasibility, not trained recovery,
-dynamic-graph support in the tested artifact, or device performance. Production
-model/export/browser code is unchanged by this design update.
+The revised scratch prototype was checked on 4 November 2026 with separate
+anchors, the reduced convolutional path and all four attention blocks. Numerical
+G8/G16 forwards and ONNX checks passed. ONNX Runtime Web 1.23.2, single-thread
+WASM, matched PyTorch with maximum logit errors 1.25×10⁻⁶ / 1.85×10⁻⁶, no
+tolerance failures and no changed argmax cells. Each exported graph contained
+only its selected anchor; the full anchor bank was not duplicated into each
+profile. This used random weights and establishes small-profile execution/parity,
+not trained recovery or phone performance. Production model/export/browser code
+is unchanged by this design update.
 
 ### Training and transport integration
 
 Initialize from the successful G64 checkpoint and fine-tune one model across
-sizes, retaining G64 examples. Use one size per minibatch and a mixture of sizes
+sizes, retaining G64 examples. Copy only matching shared blocks and the G64
+anchor; initialize the other size anchors and additional attention blocks
+independently. Do not manufacture the other anchors by resizing the G64 tensor.
+Removed encoder/decoder blocks have no destination. This is an explicit warm
+start, not an exact whole-checkpoint load.
+
+Use one size per minibatch and a mixture of sizes
 across updates; reduce the batch at large resolutions instead of padding every
 example to 512×512. Keep per-example loss normalization so large matrices do
 not dominate merely by having more labeled cells. Generate synthetic observations
@@ -488,6 +546,9 @@ at each actual cell density and evaluate real capture recovery by size. Existing
 the original recordings. Halving input dimensions discards some subcell evidence,
 so the existing recovery rates do not transfer automatically to the new sampling.
 A shape change alone does not demonstrate accuracy at unseen resolutions.
+Only the selected anchor receives gradients from a minibatch; all examples
+update the shared trunk. Clear gradients with `set_to_none=True` so an inactive
+anchor is not accidentally decayed or updated through stale optimizer gradients.
 
 Neural-QR can then use small profiles for controls and large profiles for data.
 The receiver must know G before rectification/inference: start with agreed

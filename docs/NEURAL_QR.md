@@ -21,10 +21,12 @@ not an encoded valid packet. Marker dimensions and the asymmetric corner pattern
 are design candidates. The outer geometry stays fixed across phases; only the
 phase patches and phase-permuted data colors change. Reference colors stay fixed.
 
-The target is a **multi-resolution family**, G8/G16/G32/G64/G128/G256, read by one
-shared U-tube-2x-attn parameter set. G64 is the existing trained starting point;
+The target is a **multi-resolution family**, G8/G16/G32/G64/G128/G256, read by
+**`multires`**: a shared convolution/attention trunk with one learned G×G anchor
+per size, enlarged exactly 2× at its inlet, and four attention blocks at G.
+G64 is the existing trained starting point;
 small controls and larger data matrices can use different profiles. The
-[model design](NEURAL_CORRECTOR.md#multi-resolution-u-tube-2x-attn-next-design)
+[model design](NEURAL_CORRECTOR.md#multires-next-architecture)
 specifies crop sizes, anchors, masks, export and training changes.
 Rectification uses **2×2 pixels per cell**: G32 → 64×64, G64 → 128×128 and
 G256 → 512×512. Drawing cell dimensions are illustrative display units, not
@@ -180,7 +182,7 @@ audited cryptographic security result.
 
 ## Implementation sequence
 
-1. Parameterize U-tube-2x-attn for the shared size family while implementing the
+1. Implement `multires` with independent size anchors and four attention blocks while implementing the
    illustrated layout, phase cues and packet association. Use 2×2 pixels per
    cell, keep the bottleneck at G, and test shape/export parity; these efforts
    can proceed together.
