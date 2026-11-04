@@ -21,6 +21,10 @@ export function validateManifest(manifest) {
       !plain(manifest.versions) || !Array.isArray(manifest.cases)) {
     throw new Error('Unsupported corrector manifest. Regenerate the current model and fixtures.');
   }
+  if (!plain(manifest.tolerance) || Object.keys(manifest.tolerance).length !== 2 ||
+      manifest.tolerance.atol !== PARITY_TOLERANCE.atol || manifest.tolerance.rtol !== PARITY_TOLERANCE.rtol) {
+    throw new Error('Invalid corrector parity tolerance. Regenerate and prepare the current model bundle.');
+  }
   const profile=manifest.modelProfile;
   if (!Object.hasOwn(MODEL_PROFILES,profile)||MODEL_PROFILES[profile].base+MODEL_PROFILES[profile].perFrame*manifest.framesPerInput!==manifest.parameterCount) throw new Error('Invalid corrector model profile/count.');
   const attention=profile==='U-tube-2x-attn',frames=manifest.framesPerInput;

@@ -41,10 +41,31 @@ an **untrained** feasibility model and is unsuitable for a recognition test.
 G128, but successful export alone does not establish cross-size recognition.
 
 Export runs on CPU and checks ONNX graph validity plus native ONNX Runtime
-agreement with PyTorch. If a particular host cannot initialize the native
-runtime, the explicit `--skip-ort-check` option records `not_run`; it does not
-count as a passed check. The Node/WASM and actual-device parity tests remain
-necessary. The pinned runtime is **ONNX Runtime Web 1.23.2**.
+agreement with PyTorch on two fixture inputs. Native export, Node/WASM and the
+browser use one float32 parity policy:
+`abs(actual - expected) <= 1e-4 + 1e-3 * abs(expected)`.
+Every logit must pass; nonfinite values and mismatched shapes fail. The absolute
+term permits small differences near zero, where relative tolerance contributes
+little. This checks runtime agreement, not bitwise identity or payload recovery.
+
+The native check also reports changed argmax cells, the largest reference
+winner/runner-up margin among those cells, and maximum softmax probability
+difference. These are diagnostics: almost-tied logits can exchange their winning
+class while still meeting the numerical tolerance. The fixtures have no known
+optical payload, so neither argmax agreement nor parity proves decoding accuracy.
+
+The TorchScript ONNX deprecation warning is separate from a parity failure.
+The exporter deliberately uses `dynamo=False` with its tested static opset-17
+operator set and existing dependencies. Do not switch exporters or disable
+parity to address a numerical comparison failure. After updating this code,
+rerun the export command above, prepare the bundle again, and reload both
+browsers. Preparation and browser loading reject a manifest declaring a different
+tolerance; model, manifest and fixtures must be regenerated together.
+
+If a host cannot initialize the native runtime at all, the explicit
+`--skip-ort-check` option records `not_run`; it does not count as a passed check.
+The Node/WASM and actual-device parity tests remain necessary. The pinned runtime
+is **ONNX Runtime Web 1.23.2**.
 
 ### Rename the descriptive profile in an existing checkpoint
 
@@ -191,7 +212,7 @@ explicit local setup steps and do not reactivate any hosted test site.
 
 1. With the camera off, choose **WASM**, G64 and ten measured runs. The benchmark
    warms up twice, then compares every output logit with the PyTorch fixture.
-   The browser tolerance is `abs(actual - expected) <= 1e-4 + 1e-3 * abs(expected)`.
+   The shared native/browser tolerance is `abs(actual - expected) <= 1e-4 + 1e-3 * abs(expected)`.
 2. Repeat using **Auto**. It selects WebGPU when available; if WebGPU session
    initialization fails it records the reason and tries WASM. Explicit **WebGPU**
    selection reports a failure instead of falling back. WASM uses one thread.

@@ -215,7 +215,13 @@ def main() -> None:
     for case in manifest["cases"]:
         if case["pythonParity"]:
             error = max(item["maxAbsError"] for item in case["pythonParity"])
-            note = f"two-input CPU parity passed (max abs {error:.3g})"
+            note = f"two-input CPU parity passed (max abs {error:.3g}; atol {ATOL:g}, rtol {RTOL:g})"
+            decisions = [item.get("decisions") for item in case["pythonParity"]]
+            if all(decisions):
+                changed = sum(item["argmaxChangedCells"] for item in decisions)
+                cells = sum(item["cells"] for item in decisions)
+                probability_error = max(item["maxProbabilityError"] for item in decisions)
+                note += f"; argmax changed {changed}/{cells} cells, max probability error {probability_error:.3g}"
         else:
             note = "Python ONNX Runtime parity NOT RUN; browser parity still required"
         print(f"G={case['size']}: {case['model']['bytes']:,} ONNX bytes; {note}.")

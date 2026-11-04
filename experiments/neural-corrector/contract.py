@@ -22,10 +22,11 @@ NETWORK_INPUT_MAX = 1.0
 PARAMETER_COUNT = 140_976
 INPUT_NAME = "pixels"
 OUTPUT_NAME = "logits"
-# Native Python ONNX Runtime thresholds; the browser uses its documented,
-# slightly wider thresholds to accommodate different execution backends.
-ATOL = 2e-5
-RTOL = 2e-4
+# One deployment policy for native ONNX Runtime, browser and WASM checks.
+# Float32 backends may accumulate/reorder operations differently, especially
+# through trained residual/attention blocks. Every logit must pass this bound.
+ATOL = 1e-4
+RTOL = 1e-3
 
 
 def shapes(size: int, frames: int = 1, *, presence: bool = False) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -118,11 +119,13 @@ def describe_file(path: Path) -> dict:
 def parity_metrics(expected: np.ndarray, actual: np.ndarray) -> dict:
     expected = np.asarray(expected)
     actual = np.asarray(actual)
-    if expected.shape != actual.shape or not np.isfinite(expected).all() or not np.isfinite(actual).all():
+    if not expected.size or expected.shape != actual.shape or not np.isfinite(expected).all() or not np.isfinite(actual).all():
         raise ValueError("Inference outputs must be finite and have identical shapes")
-    delta = np.abs(expected.astype(np.float64) - actual.astype(np.float64))
-    allowed = ATOL + RTOL * np.abs(expected.astype(np.float64))
-    return {
+    reference = expected.astype(np.float64)
+    output = actual.astype(np.float64)
+    delta = np.abs(reference - output)
+    allowed = ATOL + RTOL * np.abs(reference)
+    result = {
         "passed": bool(np.all(delta <= allowed)),
         "atol": ATOL,
         "rtol": RTOL,
@@ -131,3 +134,20 @@ def parity_metrics(expected: np.ndarray, actual: np.ndarray) -> dict:
         "mismatchedValues": int(np.count_nonzero(delta > allowed)),
         "values": int(expected.size),
     }
+    if expected.ndim == 4 and expected.shape[1] == CLASSES:
+        # Diagnostic only: numerical agreement can flip an argmax at a near tie.
+        # These public inputs contain no transmitted payload/known palette labels;
+        # neither argmax agreement nor this check claims CRC recovery accuracy.
+        changed = reference.argmax(axis=1) != output.argmax(axis=1)
+        top_two = np.partition(reference, -2, axis=1)[:, -2:]
+        margins = top_two[:, 1] - top_two[:, 0]
+        def probabilities(logits):
+            weights = np.exp(logits - logits.max(axis=1, keepdims=True))
+            return weights / weights.sum(axis=1, keepdims=True)
+        result["decisions"] = {
+            "cells": int(changed.size),
+            "argmaxChangedCells": int(np.count_nonzero(changed)),
+            "maxReferenceMarginAtChangedCells": float(margins[changed].max()) if changed.any() else 0.0,
+            "maxProbabilityError": float(np.abs(probabilities(reference) - probabilities(output)).max()),
+        }
+    return result

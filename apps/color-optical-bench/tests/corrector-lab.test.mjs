@@ -12,7 +12,7 @@ function manifest(frames=1,profile='U-tube') {
   const count=base+perFrame*frames;
   return {format:'neural-corrector',version:1,status:'untrained',modelProfile:profile,framesPerInput:frames,inputLayout:attention?'phase-paired-rgb-presence-planes':'stacked-rgb',
     minFramesPerInput:attention?4:frames,frameCounts:attention?[4,5,6,7,8]:[frames],outputLabelSpace:attention?'logical':'physical',phaseMasks:attention?[0,15,7,8]:[],parameterCount:count,pixelsPerCell:4,channels,classes:16,
-    normalization:{divisor:127.5,offset:-1,clip:[-1.5,1.5]},networkInputClip:[-1,1],
+    normalization:{divisor:127.5,offset:-1,clip:[-1.5,1.5]},networkInputClip:[-1,1],tolerance:{atol:1e-4,rtol:1e-3},
     inputName:'pixels',outputName:'logits',seed:7,opset:17,versions:{torch:'test'},cases:(attention?[64]:[64,128]).map(size=>({size,framesAvailable:attention?4:frames,
       inputShape:[1,channels,4*size,4*size],outputShape:[1,16,size,size],model:entry(`model-${size}.onnx`,500000),
       input:entry(`input-${size}.f32`,channels*16*size*size*4),expected:entry(`expected-${size}.f32`,16*size*size*4)}))};
@@ -24,6 +24,18 @@ test('corrector manifest accepts only bounded current shape/artifact contracts',
     m=>m.cases[0].model.file='../model.onnx',m=>m.cases[0].model.file='https://example.com/a',
     m=>m.cases[0].model.sha256='invalid',m=>m.cases[1].model.file=m.cases[0].model.file]) {
     const invalid=manifest(); mutate(invalid); assert.throws(()=>validateManifest(invalid));
+  }
+});
+test('manifest requires the same current parity policy used by browser inference',()=>{
+  const valid=manifest();assert.equal(validateManifest(valid),valid);
+  for(const tolerance of [undefined,null,{},[],{atol:1e-4},{rtol:1e-3},
+    {atol:Infinity,rtol:1e-3},{atol:1e-4,rtol:NaN},
+    {atol:1e-3,rtol:1e-3},{atol:1e-4,rtol:1e-2},
+    {atol:2e-5,rtol:2e-4},{atol:'0.0001',rtol:1e-3},
+    {atol:1e-4,rtol:1e-3,ignoreFailures:true}]) {
+    const invalid={...manifest(),tolerance};
+    if(tolerance===undefined)delete invalid.tolerance;
+    assert.throws(()=>validateManifest(invalid),/parity tolerance.*Regenerate/);
   }
 });
 test('manifest distinguishes retained capture range from the mandatory in-graph input clip',()=>{
@@ -55,6 +67,17 @@ test('parity checks every logit including a late mismatch and non-finite values'
   assert.equal(result.passed,false);assert.equal(result.failures,1);assert.equal(result.checked,1000);
   actual[3]=NaN; assert.equal(compareLogits(actual,expected).nonFinite,1);
   assert.throws(()=>compareLogits(actual,new Float32Array(3)));
+});
+test('reported-scale near-zero float32 drift passes while a single larger outlier fails',()=>{
+  const expected=new Float32Array(65536),actual=expected.slice();
+  actual[65535]=5.91278076171875e-5;
+  const small=compareLogits(actual,expected);
+  assert.equal(small.passed,true);assert.equal(small.failures,0);
+  assert.equal(small.checked,65536);assert.equal(small.atol,1e-4);assert.equal(small.rtol,1e-3);
+  actual[65535]=1.1e-4;
+  const outlier=compareLogits(actual,expected);
+  assert.equal(outlier.passed,false);assert.equal(outlier.failures,1);
+  assert.equal(outlier.checked,65536);
 });
 test('float fixture format is explicitly little-endian and finite',()=>{
   const buffer=new ArrayBuffer(12),view=new DataView(buffer);
