@@ -25,7 +25,7 @@ From the repository root, with the training virtual environment active:
 ```sh
 python -m pip install -r experiments/neural-corrector/requirements.txt
 python experiments/neural-corrector/export.py \
-  --checkpoint checkpoints/neural-corrector/U-tube-2x-attn/best.pt \
+  --checkpoint checkpoints/neural-corrector/u-tube-2x-attn-phase8/best.pt \
   --out experiments/neural-corrector/artifacts/selected
 npm ci --prefix experiments/neural-corrector/browser-runtime
 npm run prepare:apps
@@ -54,44 +54,37 @@ inside it. The successfully trained phase-grouped checkpoint still records
 training with `--initialize` validate this field**, so update it once in each
 checkpoint you intend to use. Archived JSON reports need no edits.
 
-From the repository root, the following updates the checkpoint in your already
-renamed directory. Adjust `path` to your actual folder name. It writes and
-validates a temporary file before atomically replacing the original; a failed
-validation leaves the original intact:
+With the training virtual environment active, use the explicit metadata utility
+from the repository root. Its defaults match the already renamed run folders:
 
 ```sh
-python - <<'PY'
-from pathlib import Path
-import os
-import sys
-import tempfile
-import torch
+# Optional: validate all three checkpoints and preview changes.
+python scripts/rename-corrector-checkpoints.py --dry-run
 
-sys.path.insert(0, 'experiments/neural-corrector')
-from checkpoint import load_checkpoint
+# Apply the metadata update in place.
+python scripts/rename-corrector-checkpoints.py
+```
 
-path = Path('checkpoints/neural-corrector/U-tube-2x-attn/best.pt')
-checkpoint = torch.load(path, map_location='cpu', weights_only=True)
-assert checkpoint['format'] == 'optical-decoder-checkpoint'
-profile = checkpoint['training']['modelProfile']
-if profile == 'U-tube-2x-attn':
-    load_checkpoint(path)
-    print(f'Already ready: {path}')
-    raise SystemExit
-assert profile == 'attention-tube', f'Unexpected profile: {profile}'
-checkpoint['training']['modelProfile'] = 'U-tube-2x-attn'
-with tempfile.NamedTemporaryFile(dir=path.parent, suffix='.pt', delete=False) as handle:
-    temporary = Path(handle.name)
-try:
-    torch.save(checkpoint, temporary)
-    verified = load_checkpoint(temporary)
-    assert all(torch.equal(value, verified['modelState'][name])
-               for name, value in checkpoint['modelState'].items())
-    os.replace(temporary, path)
-finally:
-    temporary.unlink(missing_ok=True)
-print(f'Ready for export or --initialize: {path}')
-PY
+| Checkpoint under `checkpoints/neural-corrector/` | Stored name before → after |
+| --- | --- |
+| `u-tube-burst5/best.pt` | `normalized-tube` → `U-tube` |
+| `u-tube-2x-burst5/best.pt` | `longtube` → `U-tube-2x` |
+| `u-tube-2x-attn-phase8/best.pt` | `attention-tube` → `U-tube-2x-attn` |
+
+The script changes only `training.modelProfile`. It validates all selected files
+using the current checkpoint loader before replacing any original, and checks
+saved tensor bytes for exact equality. Each replacement is atomic; temporary
+files are removed afterward. Already-current checkpoints are validated and left
+byte-for-byte unchanged, so repeating the command is safe. Run it while no
+training process is writing these files; it detects changes during preparation
+and stops rather than overwriting them.
+
+No JSON reports, settings files, recording data, directories or other `.pt`
+files are modified. To select different checkpoints, pass their paths explicitly:
+
+```sh
+python scripts/rename-corrector-checkpoints.py \
+  checkpoints/neural-corrector/u-tube-2x-attn-phase8/best.pt
 ```
 
 The model tensors, input layout, phase semantics and split provenance remain
@@ -113,7 +106,7 @@ not the `.pt` file. If you later want to refine its weights, for example:
 python experiments/neural-corrector/train.py \
   --train local-data/real-train local-data/target-synthetic-train \
   --validation local-data/real-validation \
-  --initialize checkpoints/neural-corrector/U-tube-2x-attn/best.pt \
+  --initialize checkpoints/neural-corrector/u-tube-2x-attn-phase8/best.pt \
   --model U-tube-2x-attn --frames 8 \
   --session-groups local-data/session-groups.json \
   --paired-targets --real-fraction .5 \
