@@ -29,7 +29,7 @@ export function sample(image,x,y){
   for(let k=0;k<3;k++)rgb[k]=(image.data[4*(y0*image.width+x0)+k]*(1-fx)+image.data[4*(y0*image.width+x1)+k]*fx)*(1-fy)+(image.data[4*(y1*image.width+x0)+k]*(1-fx)+image.data[4*(y1*image.width+x1)+k]*fx)*fy;
   return rgb;
 }
-function patch(image,h,x,y,radius=0){
+export function patch(image,h,x,y,radius=0){
   const offsets=radius?[[0,0],[-radius,0],[radius,0],[0,-radius],[0,radius]]:[[0,0]],rgb=[0,0,0];
   for(const [dx,dy] of offsets){const p=project(h,x+dx,y+dy),c=sample(image,...p);if(!c)throw Error('Matrix extends outside the image.');for(let k=0;k<3;k++)rgb[k]+=c[k]/offsets.length;}
   return rgb;
@@ -138,7 +138,7 @@ export function findMarkers(image){
   });
   return {markers,threshold};
 }
-function quadProposals(markers,width,height){
+export function quadProposals(markers,width,height){
   const proposals=[];
   for(let a=0;a<markers.length-3;a++)for(let b=a+1;b<markers.length-2;b++)for(let c=b+1;c<markers.length-1;c++)for(let d=c+1;d<markers.length;d++){
     const ms=[markers[a],markers[b],markers[c],markers[d]];
@@ -166,7 +166,7 @@ function readHeader(image,h){
   }
   return parseHeader(bytes);
 }
-function calibrate(values,offset){
+export function calibrate(values,offset){
   const rows=[],targets=[],observed=[];
   for(let i=0;i<32;i++){
     const rgb=Array.from(values.subarray(offset+i*3,offset+i*3+3));rows.push([...rgb.map(v=>v/255),1]);targets.push(PALETTE[i%16]);observed.push(rgb);

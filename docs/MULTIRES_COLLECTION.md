@@ -6,12 +6,18 @@ profile uses **16 colors and four palette phases**. It records camera evidence;
 the receiver never receives sender payloads or labels. Sender manifests provide
 the labels during the offline join.
 
-This collector still uses the working OBM5 geometry/header to identify captures.
-The header-free [Neural-QR layout](NEURAL_QR.md) remains a separate integration
-task. Payload/reference cells and phase grouping supply useful multires data now.
+The collector now uses the header-free [Neural-QR layout](NEURAL_QR.md): three
+standard finders, an asymmetric bottom-right fiducial, two repeated phase-cue
+pairs and fixed color references. There is no monochrome byte header. The
+receiver knows the grid size from its settings and reads the phase optically.
+A public collection code, copied from the sender, associates the recording with
+its manifest offline. It does not contain clean pixels or labels.
+
 The [multires architecture](NEURAL_CORRECTOR.md#multires-next-architecture) is
-specified and prototyped; its production training/browser integration is pending.
-The established 4×4-cell training commands must not be used on these 2×2-cell data.
+specified and prototyped; production training/browser integration is pending.
+The established 4×4-cell training commands must not be used on these new
+2×2-cell Neural-QR data. The existing authentication demo remains a separate
+OBM5/QR-ACK baseline until the new model and packet codec are integrated.
 
 ## Start the upload-enabled collector
 
@@ -71,7 +77,7 @@ For each size, collect easy, typical and difficult views: vary distance, angle,
 brightness and small natural motion without losing the complete matrix. Collect
 both phone→PC and PC→phone. G256 may require a larger displayed area and a camera
 resolution that preserves sufficient cell detail; an upsampled crop does not
-restore detail that the camera never captured. Record acquisition failures too.
+restore detail that the camera never captured. Record acquisition failures too; they remain bounded diagnostics rather than labeled model inputs.
 
 Keep an entire physical session in **one split**, including every size, payload
 and phase from that arrangement. Do not put different phases or neighboring
@@ -83,16 +89,20 @@ ownership across splits.
 
 1. Choose the same split on both devices before beginning the physical session.
    An optional device label helps when a browser exposes only a generic model.
-2. On the sender choose grid, 16 colors and four phases, then create a random
-   sequence. **Upload sender manifest** before creating the next sequence.
-3. On the receiver start the camera, choose the pool, and press Record. Automatic
-   alignment and the stable-header guard remain active. Retained phase counts,
-   diversity and replacement counters stay next to the camera view.
-4. Once a phase has enough varied captures, manually advance the sender. Full
-   pools keep replacing redundant captures rather than stopping automatically.
+2. On the sender choose a grid and create a random matrix. Colors and phases are
+   fixed at 16 and four. **Upload sender manifest** before creating the next
+   matrix. The sender displays an eight-character collection code.
+3. On the receiver enter that collection code and select the same grid, then
+   start the camera, choose the pool, and press Record. Code and grid are fixed
+   for the batch. Automatic alignment validates the asymmetric marker and
+   repeated phase cues; a 500 ms settling guard precedes retention. Retained
+   phase counts, mean distance and replacement counters stay next to the camera.
+4. Once a phase has enough captures, manually advance the sender. Full pools
+   continue balanced replacement instead of stopping or maximizing distance.
+   Keep most captures close to the typical view, with some moderate variation.
 5. Pause and **Upload receiver captures**. Wait for the saved-path confirmation.
    A failed upload keeps the captures and permits retry; it never clears them.
-6. Clear the saved batch and continue. Changing grid requires a fresh batch, but
+6. Clear the saved batch and continue. Changing grid or collection code requires a fresh batch, but
    can retain the physical session when the device arrangement is unchanged.
    Changing camera or physical arrangement requires a new physical session.
 7. Repeat with a new payload, then the next size. Download remains available when
@@ -109,8 +119,8 @@ budgets are smaller than total browser memory use.
 The server derives names from the recording identities and stores:
 
 ```text
-local-data/recordings/train/g64/sender/<checksum>_decoder-sender-<sequence>.json
-local-data/recordings/train/g64/receiver/<checksum>_decoder-captures-<session>-<time>.json
+local-data/recordings/train/g64/sender/<code>_neural-qr-sender-<session>.json
+local-data/recordings/train/g64/receiver/<code>_neural-qr-captures-<session>-<time>.json
 local-data/recordings/validation/g256/receiver/...
 ```
 
@@ -132,10 +142,50 @@ exact hardware model names are not always available. A manual label can improve
 human grouping without inventing missing information. No high-entropy device
 fingerprint or separate hardware permission is requested.
 
-The recording format identifiers/version stay unchanged. New recordings add
-explicit `pixelsPerCell: 2` and environment/split metadata. Established records
-without the sampling field retain their 4×4-cell interpretation. No recording
-file is rewritten; the offline join preserves the actual tensor shape.
+Recordings now use `neural-qr-sender` and `neural-qr-captures`, version 1.
+The receiver stores `pixelsPerCell: 2`, its public assignment and observed phase,
+normalized CHW input, raw RGB cell/reference samples, acquisition diagnostics and
+environment/split metadata. Sender files store random logical symbols and their
+hash for offline labeling. There is no fake or reconstructed OBM5 header.
+
+## Admission and balanced retention
+
+The first filter is geometry and phase agreement: all finder geometry and the
+asymmetric orientation must be readable, and the phase pairs at the top and
+bottom must confidently agree. An uncertain phase or transition exposure is
+skipped. The 500 ms settling guard restarts when a corner moves by more than
+4% of the current matrix diagonal. Green means acquired geometry/phase; orange means tentative geometry
+without accepted cues. Neither color asserts an exact payload or correct manual
+collection assignment.
+
+Within a valid phase, retain an initial pool, then freeze a robust reference
+from that warm-up. A trimmed medoid gives a representative captured image;
+median radial distance and MAD provide its scale, with a small scale floor.
+Freezing the reference avoids shrinking the acceptance region repeatedly as
+central samples replace other samples. A new batch establishes a new reference.
+
+The selector targets roughly **70% core, 25% shoulder and 5% moderate tail**
+using three robust distance bands. Quotas are rounded to the actual pool size,
+so a six-capture G256 pool has no dedicated far-tail slot. Observations beyond
+the outer band are rejected; isolated poor warm-up samples are replaced first.
+Near duplicates are skipped. Within a filled band, a randomized refresh permits
+new evidence without rewarding ever larger differences. Empty bands are not
+fabricated, and the result is not a mathematically fitted normal distribution:
+RGB distances are nonnegative and their distribution depends on the scene.
+
+The representative image is an agreement estimate, not clean ground truth.
+A consistently misaligned or wrong matrix can still form a coherent cluster.
+If the arrangement changes substantially, save the batch and start another;
+do not move far away solely to increase the displayed mean distance. Vary
+physical conditions across sessions while keeping each batch mostly typical.
+Selection never receives sender symbols, payload CRC outcomes or model labels.
+
+The collection code is the CRC32 of the logical matrix, validated against its
+SHA-256 sender manifest during joining. It is manually assigned on the receiver,
+not decoded from the camera. **Verify the visible code and grid before recording,
+and keep the same matrix through all four phases.** A wrong assignment cannot
+be ruled out from marker detection or capture similarity alone. Review suspect
+sessions offline rather than assuming the code authenticates the image.
 
 ## Join uploaded recordings by size
 
@@ -148,15 +198,17 @@ node scripts/corrector-dataset.mjs join-uploads \
 ```
 
 The output must be a new or empty directory. This command discovers recordings,
-checks sender/header matches and split ownership, and writes datasets under
-`local-data/multires-joined/<train|validation|test>/g<size>/`. Each sample retains
+checks public code/profile/phase matches and split ownership, and writes datasets under
+`local-data/multires-joined/<train|validation|test>/g<size>/`. The joined manifest is `neural-qr-dataset`, version 1. Each sample retains
 its sampling density, `[3,2G,2G]` input shape, device pair, camera metadata and
 physical-session grouping. Source recordings are never deleted or overwritten.
 Unmatched captures must be resolved by uploading the missing sender manifest;
 the tool does not guess labels from filenames.
 
-The existing four-pixel-per-axis synthetic/training rebuild explicitly rejects
-these new 2×2-cell datasets before deleting outputs. Multires dataset generation
+The existing four-pixel-per-axis synthetic/training pipeline does not accept
+these Neural-QR datasets. The old rebuild entry point stops before cleanup and
+directs new recordings to `join-uploads`; it does not delete datasets. Keep the
+new joined output separate from existing training inputs. Multires dataset generation
 and training are the next implementation step. Existing 4×4-cell datasets and
 their documented training recipe remain usable.
 

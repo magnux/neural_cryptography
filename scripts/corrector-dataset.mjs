@@ -1,18 +1,20 @@
 #!/usr/bin/env node
-/** Canonical OBM5 data generation, offline label joining, and exact recovery. */
+/** Neural-QR recording joins; independent OBM5 synthetic/recovery experiment tools. */
 import {readFile,writeFile,mkdir,stat,lstat,realpath,readdir} from 'node:fs/promises';
 import {resolve,dirname,join,sep,isAbsolute,relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
-import {createSender,senderFrames,captureKey,base64ToBytes,floatBytes,floatsFromBytes,DATASET_FORMAT,validateSessionId,canonicalJSON,MAX_RECORDS,MAX_CAPTURE_BYTES} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
+import {senderFrames,captureKey,base64ToBytes,floatBytes,floatsFromBytes,DATASET_FORMAT,validateSessionId,canonicalJSON,MAX_RECORDS,MAX_CAPTURE_BYTES,validateProfile} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
 import {validateCapture} from '../apps/color-optical-bench/dist/js/dataset/capture.js';
-import {renderFrame,parseHeader,encodeSequence,phaseFrames,PALETTE,sameBytes} from '../apps/color-optical-bench/dist/js/format.js';
+import {renderFrame,parseHeader,encodeSequence,phaseFrames,PALETTE,sameBytes,capacity,frameKey} from '../apps/color-optical-bench/dist/js/format.js';
 import {gridLayout} from '../apps/color-optical-bench/dist/js/grid.js';
 import {extractLearnedInput,logitsToLogicalScores} from '../apps/color-optical-bench/dist/js/learned-input.js';
 import {classifySamples,decodeScores} from '../apps/color-optical-bench/dist/js/vision.js';
 import {validFrameCount} from '../apps/color-optical-bench/dist/js/corrector-lab/runtime.js';
 
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
+const NEURAL_QR_DATASET_FORMAT='neural-qr-dataset';
+const opticalCaptureKey=info=>`${frameKey(info)}/${info.phase}`;
 // Offline corpora and browser capture bundles have different resource budgets.
 const MAX_MANIFEST_BYTES=256*1024*1024;
 const MAX_CAPTURE_JSON=MAX_CAPTURE_BYTES+4*1024*1024;
@@ -22,6 +24,16 @@ function int(value,def,min,max){const n=value===undefined?def:Number(value);if(!
 function splitName(value='train'){if(!['train','validation','test'].includes(value))throw Error('Use split train, validation, or test.');return value;}
 function recordingSplit(bundle,split,path) {
   if(bundle.datasetSplit!==undefined&&(splitName(bundle.datasetSplit)!==split))throw Error(`Recording split disagrees with selected split: ${path}`);
+}
+function validateCaptureBundle(bundle) {
+  if(bundle?.format!=='neural-qr-captures'||bundle.version!==1||!Array.isArray(bundle.records)||bundle.records.length>MAX_RECORDS||
+      !Array.isArray(bundle.diagnostics??[])||(bundle.diagnostics??[]).length>100||! /^[a-f0-9]{8}$/.test(bundle.collectionCode??''))throw Error('Unsupported receiver capture bundle.');
+  validateSessionId(bundle.sessionId);validateProfile(bundle.profile);
+  for(const record of bundle.records) {
+    if(record.info?.collectionCode!==bundle.collectionCode||Object.entries(bundle.profile).some(([key,value])=>record.info?.[key]!==value))
+      throw Error('Capture disagrees with its declared collection code/profile.');
+  }
+  return bundle;
 }
 function capturePixelsPerCell(record) {
   const value=record.pixelsPerCell??4;
@@ -55,7 +67,7 @@ async function jsonFile(path,limit=MAX_MANIFEST_BYTES){if((await stat(path)).siz
 async function freshDirectory(path){await mkdir(path,{recursive:true});if((await readdir(path)).length)throw Error('Output dataset directory must be empty; use a new output directory.');}
 async function putSample(out,index,metadata,{input,labels,mask,baseline,expected,samples,original}) {
   const prefix=`sample-${String(index).padStart(6,'0')}`;
-  const identity={sessionId:metadata.sessionId,payloadId:metadata.payloadId,key:captureKey(metadata.info),timestamp:metadata.timestamp};
+  const identity={sessionId:metadata.sessionId,payloadId:metadata.payloadId,info:metadata.info,timestamp:metadata.timestamp};
   const result={id:`sample-${hash(Buffer.from(JSON.stringify(identity))).slice(0,24)}`,...metadata,hashes:{}};
   const arrays={input:floatBytes(input),labels,mask,baseline:floatBytes(baseline),expected};
   if(samples)arrays.samples=floatBytes(samples);
@@ -96,11 +108,15 @@ export async function generate(options) {
   const sessionId=`synthetic-${seed}-${size}-${colors}`,dataset={format:DATASET_FORMAT,version:1,created:new Date().toISOString(),
     description:'Clean canonical OBM5 renderer crops. Corruption/training is a separate Python step.',samples:[]};
   for(let i=0;i<count;i++) {
-    const generated=await createSender({size,colors,phases,seed:(seed+i)>>>0,sessionId});
-    for(const frame of generated.frames) {
+    // Established OBM5 synthetic experiment; it is independent of Neural-QR collection.
+    const profile={size,colors,phases,gridBlock:8,parity:32,holdMs:4000,permute:phases>1};
+    let state=(seed+i)>>>0;const bytes=new Uint8Array(capacity(size,colors,profile)+8);
+    for(let at=0;at<bytes.length;at++){state=(Math.imul(state,1664525)+1013904223)>>>0;bytes[at]=state>>>24;}
+    const payload=bytes.slice(8),frames=phaseFrames(encodeSequence(payload,{...profile,id:bytes.slice(0,8),contentType:'raw'}));
+    for(const frame of frames) {
       const input=cleanCrop(frame),info=parseHeader(frame.header);
-      dataset.samples.push(await putSample(out,dataset.samples.length,{sessionId,payloadId:generated.manifest.payloadId,split,source:'synthetic',size,colors,info,
-        burstId:captureKey(info),timestamp:info.phase*500,provenance:{generator:'OBM5 renderFrame + validated dense crop',seed:(seed+i)>>>0,corruption:'none',baseline:'calibrated-crop approximation'}},
+      dataset.samples.push(await putSample(out,dataset.samples.length,{sessionId,payloadId:hash(payload),split,source:'synthetic',size,colors,info,
+        burstId:opticalCaptureKey(info),timestamp:info.phase*500,provenance:{generator:'OBM5 renderFrame + validated dense crop',seed:(seed+i)>>>0,corruption:'none',baseline:'calibrated-crop approximation'}},
         {input,labels:frame.symbols,mask:maskFor(info),baseline:denseClassicalScores(input,info),expected:frame.chunk}));
     }
   }
@@ -116,17 +132,17 @@ export async function joinCaptures(options) {
     const manifest=await jsonFile(path,1024*1024),frames=await senderFrames(manifest);
     recordingSplit(manifest,split,path);
     for(const frame of frames) {
-      const key=captureKey(frame),signature=JSON.stringify({payloadId:manifest.payloadId,sessionId:manifest.sessionId,header:Buffer.from(frame.header).toString('hex')});
-      if(senders.has(key)&&senders.get(key).signature!==signature)throw Error('Conflicting sender manifests for an optical header.');
-      const previous=senderIds.get(frame.id);if(previous&&previous!==manifest.payloadId)throw Error('Conflicting payloads reuse a sequence ID.');
+      const key=captureKey(frame),signature=canonicalJSON({payloadId:manifest.payloadId,sessionId:manifest.sessionId,info:manifest.frames[frame.phase].info});
+      if(senders.has(key)&&senders.get(key).signature!==signature)throw Error('Conflicting sender manifests reuse a collection code/profile.');
+      const previous=senderIds.get(frame.id);if(previous&&previous!==manifest.payloadId)throw Error('Conflicting payloads reuse a collection code.');
       senderIds.set(frame.id,manifest.payloadId);senders.set(key,{signature,frame,manifest});
     }
   }
   let exclusions=[];if(options.exclude){exclusions=await jsonFile(options.exclude,65536);if(!Array.isArray(exclusions)||exclusions.some(x=>typeof x!=='string'))throw Error('Exclusions must be capture IDs in a JSON array.');}
-  const dataset={format:DATASET_FORMAT,version:1,created:new Date().toISOString(),samples:[],excluded:[],diagnostics:[]},ids=new Set();
+  const dataset={format:NEURAL_QR_DATASET_FORMAT,version:1,created:new Date().toISOString(),association:'Operator-entered public collection code; not optically authenticated.',samples:[],excluded:[],diagnostics:[]},ids=new Set();
   await freshDirectory(out);
   for(const path of fileList(options.captures)) {
-    const bundle=await jsonFile(path,MAX_CAPTURE_JSON);if(bundle.format!=='optical-decoder-captures'||bundle.version!==1||!Array.isArray(bundle.records)||bundle.records.length>MAX_RECORDS)throw Error('Unsupported receiver capture bundle.');
+    const bundle=validateCaptureBundle(await jsonFile(path,MAX_CAPTURE_JSON));
     validateSessionId(bundle.sessionId);
     recordingSplit(bundle,split,path);
     for(let i=0;i<bundle.records.length;i++) {
@@ -135,12 +151,12 @@ export async function joinCaptures(options) {
       if(exclusions.includes(captureId)){dataset.excluded.push({captureId,reason:'Explicit offline exclusion'});continue;}
       const record=validateCapture(bundle.records[i]);
       const guard=record.stability;
-      if(!guard||!Number.isInteger(guard.guardMs)||guard.guardMs<500||guard.guardMs>5000||!Number.isFinite(guard.durationMs)||guard.durationMs<guard.guardMs||!Number.isInteger(guard.observations)||guard.observations<2)throw Error('Capture has no stable-header guard evidence.');
+      if(!guard||!Number.isInteger(guard.guardMs)||guard.guardMs<500||guard.guardMs>5000||!Number.isFinite(guard.durationMs)||guard.durationMs<guard.guardMs||!Number.isInteger(guard.observations)||guard.observations<2)throw Error('Capture has no stable marker/phase guard evidence.');
       const sender=senders.get(record.key);
-      if(!sender){dataset.excluded.push({captureId,reason:'No matching sender/header; remains unlabeled'});continue;}
-      const info=parseHeader(sender.frame.header);
-      // Exact canonical metadata match, not just a sequence ID or payload checksum.
-      if(canonicalJSON(info)!==canonicalJSON(record.info))throw Error('Capture metadata disagrees with sender header.');
+      if(!sender){dataset.excluded.push({captureId,reason:'No matching sender collection code/profile/phase; remains unlabeled'});continue;}
+      const info=sender.manifest.frames[sender.frame.phase].info;
+      // Exact declared profile and phase match. Public code is not optical proof of membership.
+      if(canonicalJSON(info)!==canonicalJSON(record.info))throw Error('Capture metadata disagrees with sender acquisition profile.');
       const pixelsPerCell=capturePixelsPerCell(record),side=pixelsPerCell*info.size;
       const input=floatsFromBytes(base64ToBytes(record.inputBase64),3*side**2),samples=floatsFromBytes(base64ToBytes(record.samplesBase64),info.size**2*3+96);
       const baseline=new Float32Array(classifySamples(info,samples,{local:true}).scores);
@@ -156,14 +172,14 @@ export async function joinCaptures(options) {
     }
     for(const diagnostic of (bundle.diagnostics??[]).slice(0,100))dataset.diagnostics.push({sessionId:bundle.sessionId,...diagnostic});
   }
-  if(!dataset.samples.length)throw Error('No labeled captures matched; check headers/manifests and exclusions.');
+  if(!dataset.samples.length)throw Error('No labeled captures matched; check collection codes, profiles, manifests and exclusions.');
   await writeFile(join(out,'manifest.json'),JSON.stringify(dataset,null,2)+'\n');
   return {dataset:out,samples:dataset.samples.length,excluded:dataset.excluded,diagnostics:dataset.diagnostics.length,split};
 }
 
 /** Join server uploads by declared split/grid without altering any recordings.
  * Read all identities before creating outputs so leakage and missing counterparts
- * fail early. Directory names organize uploads; complete headers still pair them.
+ * fail early. Directory names organize uploads; declared public codes/profiles pair them.
  */
 export async function joinUploads(options) {
   only(options,['recordings-root','out']);
@@ -187,7 +203,7 @@ export async function joinUploads(options) {
     if(info.isSymbolicLink()||!info.isDirectory())throw Error(`Invalid upload split directory: ${folder}`);
     await scan(folder);
   }
-  const sessionOwners=new Map(),payloadOwners=new Map(),headers=new Map(),groups=new Map(),captures=new Set(),entries=[];
+  const sessionOwners=new Map(),payloadOwners=new Map(),associations=new Map(),groups=new Map(),captures=new Set(),entries=[];
   const own=(owners,id,split,label)=>{
     if(owners.has(id)&&owners.get(id)!==split)throw Error(`${label} crosses dataset splits: ${id}`);
     owners.set(id,split);
@@ -204,17 +220,17 @@ export async function joinUploads(options) {
       if(grid!==`g${bundle.profile.size}`)throw Error(`Sender grid disagrees with upload folder: ${path}`);
       own(payloadOwners,bundle.payloadId,split,'Payload');
       for(const frame of frames) {
-        const key=captureKey(frame),signature=canonicalJSON([bundle.sessionId,bundle.payloadId,parseHeader(frame.header)]);
-        const previous=headers.get(key);
-        if(previous&&previous.signature!==signature)throw Error(`Conflicting sender header: ${path}`);
-        headers.set(key,{entry,signature,info:parseHeader(frame.header)});
+        const key=captureKey(frame),signature=canonicalJSON([bundle.sessionId,bundle.payloadId,bundle.frames[frame.phase].info]);
+        const previous=associations.get(key);
+        if(previous&&previous.signature!==signature)throw Error(`Conflicting sender collection code/profile: ${path}`);
+        associations.set(key,{entry,signature,info:bundle.frames[frame.phase].info});
       }
     }else {
-      if(bundle.format!=='optical-decoder-captures'||bundle.version!==1||!Array.isArray(bundle.records)||bundle.records.length>MAX_RECORDS)throw Error(`Unsupported capture bundle: ${path}`);
+      validateCaptureBundle(bundle);
       if(!bundle.records.length&&grid!=='unknown')throw Error(`Diagnostic-only capture requires unknown grid folder: ${path}`);
       for(const raw of bundle.records) {
         const record=validateCapture(raw),guard=record.stability;
-        if(!guard||!Number.isInteger(guard.guardMs)||guard.guardMs<500||guard.guardMs>5000||!Number.isFinite(guard.durationMs)||guard.durationMs<guard.guardMs||!Number.isInteger(guard.observations)||guard.observations<2)throw Error(`Capture has no stable-header guard evidence: ${path}`);
+        if(!guard||!Number.isInteger(guard.guardMs)||guard.guardMs<500||guard.guardMs>5000||!Number.isFinite(guard.durationMs)||guard.durationMs<guard.guardMs||!Number.isInteger(guard.observations)||guard.observations<2)throw Error(`Capture has no stable marker/phase guard evidence: ${path}`);
         if(grid!==`g${record.info.size}`)throw Error(`Capture grid disagrees with upload folder: ${path}`);
         const identity=`${bundle.sessionId}/${record.timestamp}`;
         if(captures.has(identity))throw Error(`Duplicate capture across uploads: ${identity}`);
@@ -228,10 +244,10 @@ export async function joinUploads(options) {
     if(!entry.records.length){diagnosticFiles++;continue;}
     const key=`${entry.split}/${entry.grid}`,group=groups.get(key)??{split:entry.split,grid:entry.grid,senders:new Set(),captures:[],records:0};
     for(const record of entry.records) {
-      const sender=headers.get(record.key);
+      const sender=associations.get(record.key);
       if(!sender)throw Error(`No matching uploaded sender for ${entry.path}; upload its sender manifest first.`);
       if(sender.entry.split!==entry.split)throw Error(`Sender and receiver cross dataset splits: ${entry.path}`);
-      if(canonicalJSON(sender.info)!==canonicalJSON(record.info))throw Error(`Capture metadata disagrees with sender header: ${entry.path}`);
+      if(canonicalJSON(sender.info)!==canonicalJSON(record.info))throw Error(`Capture metadata disagrees with sender acquisition profile: ${entry.path}`);
       group.senders.add(sender.entry.path);group.records++;
     }
     group.captures.push(entry.path);groups.set(key,group);
@@ -259,6 +275,7 @@ export async function targets(options) {
   let captures=0;
   for(const location of fileList(options.dataset)) {
     const root=resolve(location),manifestPath=await safeReadPath(root,'manifest.json'),manifest=await jsonFile(manifestPath);
+    if(manifest.format===NEURAL_QR_DATASET_FORMAT)throw Error('Neural-QR multires synthetic/training integration is separate; this operation requires the established OBM5 4x4-pixel dataset.');
     if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length)throw Error('Unsupported joined dataset manifest.');
     sources.push({manifestSha256:hash(await readFile(manifestPath))});
     for(const sample of manifest.samples) {
@@ -283,7 +300,7 @@ export async function targets(options) {
       const frame=frames[info.phase];
       if(!frame||canonicalJSON(parseHeader(frame.header))!==canonicalJSON(info))throw Error('Regenerated target header disagrees with joined metadata.');
       if(!sameBytes(frame.symbols,labels)||!sameBytes(maskFor(info),mask))throw Error('Regenerated target labels or mask disagree with joined truth.');
-      const key=canonicalJSON([sample.sessionId,sample.payloadId,captureKey(info)]),previous=grouped.get(key);
+      const key=canonicalJSON([sample.sessionId,sample.payloadId,opticalCaptureKey(info)]),previous=grouped.get(key);
       if(previous&&(previous.sample.senderSessionId!==sample.senderSessionId||previous.sample.split!==split))throw Error('Conflicting identities for one target matrix.');
       if(!previous)grouped.set(key,{sample,frame});
       captures++;
@@ -323,6 +340,7 @@ async function readSampleFile(root,sample,kind,maxBytes) {
 export async function baselines(options) {
   only(options,['dataset']);if(!options.dataset)throw Error('baselines requires --dataset DIRECTORY.');
   const root=resolve(options.dataset),manifestPath=await safeReadPath(root,'manifest.json'),manifest=await jsonFile(manifestPath);
+  if(manifest.format===NEURAL_QR_DATASET_FORMAT)throw Error('Neural-QR multires baseline/training integration is separate; this operation requires the established OBM5 4x4-pixel dataset.');
   if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||manifest.samples.some(s=>s.source!=='synthetic'))throw Error('Baseline refresh accepts only a synthetic dataset.');
   if(new Set(manifest.samples.map(s=>s.id)).size!==manifest.samples.length)throw Error('Duplicate dataset sample ID.');
   for(const sample of manifest.samples) {
@@ -339,6 +357,7 @@ export async function baselines(options) {
 export async function evaluate(options) {
   only(options,['dataset','predictions','split']);if(!options.dataset||!options.predictions)throw Error('evaluate requires --dataset DIRECTORY --predictions FILE.');
   const root=resolve(options.dataset),manifest=await jsonFile(join(root,'manifest.json')),predictionPath=resolve(options.predictions),predictions=await jsonFile(predictionPath);
+  if(manifest.format===NEURAL_QR_DATASET_FORMAT)throw Error('Neural-QR multires recovery evaluation is not yet integrated; OBM5 packet CRC evaluation cannot be applied to unframed training matrices.');
   if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||!Array.isArray(predictions.samples)||!predictions.samples.length||!validFrameCount(predictions.framesPerInput)||!['physical','logical'].includes(predictions.outputLabelSpace))throw Error('Unsupported dataset/prediction manifest.');
   if(new Set(manifest.samples.map(s=>s.id)).size!==manifest.samples.length)throw Error('Duplicate dataset sample ID.');
   if(options.split)splitName(options.split);

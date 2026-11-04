@@ -10,7 +10,7 @@
   <header class="site-header"><a class="brand" href="./capture.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M2 12V2h10M20 2h10v10M30 20v10H20M12 30H2V20"/><path d="M11 11h10v10H11z"/></svg><span>NEURAL KEY<span class="brand-divider">/</span><strong>CAPTURE DATASET</strong></span></a><span class="local-badge"><i></i> Browser-local</span></header>
   <nav class="app-nav" aria-label="Application"><a href="./index.html">Optical Bench</a><a href="./crypto.html">Crypto Lab</a><a href="./link.html">Live Demo</a><a href="./corrector.html">Corrector Lab</a><a href="./capture.html" aria-current="page">Capture Dataset</a><a href="./neural-zkboo.html">Neural-ZKBoo</a></nav>
   <main>
-    <section class="capture-intro"><div class="eyebrow">MULTIRES · TRAINING DATA</div><h1>Capture the difficult frames.</h1><p>Collect one matrix size at a time. Upload both recordings to the demo server, or download them for offline processing.</p></section>
+    <section class="capture-intro"><div class="eyebrow">MULTIRES · TRAINING DATA</div><h1>Capture Neural-QR frames.</h1><p>Collect header-free Neural-QR at one matrix size at a time. Pair recordings with a public collection code, then upload or download both sides.</p></section>
     <div id="captureError" class="notice" role="alert" hidden></div>
     <noscript><div class="notice">Enable JavaScript to collect local samples.</div></noscript>
     <div class="capture-role" role="group" aria-label="Device role"><button id="senderRole" class="role-button" aria-pressed="true">Display a matrix</button><button id="receiverRole" class="role-button" aria-pressed="false">Collect camera samples</button></div>
@@ -26,21 +26,26 @@
         <p>Create and save the sender manifest before recording. Keep the displayed matrix unchanged for the entire receiver burst. Advance manually after the receiver finishes.</p>
         <div class="capture-fields sender-fields">
           <label>Grid<select id="senderSize"><option value="8">8 × 8</option><option value="16">16 × 16</option><option value="32">32 × 32</option><option value="64" selected>64 × 64</option><option value="128">128 × 128</option><option value="256">256 × 256</option></select></label>
-          <label>Palette<select id="senderColors"><option value="16">16 colors</option><option value="4">4 colors · control</option></select></label>
-          <label>Palette phases<select id="senderPhases"><option value="4">4 phases</option><option value="1">1 phase</option><option value="8">8 phases</option><option value="16">16 phases</option></select></label>
+          <div class="capture-profile-note">16 colors · 4 palette phases<br>2 × 2 pixels per rectified cell</div>
         </div>
         <div class="capture-actions"><button class="button primary" id="createSender">Create random sequence</button><button class="button secondary" id="uploadSender" disabled>Upload sender ↑</button><button class="button secondary" id="downloadSender" disabled>Save sender manifest ↓</button><button class="small-button" id="nextPhase" disabled>Next phase →</button><button class="small-button" id="focusMatrix" aria-expanded="false" disabled>Focus matrix</button></div>
+        <div class="capture-code"><span>Collection code · enter on receiver</span><output id="senderCollectionCode">Create a matrix first</output></div>
         <p id="senderUploadStatus" class="muted" role="status"></p>
-        <p id="senderStatus" class="capture-status" role="status">Grid-8 references; RS32 from G16 upward, no RS parity at G8. Capture crops use 2×2 pixels per cell.</p>
+        <p id="senderStatus" class="capture-status" role="status">Header-free markers and repeated phase cues. Grid-8 references; 2×2 pixels per cell. Create a matrix, then enter its code and grid on the receiver.</p>
         <div id="senderCanvasWrap" class="sender-canvas-wrap" hidden><button id="closeFocus" class="small-button" hidden>Close focus · Esc</button><canvas id="senderCanvas" width="1024" height="1024" aria-label="Current training matrix"></canvas></div>
         <div class="capture-session sender-session-actions"><span id="senderSession"></span><button class="small-button" id="newSenderSession">New physical session</button></div>
         <p class="muted">Each new sequence has fresh random bytes. Keep one session for the same device arrangement; start a new session after changing devices or returning later. All phases of a payload stay in the same training split.</p>
       </div>
     </section>
     <section id="receiverPanel" class="panel" hidden>
-      <div class="panel-heading"><div><span class="section-number">02</span><h2>Receiver</h2></div><span class="mode-label">NO SENDER FILE REQUIRED</span></div>
+      <div class="panel-heading"><div><span class="section-number">02</span><h2>Receiver</h2></div><span class="mode-label">PUBLIC CODE + GRID</span></div>
       <div class="capture-body">
-        <p>Fit all four corner markers and the monochrome header in view. A failed payload CRC is useful training data; an unreadable header is saved only as a diagnostic.</p>
+        <p>Enter the code shown beside the sender matrix and select the same grid. The code associates recordings offline; it is not read from the image. Keep that one matrix displayed through all four phases. No sender pixels, random seed or labels enter acquisition.</p>
+        <div class="capture-fields receiver-assignment">
+          <label>Collection code<input id="receiverCode" maxlength="8" pattern="[a-fA-F0-9]{8}" inputmode="text" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="e.g. a12b34cd"></label>
+          <label>Grid on sender<select id="receiverSize"><option value="8">8 × 8</option><option value="16">16 × 16</option><option value="32">32 × 32</option><option value="64" selected>64 × 64</option><option value="128">128 × 128</option><option value="256">256 × 256</option></select></label>
+        </div>
+        <p class="muted">The code and grid lock while a batch contains recordings. Save and clear the batch before displaying a different matrix. A wrong code can mislabel samples; check it on both screens.</p>
         <div class="capture-workbench">
           <div class="capture-toolbar">
             <div class="capture-fields capture-settings">
@@ -58,10 +63,10 @@
         </div>
         <p class="muted" id="cameraStatus">Camera images stay on this device until you explicitly upload or download a capture file.</p>
         <label class="capture-checkbox"><input id="saveOriginal" type="checkbox">Include an original PNG when possible (maximum two snapshots per batch, 1 MiB each).</label>
-        <p class="muted">The green fill marks a valid matrix. Record once; each phase fills its own pool after a stable-header check. At capacity, recording continues and a fast sampled-distance heuristic may replace a redundant capture. No manual cleanup is needed. Pause before changing the displayed matrix if you want to inspect the current pool.</p>
+        <p class="muted">Green means orientation and repeated phase cues agree; orange means geometry was found but acquisition is uncertain. Record once; each phase fills its own pool after a settling check. At capacity, balanced sample selection favors the central cluster while retaining moderate variation. Pause before changing the displayed phase; save and clear the batch before changing the matrix.</p>
         <dl class="capture-metrics"><div><dt>All saved samples</dt><dd id="sampleCount">0 / 128</dd></div><div><dt>Diagnostics</dt><dd id="diagnosticCount">0</dd></div><div><dt>Export budget</dt><dd id="captureBytes">0 / 160 MiB</dd></div></dl>
         <p class="muted" id="distanceDetails">Needs at least two retained captures of this phase.</p>
-        <p class="muted">Distance compares sampled pixels in aligned, color-corrected captures of the same phase. It helps measure variety, but blur and noise can also raise it. Keep the whole matrix visible and include both easy and difficult conditions.</p>
+        <p class="muted">Distance compares aligned, color-corrected captures of the same phase. We aim for a mostly similar pool with some variation, not the largest possible distance. Severe blur, wrong phase or wrong geometry should not count as useful diversity.</p>
         <div class="capture-actions"><button class="small-button" id="clearCaptures">Clear saved batch</button><button class="small-button" id="newReceiverSession">New physical session</button></div>
         <div class="capture-diagnostics"><h3>Latest capture</h3><p id="latestCapture">Start the camera; alignment checks run automatically.</p><p class="muted" id="latestDetails"></p></div>
         <label class="capture-notes">Session notes<textarea id="captureNotes" rows="3" maxlength="1000" placeholder="Phone / PC, direction, screen brightness, distance, motion or focus changes…"></textarea></label>

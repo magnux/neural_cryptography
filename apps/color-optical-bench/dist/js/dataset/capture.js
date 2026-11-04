@@ -1,36 +1,36 @@
-/** Receiver-only evidence collection. No sender seed, payload, or labels accepted. */
-import {extractCapture,classifySamples,decodeScores} from '../vision.js';
+/** Receiver evidence; a public collection assignment contains no sender labels. */
+import {extractNeuralQR} from '../neural-qr/vision.js';
 import {captureSignature} from './diversity.js';
-import {extractLearnedInput} from '../learned-input.js';
-import {captureKey,bytesToBase64,floatBytes,base64ToBytes,floatsFromBytes,validateSessionId,MAX_CAPTURE_BYTES,MAX_RECORDS,CAPTURE_SIZES} from './contract.js';
+import {captureKey,bytesToBase64,floatBytes,base64ToBytes,floatsFromBytes,validateSessionId,validateCollectionCode,validateProfile,captureProfile,MAX_CAPTURE_BYTES,MAX_RECORDS} from './contract.js';
 
-export function captureFrame(image,{timestamp=Date.now(),camera={},signature=false,pixelsPerCell=4}={}) {
-  if(!Number.isFinite(timestamp)||timestamp<0) throw Error('Invalid capture timestamp.');
-  const capture=extractCapture(image,{preview:false}),base={timestamp,camera};
-  if(!capture.samples) return {...base,ok:false,stage:capture.stage,error:capture.error,stats:capture.stats};
-  const learned=extractLearnedInput(image,capture,{pixelsPerCell});
-  if(!learned.ok) return {...base,ok:false,stage:learned.stage,error:learned.error,stats:learned.stats};
-  const classified=classifySamples(learned.info,capture.samples,{local:true});
-  const decoded=decodeScores(learned.info,classified.scores,{}, {recovery:'erasures'});
-  return {...base,ok:true,info:learned.info,key:captureKey(learned.info),pixelsPerCell,
-    ...(signature?{signature:captureSignature(learned.input,learned.info.size,pixelsPerCell)}:{}),
-    inputBase64:bytesToBase64(floatBytes(learned.input)),samplesBase64:bytesToBase64(floatBytes(capture.samples)),
-    stats:{...learned.stats,...capture.stats},colorTransform:learned.colorTransform,transform:capture.transform,
-    observedPalette:classified.observedPalette,
-    baseline:{accepted:decoded.ok,error:decoded.error,...decoded.stats}};
+export function captureFrame(image,{timestamp=Date.now(),camera={},signature=false,profile,collectionCode,previousGeometry=null,probe=false}={}) {
+  if(!Number.isFinite(timestamp)||timestamp<0)throw Error('Invalid capture timestamp.');
+  validateProfile(profile);validateCollectionCode(collectionCode);
+  const capture=extractNeuralQR(image,{profile,previousGeometry,now:timestamp,dense:!probe});
+  const base={timestamp,camera,probe,ok:capture.ok,stage:capture.stage,error:capture.error,
+    stats:capture.stats,transform:capture.transform,geometry:capture.geometry,corners:capture.corners,tentativeCorners:capture.tentativeCorners};
+  if(!capture.ok)return base;
+  const info={...profile,id:collectionCode,collectionCode,phase:capture.info.phase,bits:4};
+  const common={...base,info,key:captureKey(info),pixelsPerCell:2,
+    acquisition:{format:'neural-qr',association:'manual-public-code',phase:'repeated-color-cues'}};
+  if(probe)return common;
+  return {...common,...(signature?{signature:captureSignature(capture.input,info.size,2)}:{}),
+    inputBase64:bytesToBase64(floatBytes(capture.input)),samplesBase64:bytesToBase64(floatBytes(capture.samples)),
+    colorTransform:capture.colorTransform};
 }
-
-export function validateCapture(record) {
-  if(!record||record.ok!==true||!record.info||!CAPTURE_SIZES.includes(record.info.size)||![4,16].includes(record.info.colors)||
-    record.key!==captureKey(record.info)||!Number.isFinite(record.timestamp)||record.timestamp<0) throw Error('Invalid capture record.');
-  const g=record.info.size,pixelsPerCell=record.pixelsPerCell===undefined?4:record.pixelsPerCell;
-  if(![2,4].includes(pixelsPerCell)||pixelsPerCell===4&&![64,128].includes(g))throw Error('Invalid capture raster profile.');
-  const values=3*(pixelsPerCell*g)**2;
+export function validateCapture(record){
+  if(!record||record.ok!==true||!record.info||!Number.isFinite(record.timestamp)||record.timestamp<0)throw Error('Invalid capture record.');
+  validateProfile(record.info);validateCollectionCode(record.info.collectionCode);
+  if(record.info.id!==record.info.collectionCode||record.key!==captureKey(record.info)||record.pixelsPerCell!==2||
+    !Number.isInteger(record.info.phase)||record.info.phase<0||record.info.phase>=4||record.info.bits!==4||
+    record.acquisition?.format!=='neural-qr'||record.acquisition.association!=='manual-public-code'||record.acquisition.phase!=='repeated-color-cues')throw Error('Invalid Neural-QR acquisition record.');
+  const g=record.info.size,values=3*(2*g)**2;
   const input=floatsFromBytes(base64ToBytes(record.inputBase64,values*4),values);
-  for(const value of input) if(value < -1.5||value > 1.5) throw Error('Input tensor outside normalization bounds.');
+  for(const value of input)if(value < -1.5||value > 1.5)throw Error('Input tensor outside normalization bounds.');
   floatsFromBytes(base64ToBytes(record.samplesBase64,(g*g*3+96)*4),g*g*3+96);
-  if(record.original!==undefined) {
-    if(record.original.mime!=='image/png') throw Error('Original capture must be PNG.');
+  if(!Array.isArray(record.transform)||record.transform.length!==9||record.transform.some(v=>!Number.isFinite(v)))throw Error('Invalid capture geometry.');
+  if(record.original!==undefined){
+    if(record.original.mime!=='image/png')throw Error('Original capture must be PNG.');
     base64ToBytes(record.original.base64,1024*1024);
   }
   return record;
@@ -67,9 +67,15 @@ export class CaptureBuffer {
     if(!record.ok){this.active=null;return diagnostic(record.stage??'capture',record.error??'Capture failed.');}
     if(!alreadyValidated)validateCapture(record);
     if(this.active&&record.timestamp<=this.active.last) return diagnostic('duplicate','Capture timestamps must increase.');
-    if(!this.active||record.key!==this.active.key) this.active={key:record.key,since:record.timestamp,last:record.timestamp,observations:1};
-    else {this.active.last=record.timestamp;this.active.observations++;}
-    if(record.timestamp-this.active.since<this.stableMs||this.active.observations<2) return diagnostic('settling','Waiting for a stable header; keep a static matrix visible.');
+    const corners=record.corners;
+    let moved=false;
+    if(this.active?.corners&&Array.isArray(corners)&&corners.length===4){
+      const diagonal=Math.hypot(corners[2][0]-corners[0][0],corners[2][1]-corners[0][1]);
+      moved=diagonal>0&&corners.some((point,i)=>Math.hypot(point[0]-this.active.corners[i][0],point[1]-this.active.corners[i][1])>.04*diagonal);
+    }
+    if(!this.active||record.key!==this.active.key||moved)this.active={key:record.key,since:record.timestamp,last:record.timestamp,observations:1,corners};
+    else {this.active.last=record.timestamp;this.active.observations++;this.active.corners=corners;}
+    if(record.timestamp-this.active.since<this.stableMs||this.active.observations<2) return diagnostic('settling','Waiting for stable geometry and phase cues; keep a static matrix visible.');
     const phaseRows=this.phaseRecords(record.key),phaseFull=phaseRows.length>=maxPerPhase;
     if(replaceIndex!==null&&(!Number.isInteger(replaceIndex)||replaceIndex<0||replaceIndex>=phaseRows.length))throw Error('Invalid phase replacement index.');
     if(phaseFull&&replaceIndex===null)return {accepted:false,stage:'kept',count:this.records.length,bytes:this.bytes};
@@ -92,10 +98,11 @@ export class CaptureBuffer {
   }
   export({notes='',sessionId=crypto.randomUUID(),camera={}}={}) {
     validateSessionId(sessionId);
-    return {format:'optical-decoder-captures',version:1,created:new Date().toISOString(),sessionId,
+    return {format:'neural-qr-captures',version:1,created:new Date().toISOString(),sessionId,
+      ...(this.records.length?{collectionCode:this.records[0].info.collectionCode,profile:{...captureProfile(this.records[0].info.size),holdMs:this.records[0].info.holdMs}}:{}),
       notes:String(notes).slice(0,2000),camera,limits:{maxRecords:this.maxRecords,maxBytes:this.maxBytes,stableMs:this.stableMs},
-      transitionPolicy:'Manual static sender; consecutive checksum-valid identical headers after guard. Review and exclude mixed/settling captures offline.',
-      selection:{method:'sampled-distance-replacement',recentThinning:this.thinning},
+      transitionPolicy:'Manual static sender and public collection assignment; consecutive agreeing geometry/phase cues after guard. Association is not optically authenticated. Review mixed/wrong-matrix captures offline.',
+      selection:{method:'centered-band-reservoir',recentThinning:this.thinning},
       records:this.records,diagnostics:this.diagnostics};
   }
 }

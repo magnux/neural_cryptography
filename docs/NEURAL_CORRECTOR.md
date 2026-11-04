@@ -22,11 +22,12 @@ Original Neural-Corrector code and documentation use [Apache-2.0](../LICENSE),
 with credit to Neural Cryptography and **Alejandro Hernandez Ruiz (magnux)** in
 [NOTICE](../NOTICE). See [licensing scope](LICENSING.md) for model releases.
 
-The next optical transport is [Neural-QR](NEURAL_QR.md). Its acquisition design
+The next optical transport is [Neural-QR](NEURAL_QR.md). Its implemented collector acquisition
 replaces the current separately decoded header with geometric anchors and phase
 cues while reusing the palette, phase grouping and logical-label conventions. The
 header-based descriptions below document the currently implemented OBM5 path;
-they are not a requirement for future neural input preparation.
+they are not used by the new Neural-QR collector. Its current cue-based acquisition
+and manual public-code association are documented in [the collection guide](MULTIRES_COLLECTION.md).
 
 The next model is **`multires`**, with a shared convolution/attention trunk and
 an independent learned positional anchor for every supported size, G8…G256.

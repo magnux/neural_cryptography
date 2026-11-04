@@ -1,15 +1,17 @@
 /** Current offline dataset contract. Sender truth is never a receiver input. */
-import {capacity, encodeSequence, phaseFrames, parseHeader, frameKey, randomBytes, hex} from '../format.js';
+import {randomBytes, hex, crc32} from '../format.js';
+import {gridLayout,paletteMap} from '../grid.js';
 
-export const DATASET_FORMAT = 'optical-decoder-dataset';
+export const DATASET_FORMAT = 'optical-decoder-dataset'; // Established offline training experiment.
+export const NEURAL_QR_DATASET_FORMAT = 'neural-qr-dataset';
 export const DATASET_VERSION = 1;
 export const MAX_CAPTURE_BYTES = 160 * 1024 * 1024;
 export const MAX_RECORDS = 128;
 export const CAPTURE_SIZES = Object.freeze([8,16,32,64,128,256]);
 export const CAPTURE_PIXELS_PER_CELL = 2;
-/** Recording profiles remain the current optical format. G8 cannot fit RS32. */
+/** Header-free Neural-QR acquisition profile; training symbols have no packet framing. */
 export function captureProfile(size=64,colors=16,phases=4){
-  const profile={size,colors,phases,gridBlock:8,parity:size===8?0:32,holdMs:4000,pixelsPerCell:CAPTURE_PIXELS_PER_CELL};
+  const profile={size,colors,phases,gridBlock:8,parity:0,holdMs:4000,permute:true,pixelsPerCell:CAPTURE_PIXELS_PER_CELL};
   validateProfile(profile);return profile;
 }
 /** Conservative JSON budget across all phases, including camera metadata and two PNGs. */
@@ -20,7 +22,11 @@ export function recommendedPhaseMaximum(size,phases=4){
   const allowance=Math.min(Math.floor(MAX_RECORDS/phases),Math.floor((MAX_CAPTURE_BYTES-3*1024*1024)/(perRecord*phases)));
   return [32,16,8,6,4,2,1].find(n=>n<=allowance)??1;
 }
-export const captureKey = info => `${frameKey(info)}/${info.phase}`;
+export function validateCollectionCode(value){
+  if(typeof value!=='string'||! /^[a-f0-9]{8}$/.test(value))throw Error('Collection code must be eight lowercase hexadecimal characters.');
+  return value;
+}
+export const captureKey = info => `${validateCollectionCode(info.collectionCode??info.id)}/${info.size}/${info.colors}/${info.gridBlock}/${info.phase}`;
 export function canonicalJSON(value) {
   if(Array.isArray(value))return `[${value.map(canonicalJSON).join(',')}]`;
   if(value&&typeof value==='object')return `{${Object.keys(value).sort().map(key=>`${JSON.stringify(key)}:${canonicalJSON(value[key])}`).join(',')}}`;
@@ -65,11 +71,9 @@ export function validateSessionId(value) {
   return value;
 }
 export function validateProfile(profile) {
-  if(!profile||!CAPTURE_SIZES.includes(profile.size)||![4,16].includes(profile.colors)||
-    ![1,2,4,8,16].includes(profile.phases)||![0,4,8,16].includes(profile.gridBlock)||
-    ![0,16,32].includes(profile.parity)||!Number.isInteger(profile.holdMs)||profile.holdMs<250||profile.holdMs>10000||
-    profile.pixelsPerCell!==undefined&&![2,4].includes(profile.pixelsPerCell)) throw Error('Unsupported capture profile.');
-  capacity(profile.size,profile.colors,profile);
+  if(!profile||!CAPTURE_SIZES.includes(profile.size)||profile.colors!==16||profile.phases!==4||
+    profile.gridBlock!==8||profile.parity!==0||profile.permute!==true||profile.pixelsPerCell!==2||
+    !Number.isInteger(profile.holdMs)||profile.holdMs<500||profile.holdMs>10000) throw Error('Unsupported Neural-QR capture profile.');
   return profile;
 }
 function seededBytes(length,seed) {
@@ -78,33 +82,42 @@ function seededBytes(length,seed) {
   return bytes;
 }
 
-/** One static logical frame; the UI advances phases manually, with a settling guard. */
-export async function createSender({size=64,colors=16,phases=4,gridBlock=8,parity=size===8?0:32,holdMs=4000,pixelsPerCell=CAPTURE_PIXELS_PER_CELL,sessionId=crypto.randomUUID(),seed}={}) {
+/** One static logical matrix; identity is assigned publicly, never read from hidden truth. */
+export async function createSender({size=64,colors=16,phases=4,gridBlock=8,parity=0,holdMs=4000,
+  pixelsPerCell=2,permute=true,sessionId=crypto.randomUUID(),seed}={}) {
   validateSessionId(sessionId);
-  const profile=validateProfile({size,colors,phases,gridBlock,parity,holdMs,pixelsPerCell});
-  if(seed!==undefined&&(!Number.isInteger(seed)||seed<0||seed>0xffffffff)) throw Error('Invalid public synthetic seed.');
-  const bytes=seed===undefined?randomBytes(capacity(size,colors,profile)+8):seededBytes(capacity(size,colors,profile)+8,seed);
-  const id=bytes.slice(0,8),payload=bytes.slice(8);
-  const frames=phaseFrames(encodeSequence(payload,{...profile,id,permute:phases>1,contentType:'raw'}));
-  const manifest={format:'optical-decoder-sender',version:1,created:new Date().toISOString(),sessionId,
-    payloadId:await sha256(payload),payloadBase64:bytesToBase64(payload),sequenceId:hex(id),profile,
-    frames:frames.map(frame=>({key:captureKey(frame),info:parseHeader(frame.header),headerBase64:bytesToBase64(frame.header)}))};
+  const profile=validateProfile({size,colors,phases,gridBlock,parity,holdMs,pixelsPerCell,permute});
+  if(seed!==undefined&&(!Number.isInteger(seed)||seed<0||seed>0xffffffff))throw Error('Invalid public synthetic seed.');
+  const logical=seed===undefined?randomBytes(size*size):seededBytes(size*size,seed);
+  for(let i=0;i<logical.length;i++)logical[i]&=15;
+  const layout=gridLayout(size,colors,gridBlock);
+  for(const cell of layout.pilots)logical[cell]=layout.reference[cell];
+  const collectionCode=crc32(logical).toString(16).padStart(8,'0');
+  const manifest={format:'neural-qr-sender',version:1,created:new Date().toISOString(),sessionId,
+    collectionCode,payloadId:await sha256(logical),payloadBase64:bytesToBase64(logical),profile};
+  const frames=makeFrames(logical,profile,collectionCode);
+  manifest.frames=frames.map(frame=>({key:captureKey(frame),info:frame.info}));
   return {manifest,frames};
 }
-
-/** Recreate only offline or on the sender. Never call this on the receive path. */
-export async function senderFrames(manifest) {
-  if(!manifest||manifest.format!=='optical-decoder-sender'||manifest.version!==1) throw Error('Unsupported sender manifest.');
+function makeFrames(logical,profile,collectionCode){
+  const layout=gridLayout(profile.size,profile.colors,profile.gridBlock);
+  return Array.from({length:4},(_,phase)=>{
+    const info={...profile,id:collectionCode,collectionCode,phase,bits:4};
+    const symbols=logical.slice();for(const cell of layout.cells)symbols[cell]=paletteMap(symbols[cell],info);
+    return {...info,info,symbols,logicalSymbols:logical.slice(),chunk:logical.slice()};
+  });
+}
+/** Offline/sender only. The receiver never imports a manifest or clean symbols. */
+export async function senderFrames(manifest){
+  if(!manifest||manifest.format!=='neural-qr-sender'||manifest.version!==1)throw Error('Unsupported Neural-QR sender manifest.');
   validateSessionId(manifest.sessionId);const profile=validateProfile(manifest.profile);
-  if(typeof manifest.sequenceId!=='string'||! /^[a-f0-9]{16}$/.test(manifest.sequenceId)||! /^[a-f0-9]{64}$/.test(manifest.payloadId)) throw Error('Invalid sender identity.');
-  const payload=base64ToBytes(manifest.payloadBase64,capacity(profile.size,profile.colors,profile));
-  if(payload.length!==capacity(profile.size,profile.colors,profile)||await sha256(payload)!==manifest.payloadId) throw Error('Sender payload hash/length mismatch.');
-  const id=Uint8Array.from(manifest.sequenceId.match(/../g),s=>parseInt(s,16));
-  const frames=phaseFrames(encodeSequence(payload,{...profile,id,permute:profile.phases>1,contentType:'raw'}));
-  if(!Array.isArray(manifest.frames)||manifest.frames.length!==frames.length) throw Error('Sender phase count mismatch.');
-  for(let i=0;i<frames.length;i++) {
-    const row=manifest.frames[i],frame=frames[i];
-    if(row.key!==captureKey(frame)||row.headerBase64!==bytesToBase64(frame.header)||canonicalJSON(row.info)!==canonicalJSON(parseHeader(frame.header))) throw Error('Sender header or phase metadata mismatch.');
-  }
+  const code=validateCollectionCode(manifest.collectionCode),logical=base64ToBytes(manifest.payloadBase64,profile.size**2);
+  if(logical.length!==profile.size**2||logical.some(v=>v>=16)||await sha256(logical)!==manifest.payloadId||
+    crc32(logical).toString(16).padStart(8,'0')!==code)throw Error('Sender logical matrix hash/length/code mismatch.');
+  const layout=gridLayout(profile.size,16,8);
+  if(Array.from(layout.pilots).some(cell=>logical[cell]!==layout.reference[cell]))throw Error('Sender grid references disagree.');
+  const frames=makeFrames(logical,profile,code);
+  if(!Array.isArray(manifest.frames)||manifest.frames.length!==4)throw Error('Sender phase count mismatch.');
+  for(let i=0;i<4;i++)if(manifest.frames[i].key!==captureKey(frames[i])||canonicalJSON(manifest.frames[i].info)!==canonicalJSON(frames[i].info))throw Error('Sender phase metadata mismatch.');
   return frames;
 }

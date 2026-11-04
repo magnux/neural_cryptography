@@ -13,186 +13,90 @@ interleaved convolution/attention design are specified in the model guide.
 
 ## Collect real examples
 
-Use the [multires recording guide](MULTIRES_COLLECTION.md) for the current collector:
-G8/G16/G32/G64/G128/G256, 2×2 pixels per cell, optional server uploads, automatic
-browser/device/camera metadata, and size-separated offline joining. Four palette
-phases are the intended multires input. Downloads remain available.
+The current collector uses the new **header-free Neural-QR** layout. Follow
+[Multires collection](MULTIRES_COLLECTION.md) for G8/G16/G32/G64/G128/G256,
+16 colors, four phases, 2×2 pixels per cell, server uploads and automatic
+browser/device/camera metadata. Copy the sender's public collection code to the
+receiver and select the same grid before recording. The receiver reads the
+asymmetric orientation marker and phase cues; it never loads clean symbols.
 
-The training and synthetic commands later in this document describe the
-**established 4×4-cell U-tube recipe**. They remain usable with existing recordings
-and datasets. New 2×2-cell collection is ready; production multires training/data
-augmentation support is a subsequent implementation step. The existing rebuild
-rejects the new sampling density before cleaning any output directories.
+This guide's later synthetic/training commands describe the **established
+4×4-cell U-tube experiment**. They remain usable with its already prepared
+`optical-decoder-dataset` datasets and checkpoints. They do not accept the new
+`neural-qr-dataset` evidence. Production multires training and synthetic generation
+are the next integration step. Keep the new recordings and joined outputs in
+separate directories so existing training jobs can continue unchanged.
 
-The sender/receiver recording format identifiers and version remain the same.
-New records explicitly carry their sampling density and additional environment
-metadata; established records retain their original four-pixels-per-axis meaning.
-No recorded file is rewritten or converted automatically.
+### Interpreting capture distance
 
-### Interpreting diversity
+The collector samples 1,024 stratified, deterministically jittered RGB positions
+in each aligned crop. The displayed value is mean pairwise sampled RMS distance
+within the same assigned matrix and observed phase, expressed relative to the
+nominal RGB range. It measures variation, not correctness, and does not need to
+increase. Signatures remain temporary evidence-selection features.
 
-The worker samples the same 1,024 stratified, deterministically jittered RGB
-positions in each aligned, color-corrected dense crop. It computes the RMS RGB
-difference for every pair of retained signatures, then averages those distances.
-The displayed percentage is relative to the nominal 0–255 RGB range (normalization
-is inverted by a factor of 127.5); calibrated overshoot can exceed that range.
-It is an estimate from sampled pixels, not the full-tensor distance. Fewer than
-two samples displays no metric. Signatures are temporary and are not exported
-as training features. Only captures with the same complete frame identity and
-palette phase are compared. Computation stays in the worker.
-
-Once a phase pool is full, the worker draws up to eight reference samples and
-up to eight candidate records at random. It estimates novelty by nearest-reference
-RGB distance and replaces a crowded candidate only if novelty improves by more
-than max(0.05 percentage points, 5% of the candidate's crowding distance). For
-selection only, each RGB component's difference is capped at 25 percentage points
-so a few extreme pixels cannot dominate. An isolation guard rejects incoming
-samples farther than max(12 percentage points, three times the median reference
-pair distance). These are initial tunable heuristic constants, not correctness
-thresholds. Randomness chooses comparison subsets and resolves equal candidates.
-
-Selection receives no labels or CRC outcome. It can miss duplicates outside the
-sampled references, and neither global mean distance nor image quality is guaranteed
-to increase. The displayed mean remains the ordinary, unclipped sampled RMS metric,
-so it is distinct from the clipped selection score. A phase's count stays bounded;
-replacement preserves the stable-header guard, byte budget, and snapshot limits.
-Receiver exports retain the same distance-summary fields and recording schema.
-
-For device checks, report camera/direction, grid/palette, interval, pool maximum,
-seen/replaced counts, mean distance at first fill and later, and whether the
-controls/counters and camera fit together on screen. Marker/header acquisition
-failures remain separate: this iteration improves collection, not the detector.
-
-The guard cannot prove the absence of a rolling-shutter display transition.
-Keep the sender static, review questionable captures, and exclude mixed frames
-offline. Unreadable headers are kept as diagnostics, optionally with an original
-image, and receive no inherited labels. For the PC, resolve marker/header
-acquisition before expecting this payload classifier to help.
+Retention now favors a stable core of similar samples with a controlled shoulder
+and tail, rather than maximizing novelty. It uses a frozen warm-up medoid and
+robust scale, nominal 70/25/5 band quotas, isolated-outlier rejection and randomized
+within-band refresh. Small pools use rounded quotas. The full algorithm and its
+limits are documented under [balanced retention](MULTIRES_COLLECTION.md#admission-and-balanced-retention).
+No sender labels or CRC outcomes enter the selection. Keep one logical matrix
+static across each phase's capture; similarity alone cannot detect a wrong
+manual code or a consistently wrong view.
 
 ## Organize recordings and rebuild datasets
 
-Sender and receiver downloads now start with the **eight-digit hexadecimal
-CRC32 of the first logical matrix's payload**. This is `info.chunkCRC`, already
-present in both JSON files. Palette phases share it; the header checksum changes
-between phases and is deliberately not used. The original sequence-ID and
-receiver session/timestamp suffixes distinguish downloads. A receiver batch containing only
-diagnostics uses `unpaired` because it has no decoded matrix header. If a batch
-contains several sequences, its prefix describes the first retained matrix;
-the offline join still considers every record's full header.
+Current downloads are named `<collection-code>_neural-qr-sender-…json` and
+`<collection-code>_neural-qr-captures-…json`. The code is a CRC32 of the logical
+matrix, assigned explicitly on the receiver. It groups files but is not an
+optically verified identity. Uploads organize recordings by declared split,
+grid size and sender/receiver role; both environments and the camera remain in
+metadata. Keep every physical session and all phases of a matrix in one split.
 
-The prefix is an organizational aid, not a unique identity or authentication
-check. Pairing still validates the full header and sender payload. Recording
-JSON content, versions, session identities and capture timestamps are unchanged.
-
-Put both devices' exports under these directories:
-
-| Directory | Contents | Dataset split |
-| --- | --- | --- |
-| `local-data/phone/train/` | Sender and receiver exports saved on the phone | Training |
-| `local-data/pc/train/` | Sender and receiver exports saved on the PC | Training |
-| `local-data/phone/val/` | Held-out exports saved on the phone | Validation |
-| `local-data/pc/val/` | Held-out exports saved on the PC | Validation |
-
-In the current collection, prefixes **6, 7, 8, d, e, f** belong to `val` on
-both devices and the other prefixes belong to `train`. Keep this arrangement
-when renaming. For future collections, assign splits before removing manual labels. Keep
-whole physical sessions and payloads in one split. Filesystem creation dates
-and the original manual prefixes do not participate in joining or grouping.
-
-Rename existing downloads using their JSON contents:
+For uploaded Neural-QR recordings, use the current join:
 
 ```sh
-node scripts/rename-corrector-recordings.mjs --dry-run
-node scripts/rename-corrector-recordings.mjs --apply
+node scripts/corrector-dataset.mjs join-uploads \
+  --recordings-root local-data/recordings \
+  --out local-data/multires-joined
 ```
 
-The command scans the `phone` and `pc` trees recursively. It replaces only the
-leading manual/checksum prefix, preserving the rest of each filename exactly,
-including any existing timestamp. Files stay in the same split/device directory;
-file bytes are preserved, conflicting destinations are refused, and rerunning
-is safe. No recording-format conversion is performed. For example,
-`6_decoder-sender-7b37095e6b0768e7.json` becomes
-`<crc32>_decoder-sender-7b37095e6b0768e7.json` in the same `pc/val` directory.
+The output must be new or empty. It contains size-separated
+`<split>/g<size>/manifest.json` datasets and hashed evidence/label arrays. The
+command does not delete or rewrite recordings. Missing or conflicting sender
+assignments must be resolved before joining. Follow the
+[recording workflow](MULTIRES_COLLECTION.md#device-workflow) for collection and
+[upload organization](MULTIRES_COLLECTION.md#storage-and-automatic-metadata).
 
-Once the current training job has finished, rebuild the standard datasets:
-
-```sh
-node scripts/rebuild-corrector-data.mjs --python python --dry-run
-node scripts/rebuild-corrector-data.mjs --python python
-```
-
-Use the active training virtual environment for `python`. Do not rebuild while
-a training/evaluation process is reading these paths. The command checks raw
-inputs, pairing, split ownership, complete four-phase coverage and dependencies
-before replacing outputs. The standard phase-grouped rebuild requires G64,
-16 colors, four permuted phases and at least two distinct real captures per phase
-for each logical group.
-It rejects unmatched captures and conflicting/duplicate records instead of
-silently shrinking the dataset. Captures in `phone` map to **PC→phone**; captures
-in `pc` map to **phone→PC**, with the sender required on the opposite device.
-
-Only these generated outputs are replaced:
-
-| Output under `local-data/` | Purpose |
-| --- | --- |
-| `real-train`, `real-validation` | Joined calibrated captures with original burst/session identities |
-| `target-clean-train`, `target-clean-validation` | Canonical clean targets reconstructed from sender truth |
-| `target-synthetic-train`, `target-synthetic-validation` | Corrupted views paired with those exact targets |
-| `session-groups.json` | Current receiver-session direction labels |
-
-Other datasets, raw recordings and checkpoints are left alone. Generation
-reuses these names on each run; no numbered or dated dataset copies accumulate.
-After preflight, the previous managed outputs are removed to avoid requiring
-space for two synthetic corpora. A later processing/disk failure leaves an
-incomplete rebuild; fix the cause and rerun before training.
-
-The training corpus uses the current harder recipe, including glare, native
-capture-resolution loss and RGB-offset motion blur, with **32 coherent phase
-groups × 12 captures per phase**, seed 41. Validation synthetics use **4 groups
-× 12 captures per phase**, seed 42, and remain held out. Each group contains all
-four phases of one logical matrix. The generator shares slow optical conditions
-and varies capture-level artifacts across an interleaved four-phase timeline.
-It records a common synthetic phase-group identity while preserving each
-phase-specific burst ID. Model selection still uses `real-validation`.
-
-The command exposes `--frames`, `--bursts-per-target`,
-`--validation-bursts-per-target`, `--seed`, severity and output-budget controls in
-`--help`. Here `--frames` is generated captures **per phase**, with at least two
-for grouped training; training `--frames 8` is the model's fixed capacity. Existing
-real capture files and burst IDs are unchanged. Rebuilding does not make
-correlated captures independent physical sessions. New sessions enter the next
-rebuild without handwritten sender/capture lists.
+The previous rebuild entry point now stops before cleanup and directs current
+recordings to this join. It does not regenerate 4×4-cell datasets from the new
+layout, nor convert previous raw recording formats. Existing prepared 4×4-cell
+datasets and their independent synthetic-generation commands below remain usable.
 
 ## Join labels offline manually
 
-The receiver never loads the sender manifest. The rebuild command above uses
-the canonical JavaScript codec. For an individual custom join, run:
+For downloaded **current Neural-QR** files, an explicit join is also available:
 
 ```sh
 node scripts/corrector-dataset.mjs join \
   --senders local-data/sender-a.json,local-data/sender-b.json \
   --captures local-data/receiver-batch-a.json,local-data/receiver-batch-b.json \
-  --split train --out local-data/real-train
+  --split train --out local-data/neural-qr-train
 ```
 
-Use actual downloaded filenames. Repeat into separate empty directories for
-`validation` and later `test`, with whole sessions and fresh payloads assigned
-in advance. One directory can contain multiple sessions. Join validates complete
-header metadata, phase, payload digest, and sender consistency. Unmatched
-records remain excluded/unlabeled; conflicting manifests are rejected.
+Use actual downloaded names and a new or empty output directory. Repeat into
+separate outputs for validation and test. The join validates collection code,
+profile, phase, sender digest and split consistency. It cannot prove that the
+operator pointed the camera at the assigned matrix. Unmatched captures remain
+unlabeled; conflicting manifests are rejected.
 
-To remove a questionable sample, write a JSON array of its
-`receiverSessionId/timestamp` capture IDs and pass `--exclude exclusions.json`.
-These IDs appear in joined sample provenance. Rejoin into a new empty directory;
-do not edit pixel/label binaries manually.
-
-The directory contains a `manifest.json` and hashed binaries: normalized NCHW
-float32 inputs, physical palette labels, data-cell masks, classical scores,
-and expected chunk bytes. Labels are regenerated from the existing OBM5
-encoder, including reference cells, parity, and padding. Python implements no
-parallel optical wire format. Reference cells remain in the image but are
-excluded from the classification loss. Expected bytes are used only after
-independent decoding to measure whether accepted output is exact.
+To remove a questionable sample, provide a JSON array of
+`receiverSessionId/timestamp` capture IDs with `--exclude exclusions.json`.
+These IDs appear in sample provenance. Rejoin into a new directory instead of
+editing pixel/label binaries. The new `neural-qr-dataset` stores `[3,2G,2G]`
+inputs, physical palette labels, data-cell masks, classical score diagnostics
+and logical target symbols. Packet recovery/ECC is not yet defined for this
+acquisition-only format. These files await multires training integration.
 
 ## Generate the synthetic pilot
 
@@ -204,8 +108,9 @@ starts fresh combined-model weights using the current paired synthetics. Existin
 U-tube and U-tube-2x checkpoints remain available for their own evaluation or continuation.
 
 For a fresh pilot, reuse existing clean corpora or generate them below. Generate
-corrupted corpora into empty directories. Real recordings and joined datasets
-remain usable without conversion. The following independent random-payload route
+corrupted corpora into empty directories. Existing prepared OBM5 datasets
+remain usable without conversion; the new Neural-QR recordings are a separate
+input contract. The following independent random-payload route
 also remains available for broader pretraining:
 
 ```sh
@@ -531,12 +436,12 @@ are not embedded in training history. Existing reports are not rewritten.
 
 ## Generate the updated paired synthetic corpus
 
-The rebuild command already performs this step. For a manual regeneration,
+For existing prepared OBM5 datasets, generate target-paired synthetics as follows;
 reuse `target-clean-train`, or reconstruct it once with the first command below.
 Generate the phase-grouped corpus into an empty `target-synthetic-train`
 directory. This keeps seed 41 and the resolution/glare/RGB-offset recipe, while
-correlating slow optical conditions across each four-phase group. Original recordings and joined real data
-remain unchanged.
+correlating slow optical conditions across each four-phase group. Existing joined
+real data remain unchanged.
 
 ```sh
 # Reuse target-clean-train if already generated; otherwise run:
@@ -564,8 +469,8 @@ example per receiver session/payload/frame/phase, regardless of how many real
 captures show it. **No noisy camera pixels are treated as clean truth.** The
 sender/receiver identities, whole-payload identity and split are preserved;
 recording files remain unchanged. Multiple joined source directories can be
-passed as a comma-separated `--dataset` list. This command supports the capture
-app’s single logical frame with palette phases; it rejects incomplete multipart
+passed as a comma-separated `--dataset` list. This command supports established OBM5
+single logical frames with palette phases; it rejects incomplete multipart
 payloads rather than inventing missing target bytes.
 
 Thirty-two coherent phase groups with twelve captures per phase provide **384
@@ -573,7 +478,8 @@ synthetic observations per clean phase target**. A logical target has four such
 phase targets. Slow optical conditions are shared across the four phases, while
 noise, motion, moiré, rolling shutter and exposure drift change over the capture
 timeline. `--phase-grouped` requires all four phases, G64/16 colors and consistent
-logical data targets before writing outputs. The raw recording schema is unchanged.
+logical data targets before writing outputs. This operates on established
+prepared datasets and does not convert Neural-QR recordings.
 Severity varies from .45 to .9 per burst. Glare, white balance, exposure, shade,
 rolling shutter and resolution settings match the previous paired corpus; RGB
 exposure offsets add the new effect. This retains moderate cases
@@ -600,22 +506,19 @@ not an additional model input or a browser decoding oracle.
 
 ## Training another run
 
-First rebuild after the current training job stops reading the managed dataset
-paths. The script validates the raw inputs before replacing only the standard
-generated directories and creates coherent four-phase synthetics:
+Use the **already prepared 4×4-cell OBM5 datasets** for this recipe. If you need
+fresh synthetic partners for those datasets, use the target-paired commands
+above, writing into empty output directories. The current Neural-QR join cannot
+feed this training command until production multires support is implemented.
 
-```sh
-node scripts/rebuild-corrector-data.mjs --python python --dry-run
-node scripts/rebuild-corrector-data.mjs --python python
-```
-
-For a fresh experiment, **train `U-tube-2x-attn` from scratch**, with eight phase-paired slots and randomly
-selected 4–8 observations at `1e-4` for 32,000 updates. Use the regenerated
-`real-train`, `target-synthetic-train`, `real-validation` and direction sidecar.
-Each training group must have at least two distinct captures of every phase,
-although each draw uses only one or two. All examples must be G64/16 colors with
-four permuted phases. Existing recording files need no conversion; independently
-generated old synthetic phase bursts need regeneration.
+For a fresh U-tube experiment, train `U-tube-2x-attn` from scratch with eight
+phase-paired slots and randomly selected 4–8 observations at `1e-4` for 32,000
+updates. Use existing `real-train`, `target-synthetic-train`, `real-validation`
+and their direction sidecar. Each training group must have at least two distinct
+captures of every phase, although each draw uses only one or two. All examples
+must be G64/16 colors with four permuted phases and the established 4×4-cell
+input contract. Independently generated old synthetic phase bursts require
+regeneration with the paired group recipe.
 
 Use **batch 16 × accumulation 2 = effective batch 32**. Batch 8 × 4 retains that
 effective batch if activation memory is limiting. The new output directory is

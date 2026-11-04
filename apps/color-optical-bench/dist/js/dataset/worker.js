@@ -1,11 +1,11 @@
-import {extractCapture} from '../vision.js';
 import {captureKey,captureProfile,CAPTURE_SIZES,CAPTURE_PIXELS_PER_CELL} from './contract.js';
 import {createSender} from './contract.js';
 import {captureFrame,validateCapture} from './capture.js';
-import {meanCaptureDistance,selectCaptureReplacement} from './diversity.js';
-import {renderFrame} from '../format.js';
+import {meanCaptureDistance,selectCaptureReplacement,createCaptureReference} from './diversity.js';
+import {renderNeuralQR} from '../neural-qr/layout.js';
 
-let busy=false;
+let busy=false,previousGeometry=null,geometryAssignment=null;
+const references=new Map();
 function toBase64(bytes){let text='';for(let i=0;i<bytes.length;i+=8192)text+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(text);}
 async function originalPNG(image){
   if(typeof OffscreenCanvas!=='function')return {omitted:'This browser does not support worker PNG encoding.'};
@@ -29,25 +29,30 @@ self.onmessage=async event=>{
     }else if(operation==='render'){
       const {frame,pixels}=options;
       if(![1024,2048].includes(pixels)||!CAPTURE_SIZES.includes(frame?.size)||![4,16].includes(frame?.colors))throw Error('Unsupported capture display profile.');
-      result=renderFrame(frame,pixels);transfer=[result.data.buffer];
+      result=renderNeuralQR(frame,pixels);transfer=[result.data.buffer];
     }else if(operation==='compare'){
       result=meanCaptureDistance(options.signatures);
     }else if(operation==='select'){
-      result=selectCaptureReplacement(options.signatures,options.incomingSignature);
+      const key=options.key;
+      if(typeof key!=='string'||key.length>200)throw Error('Selection requires a phase group key.');
+      if(options.reference)references.set(key,options.reference);
+      if(!references.has(key)){references.set(key,createCaptureReference(options.signatures));}
+      if(references.size>128)references.delete(references.keys().next().value);
+      result={...selectCaptureReplacement(options.signatures,options.incomingSignature,{reference:references.get(key)}),
+        ...(!options.reference?{reference:references.get(key)}:{})};
     }else if(operation==='capture'||operation==='probe'){
       const {image,timestamp,camera,original=false}=options;
       if(!image||!Number.isSafeInteger(image.width)||!Number.isSafeInteger(image.height)||
          image.width<32||image.height<32||image.width*image.height>2073600||
          !(image.data instanceof Uint8ClampedArray)||image.data.length!==image.width*image.height*4)throw Error('Capture exceeds the 1080p pixel limit or has invalid pixels.');
-      // No sender manifest, labels, expected bytes, or sequence seed enters here.
-      if(operation==='probe'){
-        const detected=extractCapture(image,{preview:false});
-        const supported=CAPTURE_SIZES.includes(detected.info?.size)&&[4,16].includes(detected.info?.colors);
-        result={timestamp,camera,probe:true,ok:Boolean(detected.samples)&&supported,
-          info:detected.info,key:detected.info?captureKey(detected.info):null,
-          transform:detected.transform,stats:detected.stats,stage:supported?detected.stage:(detected.info?'profile':detected.stage),
-          error:detected.info&&!supported?'Collection supports 8/16/32/64/128/256 grids and 4/16 colors.':detected.error};
-      }else result=await captureFrame(image,{timestamp,camera,signature:true,pixelsPerCell:CAPTURE_PIXELS_PER_CELL});
+      // Public assignment only: no sender manifest, labels, expected bytes, or seed.
+      const {collectionCode,profile}=options;
+      const assignment=`${collectionCode}/${profile?.size}`;
+      if(assignment!==geometryAssignment){previousGeometry=null;geometryAssignment=assignment;references.clear();}
+      result=captureFrame(image,{timestamp,camera,signature:operation==='capture',profile,collectionCode,
+        previousGeometry,probe:operation==='probe'});
+      if(result.ok)previousGeometry=result.geometry;
+      else if(result.stage==='markers'||result.stage==='geometry')previousGeometry=null;
       if(original){
         try{const snapshot=await originalPNG(image);if(snapshot.omitted)result.originalNote=snapshot.omitted;else result.original=snapshot;}
         catch(error){result.originalNote=`Original snapshot unavailable: ${error.message}`;}

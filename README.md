@@ -7,13 +7,14 @@ store recording JSONs explicitly uploaded from the data collector.
 
 The goal is **fast, reliable and secure optical authentication between a phone
 and computer**. A complete Neural-ZKBoo device exchange has now succeeded using
-the trained neural corrector for color data and standard QR ACKs. The next design
+the trained neural corrector for color data and standard QR ACKs. The new acquisition format
 is **Neural-QR**: our custom optical matrices built specifically for neural
 correction, with asymmetric geometric markers and phase cues instead of the
 current dense monochrome header. Neural-QR is not a standard QR code.
 
 The [Neural-QR design](docs/NEURAL_QR.md) and [roadmap](docs/ROADMAP.md) define the
-next implementation steps. The existing `neural-zkboo.html` remains the working
+remaining model and packet-integration steps. Header-free acquisition is implemented
+in `capture.html`, including multires recordings and server uploads. The existing `neural-zkboo.html` remains the working
 baseline while that format is developed. Functional success does not establish
 cryptographic security or a controlled throughput advantage over QR; those are
 separate acceptance criteria. Earlier experiments remain available as research
@@ -32,7 +33,7 @@ for the original dynamical-systems exploration.
 | Neural dynamics / symmetric neural key | [Python experiment](experiments/neural-dynamics/README.md) | Recurrent CNNs, rotating kernels, diffusion, bias, numerical agreement, and surrogate attacks. |
 | Python ZKBoo | [Python experiment and core](experiments/python-zkboo/README.md) | Exact binary circuit, compact prover/verifier, command-line provisioning and optical simulation, and Python↔JavaScript parity. |
 | Browser Crypto Lab | [Color app](apps/color-optical-bench/README.md), `crypto.html` | Generate keys, prove, verify, reject tampering, and measure local performance in a worker. |
-| Neural-QR transport research | [Design](docs/NEURAL_QR.md), [current Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Custom neural-readable matrices. The current executable transport remains OBM5; the replacement layout and acquisition pipeline are specified for the next implementation. |
+| Neural-QR transport research | [Design](docs/NEURAL_QR.md), [current Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Custom neural-readable matrices. Header-free rendering/acquisition runs in `capture.html`; OBM5 remains the working authentication baseline until multires model and packet integration. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
 | Neural-ZKBoo authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | A 32-repetition phone/PC exchange completed with trained four-phase data reception and static QR ACKs. Baseline for Neural-QR integration. |
 | Neural corrector | [Model and training](experiments/neural-corrector/README.md), [capture/training guide](docs/NEURAL_CORRECTOR_TRAINING.md), `corrector.html` and `capture.html` | Full-resolution U-tube models, labeled captures, coherent synthetics, training, recovery evaluation and browser export. Phase-grouped training passed the recorded recovery target; the new authentication interface exercises live learned recovery. |
@@ -47,7 +48,7 @@ parameters: transport carries the serialized proof bytes.
 
 - [POC roadmap](docs/ROADMAP.md): browser feasibility, capture/training,
   completed authentication, Neural-QR development, and repeatable device tests.
-- [Neural-QR specification plan](docs/NEURAL_QR.md): geometric anchors, phase
+- [Neural-QR specification](docs/NEURAL_QR.md): geometric anchors, phase
   identification, header-free neural acquisition, payload integrity and ACKs.
 - [Neural corrector design](docs/NEURAL_CORRECTOR.md): architecture, input/output
   contract, dataset collection, RTX 4090 training, and browser inference.

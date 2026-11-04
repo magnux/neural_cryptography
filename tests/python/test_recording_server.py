@@ -18,29 +18,36 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+def profile(size=64):
+    return {"size": size, "colors": 16, "phases": 4, "gridBlock": 8,
+            "permute": True, "pixelsPerCell": 2, "holdMs": 4000, "parity": 0}
+
+
 def info(size=64, phase=0):
-    return {"size": size, "colors": 16, "phases": 4, "phase": phase, "chunkCRC": 0x1234abcd}
+    return {**profile(size), "phase": phase, "bits": 4,
+            "collectionCode": "1234abcd", "id": "1234abcd"}
 
 
 def sender(size=64):
-    return {"format": "optical-decoder-sender", "version": 1,
+    return {"format": "neural-qr-sender", "version": 1,
             "created": "2026-11-04T12:34:56.789Z", "sessionId": "sender-abc",
-            "datasetSplit": "train", "sequenceId": "0123456789abcdef",
+            "datasetSplit": "train", "collectionCode": "1234abcd",
             "payloadId": "a" * 64, "payloadBase64": "AQID",
-            "profile": {"size": size, "colors": 16, "phases": 4},
+            "profile": profile(size),
             "environment": {"deviceId": "device-one", "browser": {"name": "test"}},
-            "frames": [{"info": info(size, phase), "headerBase64": "AA=="} for phase in range(4)]}
+            "frames": [{"info": info(size, phase), "key": f"1234abcd/{size}/16/8/{phase}"} for phase in range(4)]}
 
 
 def receiver(size=64):
-    return {"format": "optical-decoder-captures", "version": 1,
+    return {"format": "neural-qr-captures", "version": 1,
             "created": "2026-11-04T12:34:56.789Z", "sessionId": "receiver-abc",
-            "datasetSplit": "train", "environment": {"deviceId": "device-two"},
+            "datasetSplit": "train", "collectionCode": "1234abcd", "profile": profile(size),
+            "environment": {"deviceId": "device-two"},
             "camera": {"label": "Front camera", "deviceId": "origin-scoped-camera"},
-            "records": [{"ok": True, "info": info(size, phase),
+            "records": [{"ok": True, "info": info(size, phase), "pixelsPerCell": 2,
+                         "key": f"1234abcd/{size}/16/8/{phase}",
                          "inputBase64": "AA==", "samplesBase64": "AA=="} for phase in range(4)],
             "diagnostics": []}
-
 
 class QuietHandler(MODULE.BenchHandler):
     def log_message(self, *args):
@@ -109,7 +116,7 @@ class RecordingServerTests(unittest.TestCase):
                 recording["datasetSplit"] = "validation"
                 status, result = self.request("POST", "/api/recordings?split=validation", recording)
                 self.assertEqual(status, 201, result)
-                self.assertTrue(result["storedPath"].startswith(f"validation/g256/{role}/1234abcd_decoder-"))
+                self.assertTrue(result["storedPath"].startswith(f"validation/g256/{role}/1234abcd_neural-qr-"))
                 saved = self.store.root / result["storedPath"]
                 self.assertEqual(json.loads(saved.read_text()), recording)
                 self.assertFalse(result["duplicate"])
@@ -166,14 +173,36 @@ class RecordingServerTests(unittest.TestCase):
             unsafe["sessionId"] = "../../outside"
             self.assertEqual(self.request("POST", "/api/recordings?split=train", unsafe)[0], 422)
             invalid = sender()
-            invalid["frames"][0]["info"]["chunkCRC"] = -1
+            invalid["frames"][0]["info"]["collectionCode"] = "bad"
             self.assertEqual(self.request("POST", "/api/recordings?split=train", invalid)[0], 422)
             diagnostic = receiver()
             diagnostic["records"] = []
             diagnostic["diagnostics"] = [{"stage": "markers", "error": "not found"}]
             status, result = self.request("POST", "/api/recordings?split=train", diagnostic)
             self.assertEqual(status, 201, result)
-            self.assertTrue(result["storedPath"].startswith("train/unknown/receiver/unpaired_"))
+            self.assertTrue(result["storedPath"].startswith("train/unknown/receiver/1234abcd_"))
+
+    def test_current_profile_code_and_phase_membership_are_required(self):
+        with self.server():
+            mutations = [
+                lambda b: b.update(format="optical-decoder-sender"),
+                lambda b: b.update(collectionCode="ABCDEF12"),
+                lambda b: b["profile"].update(colors=4),
+                lambda b: b["profile"].update(pixelsPerCell=4),
+                lambda b: b["profile"].update(phases=4.0),
+                lambda b: b["frames"][0]["info"].update(phase=True),
+                lambda b: b["frames"][0].update(key="wrong"),
+                lambda b: b["frames"].__setitem__(1, deepcopy(b["frames"][0])),
+            ]
+            for change in mutations:
+                recording = sender()
+                change(recording)
+                with self.subTest(recording=recording):
+                    self.assertEqual(self.request("POST", "/api/recordings?split=train", recording)[0], 422)
+            malformed = receiver()
+            malformed["records"][0]["pixelsPerCell"] = 4
+            self.assertEqual(self.request("POST", "/api/recordings?split=train", malformed)[0], 422)
+        self.assertFalse(list(self.store.root.rglob("*.json")))
 
     def test_storage_must_be_private_and_symlink_cannot_redirect_writes(self):
         for location in (self.dist, self.dist / "uploads", self.dist.parent):

@@ -6,20 +6,21 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {createSender,senderFrames,base64ToBytes,bytesToBase64,floatBytes,floatsFromBytes} from '../dist/js/dataset/contract.js';
 import {captureFrame,CaptureBuffer,validateCapture} from '../dist/js/dataset/capture.js';
-import {renderFrame,FORMAT,parseHeader} from '../dist/js/format.js';
+import {renderNeuralQR,NQR_LAYOUT} from '../dist/js/neural-qr/layout.js';
 import {gridLayout} from '../dist/js/grid.js';
 import {generate,joinCaptures,targets,evaluate} from '../../../scripts/corrector-dataset.mjs';
-import {extractLearnedInput,logitsToLogicalScores} from '../dist/js/learned-input.js';
+import {logitsToLogicalScores} from '../dist/js/learned-input.js';
 import {decodeScores} from '../dist/js/vision.js';
 
 const base=fileURLToPath(new URL('../../../validation/',import.meta.url));
 const sender=await createSender({seed:123,sessionId:'sender-test'});
-const frame=sender.frames[1],image=renderFrame(frame,1024),record=captureFrame(image,{timestamp:1000});
+const assignment={profile:sender.manifest.profile,collectionCode:sender.manifest.collectionCode};
+const frame=sender.frames[1],image=renderNeuralQR(frame,1024),record=captureFrame(image,{...assignment,timestamp:1000});
 const copy=value=>JSON.parse(JSON.stringify(value));
 async function temp(fn){await mkdir(base,{recursive:true});const root=await mkdtemp(join(base,'dataset-'));try{await fn(root);}finally{await rm(root,{recursive:true,force:true});}}
-function bundle(){const b=new CaptureBuffer();b.add(record);b.add({...record,timestamp:1600});return b.export({sessionId:'physical-session'});}
+function bundle(){const b=new CaptureBuffer();b.add(copy(record));b.add({...copy(record),timestamp:1600});return b.export({sessionId:'physical-session'});}
 
-test('sender manifests regenerate exact physical phases, including fixed references and parity',async()=>{
+test('sender manifests regenerate exact physical phases, including fixed references and public collection identity',async()=>{
   const restored=await senderFrames(sender.manifest),layout=gridLayout(64,16,8);
   assert.equal(restored.length,4);
   for(let i=0;i<4;i++)assert.deepEqual(restored[i].symbols,sender.frames[i].symbols);
@@ -31,32 +32,33 @@ test('sender manifests regenerate exact physical phases, including fixed referen
   await assert.rejects(senderFrames(wrongInfo),/metadata/);
 });
 
-test('receiver produces normalized evidence without sender knowledge; failed payloads remain usable',()=>{
+test('receiver produces normalized evidence without sender labels; damaged payload pixels remain usable',()=>{
   assert.equal(record.ok,true);validateCapture(record);
   assert.equal(record.info.phase,1);assert.equal(record.inputBase64.length>0,true);
-  const damaged={...image,data:image.data.slice()},p=FORMAT.payload,scale=image.width/256;
+  const damaged={...image,data:image.data.slice()},p=NQR_LAYOUT.payload,scale=image.width/256;
   for(let y=Math.ceil(p.y*scale);y<Math.floor((p.y+p.side)*scale);y++)for(let x=Math.ceil(p.x*scale);x<Math.floor((p.x+p.side)*scale);x++) {
     const i=(y*image.width+x)*4;damaged.data[i]=damaged.data[i+1]=damaged.data[i+2]=100;
   }
-  const bad=captureFrame(damaged,{timestamp:2000});
-  assert.equal(bad.ok,true);assert.equal(bad.baseline.accepted,false);validateCapture(bad);
+  const bad=captureFrame(damaged,{...assignment,timestamp:2000});
+  assert.equal(bad.ok,true);assert.equal(bad.baseline,undefined);assert.notEqual(bad.inputBase64,record.inputBase64);validateCapture(bad);
+  assert.equal(bad.acquisition.association,'manual-public-code');
   const malformed=copy(record);malformed.inputBase64='AAAA';assert.throws(()=>validateCapture(malformed),/length/);
 });
 
-test('settling guard resets on invalid headers and rejects duplicate captures; bounds preserve diagnostics',()=>{
+test('settling guard resets on invalid phase cues and rejects duplicate captures; bounds preserve diagnostics',()=>{
   const b=new CaptureBuffer({maxRecords:1});
   assert.equal(b.add(record).accepted,false);
   assert.equal(b.add({...record,timestamp:1200}).accepted,false);
-  b.add({ok:false,timestamp:1300,stage:'header',error:'bad',original:{mime:'image/png',base64:'AQID'}});
+  b.add({ok:false,timestamp:1300,stage:'phase',error:'bad',original:{mime:'image/png',base64:'AQID'}});
   assert.equal(b.add({...record,timestamp:1600}).accepted,false);
   assert.equal(b.add({...record,timestamp:2200}).accepted,true);
   assert.equal(b.add({...record,timestamp:2200}).stage,'duplicate');
   assert.equal(b.add({...record,timestamp:2800}).stage,'full');
-  assert.equal(b.export({sessionId:'receiver'}).diagnostics.find(x=>x.stage==='header').original.base64,'AQID');
+  assert.equal(b.export({sessionId:'receiver'}).diagnostics.find(x=>x.stage==='phase').original.base64,'AQID');
   assert.equal(b.summary().records,1);assert.ok(b.summary().bytes<32*1024*1024);
 });
 
-test('offline joining requires full header match and preserves receiver session and failed diagnostic records',async()=>temp(async root=>{
+test('offline joining requires complete declared profile/phase matching and preserves receiver session and failed diagnostic records',async()=>temp(async root=>{
   const s=join(root,'sender.json'),r=join(root,'capture.json');
   await writeFile(s,JSON.stringify(sender.manifest));await writeFile(r,JSON.stringify(bundle()));
   const out=join(root,'joined');await joinCaptures({out,senders:s,captures:r,split:'validation'});
@@ -71,7 +73,7 @@ test('offline joining requires full header match and preserves receiver session 
   const largeResult=await joinCaptures({out:join(root,'large-pool'),senders:s,captures:r});
   assert.equal(largeResult.samples,24,'current importer accepts pools larger than 20');
   const broken=bundle();broken.records[0].info.bits=1;await writeFile(r,JSON.stringify(broken));
-  await assert.rejects(joinCaptures({out:join(root,'bad'),senders:s,captures:r}),/metadata/);
+  await assert.rejects(joinCaptures({out:join(root,'bad'),senders:s,captures:r}),/acquisition record|metadata/);
   const invalid=bundle();invalid.records[0].stability.observations=null;await writeFile(r,JSON.stringify(invalid));
   await assert.rejects(joinCaptures({out:join(root,'bad-guard'),senders:s,captures:r}),/guard/);
 }));
@@ -100,33 +102,20 @@ test('float/base64 contract rejects malformed, oversized, and non-finite tensors
   assert.throws(()=>floatBytes(Float32Array.of(NaN)),/Non-finite/);
 });
 
-test('target reconstruction deduplicates captures and restores sender colors without reading camera pixels',async()=>temp(async root=>{
+test('current Neural-QR joined captures reject the established OBM5 target recipe before output creation',async()=>temp(async root=>{
   const s=join(root,'sender.json'),r=join(root,'capture.json'),joined=join(root,'joined'),out=join(root,'targets');
   const b=new CaptureBuffer();let timestamp=1000;
   for(const phase of [1,3]) {
-    const captured=captureFrame(renderFrame(sender.frames[phase],1024),{timestamp});
+    const captured=captureFrame(renderNeuralQR(sender.frames[phase],1024),{...assignment,timestamp});
     b.add(captured);b.add({...captured,timestamp:timestamp+600});b.add({...captured,timestamp:timestamp+1200});timestamp+=2000;
   }
   await writeFile(s,JSON.stringify(sender.manifest));await writeFile(r,JSON.stringify(b.export({sessionId:'physical-target-session'})));
   await joinCaptures({out:joined,senders:s,captures:r,split:'validation'});
   const source=JSON.parse(await readFile(join(joined,'manifest.json'),'utf8'));
-  assert.equal(source.samples.length,4);
-  // The target path must depend on sender truth, never on a noisy input tensor.
-  for(const sample of source.samples)await rm(join(joined,sample.input));
-  const result=await targets({dataset:joined,out});
-  assert.equal(result.samples,2);assert.equal(result.deduplicated,2);
-  const clean=JSON.parse(await readFile(join(out,'manifest.json'),'utf8'));
-  for(const sample of clean.samples) {
-    const original=source.samples.find(x=>x.info.phase===sample.info.phase);
-    for(const field of ['sessionId','senderSessionId','payloadId','split','size','colors','info','burstId'])assert.deepEqual(sample[field],original[field]);
-    assert.equal(sample.source,'synthetic');assert.notEqual(sample.id,original.id);
-    for(const field of ['labels','mask','expected'])assert.equal(sample.hashes[field],original.hashes[field]);
-    const input=extractLearnedInput(renderFrame(sender.frames[sample.info.phase],1024),{transform:[4,0,0,0,4,0,0,0,1]}).input;
-    assert.deepEqual(await readFile(join(out,sample.input)),Buffer.from(floatBytes(input)));
-  }
-  const again=join(root,'again');await targets({dataset:joined,out:again});
-  const repeated=JSON.parse(await readFile(join(again,'manifest.json'),'utf8'));
-  assert.deepEqual(clean.samples.map(s=>[s.id,s.hashes]),repeated.samples.map(s=>[s.id,s.hashes]));
+  assert.equal(source.format,'neural-qr-dataset');assert.equal(source.samples.length,4);
+  await assert.rejects(targets({dataset:joined,out}),/Neural-QR multires synthetic\/training integration is separate/);
+  await assert.rejects(readFile(join(out,'manifest.json')),{code:'ENOENT'});
+  for(const sample of source.samples)assert.equal((await readFile(join(joined,sample.input))).length,3*128*128*4);
 }));
 
 test('target reconstruction preserves G128/4 phases and refuses split leakage or inconsistent canonical truth',async()=>temp(async root=>{
@@ -252,3 +241,4 @@ test('four-phase evaluation canonicalizes each observation and never phase-inver
   await writeFile(predictionPath,JSON.stringify(noSpace));
   await assert.rejects(evaluate({dataset:directory,predictions:predictionPath}),/Unsupported dataset\/prediction/);
 }));
+

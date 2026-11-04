@@ -7,11 +7,12 @@ optical format designed around the **neural-corrector**. The existing experiment
 are its exploratory foundation. Functional success does not establish audited
 cryptographic security.
 
-Neural-QR is not standards-compatible QR. Its proposed acquisition path replaces
+Neural-QR is not standards-compatible QR. Its implemented collector acquisition replaces
 the dense, separately decoded monochrome header with asymmetric geometry and
 large phase/reference cues; data and packet metadata pass through neural recovery.
-The [Neural-QR design](NEURAL_QR.md) defines this direction. It is **planned**, not
-the current runtime: the working [device demo](NEURAL_ZKBOO_DEMO.md) still uses
+The [Neural-QR design](NEURAL_QR.md) specifies the implemented layout and remaining
+packet integration. Header-free `capture.html` now collects its training data;
+the working [device demo](NEURAL_ZKBOO_DEMO.md) still uses
 OBM5 color DATA and static standard QR ACKs.
 
 The model target is now **`multires`**, covering
@@ -30,6 +31,7 @@ model plan; layout, shared model support and integration can proceed together.
 | Canonical crypto and authentication | Browser/Python circuit and compact proof implementation; local key generation, pairing confirmation, fresh challenge, proof, result and acknowledgments |
 | Trained neural-corrector | G64 U-tube-2x-attn with four phases and 4–8 captures; successful recorded evaluation and live device recovery |
 | Hybrid optical authentication | The 4 November device reports confirm local proof acceptance and final result delivery for 32 repetitions |
+| Header-free acquisition | Neural-QR rendering, asymmetric orientation, repeated phase cues, 2×2-cell multires crops, balanced recording pools, uploads and offline joins; device tests pending |
 | Optical engineering | Geometry, color references, temporal collection, ECC, CRC, multipart transfer and QR comparison tools are reusable |
 
 The completed exchange took about **6 min 17 s**. A **17,474-byte** proof took
@@ -68,7 +70,7 @@ saved challenge, identity minimum and repetition policy continue to govern accep
 
 | Milestone | Work | Completion criterion |
 | --- | --- | --- |
-| **N1 — Shared model and Neural-QR format** | Implement `multires` for G8…G256 with independent G-sized anchors, 2×2 pixels/cell and four attention blocks at G; fine-tune shared trunk and size-specific anchors; implement the illustrated header-free layout, phase cues, protected in-band metadata and bounded capture association alongside model work | Export/WASM parity for supported profiles; exact packet recovery; mixed phases/packets reject or refresh cleanly; real-device recovery assessed by size |
+| **N1 — Shared model and Neural-QR format** | Implement `multires` for G8…G256 with independent G-sized anchors, 2×2 pixels/cell and four attention blocks at G; fine-tune shared trunk and size-specific anchors; use the implemented header-free collector; add protected in-band metadata and bounded live packet association alongside model work | Export/WASM parity for supported profiles; exact packet recovery; mixed phases/packets reject or refresh cleanly; real-device recovery assessed by size |
 | **N2 — QR-free authentication** | Connect small Neural-QR controls and larger DATA profiles to the existing authentication session; choose controls that fit full framing/ECC/binding; use pre-agreed directional profiles initially | Complete identity/pairing/challenge/proof/result/final-ACK exchange with 32 repetitions in both role arrangements; no QR ACK or silent alternate reader; one exchange completes after server disconnection |
 | **N3 — Fast complete exchanges and larger proofs** | Tune profile size, capture/inference scheduling and ACK windows from measured costs; update payload limits and bounded deadlines; validate 219-repetition operation | Repeatable delivered bytes/s and complete-authentication time; losses/duplicates/corruption recover or time out; larger profiles improve actual goodput where enabled; compare standard QR under matched conditions |
 

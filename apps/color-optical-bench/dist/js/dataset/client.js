@@ -1,4 +1,4 @@
-/** Stateless extraction worker. Collected samples stay with the page on cancel. */
+/** Bounded extraction worker. Collected samples stay with the page on cancel. */
 export class CaptureClient {
   constructor({workerFactory = () => new Worker(new URL('./worker.js', import.meta.url), {type:'module'}), timeoutMs = 30000} = {}) {
     this.workerFactory=workerFactory; this.timeoutMs=timeoutMs; this.worker=null; this.pending=null; this.serial=0;

@@ -4,13 +4,13 @@ Each layer has one current POC format. There are no compatibility readers for
 previous experiment formats. Update both devices and regenerate affected
 fixtures when changing one.
 
-**Neural-QR** is the name of the next custom, neural-readable optical format.
-Its [design](NEURAL_QR.md) removes the separate dense monochrome header and
-standard QR ACK dependency. It is a planned replacement, not another accepted
-wire format today: the runnable demo still uses OBM5 data plus standard QR ACKs.
-The replacement will update both endpoints, capture tools and fixtures together,
-with one active format and no compatibility reader. Naming the design does not
-rename existing stored capture/checkpoint identifiers.
+**Neural-QR acquisition is now implemented in `capture.html`.** Its
+[layout](NEURAL_QR.md) uses asymmetric geometric markers, repeated phase-color
+cues, an explicitly configured grid size and no dense monochrome byte header.
+The collector records random training symbols; the in-band packet codec and
+QR-free authentication integration remain pending. The separate runnable
+Neural-ZKBoo demo still uses OBM5 data and standard QR ACKs. Neither receiver
+has a compatibility fallback to the other format.
 
 | Layer | Current identifier | Canonical documentation / source |
 | --- | --- | --- |
@@ -25,8 +25,27 @@ rename existing stored capture/checkpoint identifiers.
 | Neural-ZKBoo authentication envelope | `NZA1`, `neural-zkboo-auth-v1` | [Authentication protocol](../apps/qr-neural-key/AUTHENTICATION.md), [QR formats](../apps/qr-neural-key/FORMAT.md) |
 | Optical model bundle | `neural-corrector`, version 1 | [Model/export contract](../experiments/neural-corrector/README.md); untrained or trained status, hashed graphs and fixtures |
 | Neural-corrector checkpoint | `optical-decoder-checkpoint`, version 1 | [`checkpoint.py`](../experiments/neural-corrector/checkpoint.py); local state dict and training/split provenance |
-| Capture sender / receiver exports | `optical-decoder-sender` / `optical-decoder-captures`, version 1 | [Multires collection](MULTIRES_COLLECTION.md); additive sampling/environment metadata, independent recordings downloaded or uploaded and joined offline |
-| Joined training dataset | `optical-decoder-dataset`, version 1 | [`data.py`](../experiments/neural-corrector/data.py), [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); hashed NCHW inputs, physical labels, mask, baseline, expected bytes |
+| Neural-QR acquisition layout | `neural-qr`, version 1 | [`layout.js`](../apps/color-optical-bench/dist/js/neural-qr/layout.js), [`vision.js`](../apps/color-optical-bench/dist/js/neural-qr/vision.js); G8…G256, 16 colors, four phases, grid-8 references, 2×2 pixels/cell |
+| Capture sender / receiver exports | `neural-qr-sender` / `neural-qr-captures`, version 1 | [Multires collection](MULTIRES_COLLECTION.md); public collection code and profile, phase cues, independently saved/uploaded evidence and sender labels |
+| Joined Neural-QR evidence | `neural-qr-dataset`, version 1 | [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); 2×2-cell CHW inputs and offline labels; multires training integration pending |
+| Established OBM5 training dataset | `optical-decoder-dataset`, version 1 | [`data.py`](../experiments/neural-corrector/data.py), [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); hashed NCHW inputs, physical labels, mask, baseline, expected bytes |
+
+## Neural-QR collection association
+
+The sender's collection code is eight hexadecimal CRC32 characters over its
+logical training matrix; the full SHA-256 and logical symbols remain in the
+sender manifest. The receiver explicitly records that code and a profile, then
+observes orientation and phase from the camera. Joining checks these values and
+manifest consistency, including split ownership. It does not establish that a
+manually assigned code matches the pixels actually photographed. This collection
+mechanism is not a packet identifier, authenticator or cryptographic key.
+
+The input is normalized RGB evidence at `[3,2G,2G]`. Joined labels are physical
+palette indices; the known phase map relates them to logical symbols. Reference
+cells have a separate loss mask. Current training matrices contain random
+logical symbols and fixed reference cells; no packet framing, ECC or payload CRC
+is implied. The future Neural-QR packet layer must add those checks before
+accepting bytes or advancing authentication.
 
 ## Content and transport
 

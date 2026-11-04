@@ -26,7 +26,7 @@ test('metadata uses available browser hints and camera settings without requesti
 });
 
 const config={enabled:true,maxUploadBytes:4096,uploadToken:'csrf-token'};
-const recording={format:'optical-decoder-captures',version:1,datasetSplit:'validation',created:'2026-11-04T12:00:00.000Z',records:[]};
+const recording={format:'neural-qr-captures',version:1,datasetSplit:'validation',created:'2026-11-04T12:00:00.000Z',records:[]};
 class Request{
   constructor(result={ok:true,storedPath:'validation/g64/receiver/example.json',duplicate:false}){this.upload={};this.headers={};this.result=result;this.status=201;}
   open(method,url){this.method=method;this.url=url;}

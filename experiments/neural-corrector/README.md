@@ -19,12 +19,13 @@ recordings, synthetic generation, training and evaluation. The
 [Corrector Lab guide](../../docs/CORRECTOR_LAB.md) describes checkpoint export,
 static serving and browser tests.
 
-The next transport is [Neural-QR](../../docs/NEURAL_QR.md), designed to supply
+The next integrated transport is [Neural-QR](../../docs/NEURAL_QR.md), designed to supply
 geometry, phase identity and normalized crops without a separately decoded dense
 header. The next planned architecture is `multires`, with independent per-size
 anchors and an alternating convolution/attention bottleneck. The
 [multires collector](../../docs/MULTIRES_COLLECTION.md) already records G8…G256
-at 2×2 pixels per cell and supports server uploads. Its production training and
+at 2×2 pixels per cell using the new header-free markers and phase cues, and
+supports server uploads with a public collection code for offline association. Its production training and
 browser model integration are pending; the implemented profiles below use their
 established four-pixels-per-axis inputs.
 
@@ -66,14 +67,17 @@ for the distinction between these masks and the shifted-attention boundary mask.
 ## Training and data
 
 The recordings contain calibrated dense crops. Offline joins recover exact
-sender-derived targets, and the rebuild workflow keeps receiver/sender sessions
-and payloads in their assigned train/validation split. Real inputs can receive
+sender-derived targets, keeping receiver/sender sessions and payloads in their
+assigned train/validation split. New Neural-QR recordings use `join-uploads`;
+the old automatic rebuild command is paused until multires synthesis is ready. Real inputs can receive
 mild photometric augmentation. Synthetics include curved moiré, capture-resolution
 loss, rolling shutter, motion/RGB-offset blur, white balance/exposure changes,
 shadows, reflections, glare and sensor noise.
 
-Serialized recording, dataset and checkpoint format identifiers remain stable.
-Renaming this component does not require editing existing capture JSON. Profile
+Current collection files use `neural-qr-sender` / `neural-qr-captures`, and their
+joined datasets use `neural-qr-dataset`. They are separate from existing prepared
+4×4-cell training datasets; there is no implicit format conversion. Checkpoint
+formats for the implemented U-tube models remain unchanged. Profile
 names in checkpoint metadata are separate from filenames; the serving guide
 explains the explicit naming update for already trained weights.
 

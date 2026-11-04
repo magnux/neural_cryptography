@@ -8,57 +8,32 @@ include these notices; third-party licenses remain unchanged. See
 
 The next custom optical format is [Neural-QR](../../docs/NEURAL_QR.md), designed
 around neural correction with asymmetric markers and phase cues instead of a
-dense external header. This is the next implementation plan; the running demo
-below still uses OBM5 DATA and QR ACKs.
+dense external header. The new renderer and acquisition run in **Capture Dataset** (`capture.html`) uses header-free **Neural-QR** acquisition:
+three ordinary localization markers and an asymmetric lower-right fiducial,
+repeated phase cues, and fixed palette references. It records G8/G16/G32/G64/G128/G256
+at 2×2 pixels per cell with 16 colors and four manually advanced phases.
+Copy the sender's eight-character collection code and choose its grid on the
+receiver. This public assignment pairs recordings offline; it does not optically
+prove matrix identity. No sender labels or clean matrix enter camera processing.
 
-Five browser-local workspaces share top-level navigation:
+Orange fill means a tentative location with uncertain orientation/phase;
+green means current optical cues passed. Each phase settles for 500 ms before
+retention. Full pools favor a robust central cluster with controlled moderate/hard
+samples instead of maximizing distance. The reference survives pause/resume.
+Defaults retain 32 samples/phase through G64, 16 at G128 and six at G256.
 
-- **Optical Bench** (`index.html`) tests optical transport of bytes, UTF-8,
-  PNG/JPEG, and PCM WAV, with Live link and Image lab workspaces.
-- **Crypto Lab** (`crypto.html`) tests the neural-key proof engine in a dedicated
-  worker, including round trips, tampering, public-only verification, and device
-  performance reports.
-- **Live Demo** (`link.html`) tests reliable multipart optical messages, with a
-  local fault simulation and a two-device camera transfer. Step 3.3a transfers
-  bytes; pairing and authentication are not implemented in this tab yet.
-- **Corrector Lab** (`corrector.html`) tests the prepared optical model or checkpoint in a
-  dedicated worker. It compares full outputs against Python fixtures and measures
-  local inference, with an optional live camera crop. It does not decode payloads.
-  Follow the [separate setup and device checklist](../../docs/CORRECTOR_LAB.md).
-- **Neural-ZKBoo** (`neural-zkboo.html`) performs the full authentication flow
-  through trained four-phase DATA reception and static QR ACKs. Each
-  matrix waits for acknowledgment; explicit turns let the phone change its
-  angle between receiving and displaying. Start with the 32-repetition profile
-  and follow the [model setup and device sequence](../../docs/NEURAL_ZKBOO_DEMO.md).
-  Defaults are 150 ms phases and 100 ms acquisition. Orange marker feedback
-  indicates an unreadable header; green indicates a validated header. Recent
-  geometry is tried first, with current-exposure header validation and bounded reuse.
+Uploads, downloads, automatic browser/device/camera metadata and display-only
+mirroring remain available. Start the server with
+`--recordings-dir local-data/recordings`, or use downloads on a static host.
+Current files are `neural-qr-sender` / `neural-qr-captures`, version 1. The offline
+join produces `neural-qr-dataset`; production multires training and synthetics
+are the next integration task. Existing prepared U-tube datasets remain usable
+with their established training tools. The obsolete rebuild command stops before
+changing files and directs new recordings to `join-uploads`.
 
-**Capture Dataset** (`capture.html`), linked from Corrector Lab, adds the M2
-sender/receiver data collector. It now supports G8/G16/G32/G64/G128/G256 with
-2×2 pixels per cell, optional uploads to the demo server, and automatic
-browser/device/camera metadata. Follow the [multires recording guide](../../docs/MULTIRES_COLLECTION.md)
-for collection budgets, server setup and size-separated joining. Display a static random matrix, collect bounded
-camera samples with automatic filled alignment feedback, and export the sender
-manifest and receiver captures separately. Collection keeps per-phase pools
-(up to 32 samples by default, reduced to 16 at G128 and six at G256 for four phases), continuously replaces redundant captures with a randomized
-distance heuristic, and shows within-phase RGB distance and replacement counters
-above the camera. Recording versions are unchanged; new records explicitly
-declare their sampling density and include environment/split metadata. Both exports use the
-first matrix's payload CRC32 as a matching filename prefix; the offline join
-still validates full header/payload identities. The
-[recording workflow](../../docs/NEURAL_CORRECTOR_TRAINING.md#organize-recordings-and-rebuild-datasets)
-includes filename migration and one-command rebuilding from `phone/pc` split folders.
-**Mirror preview** flips the visible camera image and its alignment overlay
-together; capture tensors and optional original PNGs retain the camera's original
-orientation. This display preference persists while changing roles or restarting
-the camera within the page.
-No model installation is needed to collect data. Uploads require
-`--recordings-dir local-data/recordings` on `serve.py`; downloads work with any
-static host. The new 2×2-cell collection awaits production multires training
-integration. Follow the
-[capture and training guide](../../docs/NEURAL_CORRECTOR_TRAINING.md) for offline
-label joining, train/validation/test splits, and checkpoint evaluation.
+Follow the [multires recording guide](../../docs/MULTIRES_COLLECTION.md) for setup,
+association, collection budgets, uploads and size-separated joining. No trained
+model is needed for this acquisition step.
 
 The reusable crypto engine and worker have one canonical source in
 [`shared/browser-crypto/`](../../shared/browser-crypto/). `npm run prepare:app`
@@ -82,7 +57,8 @@ describe the exploratory background and later cryptanalytic work.
 
 The optical transport supports 8/16 palette phases, progressive reception, per-cell robust
 sample selection, and reliability-guided Reed–Solomon recovery. **OBM5 is the only
-accepted format.** Reload both devices together. There is no old-format reader or
+accepted format in those transport workspaces.** The collector exclusively uses
+the new Neural-QR acquisition layout. Reload both devices together. There is no old-format reader or
 migration path.
 
 ## Reliable optical messages · step 3.3a

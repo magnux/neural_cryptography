@@ -6,15 +6,16 @@ import {createSender,captureKey} from '../dist/js/dataset/contract.js';
 import {captureFrame} from '../dist/js/dataset/capture.js';
 import {recordingFilename} from '../dist/js/dataset/filenames.js';
 import {meanCaptureDistance} from '../dist/js/dataset/diversity.js';
-import {renderFrame} from '../dist/js/format.js';
+import {renderNeuralQR} from '../dist/js/neural-qr/layout.js';
 
 test('page keeps sampling full pools, applies selection, isolates phases, and pauses without losing records',async()=>{
   const html=await readFile(new URL('../dist/capture.html',import.meta.url),'utf8');
   const css=await readFile(new URL('../dist/js/dataset/style.css',import.meta.url),'utf8');
   const sender=await createSender({seed:90,sessionId:'flow'});
-  const record=captureFrame(renderFrame(sender.frames[0],1024),{signature:true});
+  const record=captureFrame(renderNeuralQR(sender.frames[0],1024),{signature:true,collectionCode:sender.manifest.collectionCode,profile:sender.manifest.profile});
   let phase=0,grid=64,clock=1000,media=1,stopped=0,filled=0,replacementChoice=null,holdSelection=false,lateSelection=null,download=null,downloadName=null;
-  const uploaded=[];let failUpload=true;
+  const uploaded=[],acquisitionOptions=[],selectionOptions=[];let failUpload=true,phaseFailure=false,noMajority=false;
+  const frozenReference={ready:true,center:record.signature.slice(),radius:1,scale:1,limits:[2,3,4],samples:32};
   const timers=new Map();let timerId=0;const operations=[],cameraInputs=[],draws=[];
   const rawPixels=Uint8ClampedArray.from({length:4096},(_,i)=>(i*17+Math.floor(i/128))%256);
   const context={clearRect(){},drawImage(...args){draws.push(args);},getImageData:()=>({width:32,height:32,data:rawPixels.slice()}),
@@ -31,7 +32,7 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
   const intervalOptions=html.match(/<select id="scanInterval">(.*?)<\/select>/s)[1];
   assert.deepEqual([...intervalOptions.matchAll(/value="(\d+)"/g)].map(match=>Number(match[1])),[100,250,500,1000,2000]);
   assert.match(intervalOptions,/<option value="100" selected>/);
-  for(const [id,value] of Object.entries({phaseMaximum:'32',scanInterval:'100',resolution:'720',datasetSplit:'train'}))get(id).value=value;
+  for(const [id,value] of Object.entries({phaseMaximum:'32',scanInterval:'100',resolution:'720',datasetSplit:'train',receiverCode:sender.manifest.collectionCode,receiverSize:'64'}))get(id).value=value;
   assert.equal(elements.has('keepCount'),false);assert.equal(elements.has('thinCaptures'),false);
   assert.ok(html.indexOf('id="collectBurst"')<html.indexOf('id="video"'));
   assert.ok(html.indexOf('id="phaseCount"')<html.indexOf('id="video"'));
@@ -44,9 +45,11 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
   class Worker{
     postMessage({id,operation,options}){
       operations.push(operation);const info={...record.info,size:grid,phase},key=captureKey(info);
-      if(options.image)cameraInputs.push(options.image.data.slice());
-      const result=operation==='select'?{replaceIndex:replacementChoice,reason:'test selection'}:operation==='compare'?meanCaptureDistance(options.signatures):operation==='probe'
-        ?{ok:true,probe:true,info,key,transform:record.transform,stats:record.stats}
+      if(options.image){cameraInputs.push(options.image.data.slice());acquisitionOptions.push({collectionCode:options.collectionCode,profile:options.profile});}
+      if(operation==='select')selectionOptions.push(options);
+      const result=operation==='select'?{replaceIndex:replacementChoice,reason:noMajority?'no-majority-cluster':'test selection',...(!options.reference?{reference:frozenReference}:{})}:operation==='compare'?meanCaptureDistance(options.signatures):phaseFailure
+        ?{ok:false,probe:operation==='probe',stage:'phase',error:'Phase cues disagree',tentativeCorners:[[1,1],[30,1],[30,30],[1,30]],timestamp:options.timestamp}
+        :operation==='probe'?{ok:true,probe:true,info,key,transform:record.transform,stats:record.stats}
         :{...record,info,key,timestamp:options.timestamp};
       const reply=()=>this.onmessage?.({data:{id,type:'result',result}});
       if(operation==='select'&&holdSelection){holdSelection=false;lateSelection=reply;}else queueMicrotask(reply);
@@ -79,7 +82,9 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     assert.equal(get('mirrorPreview').getAttribute('aria-pressed'),'true');
     await get('receiverRole').fire();await get('startCamera').fire();await flush();
     assert.ok(operations.includes('probe'));assert.ok(filled>0,'matrix overlay fills its area');
+    for(const options of acquisitionOptions){assert.equal(options.collectionCode,sender.manifest.collectionCode);assert.equal(options.profile.size,64);assert.equal(options.profile.colors,16);assert.equal(options.profile.phases,4);assert.equal(options.profile.payloadBase64,undefined);}
     assert.equal(get('sampleCount').textContent,'0 / 128');
+    const fillsBeforeFailure=filled;phaseFailure=true;await tick();assert.ok(filled>fillsBeforeFailure,'tentative phase-failed geometry is filled');assert.equal(context.fillStyle,'rgba(255,190,50,0.25)');assert.equal(context.strokeStyle,'#ffbe32');assert.match(get('latestCapture').textContent,/Phase cues disagree/);phaseFailure=false;
     await get('mirrorPreview').fire();await tick();
     assert.equal(get('cameraPreview').getAttribute('data-mirrored'),'false');
     assert.equal(get('mirrorPreview').getAttribute('aria-pressed'),'false');
@@ -89,9 +94,12 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     await get('collectBurst').fire();await flush();
     for(let i=0;i<32;i++)await tick();
     assert.equal(get('phaseCount').textContent,'32 / 32');assert.equal(get('meanDistance').textContent,'0.00%');
+    assert.equal(get('receiverCode').disabled,true);assert.equal(get('receiverSize').disabled,true);
+    get('receiverCode').value='deadbeef';await get('receiverCode').fire('input');assert.equal(get('receiverCode').value,sender.manifest.collectionCode,'recording identity cannot change within batch');
     await tick();assert.equal(operations.at(-1),'select','full pool continues capturing and selecting');
     assert.equal(get('phaseCount').textContent,'32 / 32');assert.equal(get('replacementCount').textContent,'0');
     replacementChoice=0;await tick();
+    assert.equal(selectionOptions[0].reference,undefined);assert.equal(selectionOptions.at(-1).reference,frozenReference,'fixed phase reference is reused');
     assert.equal(get('phaseCount').textContent,'32 / 32');assert.equal(get('replacementCount').textContent,'1');
     const seen=Number(get('seenCount').textContent);assert.ok(seen>32);
     // A selection already in flight must not replace a record after pause.
@@ -99,12 +107,13 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     await get('cancelBurst').fire();await flush();lateSelection();await flush();
     assert.equal(get('replacementCount').textContent,'1');
     await get('collectBurst').fire();await flush();
+    await tick();assert.equal(selectionOptions.at(-1).reference,frozenReference,'pause/resume keeps the reference despite restarting the worker');
     phase=1;await tick();await tick();
     assert.equal(get('phaseCount').textContent,'1 / 32');assert.equal(get('sampleCount').textContent,'33 / 128');
     grid=128;await tick();assert.equal(get('sampleCount').textContent,'33 / 128');
     assert.match(get('receiverStatus').textContent,/different profile/);assert.equal(get('cancelBurst').disabled,true);
     assert.equal(get('datasetSplit').disabled,true,'split remains fixed for the physical session');
-    grid=64;await get('collectBurst').fire();await flush();
+    grid=64;phase=0;await get('collectBurst').fire();await flush();noMajority=true;await tick();assert.equal(get('cancelBurst').disabled,true);assert.match(get('captureError').textContent,/no consistent majority/);assert.equal(get('sampleCount').textContent,'33 / 128');noMajority=false;phase=1;await get('collectBurst').fire();await flush();
     await get('cancelBurst').fire();await flush();const count=get('sampleCount').textContent;
     await tick();assert.equal(get('sampleCount').textContent,count);assert.equal(get('downloadCaptures').disabled,false);
     await get('stopCamera').fire();await flush();assert.equal(timers.size,0);assert.equal(stopped,1);
@@ -115,8 +124,9 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     await get('downloadCaptures').fire();
     const exported=JSON.parse(await download.text());
     assert.equal(downloadName,recordingFilename(exported));
-    assert.ok(downloadName.startsWith(`${record.info.chunkCRC.toString(16).padStart(8,'0')}_`));
-    assert.equal(exported.format,'optical-decoder-captures');assert.equal(exported.version,1);
+    assert.ok(downloadName.startsWith(`${sender.manifest.collectionCode}_`));
+    assert.equal(exported.format,'neural-qr-captures');assert.equal(exported.version,1);
+    assert.equal(exported.collectionCode,sender.manifest.collectionCode);assert.equal(exported.profile.size,64);
     assert.equal(exported.datasetSplit,'train');assert.ok(exported.environment.deviceId);
     assert.equal(exported.camera.label,'Flow camera');assert.equal(exported.camera.deviceId,'flow-camera-id');
     assert.equal(exported.camera.active,false,'camera metadata survives stopping capture');
@@ -135,6 +145,9 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     assert.match(get('receiverUploadStatus').textContent,/Saved: train\/g64\/receiver/);
     await get('clearCaptures').fire();assert.equal(get('sampleCount').textContent,'0 / 128');
     assert.equal(get('datasetSplit').disabled,true,'saving and clearing a batch does not reset its physical split');
+    assert.equal(get('receiverCode').disabled,false);assert.equal(get('receiverSize').disabled,false);
+    get('receiverCode').value='invalid';await get('receiverCode').fire('input');assert.equal(get('startCamera').disabled,true);
+    get('receiverCode').value='abcdef01';await get('receiverCode').fire('input');get('receiverSize').value='256';await get('receiverSize').fire('change');assert.equal(get('phaseMaximum').value,'6');
     await get('newReceiverSession').fire();assert.equal(get('datasetSplit').disabled,false);
     timers.clear();
   }finally{

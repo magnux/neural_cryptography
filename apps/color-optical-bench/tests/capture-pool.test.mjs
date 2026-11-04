@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {CaptureBuffer,captureFrame} from '../dist/js/dataset/capture.js';
-import {captureSignature,meanCaptureDistance,selectCaptureReplacement} from '../dist/js/dataset/diversity.js';
+import {captureSignature,meanCaptureDistance} from '../dist/js/dataset/diversity.js';
 import {createSender,captureKey} from '../dist/js/dataset/contract.js';
-import {renderFrame} from '../dist/js/format.js';
+import {renderNeuralQR} from '../dist/js/neural-qr/layout.js';
 import {ScanLoop} from '../dist/js/dataset/scan-loop.js';
 
 const sender=await createSender({seed:55,sessionId:'pool-test'});
-const sample=captureFrame(renderFrame(sender.frames[0],1024),{timestamp:1000,signature:true});
+const sample=captureFrame(renderNeuralQR(sender.frames[0],1024),{profile:sender.manifest.profile,collectionCode:sender.manifest.collectionCode,timestamp:1000,signature:true});
 function fill(buffer,count,record=sample,offset=0){
   buffer.add({...record,timestamp:1000+offset},{alreadyValidated:true,maxPerPhase:32});
   for(let i=1;i<=count;i++)assert.equal(buffer.add({...record,timestamp:1000+offset+i*600},{alreadyValidated:true,maxPerPhase:32}).accepted,true);
@@ -30,18 +30,18 @@ test('32-sample pools continue via guarded replacements and isolate other phases
   assert.equal(b.phaseRecords(sample.key)[4].timestamp,60600);
   assert.ok(!b.records.includes(oldRecord));
   assert.equal(b.add(fresh,{alreadyValidated:true,maxPerPhase:32,replaceIndex:4}).stage,'duplicate');
-  b.add({ok:false,timestamp:61000,error:'lost header'});
+  b.add({ok:false,timestamp:61000,error:'lost phase cues'});
   assert.equal(b.add({...sample,timestamp:61200},{alreadyValidated:true,maxPerPhase:32,replaceIndex:4}).stage,'settling');
   const exported=b.export({sessionId:'receiver'});
   assert.equal(exported.records.length,35);
   assert.ok(exported.records.every(x=>!('signature' in x)));
-  assert.deepEqual(Object.keys(exported),['format','version','created','sessionId','notes','camera','limits','transitionPolicy','selection','records','diagnostics']);
-  assert.equal(exported.format,'optical-decoder-captures');assert.equal(exported.version,1);
-  assert.deepEqual(exported.selection,{method:'sampled-distance-replacement',recentThinning:[]});
+  assert.deepEqual(Object.keys(exported),['format','version','created','sessionId','collectionCode','profile','notes','camera','limits','transitionPolicy','selection','records','diagnostics']);
+  assert.equal(exported.format,'neural-qr-captures');assert.equal(exported.version,1);
+  assert.deepEqual(exported.selection,{method:'centered-band-reservoir',recentThinning:[]});
 });
 
 test('net byte accounting allows full-count replacement and declines oversized new evidence',()=>{
-  const b=new CaptureBuffer({maxRecords:2,maxBytes:3*1024*1024});
+  const b=new CaptureBuffer({maxRecords:2,maxBytes:800*1024});
   fill(b,2);
   const count=b.records.length,bytes=b.bytes,diagnostics=b.diagnostics.length;
   assert.equal(b.add({...sample,timestamp:3000},{alreadyValidated:true,maxPerPhase:2,replaceIndex:0}).stage,'replaced');
@@ -61,21 +61,6 @@ test('replacement correctly counts original snapshots, retaining at most two',()
   assert.equal(b.originals,2);assert.ok(b.phaseRecords(sample.key)[0].original);
   b.add({...sample,timestamp:3600},{alreadyValidated:true,maxPerPhase:2,replaceIndex:0});
   assert.equal(b.originals,1);assert.equal(b.phaseRecords(sample.key)[0].original,undefined);
-});
-
-test('randomized crowding replacement rejects duplicates and isolated extremes, accepts useful variation',()=>{
-  const a=new Float32Array(3072),pool=Array.from({length:32},()=>a);
-  const options={random:()=>0},candidate=new Float32Array(3072).fill(.04);
-  assert.equal(selectCaptureReplacement(pool,a,options).replaceIndex,null);
-  assert.equal(selectCaptureReplacement(pool,new Float32Array(3072).fill(.0005),options).replaceIndex,null);
-  const chosen=selectCaptureReplacement(pool,candidate,options);
-  assert.equal(chosen.replaceIndex,0);assert.equal(chosen.reason,'greater-local-diversity');
-  assert.ok(Math.abs(chosen.candidateDistance-2)<1e-5);
-  assert.equal(selectCaptureReplacement(pool,new Float32Array(3072).fill(1.5),options).reason,'isolated-candidate');
-  const randomized=selectCaptureReplacement(pool,candidate,{random:()=>.6});
-  assert.notEqual(randomized.replaceIndex,chosen.replaceIndex);
-  assert.throws(()=>selectCaptureReplacement(pool,Float32Array.of(NaN),options),/signature/);
-  assert.throws(()=>selectCaptureReplacement(pool,candidate,{random:()=>1}),/randomness/);
 });
 
 test('distance measures same-coordinate RGB differences, with explicit insufficient-sample state',()=>{
@@ -110,7 +95,7 @@ test('100 ms scanner cadence accounts for processing time without queued or over
   clock=290;resolveReceive();await flush();assert.equal(scheduled[0].ms,0,'overrun resumes only when the current tick completes');
   assert.deepEqual(received,['first','slow']);loop.stop();assert.equal(scheduled.length,0);
 });
-test('100 ms captures preserve the 500 ms stable-header guard before saving frames',()=>{
+test('100 ms captures preserve the 500 ms stable phase-cue guard before saving frames',()=>{
   const buffer=new CaptureBuffer();
   for(let timestamp=1000;timestamp<1500;timestamp+=100){
     assert.equal(buffer.add({...sample,timestamp},{alreadyValidated:true}).stage,'settling');
@@ -140,4 +125,13 @@ test('scanner retries after extraction errors and waits for asynchronous metric 
     receive:()=>new Promise(r=>finish=r),onError:e=>errors.push(e.message),schedule:fn=>{scheduled.push(fn);return fn;},unschedule:()=>{}});
   loop.start();await flush();assert.deepEqual(errors,['No fresh frame']);scheduled.shift()();await flush();
   assert.equal(scheduled.length,0);finish();await flush();assert.equal(scheduled.length,1);loop.stop();
+});
+
+
+
+test('a large geometry jump restarts the static phase settling guard',()=>{
+  const b=new CaptureBuffer();fill(b,2);
+  const corners=sample.corners.map(([x,y])=>[x+100,y]);
+  assert.equal(b.add({...sample,corners,timestamp:3000},{alreadyValidated:true}).stage,'settling');
+  assert.equal(b.add({...sample,corners,timestamp:3600},{alreadyValidated:true}).accepted,true);
 });

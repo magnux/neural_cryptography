@@ -57,20 +57,27 @@ def recording_destination(bundle, split):
         datetime.fromisoformat(created[:-1] + "+00:00")
     except ValueError as error:
         raise RecordingError("Invalid recording creation timestamp.") from error
+    code = bundle.get("collectionCode")
+    if not isinstance(code, str) or not re.fullmatch(r"[a-f0-9]{8}", code):
+        raise RecordingError("Invalid public collection code.")
+    profile = bundle.get("profile")
+    required = {"colors": 16, "phases": 4, "gridBlock": 8, "pixelsPerCell": 2,
+                "holdMs": 4000, "parity": 0}
+    if (not isinstance(profile, dict) or type(profile.get("size")) is not int
+            or profile["size"] not in SIZES or profile.get("permute") is not True
+            or any(type(profile.get(key)) is not int or profile[key] != value
+                   for key, value in required.items())):
+        raise RecordingError("Unsupported Neural-QR collection profile.")
     kind = bundle.get("format")
-    if kind == "optical-decoder-sender":
+    if kind == "neural-qr-sender":
         role, rows = "sender", bundle.get("frames")
-        profile = bundle.get("profile")
-        sequence = bundle.get("sequenceId")
-        if not isinstance(sequence, str) or not re.fullmatch(r"[a-f0-9]{16}", sequence):
-            raise RecordingError("Invalid sender sequence ID.")
-        if not isinstance(profile, dict) or not isinstance(rows, list) or not 1 <= len(rows) <= 16:
-            raise RecordingError("Invalid sender profile or phase list.")
+        if not isinstance(rows, list) or len(rows) != 4:
+            raise RecordingError("Expected four sender phases.")
         if not isinstance(bundle.get("payloadId"), str) or not re.fullmatch(r"[a-f0-9]{64}", bundle["payloadId"]):
             raise RecordingError("Invalid sender payload identity.")
         if not isinstance(bundle.get("payloadBase64"), str):
             raise RecordingError("Missing sender payload bytes.")
-    elif kind == "optical-decoder-captures":
+    elif kind == "neural-qr-captures":
         role, rows = "receiver", bundle.get("records")
         diagnostics = bundle.get("diagnostics", [])
         if not isinstance(rows, list) or len(rows) > 128 or not isinstance(diagnostics, list) or len(diagnostics) > 100:
@@ -78,32 +85,31 @@ def recording_destination(bundle, split):
         if not rows and not diagnostics:
             raise RecordingError("Recording contains no captures or diagnostics.")
     else:
-        raise RecordingError("Only current sender and receiver recording JSONs can be uploaded.")
-    sizes = set()
+        raise RecordingError("Only current Neural-QR sender and receiver recording JSONs can be uploaded.")
+    seen_phases = set()
     for row in rows:
         info = row.get("info") if isinstance(row, dict) else None
         if not isinstance(info, dict):
             raise RecordingError("Recording contains invalid matrix metadata.")
-        size, colors, phases, phase, crc = (info.get(key) for key in ("size", "colors", "phases", "phase", "chunkCRC"))
-        if (type(size) is not int or size not in SIZES or type(colors) is not int or colors not in (4, 16)
-                or type(phases) is not int or phases not in (1, 2, 4, 8, 16)
-                or type(phase) is not int or not 0 <= phase < phases
-                or type(crc) is not int or not 0 <= crc <= 0xffffffff):
-            raise RecordingError("Recording contains unsupported matrix metadata.")
+        phase = info.get("phase")
+        if (type(phase) is not int or not 0 <= phase < 4 or info.get("collectionCode") != code
+                or info.get("id") != code or type(info.get("bits")) is not int or info["bits"] != 4
+                or any(type(info.get(key)) is not type(value) or info[key] != value
+                       for key, value in profile.items())):
+            raise RecordingError("Recording metadata disagrees with its collection code or profile.")
+        if row.get("key") != f"{code}/{profile['size']}/16/8/{phase}":
+            raise RecordingError("Recording key disagrees with its phase metadata.")
         if role == "sender":
-            if any(profile.get(key) != info[key] for key in ("size", "colors", "phases")) or len(rows) != phases:
-                raise RecordingError("Sender profile and phases disagree.")
-            if not isinstance(row.get("headerBase64"), str):
-                raise RecordingError("Missing sender header bytes.")
-        elif row.get("ok") is not True or not all(isinstance(row.get(key), str) for key in ("inputBase64", "samplesBase64")):
+            if phase in seen_phases:
+                raise RecordingError("Sender phase list contains duplicates.")
+            seen_phases.add(phase)
+        elif (row.get("ok") is not True or type(row.get("pixelsPerCell")) is not int
+              or row["pixelsPerCell"] != 2
+              or not all(isinstance(row.get(key), str) for key in ("inputBase64", "samplesBase64"))):
             raise RecordingError("Missing receiver evidence.")
-        sizes.add(size)
-    if len(sizes) > 1:
-        raise RecordingError("Upload one grid size per batch. Save and clear before changing size.")
-    grid = f"g{next(iter(sizes))}" if sizes else "unknown"
-    prefix = f"{rows[0]['info']['chunkCRC']:08x}" if rows else "unpaired"
-    filename = (f"{prefix}_decoder-sender-{sequence}.json" if role == "sender" else
-                f"{prefix}_decoder-captures-{session}-{created.replace(':', '-').replace('.', '-')}.json")
+    grid = f"g{profile['size']}" if rows else "unknown"
+    filename = (f"{code}_neural-qr-sender-{session}.json" if role == "sender" else
+                f"{code}_neural-qr-captures-{session}-{created.replace(':', '-').replace('.', '-')}.json")
     return Path(split, grid, role, filename)
 
 
