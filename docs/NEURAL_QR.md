@@ -12,6 +12,24 @@ symbols, and **Neural-ZKBoo** checking the proof. Removing the separate dense
 monochrome header should remove an acquisition bottleneck and free layout space.
 It does not remove packet framing, error correction, or cryptographic verification.
 
+## Proposed visual layout
+
+![Proposed Neural-QR layout: four geometric anchors, repeated phase cues, fixed palette references and a header-free color payload](images/neural-qr-layout.svg)
+
+The illustration uses a G32 sample for legibility. Cell colors are illustrative,
+not an encoded valid packet. Marker dimensions and the asymmetric corner pattern
+are design candidates. The outer geometry stays fixed across phases; only the
+phase patches and phase-permuted data colors change. Reference colors stay fixed.
+
+The target is a **multi-resolution family**, G8/G16/G32/G64/G128/G256, read by one
+shared U-tube-2x-attn parameter set. G64 is the existing trained starting point;
+small controls and larger data matrices can use different profiles. The
+[model design](NEURAL_CORRECTOR.md#multi-resolution-u-tube-2x-attn-next-design)
+specifies crop sizes, anchors, masks, export and training changes.
+Rectification uses **2×2 pixels per cell**: G32 → 64×64, G64 → 128×128 and
+G256 → 512×512. Drawing cell dimensions are illustrative display units, not
+camera sampling pixels.
+
 ## Design boundaries
 
 | Layer | Responsibility |
@@ -25,18 +43,19 @@ Neural confidence is evidence for classification, not proof that bytes are exact
 CRC and Reed–Solomon recovery address channel errors, not a malicious sender.
 The existing proof and authentication envelope remain the canonical crypto layer.
 
-## Initial profile
+## Starting profile and shared multi-resolution model
 
-Start with one pre-agreed profile: **64×64 symbols, 16 colors, four palette
-phases, grid-8 references and RS32**. Both apps know this profile before scanning;
-no separate optical header is needed to discover it. Preserve the current palette,
-phase masks `(0, 15, 7, 8)`, logical-label output and phase-paired input contract:
-four to eight distinct exposures, at most two per phase, rectified to 256×256 RGB.
+Reuse the successful profile's **16 colors, four palette phases and grid-8
+references**, with error correction sized to each packet profile. Both apps know
+the directional grid sizes before scanning; no dense header is needed to discover
+them. Preserve palette masks `(0, 15, 7, 8)`, logical-label output and phase pairing:
+four to eight distinct exposures, at most two per phase. The new model takes
+`2G×2G` RGB crops; its weights start from the trained G64 checkpoint and require
+fine-tuning for the changed sampling and shared size family.
 
-Preserve the payload grid and measured color normalization initially so the
-trained G64 weights can be tested first. A changed outer frame does not by itself
-prove retraining is required. New-layout captures must establish recovery; collect
-additional real examples and fine-tune only if that evaluation shows a gap.
+Preserve the reference-grid convention and measured color normalization. Retain
+the G64/RS32 data profile as a comparison while adding smaller controls and larger
+payloads; overhead and error-correction settings must fit each profile.
 Reclaiming header space may enlarge displayed cells, but a fixed G64 symbol grid
 does not automatically carry more bytes. The final renderer determines the gain.
 
@@ -119,16 +138,18 @@ flowchart TD
 
 ## ACKs and control messages
 
-The first QR-free prototype can carry the existing complete ACK packet through
-the **same G64, four-phase Neural-QR envelope**. This exercises the same trained
-corrector contract on both paths and avoids a second codec. It may cost more
-acquisition/inference time than today's static QR ACK; measure that cost directly.
+The shared multi-resolution corrector makes a **smaller Neural-QR control profile**
+the preferred path. Select the smallest grid that fits the complete ACK plus
+reference cells, framing, ECC and integrity checks. G8 carries only 32 raw bytes
+at 16 colors before any overhead, so do not assume it can hold the present ACK.
+Keep ACK binding to transfer, message, acknowledged sequence and digest.
 
-A later compact control profile should use fewer symbols and, if reliable, fewer
-captures. The current G64 checkpoint cannot simply read an arbitrary tiny static
-code. That optimization needs an explicitly supported model/input contract or a
-separate small corrector, with its own recovery evaluation. Preserve ACK binding
-to the transfer, message, acknowledged sequence and digest in either profile.
+Use the same four-phase, four-to-eight-capture contract initially; smaller grids
+reduce neural computation without claiming that a single exposure is sufficient.
+One shared model can serve small controls and large data after mixed-size training
+and export. Until that integration is available, the G64 envelope can exercise the
+same codec on both paths. Measure control acquisition, processing and physical-turn
+latency directly rather than assuming that removing standard QR makes it faster.
 
 After grouping is reliable, cumulative acknowledgments and selective retransmission
 can reduce physical turns. Do not advance through unrelated packets on a timer
@@ -159,18 +180,17 @@ audited cryptographic security result.
 
 ## Implementation sequence
 
-1. Freeze the G64 layout and cue rules using renderer/detector simulations and
-   current model replay, including packet-transition tests.
-2. Implement the single Neural-QR payload codec, capture association and score
-   adapter; try the existing trained model and collect new-layout device examples.
-3. Complete QR-free Neural-ZKBoo authentication, including Neural-QR ACKs, on both
-   role arrangements. Update both endpoints together; no dual-format reader.
-4. Improve compact controls, bounded capture/inference scheduling and acknowledged
-   windows from measured bottlenecks.
-5. Trial a separate G128 corrector: 512×512 input and 128×128 bottleneck/output,
-   preserving local attention and compact parameters. Validate real camera detail
-   and increase transport chunk capacity alongside the model; training alone does
-   not remove the current application's chunk limit.
+1. Parameterize U-tube-2x-attn for the shared size family while implementing the
+   illustrated layout, phase cues and packet association. Use 2×2 pixels per
+   cell, keep the bottleneck at G, and test shape/export parity; these efforts
+   can proceed together.
+2. Fine-tune one checkpoint across sizes, export the required profiles, and wire
+   small Neural-QR controls plus larger data into the existing authentication
+   session. Update payload/chunk limits with the codec; profile size alone does
+   not change those application limits.
+3. Complete QR-free authentication in both role arrangements and improve
+   capture/inference scheduling and acknowledgment windows from measured costs.
+   Update both endpoints together; no dual-format reader.
 
 The working OBM5/QR-ACK demo remains runnable until the replacement is implemented.
 Once Neural-QR becomes the active format, retain its predecessor through Git history,

@@ -14,6 +14,11 @@ The [Neural-QR design](NEURAL_QR.md) defines this direction. It is **planned**, 
 the current runtime: the working [device demo](NEURAL_ZKBOO_DEMO.md) still uses
 OBM5 color DATA and static standard QR ACKs.
 
+The model target is now **one shared multi-resolution U-tube-2x-attn**, covering
+G8/G16/G32/G64/G128/G256 with **2×2 pixels per cell**. Small controls and larger
+data matrices use the same learned parameters. This replaces the separate-G128
+model plan; layout, shared model support and integration can proceed together.
+
 ## What is established
 
 | Component | Evidence and role |
@@ -58,13 +63,12 @@ saved challenge, identity minimum and repetition policy continue to govern accep
 
 | Milestone | Work | Completion criterion |
 | --- | --- | --- |
-| **N1 — Neural-QR layout and acquisition** | Fixed G64/16-color/four-phase profile; four anchors with an oriented asymmetric corner; static high-contrast geometry, repeated phase-color cues and same-exposure references; remove the dense external header in the new codec | Correct rectification and phase selection under rotation, reflection, perspective, exposure/color changes and phase transitions; uncertain frames reject cleanly; no standard QR decoder in this acquisition path |
-| **N2 — Neural payload and capture association** | Put packet metadata and integrity checks inside ECC-protected payloads; implement bounded phase pools and old/new packet-transition handling; retain the existing neural input/output contract initially | Exact payload recovery without the old header; mixed packets/phases do not advance transport; duplicates, missing phases and capture restarts recover or time out within bounds; test existing weights before deciding whether to fine-tune |
-| **N3 — QR-free authentication** | Use Neural-QR for START, DATA and ACK; initially reuse the G64 neural envelope for controls; connect the unchanged authentication session | Complete identity/pairing/challenge/proof/result/final-ACK exchange with 32 repetitions on real devices in both role arrangements; no QR ACK or silent alternate reader; one exchange completes after server disconnection |
-| **N4 — Faster complete exchanges** | From measured costs, improve control profile, camera/inference scheduling and cumulative ACK windows with selective retry; investigate PC GPU availability and capture stability | Three consecutive completions per direction with repeatable goodput and timing; lost/duplicated/corrupted captures recover or time out; compare standard QR under matched devices, placement, payloads and ACK criteria |
-| **N5 — Larger payloads and proof** | Trial a separate G128 corrector, new-layout recordings, 512×512 inputs and 128×128 bottleneck/output; increase payload/chunk limits with the codec; validate 219-repetition operation | G128 improves acknowledged bytes/s or full authentication time over the working G64 profile in each tested direction; larger proof completes with suitable bounded deadlines; publish the settings and unsuccessful cases too |
+| **N1 — Shared model and Neural-QR format** | Parameterize the model for G8…G256 with 2×2 pixels/cell and a G-sized bottleneck; fine-tune shared weights across sizes; implement the illustrated header-free layout, phase cues, protected in-band metadata and bounded capture association alongside model work | Export/WASM parity for supported profiles; exact packet recovery; mixed phases/packets reject or refresh cleanly; real-device recovery assessed by size |
+| **N2 — QR-free authentication** | Connect small Neural-QR controls and larger DATA profiles to the existing authentication session; choose controls that fit full framing/ECC/binding; use pre-agreed directional profiles initially | Complete identity/pairing/challenge/proof/result/final-ACK exchange with 32 repetitions in both role arrangements; no QR ACK or silent alternate reader; one exchange completes after server disconnection |
+| **N3 — Fast complete exchanges and larger proofs** | Tune profile size, capture/inference scheduling and ACK windows from measured costs; update payload limits and bounded deadlines; validate 219-repetition operation | Repeatable delivered bytes/s and complete-authentication time; losses/duplicates/corruption recover or time out; larger profiles improve actual goodput where enabled; compare standard QR under matched conditions |
 
-N1–N3 are the shortest path to the new all-Neural-QR POC. The current successful
+N1 and N2 deliver the new all-Neural-QR POC; they do not require a sequence of
+separately trained networks. The current successful
 hybrid demo stays runnable while those pieces are developed. Activate the new
 format on both endpoints together; maintain one current format per layer and
 keep earlier implementations in Git history instead of adding compatibility readers.
@@ -81,12 +85,15 @@ The separate standard-QR experiment remains useful for comparison.
   evidence across transitions. Only valid full packet metadata can advance the
   transfer. Add a coarse generation cue only if the measured transition behavior
   needs it; defer windows until grouping is reliable.
-- **Do not assume a tiny ACK is free.** The current model expects G64/four phases.
-  Reusing it removes QR dependencies but may increase control latency. A compact
-  or single-frame neural control profile needs its own supported contract and tests.
-- **Try existing weights first.** Keep G64 palette, phase masks, payload grid and
-  normalization stable initially. Capture the new layout and fine-tune if needed;
-  do not require another long architecture search before testing the format.
+- **Use one multi-resolution model.** Keep shared learned weights and compact
+  positional anchors, size-specific attention/loss masks, and 2G-sized inputs.
+  Start with static ONNX profiles from one checkpoint; load only needed sessions.
+- **Fit controls to real capacity.** G8 has only 32 raw bytes before overhead.
+  Select the smallest profile that fits the complete ACK and its binding/ECC;
+  retain four phases initially rather than assuming single-frame recovery.
+- **Initialize from existing weights.** Keep palette, phase masks, reference-grid
+  conventions and normalization. The 2×2-cell sampling and changed strides need
+  mixed-size fine-tuning; existing G64 recovery is not a claim about the new model.
 - **Bound long transfers.** The current ten-minute message limit would interrupt
   a 219-repetition proof at the observed rate. Configure deadlines from message
   size and tested throughput, with hard limits; duplicates must not extend them forever.
@@ -125,8 +132,10 @@ Save compact reports from **both endpoints**, including failures. Record:
 Detection misses while a camera is pointed away and repeated reads of held ACKs
 are not packet-loss estimates. Use completed-message goodput and repeated runs,
 not only marginal cell accuracy or one favorable frame. Compare G64/G128 and
-standard QR with equivalent payloads and completion criteria. The working G64
-model remains the baseline if a larger profile is slower or less reliable.
+standard QR with equivalent payloads and completion criteria. Keep the successful
+G64 implementation as the measurement baseline while evaluating the new shared
+model. Parameter count stays compact, but G256 activation memory and attention
+work still require device measurements.
 
 ## Later research
 

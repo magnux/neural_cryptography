@@ -24,11 +24,19 @@ with credit to Neural Cryptography and **Alejandro Hernandez Ruiz (magnux)** in
 
 The next optical transport is [Neural-QR](NEURAL_QR.md). Its acquisition design
 replaces the current separately decoded header with geometric anchors and phase
-cues while initially preserving the trained G64 input/output contract. The
+cues while reusing the palette, phase grouping and logical-label conventions. The
 header-based descriptions below document the currently implemented OBM5 path;
 they are not a requirement for future neural input preparation.
 
-## Common input and output contract
+The next model direction is **one shared multi-resolution U-tube-2x-attn** for
+G8…G256, replacing the earlier plan to train a separate G128 network. See
+[multi-resolution design](#multi-resolution-u-tube-2x-attn-next-design).
+The production implementation and trained checkpoint are currently G64.
+The new design uses **2×2 pixels per cell (four pixels total)**. The currently
+implemented models documented below use 4×4; the new shape contract and spatial
+strides are specified in the multi-resolution section, not yet in production code.
+
+## Currently implemented input and output contract
 
 Let **G** be the matrix width in cells, **T** a fixed number of observations,
 **K** the number of available observations in a variable input, and **N** the
@@ -376,6 +384,123 @@ exchange is described below.
 The changes combined phase evidence, architecture, augmentation and additional
 sessions, so this run does not isolate the contribution of each change.
 
+## Multi-resolution U-tube-2x-attn: next design
+
+Use one set of convolution, normalization, attention and classifier weights for
+G = **8, 16, 32, 64, 128, 256**. Use **2×2 rectified pixels per cell**, four
+pixels total. The U runs through **2G → G → 2G**, and its outlet reduces **2G → G**.
+The bottleneck never goes below the target symbol resolution. Phase-grouped
+input becomes `[N,32,2G,2G]`; output remains `[N,16,G,G]`, with four to eight
+observations in the same eight phase-paired slots.
+
+| Matrix G | Rectified crop | 8×8 attention windows per block | Approximate work relative to G64 | Raw 16-color capacity, before any overhead |
+| --- | --- | --- | --- | --- |
+| 8 | 16×16 | 1 | 1/64 | 32 B |
+| 16 | 32×32 | 4 | 1/16 | 128 B |
+| 32 | 64×64 | 16 | 1/4 | 512 B |
+| 64 | 128×128 | 64 | 1 | 2,048 B |
+| 128 | 256×256 | 256 | 4 | 8,192 B |
+| 256 | 512×512 | 1,024 | 16 | 32,768 B |
+
+The work column compares sizes of this new 2×2-cell design, not the previous
+4×4-cell model. It is an area-scaling estimate, not a measured latency promise.
+Window attention keeps 64 tokens per window; larger grids add windows, rather
+than attending globally across every cell. Convolution and attention work scale
+approximately as G² with fixed widths and window size. Parameters can remain
+**432,848**, but activations grow: one float32 `[1,32,512,512]` tensor alone is
+32 MiB. At G256 one four-head attention-score tensor is another 64 MiB, before
+other intermediate tensors. G256 therefore
+needs device memory and latency measurement even if its model file is small.
+
+### Learned anchor and masks
+
+Retain the learned `[1,32,64,64]` positional anchor and interpolate it to `2G×2G`
+after the inlet. It remains a learned global positional reference. This preserves
+the existing parameter shapes; it does not preserve the old G64 computation or allocate an
+independent full-resolution anchor for every size. A small learned size embedding
+could be added if size conditioning proves necessary, but is not required for
+the shared-weight architecture.
+
+Keep the residual depth while changing spatial strides: `e1` reduces `2G→G`,
+the bottleneck stays at G (its first residual pair now has stride 1), and `d1`
+combines bottleneck and `e1` without upsampling. Only `d0` upsamples to 2G. The
+outlet's first convolution reduces to G; the second uses stride 1. This retains
+all learned convolution shapes and both attention blocks, while preventing a
+second reduction below the target grid. Existing weights are an initialization
+for fine-tuning, not a drop-in trained 2×2-cell model.
+Retain the bottleneck's learned 1×1 shortcut when changing its stride to 1;
+replacing that projection with Identity would discard a checkpoint parameter.
+
+Generate the attention boundary mask for the selected grid and partition by
+`G/8` windows per axis. At G8 the window covers the complete grid: disable the
+second block's shift and wraparound mask while retaining its learned projections.
+The two attention blocks remain present. Other multiples of eight are possible;
+arbitrary widths require padding, attention masks and output cropping, so the
+initial profiles above deliberately avoid that additional machinery.
+
+Presence planes still express exactly eight availability flags; only their
+spatial extent changes. The spatial loss mask must follow the actual reference
+grid at each size; never resize a G64 boolean mask with interpolation. Palette
+class masking remains independent of size. The current code hardcodes G64 in
+RGB reshaping, anchor interpolation, attention partition/reversal, mask creation,
+the tensor contract and browser validation. All must be parameterized together.
+
+### ONNX/WASM deployment
+
+These operations have a conventional ONNX representation: Conv, elementwise
+channel normalization, Resize, Reshape/Transpose, MatMul, Softmax and Add. ONNX
+Runtime Web documents broad WASM operator support and dynamic input dimensions.
+There is no fundamental ONNX/WASM obstacle to this architecture.
+
+The shortest deployment route is **one trained checkpoint with six static-shape
+exports**, loaded on demand. They share learned weights; they are not six
+independently trained networks. Static shapes simplify window masks and browser
+validation and can enable WebGPU graph capture when all kernels support it.
+A single dynamic-shape ONNX file is also feasible, with shape-derived reshapes
+and masks; it is not necessary to obtain shared multi-resolution behavior.
+
+Inspect exported initializers: keep the compact learned anchor plus Resize.
+Pre-expanding it into a constant at G256 would add a 32 MiB tensor. Avoid
+loading every profile/session simultaneously; release unused sessions and bound
+capture pools. Test WASM parity at each exported size and measure WebGPU/phone
+performance separately. Successful CPU/WASM execution is not a phone benchmark.
+
+A scratch feasibility probe on 4 November 2026 implemented this exact 2×2-cell
+route with shared random weights and 432,848 parameters. The production-shaped
+state dictionary loaded strictly. Numerical PyTorch forwards passed at G8, G16,
+G32 and G64; G128/G256 passed shape-only propagation. Static G8/G16 exports ran
+in ONNX Runtime Web 1.23.2, single-thread WASM, with maximum logit errors
+1.13×10⁻⁶ / 1.73×10⁻⁶ against PyTorch and no tolerance failures or changed argmax
+cells. The compact anchor remained an initializer followed by Resize. These
+checks establish small-profile export/execution feasibility, not trained recovery,
+dynamic-graph support in the tested artifact, or device performance. Production
+model/export/browser code is unchanged by this design update.
+
+### Training and transport integration
+
+Initialize from the successful G64 checkpoint and fine-tune one model across
+sizes, retaining G64 examples. Use one size per minibatch and a mixture of sizes
+across updates; reduce the batch at large resolutions instead of padding every
+example to 512×512. Keep per-example loss normalization so large matrices do
+not dominate merely by having more labeled cells. Generate synthetic observations
+at each actual cell density and evaluate real capture recovery by size. Existing
+4×4-cell recording crops can be resampled to 2×2 for this training recipe; keep
+the original recordings. Halving input dimensions discards some subcell evidence,
+so the existing recovery rates do not transfer automatically to the new sampling.
+A shape change alone does not demonstrate accuracy at unseen resolutions.
+
+Neural-QR can then use small profiles for controls and large profiles for data.
+The receiver must know G before rectification/inference: start with agreed
+directional profiles, with a coarse visual profile cue available later. The
+learned positional anchor is internal to the model, distinct from optical corner
+markers. Capacity must include reference cells, framing, ECC and integrity checks:
+G8 has only 32 raw bytes and cannot automatically carry today's full ACK envelope.
+Choose the smallest profile that actually fits the complete control message.
+
+References: [ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/),
+[dynamic dimension overrides](https://onnxruntime.ai/docs/tutorials/web/env-flags-and-session-options.html#freedimensionoverrides),
+and [WebGPU graph capture](https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html#graph-capture).
+
 ## Browser integration and the next transport
 
 The demo server serves static assets. Python loads the training `.pt` checkpoint
@@ -392,9 +517,9 @@ delivery using neural DATA reception and static QR ACKs. The Optical Bench's
 other transport workspaces remain separate experiments.
 
 The next step is [Neural-QR](NEURAL_QR.md): remove the dense external header,
-preserve the G64 model contract initially, and carry both DATA and controls
-through neural recovery. Test existing weights on the new layout before deciding
-whether to fine-tune. Acceptance still requires packet integrity and context
+use the shared multi-resolution 2×2-cell model, and carry both DATA and controls
+through neural recovery. Initialize from existing weights and fine-tune for the
+new sampling and sizes. Acceptance still requires packet integrity and context
 checks; Neural-ZKBoo proof verification remains independent of transport recovery.
 Measure exact recovery, acquisition, inference, ACK time and complete authentication
 in both directions. A larger matrix or new architecture is not a prerequisite.
