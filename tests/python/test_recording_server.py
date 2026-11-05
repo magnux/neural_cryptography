@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,7 +47,8 @@ def receiver(size=64):
             "camera": {"label": "Front camera", "deviceId": "origin-scoped-camera"},
             "records": [{"ok": True, "info": info(size, phase), "pixelsPerCell": 2,
                          "key": f"1234abcd/{size}/16/8/{phase}",
-                         "inputBase64": "AA==", "samplesBase64": "AA=="} for phase in range(4)],
+                         "inputBase64": "AA==", "samplesBase64": "AA==",
+                         "stability": {"guardMs": 500, "durationMs": 600, "observations": 3}} for phase in range(4)],
             "diagnostics": []}
 
 class QuietHandler(MODULE.BenchHandler):
@@ -214,6 +216,145 @@ class RecordingServerTests(unittest.TestCase):
         with self.server():
             self.assertEqual(self.request("POST", "/api/recordings?split=train", sender())[0], 409)
         self.assertEqual(list(outside.iterdir()), [])
+
+
+    def test_collection_stages_sender_and_exposes_only_public_assignment(self):
+        with self.server():
+            self.assertEqual(self.request("GET", "/api/collection-session")[1], {"enabled": True, "session": None})
+            original = sender()
+            status, started = self.request("POST", "/api/collection-session?split=train", original)
+            self.assertEqual(status, 201, started)
+            self.assertTrue(started["storedPath"].endswith(".json.tmp"))
+            staged = self.store.root / started["storedPath"]
+            self.assertEqual(json.loads(staged.read_text()), original)
+            self.assertFalse(staged.with_suffix("").exists())
+            status, observed = self.request("GET", "/api/collection-session")
+            descriptor = observed["session"]
+            self.assertEqual(set(descriptor), {"format", "version", "id", "collectionCode", "senderSessionId", "profile", "datasetSplit", "created"})
+            self.assertEqual(descriptor, started["session"])
+            self.assertEqual(json.loads(self.store.session_path.read_text()), descriptor)
+            self.assertNotIn("payload", json.dumps(descriptor))
+            self.assertNotIn("environment", descriptor)
+            status, repeat = self.request("POST", "/api/collection-session?split=train", original)
+            self.assertEqual(status, 200)
+            self.assertTrue(repeat["duplicate"])
+            self.assertEqual(repeat["session"], descriptor)
+            other = sender(128)
+            self.assertEqual(self.request("POST", "/api/collection-session?split=train", other)[0], 409)
+            changed = deepcopy(original)
+            changed["environment"]["deviceId"] = "changed"
+            self.assertEqual(self.request("POST", "/api/collection-session?split=train", changed)[0], 409)
+            restarted = MODULE.RecordingStore(self.store.root, self.dist)
+            self.assertEqual(restarted.current_session(), descriptor)
+
+    def test_matching_receiver_finalizes_sender_and_retries_are_idempotent(self):
+        with self.server():
+            original = sender()
+            _, started = self.request("POST", "/api/collection-session?split=train", original)
+            captured = receiver()
+            captured["collectionSessionId"] = started["session"]["id"]
+            status, saved = self.request("POST", "/api/recordings?split=train", captured)
+            self.assertEqual(status, 201, saved)
+            self.assertTrue(saved["sessionCompleted"])
+            self.assertFalse(self.store.session_path.exists())
+            staged = self.store.root / started["storedPath"]
+            self.assertFalse(staged.exists())
+            self.assertEqual(json.loads(staged.with_suffix("").read_text()), original)
+            self.assertEqual(self.request("GET", "/api/collection-session")[1]["session"], None)
+            status, retry = self.request("POST", "/api/recordings?split=train", captured)
+            self.assertEqual(status, 200)
+            self.assertTrue(retry["duplicate"])
+            self.assertFalse(retry["sessionCompleted"])
+            self.assertTrue(retry["sessionInactive"])
+            status, late_sender = self.request("POST", "/api/collection-session?split=train", original)
+            self.assertEqual(status, 200)
+            self.assertTrue(late_sender["sessionCompleted"])
+            self.assertIsNone(late_sender["session"])
+            captured["created"] = "2026-11-05T12:34:56.789Z"
+            self.assertEqual(self.request("POST", "/api/recordings?split=train", captured)[0], 409)
+
+    def test_failed_or_unrelated_receiver_never_completes_session(self):
+        with self.server():
+            _, started = self.request("POST", "/api/collection-session?split=train", sender())
+            identifier = started["session"]["id"]
+            for captured in (receiver(128), receiver()):
+                captured["collectionSessionId"] = identifier
+                if captured["profile"]["size"] == 64:
+                    captured["records"][0].pop("stability")
+                self.assertIn(self.request("POST", "/api/recordings?split=train", captured)[0], (409, 422))
+            captured = receiver()
+            captured["collectionSessionId"] = "wrong-id"
+            self.assertEqual(self.request("POST", "/api/recordings?split=train", captured)[0], 409)
+            captured["collectionSessionId"] = identifier
+            captured["records"] = []
+            captured["diagnostics"] = [{"stage": "phase"}]
+            self.assertEqual(self.request("POST", "/api/recordings?split=train", captured)[0], 422)
+            self.assertTrue((self.store.root / started["storedPath"]).exists())
+            self.assertEqual(self.store.current_session()["id"], identifier)
+            # Existing smaller recordings have no session field and remain valid.
+            captured = receiver()
+            captured["records"] = captured["records"][:1]
+            self.assertEqual(self.request("POST", "/api/recordings?split=train", captured)[0], 201)
+            self.assertEqual(self.store.current_session()["id"], identifier)
+
+    def test_abandon_preserves_staged_data_and_stale_completion_cannot_clear_new_session(self):
+        with self.server():
+            _, started = self.request("POST", "/api/collection-session?split=train", sender())
+            self.assertEqual(self.request("POST", "/api/collection-session/abandon", {"id": "wrong"})[0], 409)
+            status, result = self.request("POST", "/api/collection-session/abandon", {"id": started["session"]["id"]})
+            self.assertEqual(status, 200)
+            self.assertTrue(result["abandoned"])
+            self.assertTrue((self.store.root / started["storedPath"]).exists())
+            self.assertFalse(self.store.session_path.exists())
+            _, replacement = self.request("POST", "/api/collection-session?split=train", sender(128))
+            captured = receiver()
+            captured["collectionSessionId"] = started["session"]["id"]
+            self.assertEqual(self.request("POST", "/api/recordings?split=train", captured)[0], 409)
+            self.assertEqual(self.store.current_session()["id"], replacement["session"]["id"])
+
+    def test_finalization_failure_keeps_receiver_and_retry_completes_without_rewriting_it(self):
+        with self.server():
+            _, started = self.request("POST", "/api/collection-session?split=train", sender())
+            captured = receiver()
+            captured["collectionSessionId"] = started["session"]["id"]
+            with mock.patch.object(self.store, "_finish_session", side_effect=OSError("disk unavailable")):
+                self.assertEqual(self.request("POST", "/api/recordings?split=train", captured)[0], 507)
+            self.assertTrue(self.store.session_path.exists())
+            self.assertTrue((self.store.root / started["storedPath"]).exists())
+            saved = self.store.root / MODULE.recording_destination(captured, "train")
+            original_inode = saved.stat().st_ino
+            status, retry = self.request("POST", "/api/recordings?split=train", captured)
+            self.assertEqual(status, 200, retry)
+            self.assertTrue(retry["sessionCompleted"])
+            self.assertEqual(saved.stat().st_ino, original_inode)
+
+    def test_partial_finalize_then_abandon_reports_saved_only_on_duplicate(self):
+        with self.server():
+            _, started = self.request("POST", "/api/collection-session?split=train", sender())
+            captured = receiver()
+            captured["collectionSessionId"] = started["session"]["id"]
+            with mock.patch.object(self.store, "_finish_session", side_effect=OSError("disk unavailable")):
+                self.assertEqual(self.request("POST", "/api/recordings?split=train", captured)[0], 507)
+            self.assertEqual(self.request("POST", "/api/collection-session/abandon", {"id": started["session"]["id"]})[0], 200)
+            _, replacement = self.request("POST", "/api/collection-session?split=train", sender(128))
+            status, retry = self.request("POST", "/api/recordings?split=train", captured)
+            self.assertEqual(status, 200, retry)
+            self.assertTrue(retry["duplicate"])
+            self.assertFalse(retry["sessionCompleted"])
+            self.assertTrue(retry["sessionInactive"])
+            self.assertTrue((self.store.root / started["storedPath"]).exists())
+            self.assertEqual(self.store.current_session()["id"], replacement["session"]["id"])
+
+    def test_session_endpoints_reject_unsafe_requests_and_keep_disabled_mode(self):
+        with self.server(enabled=False):
+            self.assertEqual(self.request("GET", "/api/collection-session")[1], {"enabled": False, "session": None})
+            self.assertEqual(self.request("POST", "/api/collection-session?split=train", sender())[0], 404)
+        with self.server():
+            self.assertEqual(self.request("GET", "/api/collection-session", headers={"Origin": "https://other.example"})[0], 403)
+            self.assertEqual(self.request("POST", "/api/collection-session?split=train", sender(), {"X-Upload-Token": "bad"})[0], 403)
+            self.assertEqual(self.request("POST", "/api/collection-session?split=train", receiver())[0], 422)
+            self.assertEqual(self.request("POST", "/api/collection-session/abandon", {"id": "bad", "extra": 1})[0], 422)
+        self.assertEqual(MODULE.MAX_UPLOAD_BYTES, 800 * 1024 * 1024)
 
 
 if __name__ == "__main__":

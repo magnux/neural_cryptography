@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {CAPTURE_SIZES,CAPTURE_PIXELS_PER_CELL,MAX_CAPTURE_BYTES,MAX_RECORDS,captureProfile,recommendedPhaseMaximum,
+import {CAPTURE_SIZES,CAPTURE_PIXELS_PER_CELL,DEFAULT_CAPTURE_BYTES,MAX_RECORDS,captureProfile,recommendedPhaseMaximum,
   createSender,senderFrames,base64ToBytes,floatsFromBytes} from '../dist/js/dataset/contract.js';
 import {captureFrame,validateCapture,CaptureBuffer} from '../dist/js/dataset/capture.js';
 import {captureSignature} from '../dist/js/dataset/diversity.js';
@@ -33,10 +33,10 @@ test('pool recommendations leave room for every phase, metadata and two original
     const estimated=4*Math.ceil(inputBytes/3)+4*Math.ceil(sampleBytes/3)+8192;
     assert.ok(n>=1&&n<=32);
     assert.ok(n*phases<=MAX_RECORDS);
-    assert.ok(n*phases*estimated+3*1024*1024<=MAX_CAPTURE_BYTES);
+    assert.ok(n*phases*estimated+3*1024*1024<=DEFAULT_CAPTURE_BYTES);
   }
   assert.equal(recommendedPhaseMaximum(64,4),32);
-  assert.equal(recommendedPhaseMaximum(256,4),6);
+  assert.equal(recommendedPhaseMaximum(256,4),16);
   assert.throws(()=>recommendedPhaseMaximum(512,4),/profile/);
 });
 

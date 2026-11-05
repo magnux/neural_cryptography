@@ -10,8 +10,9 @@ The collector now uses the header-free [Neural-QR layout](NEURAL_QR.md): three
 standard finders, an asymmetric bottom-right fiducial, two repeated phase-cue
 pairs and fixed color references. There is no monochrome byte header. The
 receiver knows the grid size from its settings and reads the phase optically.
-A public collection code, copied from the sender, associates the recording with
-its manifest offline. It does not contain clean pixels or labels.
+The demo server automatically shares the active collection code, grid profile and
+dataset split with the receiver. This small session descriptor contains no clean
+pixels or labels. Static hosts still support manually entering the collection code.
 
 The [multires architecture](NEURAL_CORRECTOR.md#multires-next-architecture) is
 specified and prototyped; production training/browser integration is pending.
@@ -50,22 +51,28 @@ phase applies a different known palette permutation to the same logical payload.
 Capture all four before advancing to a fresh payload. Keep each phase static
 while recording; this is dataset acquisition, not timed live transmission.
 
-| Grid size | Crop | Recommended retained captures per phase | Captures across four phases |
-| --- | --- | --- | --- |
-| 8 | 16×16 | 32 | 128 |
-| 16 | 32×32 | 32 | 128 |
-| 32 | 64×64 | 32 | 128 |
-| 64 | 128×128 | 32 | 128 |
-| 128 | 256×256 | 16 | 64 |
-| 256 | 512×512 | 6 | 24 |
+| Grid size | Crop | 200 MiB budget | 400 MiB budget (default) | 800 MiB budget |
+| --- | --- | --- | --- | --- |
+| 8 / 16 / 32 / 64 | 16 / 32 / 64 / 128 per side | 32/phase | 32/phase | 32/phase |
+| 128 | 256×256 | 32/phase | 32/phase | 32/phase |
+| 256 | 512×512 | 8/phase | 16/phase | 32/phase |
 
-These are per-upload retention budgets, not dataset-size limits. Smaller pools
-of 16 per phase are a reasonable faster start for G8…G64. At G128, the default
-pool is 16; at G256, six. G256 evidence is about 5 MiB per capture including
-the dense input and classical sample arrays, so eight captures in each of four
-phases would exhaust 160 MiB before JSON metadata. Six leaves useful headroom.
-The UI caps the selected pool using the detected grid and phase count. More
-captures can be collected in subsequent batches under the same physical session.
+The budget dropdown controls the maximum encoded recording size. These are
+recommended per-phase maxima across all four phases, within the unchanged
+128-record limit. Pools can be smaller. Change the budget while the batch is
+empty; the application preserves it when clearing a saved batch.
+
+A G256 capture stores about **5 MiB** of base64-encoded RGB input and cell/reference
+samples. Four phases with 16 captures each require about **320 MiB**, and 32 each
+require about **640 MiB**, plus metadata. Thus 400 MiB fits 16 per phase; use 800 MiB
+for 32. G128 with 32 per phase is about 160 MiB plus metadata and fits 200 MiB.
+Actual browser memory exceeds encoded file size. If a phone cannot comfortably
+retain the larger pool, select a lower budget and save more batches.
+
+Upload and download serialization build JSON one record at a time, avoiding one
+whole-file JavaScript string. The offline join also reads capture JSON in pieces.
+The format remains ordinary JSON with the same `neural-qr-captures` version.
+**Already recorded smaller pools remain valid and need no conversion.**
 
 Start with **three training sessions, one validation session and one test session
 per direction**, with **three fresh logical payloads per size in each session**.
@@ -87,39 +94,51 @@ ownership across splits.
 
 ## Device workflow
 
-1. Choose the same split on both devices before beginning the physical session.
-   An optional device label helps when a browser exposes only a generic model.
-2. On the sender choose a grid and create a random matrix. Colors and phases are
-   fixed at 16 and four. **Upload sender manifest** before creating the next
-   matrix. The sender displays an eight-character collection code.
-3. On the receiver enter that collection code and select the same grid, then
-   start the camera, choose the pool, and press Record. Code and grid are fixed
-   for the batch. Automatic alignment validates the asymmetric marker and
-   repeated phase cues; a 500 ms settling guard precedes retention. Retained
-   phase counts, mean distance and replacement counters stay next to the camera.
-4. Once a phase has enough captures, manually advance the sender. Full pools
-   continue balanced replacement instead of stopping or maximizing distance.
-   Keep most captures close to the typical view, with some moderate variation.
-5. Pause and **Upload receiver captures**. Wait for the saved-path confirmation.
-   A failed upload keeps the captures and permits retry; it never clears them.
-6. Clear the saved batch and continue. Changing grid or collection code requires a fresh batch, but
-   can retain the physical session when the device arrangement is unchanged.
-   Changing camera or physical arrangement requires a new physical session.
-7. Repeat with a new payload, then the next size. Download remains available when
-   uploads are disabled or when you want an additional local copy.
+1. Run the upload-enabled server and reload `capture.html` on both devices.
+   On the sender choose the split and grid, then create a random matrix.
+2. The sender automatically uploads its manifest as `<filename>.json.tmp`.
+   Only after it is stored does the server publish `collection_session.json`.
+   It contains an opaque collection-session ID, sender physical-session ID,
+   public collection code, profile, split and creation time—no clean matrix.
+3. The receiver reads the active session automatically. Its code, grid and split
+   are filled from that descriptor. Select the budget/pool, start the camera and
+   press Record. The receiver retains its own physical-session identity.
+4. Keep each displayed phase static while its pool fills; advance all four phases
+   manually. Full pools continue balanced replacement. Pause when finished.
+5. Upload the receiver recording. The server first saves it durably, then finalizes
+   the matching sender by removing `.tmp`, and finally removes the active
+   collection-session metadata. The sender can then create the next matrix.
+6. Clear the saved receiver batch and continue. The next active assignment is
+   picked up automatically. Changing the physical arrangement or camera starts
+   a new physical session; changing split requires a new physical session too.
 
-An upload snapshot is reused for a retry, including its timestamp. The server
-deduplicates identical retries and refuses to overwrite a different recording
-with the same filename. Uploads are limited to 160 MiB each and two in flight on
-the server. Captures retain the existing 128-record browser limit; encoded-file
-budgets are smaller than total browser memory use.
+An active assignment cannot relabel a populated batch. If the server changes or
+ends that assignment while collection is underway, recording pauses; existing
+samples remain on the device. A different split is never silently applied to an
+already-used physical session. Acquisition still identifies phase optically; the
+server's descriptor supplies association, not pixel truth or phase labels.
+
+A failed upload preserves local samples, the staged sender and active metadata
+for retry. Identical receiver retries are idempotent. If an inactive-session retry
+can confirm only that the exact receiver file is saved, it reports that fact
+without claiming sender finalization. Staging a different matrix while one is
+active is refused. The explicit abandon action clears the active descriptor but
+keeps its `.tmp` sender; it does not delete recordings.
+
+The server restores the active descriptor after restart. Downloads and manual
+code/grid selection remain available without an upload-enabled server; manually
+saved current recordings can still be joined as before. A direct upload of an
+existing recording without the optional collection-session ID remains a normal
+file upload and does not finalize an unrelated active session.
 
 ## Storage and automatic metadata
 
 The server derives names from the recording identities and stores:
 
 ```text
-local-data/recordings/train/g64/sender/<code>_neural-qr-sender-<session>.json
+local-data/recordings/collection_session.json                 # active only
+local-data/recordings/train/g64/sender/<code>_neural-qr-sender-<session>.json.tmp  # pending
+local-data/recordings/train/g64/sender/<code>_neural-qr-sender-<session>.json      # complete
 local-data/recordings/train/g64/receiver/<code>_neural-qr-captures-<session>-<time>.json
 local-data/recordings/validation/g256/receiver/...
 ```
@@ -181,15 +200,16 @@ physical conditions across sessions while keeping each batch mostly typical.
 Selection never receives sender symbols, payload CRC outcomes or model labels.
 
 The collection code is the CRC32 of the logical matrix, validated against its
-SHA-256 sender manifest during joining. It is manually assigned on the receiver,
-not decoded from the camera. **Verify the visible code and grid before recording,
+SHA-256 sender manifest during joining. It is supplied by the server descriptor
+(or entered manually), not decoded from the camera. **Verify the displayed matrix
+belongs to the active assignment before recording,
 and keep the same matrix through all four phases.** A wrong assignment cannot
 be ruled out from marker detection or capture similarity alone. Review suspect
 sessions offline rather than assuming the code authenticates the image.
 
 ## Join uploaded recordings by size
 
-After uploading both sides:
+After completing receiver uploads:
 
 ```sh
 node scripts/corrector-dataset.mjs join-uploads \
@@ -197,7 +217,8 @@ node scripts/corrector-dataset.mjs join-uploads \
   --out local-data/multires-joined
 ```
 
-The output must be a new or empty directory. This command discovers recordings,
+The output must be a new or empty directory. Pending `.json.tmp` senders and the
+root `collection_session.json` are not joined. This command discovers completed recordings,
 checks public code/profile/phase matches and split ownership, and writes datasets under
 `local-data/multires-joined/<train|validation|test>/g<size>/`. The joined manifest is `neural-qr-dataset`, version 1. Each sample retains
 its sampling density, `[3,2G,2G]` input shape, device pair, camera metadata and

@@ -9,7 +9,7 @@
   "scripts": {
     "prepare:apps": "node scripts/prepare-apps.mjs",
     "prepare:corrector": "node scripts/prepare-corrector.mjs",
-    "test:corrector": "node --test apps/color-optical-bench/tests/learned-*.test.mjs apps/color-optical-bench/tests/corrector-lab*.test.mjs apps/color-optical-bench/tests/dataset.test.mjs apps/color-optical-bench/tests/capture-*.test.mjs apps/color-optical-bench/tests/neural-qr-acquisition.test.mjs",
+    "test:corrector": "node --test apps/color-optical-bench/tests/learned-*.test.mjs apps/color-optical-bench/tests/corrector-lab*.test.mjs apps/color-optical-bench/tests/dataset.test.mjs apps/color-optical-bench/tests/capture-*.test.mjs apps/color-optical-bench/tests/neural-qr-acquisition.test.mjs apps/color-optical-bench/tests/collection-session-stack.test.mjs",
     "test:corrector:python": "python3 -m unittest discover -s experiments/neural-corrector/tests -v",
     "test:corrector:wasm": "node experiments/neural-corrector/browser-runtime/test-wasm.mjs",
     "test:python": "python3 -m unittest discover -s tests/python -v",

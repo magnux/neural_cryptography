@@ -5,7 +5,9 @@ import {gridLayout,paletteMap} from '../grid.js';
 export const DATASET_FORMAT = 'optical-decoder-dataset'; // Established offline training experiment.
 export const NEURAL_QR_DATASET_FORMAT = 'neural-qr-dataset';
 export const DATASET_VERSION = 1;
-export const MAX_CAPTURE_BYTES = 160 * 1024 * 1024;
+export const MAX_CAPTURE_BYTES = 800 * 1024 * 1024;
+export const DEFAULT_CAPTURE_BYTES = 400 * 1024 * 1024;
+export const CAPTURE_BUDGET_MIB = Object.freeze([200,400,800]);
 export const MAX_RECORDS = 128;
 export const CAPTURE_SIZES = Object.freeze([8,16,32,64,128,256]);
 export const CAPTURE_PIXELS_PER_CELL = 2;
@@ -15,11 +17,12 @@ export function captureProfile(size=64,colors=16,phases=4){
   validateProfile(profile);return profile;
 }
 /** Conservative JSON budget across all phases, including camera metadata and two PNGs. */
-export function recommendedPhaseMaximum(size,phases=4){
+export function recommendedPhaseMaximum(size,phases=4,budgetBytes=DEFAULT_CAPTURE_BYTES){
   if(!CAPTURE_SIZES.includes(size)||![1,2,4,8,16].includes(phases))throw Error('Unsupported capture pool profile.');
+  if(!Number.isSafeInteger(budgetBytes)||budgetBytes<1024||budgetBytes>MAX_CAPTURE_BYTES)throw Error('Invalid capture byte budget.');
   const inputBytes=3*(CAPTURE_PIXELS_PER_CELL*size)**2*4,sampleBytes=(3*size*size+96)*4;
   const perRecord=4*Math.ceil(inputBytes/3)+4*Math.ceil(sampleBytes/3)+8192;
-  const allowance=Math.min(Math.floor(MAX_RECORDS/phases),Math.floor((MAX_CAPTURE_BYTES-3*1024*1024)/(perRecord*phases)));
+  const allowance=Math.min(Math.floor(MAX_RECORDS/phases),Math.floor((budgetBytes-3*1024*1024)/(perRecord*phases)));
   return [32,16,8,6,4,2,1].find(n=>n<=allowance)??1;
 }
 export function validateCollectionCode(value){

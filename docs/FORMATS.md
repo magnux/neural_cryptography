@@ -30,12 +30,28 @@ has a compatibility fallback to the other format.
 | Joined Neural-QR evidence | `neural-qr-dataset`, version 1 | [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); 2×2-cell CHW inputs and offline labels; multires training integration pending |
 | Established OBM5 training dataset | `optical-decoder-dataset`, version 1 | [`data.py`](../experiments/neural-corrector/data.py), [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); hashed NCHW inputs, physical labels, mask, baseline, expected bytes |
 
+## Collector session coordination
+
+`collection_session.json` is temporary server coordination metadata, separate
+from the optical format and recording schema. Its public descriptor uses
+`neural-qr-collection-session`, version 1, and contains only an opaque ID,
+collection code, sender session ID, profile, dataset split and creation time.
+No sender symbols, payload bytes or labels are returned to the receiver.
+
+Managed receiver exports add the optional `collectionSessionId`; existing files
+without it remain valid. Successful managed upload saves receiver evidence,
+finalizes the matching `.json.tmp` sender, then removes the active descriptor.
+The stored capture format/version and all existing tensor encodings are unchanged.
+Recordings can now be up to 800 MiB, within 128 retained captures; smaller recorded
+pools are not required to grow. JSON serialization and capture-file reading avoid
+one whole-file JavaScript string.
+
 ## Neural-QR collection association
 
 The sender's collection code is eight hexadecimal CRC32 characters over its
 logical training matrix; the full SHA-256 and logical symbols remain in the
-sender manifest. The receiver explicitly records that code and a profile, then
-observes orientation and phase from the camera. Joining checks these values and
+sender manifest. The receiver records that code and profile from the server’s active session
+(or manual assignment), then observes orientation and phase from the camera. Joining checks these values and
 manifest consistency, including split ownership. It does not establish that a
 manually assigned code matches the pixels actually photographed. This collection
 mechanism is not a packet identifier, authenticator or cryptographic key.

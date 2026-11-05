@@ -1,7 +1,7 @@
 /** Receiver evidence; a public collection assignment contains no sender labels. */
 import {extractNeuralQR} from '../neural-qr/vision.js';
 import {captureSignature} from './diversity.js';
-import {captureKey,bytesToBase64,floatBytes,base64ToBytes,floatsFromBytes,validateSessionId,validateCollectionCode,validateProfile,captureProfile,MAX_CAPTURE_BYTES,MAX_RECORDS} from './contract.js';
+import {captureKey,bytesToBase64,floatBytes,base64ToBytes,floatsFromBytes,validateSessionId,validateCollectionCode,validateProfile,captureProfile,MAX_CAPTURE_BYTES,DEFAULT_CAPTURE_BYTES,MAX_RECORDS} from './contract.js';
 
 export function captureFrame(image,{timestamp=Date.now(),camera={},signature=false,profile,collectionCode,previousGeometry=null,probe=false}={}) {
   if(!Number.isFinite(timestamp)||timestamp<0)throw Error('Invalid capture timestamp.');
@@ -38,11 +38,16 @@ export function validateCapture(record){
 
 /** Bound raw JSON size, retained records, diagnostics, and original PNGs. */
 export class CaptureBuffer {
-  constructor({maxRecords=MAX_RECORDS,maxBytes=MAX_CAPTURE_BYTES,stableMs=500}={}) {
+  constructor({maxRecords=MAX_RECORDS,maxBytes=DEFAULT_CAPTURE_BYTES,stableMs=500}={}) {
     if(!Number.isInteger(maxRecords)||maxRecords<1||maxRecords>MAX_RECORDS||!Number.isInteger(maxBytes)||maxBytes<1024||maxBytes>MAX_CAPTURE_BYTES||!Number.isInteger(stableMs)||stableMs<500||stableMs>5000) throw Error('Invalid capture limits.');
     this.maxRecords=maxRecords;this.maxBytes=maxBytes;this.stableMs=stableMs;this.reset();
   }
   reset(){this.records=[];this.diagnostics=[];this.bytes=0;this.active=null;this.originals=0;this.signatures=new WeakMap();this.sizes=new WeakMap();this.revisions=new Map();this.thinning=[];}
+  setBudget(maxBytes){
+    if(!Number.isSafeInteger(maxBytes)||maxBytes<1024||maxBytes>MAX_CAPTURE_BYTES)throw Error('Invalid capture byte budget.');
+    if(this.records.length||this.diagnostics.length)throw Error('Save and clear the batch before changing its byte budget.');
+    this.maxBytes=maxBytes;
+  }
   phaseRecords(key){return this.records.filter(record=>record.key===key);}
   revision(key){return this.revisions.get(key)??0;}
   phaseSignatures(key){return this.phaseRecords(key).map(record=>this.signatures.get(record));}

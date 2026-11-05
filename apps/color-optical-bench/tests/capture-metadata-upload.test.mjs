@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {collectionIdentity,environmentMetadata,cameraMetadata} from '../dist/js/dataset/metadata.js';
-import {recordingUploadConfig,uploadRecording} from '../dist/js/dataset/upload.js';
+import {recordingUploadConfig,uploadRecording,fetchCollectionSession,stageCollectionSession,abandonCollectionSession,validateCollectionSession} from '../dist/js/dataset/upload.js';
 
 test('collection identity persists per origin and unavailable storage stays session-local',()=>{
   const values=new Map(),storage={getItem:key=>values.get(key),setItem:(key,value)=>values.set(key,value)};
@@ -57,4 +57,36 @@ test('upload rejects wrong splits, oversize data, failed server writes and cance
   const controller=new AbortController(),request=new Request();request.send=()=>{};
   const pending=uploadRecording(recording,{split:'validation',config,xhrFactory:()=>request,signal:controller.signal});
   controller.abort();await assert.rejects(pending,/cancelled/);
+});
+
+
+const profile={size:64,colors:16,phases:4,gridBlock:8,parity:0,holdMs:4000,permute:true,pixelsPerCell:2};
+const descriptor={format:'neural-qr-collection-session',version:1,id:'public-session',collectionCode:'1234abcd',senderSessionId:'sender-physical',profile,datasetSplit:'validation',created:'2026-11-05T12:00:00.000Z'};
+test('session discovery copies only public assignment metadata and never sender truth',async()=>{
+  let request;
+  const response={...descriptor,payloadBase64:'forbidden',labels:[1,2],seed:123,profile:{...profile,expectedSymbols:[1,2]}};
+  const value=await fetchCollectionSession({config,fetcher:async(url,options)=>{request={url,options};return {ok:true,json:async()=>({enabled:true,session:response})};}});
+  assert.deepEqual(value,descriptor);assert.equal(request.url,'/api/collection-session');assert.equal(request.options.cache,'no-store');
+  assert.equal(await fetchCollectionSession({config,fetcher:async()=>({ok:true,json:async()=>({enabled:true,session:null})})}),null);
+  assert.equal(await fetchCollectionSession({config:{enabled:false},fetcher:()=>{throw Error('must not fetch');}}),null);
+  assert.throws(()=>validateCollectionSession({...descriptor,profile:{...profile,colors:4}}),/profile/);
+  await assert.rejects(fetchCollectionSession({config,fetcher:async()=>({ok:false,json:async()=>({error:'unavailable'})})}),/unavailable/);
+});
+test('sender staging is explicit and bound to the manifest; completed retries do not reopen sessions',async()=>{
+  const sender={format:'neural-qr-sender',version:1,sessionId:descriptor.senderSessionId,collectionCode:descriptor.collectionCode,profile,datasetSplit:'validation'};
+  const request=new Request({ok:true,storedPath:'validation/g64/sender/sender.json.tmp',session:descriptor});
+  const staged=await stageCollectionSession(sender,{split:'validation',config,xhrFactory:()=>request});
+  assert.deepEqual(staged.session,descriptor);assert.equal(request.url,'/api/collection-session?split=validation');assert.equal(request.timeout,300000);
+  const wrong=new Request({ok:true,storedPath:'wrong.json.tmp',session:{...descriptor,collectionCode:'ffffffff'}});
+  await assert.rejects(stageCollectionSession(sender,{split:'validation',config,xhrFactory:()=>wrong}),/does not match/);
+  const completed=new Request({ok:true,storedPath:'sender.json',session:null,sessionCompleted:true,duplicate:true});
+  assert.equal((await stageCollectionSession(sender,{split:'validation',config,xhrFactory:()=>completed})).session,null);
+  await assert.rejects(stageCollectionSession(recording,{split:'validation',config}),/sender manifest/);
+});
+test('abandon targets the observed session and receiver uploads have a bounded large-body timeout',async()=>{
+  let request;
+  await abandonCollectionSession(descriptor.id,{config,fetcher:async(url,options)=>{request={url,options};return {ok:true,json:async()=>({ok:true,abandoned:true})};}});
+  assert.equal(request.url,'/api/collection-session/abandon');assert.deepEqual(JSON.parse(request.options.body),{id:descriptor.id});assert.equal(request.options.headers['X-Upload-Token'],config.uploadToken);
+  const receiver=new Request();await uploadRecording({...recording,collectionSessionId:descriptor.id},{split:'validation',config,xhrFactory:()=>receiver});
+  assert.equal(receiver.timeout,900000);assert.equal(JSON.parse(await receiver.body.text()).collectionSessionId,descriptor.id);
 });

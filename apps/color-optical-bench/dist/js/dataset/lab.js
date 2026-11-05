@@ -2,9 +2,10 @@ import {CaptureClient} from './client.js';
 import {CaptureBuffer} from './capture.js';
 import {ScanLoop} from './scan-loop.js';
 import {recordingFilename} from './filenames.js';
-import {captureProfile,recommendedPhaseMaximum} from './contract.js';
+import {captureProfile,recommendedPhaseMaximum,canonicalJSON} from './contract.js';
+import {recordingBlob} from './recording-json.js';
 import {collectionIdentity,environmentMetadata,cameraMetadata,saveDeviceLabel} from './metadata.js';
-import {recordingUploadConfig,uploadRecording} from './upload.js';
+import {recordingUploadConfig,uploadRecording,stageCollectionSession,fetchCollectionSession,abandonCollectionSession} from './upload.js';
 import {project} from '../vision.js';
 
 const $=id=>document.getElementById(id),client=new CaptureClient(),buffer=new CaptureBuffer();
@@ -20,6 +21,80 @@ let receiverSnapshot=null,receiverEnvironment=null,lastCamera={},sessionCameraId
 let lastMediaTime=-1,collecting=false,budgetFull=false,receiverEpoch=0,activeKey=null,activeInfo=null;
 const distances=new Map(),originalAttempts=new Set(),phaseActivity=new Map(),phaseReferences=new Map();
 let previousMaximum=32,receiverAssignment=null;
+let serverSession=null,serverSessionKnown=false,senderManagedId=null,sessionBlocked=false;
+let discoveryTimer=null,discoveryController=null,discoveryEpoch=0,pageActive=true;
+const automaticSession=()=>Boolean(uploadConfig.enabled&&$('autoSession').checked);
+const budgetBytes=()=>Number($('captureBudget').value)*1048576;
+function stopDiscovery(){discoveryEpoch++;clearTimeout(discoveryTimer);discoveryTimer=null;discoveryController?.abort();discoveryController=null;}
+function scheduleDiscovery(){
+  clearTimeout(discoveryTimer);discoveryTimer=null;
+  if(pageActive&&uploadConfig.enabled)discoveryTimer=setTimeout(()=>{discoveryTimer=null;pollSession();},2000);
+}
+function fittedPool(){
+  const selected=assignment();if(!selected)return;
+  const maximum=recommendedPhaseMaximum(selected.profile.size,4,buffer.maxBytes);
+  if(phaseMaximum()>maximum){$('phaseMaximum').value=String(maximum);previousMaximum=maximum;}
+}
+function applyServerSession(current){
+  if(role==='sender'){
+    if(senderManagedId&&!current){$('senderUploadStatus').textContent='This collection is no longer active. Create the next matrix when ready.';senderManagedId=null;}
+    return;
+  }
+  if(!automaticSession())return;
+  const held=receiverAssignment,locked=collecting||uploading||buffer.records.length||buffer.diagnostics.length;
+  const same=held?.collectionSessionId&&current?.id===held.collectionSessionId&&current.collectionCode===held.collectionCode&&
+    canonicalJSON(current.profile)===canonicalJSON(held.profile)&&current.datasetSplit===held.datasetSplit&&(!receiverSplit||current.datasetSplit===receiverSplit);
+  if(locked){
+    if(same){sessionBlocked=false;$('datasetSplit').value=current.datasetSplit;}
+    if(held?.collectionSessionId&&!same){
+      sessionBlocked=true;
+      if(collecting){collecting=false;receiverEpoch++;scanner.stop();buffer.resetStability();}
+      if(receiverRevision!==receiverSavedRevision)status('The active server collection changed or ended. This batch remains assigned to its original matrix; upload or download it before clearing.');
+    }
+    return;
+  }
+  if(!current){
+    sessionBlocked=true;
+    if(held?.collectionSessionId){receiverAssignment=null;$('receiverCode').value='';activeKey=null;activeInfo=null;clearOverlay();if(stream)restartScanner();}
+    return;
+  }
+  if(receiverSplit&&receiverSplit!==current.datasetSplit){sessionBlocked=true;status('The sender chose another split. Start a new physical receiver session before collecting it.');return;}
+  sessionBlocked=false;
+  if(same){$('datasetSplit').value=current.datasetSplit;return;}
+  receiverAssignment={collectionCode:current.collectionCode,profile:{...current.profile},collectionSessionId:current.id,datasetSplit:current.datasetSplit};
+  $('receiverCode').value=current.collectionCode;$('receiverSize').value=String(current.profile.size);$('datasetSplit').value=current.datasetSplit;
+  activeKey=null;activeInfo=null;clearOverlay();fittedPool();invalidateReceiver();
+  if(stream)restartScanner();
+  status(`Collection ${current.collectionCode} connected · G${current.profile.size} · ${current.datasetSplit}. Start the camera and record.`);
+}
+async function pollSession(){
+  if(!pageActive||!uploadConfig.enabled)return;
+  if(uploading||busy){scheduleDiscovery();return;}
+  discoveryController?.abort();const controller=discoveryController=new AbortController(),token=++discoveryEpoch;
+  try{
+    const current=await fetchCollectionSession({config:uploadConfig,signal:controller.signal});
+    if(token!==discoveryEpoch||!pageActive)return;
+    serverSession=current;serverSessionKnown=true;applyServerSession(current);
+    $('collectionSessionStatus').textContent=current?`Active collection ${current.collectionCode} · G${current.profile.size} · ${current.datasetSplit}.`:'No active collection. Create a matrix on the sender.';
+  }catch(error){if(token===discoveryEpoch&&error.name!=='AbortError'){
+    serverSessionKnown=false;$('collectionSessionStatus').textContent=`Session discovery: ${error.message}`;
+  }}finally{if(token===discoveryEpoch){discoveryController=null;refresh();scheduleDiscovery();}}
+}
+async function abandonActive(){
+  if(uploading||busy||!serverSession)return;
+  if(!confirm('Abandon this unfinished collection? The staged sender and any saved recordings remain on the server.'))return;
+  const id=serverSession.id;stopDiscovery();collecting=false;scanner.stop();receiverEpoch++;
+  uploading=true;uploadController=new AbortController();refresh();
+  try{await abandonCollectionSession(id,{config:uploadConfig,signal:uploadController.signal});serverSession=null;serverSessionKnown=true;senderManagedId=null;applyServerSession(null);$('collectionSessionStatus').textContent='Collection abandoned. Staged data was kept.';}
+  catch(error){showError(error.message);}
+  finally{uploading=false;uploadController=null;refresh();scheduleDiscovery();}
+}
+function changeBudget(){
+  const value=budgetBytes();
+  try{buffer.setBudget(value);const selected=assignment();if(selected){$('phaseMaximum').value=String(recommendedPhaseMaximum(selected.profile.size,4,value));previousMaximum=phaseMaximum();}invalidateReceiver();showError();}
+  catch(error){$('captureBudget').value=String(buffer.maxBytes/1048576);showError(error.message);}
+  refresh();
+}
 function selectedAssignment(){
   const collectionCode=$('receiverCode').value.trim().toLowerCase(),size=Number($('receiverSize').value);
   if(!/^[a-f0-9]{8}$/.test(collectionCode))return null;
@@ -31,9 +106,9 @@ function changeAssignment(){
     const current=receiverAssignment;if(current){$('receiverCode').value=current.collectionCode;$('receiverSize').value=String(current.profile.size);}
     showError('Save and clear this batch before changing its collection code or grid.');return;
   }
-  receiverAssignment=null;activeKey=null;activeInfo=null;clearOverlay();
+  receiverAssignment=null;sessionBlocked=false;activeKey=null;activeInfo=null;clearOverlay();
   const selected=selectedAssignment();
-  if(selected){const maximum=recommendedPhaseMaximum(selected.profile.size,4);if(phaseMaximum()>maximum){$('phaseMaximum').value=String(maximum);previousMaximum=maximum;}}
+  if(selected){const maximum=recommendedPhaseMaximum(selected.profile.size,4,buffer.maxBytes);if(phaseMaximum()>maximum){$('phaseMaximum').value=String(maximum);previousMaximum=maximum;}}
   if(stream)restartScanner();showError();refresh();
 }
 const phaseMaximum=()=>Number($('phaseMaximum').value);
@@ -70,9 +145,9 @@ async function checkUploads(){
   if(uploading)return;
   $('refreshUploads').disabled=true;uploadConfig=await recordingUploadConfig();
   $('uploadAvailability').textContent=uploadConfig.enabled
-    ? 'Recording server ready. Upload saves to the selected split and matrix-size folder. Files stay on this device until you choose Upload.'
+    ? 'Recording server ready. New sender matrices stage automatically; receiver uploads complete the pair.'
     :uploadConfig.reason;
-  $('refreshUploads').disabled=false;refresh();
+  $('refreshUploads').disabled=false;refresh();if(uploadConfig.enabled)await pollSession();else{stopDiscovery();$('collectionSessionStatus').textContent='Manual collection: enter the sender code and grid. Downloads remain available.';}
 }
 async function upload(kind){
   if(uploading||busy)return;
@@ -81,23 +156,28 @@ async function upload(kind){
   collecting=false;receiverEpoch++;scanner.stop();
   const recording=kind==='sender'?sender.manifest:snapshotReceiver(),revision=receiverRevision;
   const target=$(kind==='sender'?'senderUploadStatus':'receiverUploadStatus');
+  stopDiscovery();
   uploading=true;const token=++uploadEpoch;uploadController=new AbortController();showError();refresh();
   $('uploadProgress').hidden=false;target.textContent='Preparing recording upload…';
   try{
-    const result=await uploadRecording(recording,{split:recording.datasetSplit,config:uploadConfig,signal:uploadController.signal,
+    const result=await (kind==='sender'?stageCollectionSession:uploadRecording)(recording,{split:recording.datasetSplit,config:uploadConfig,signal:uploadController.signal,
       onProgress:({loaded,total})=>{if(token!==uploadEpoch)return;$('uploadProgress').value=total?loaded/total*100:0;
         target.textContent=loaded<total?`Uploading ${(loaded/1048576).toFixed(1)} / ${(total/1048576).toFixed(1)} MiB…`:'Upload sent. Waiting for the server to confirm storage…';}});
     if(token!==uploadEpoch)return;
-    if(kind==='sender')senderSaved=true;else receiverSavedRevision=revision;
+    if(kind==='sender'){senderSaved=true;senderManagedId=result.session?.id??null;serverSession=result.session??null;serverSessionKnown=true;}else receiverSavedRevision=revision;
     target.textContent=`${result.duplicate?'Already saved':'Saved'}: ${result.storedPath}`;
-    if(kind==='receiver')status('Recording saved on the server. Clear this saved batch to collect another matrix or size.');
+    if(kind==='receiver'){
+      if(result.sessionCompleted){serverSession=null;sessionBlocked=Boolean(receiverAssignment?.collectionSessionId);$('collectionSessionStatus').textContent='Collection completed. Sender and receiver recordings are finalized.';}
+      else if(result.sessionInactive){sessionBlocked=Boolean(receiverAssignment?.collectionSessionId);$('collectionSessionStatus').textContent='Receiver data was already saved. Its collection is no longer active; sender finalization was not confirmed.';}
+      status('Recording saved on the server. Clear this saved batch to collect another matrix or size.');
+    }
   }catch(error){if(token===uploadEpoch){target.textContent=error.message;showError(error.message);}}
-  finally{if(token===uploadEpoch){uploading=false;uploadController=null;$('uploadProgress').hidden=true;refresh();if(stream)scanner.start();}}
+  finally{if(token===uploadEpoch){uploading=false;uploadController=null;$('uploadProgress').hidden=true;refresh();if(stream&&!sessionBlocked)scanner.start();scheduleDiscovery();}}
 }
 function refresh(){
   const counts=buffer.summary(),locked=busy||uploading,split=role==='sender'?senderSplit:receiverSplit;
   $('senderRole').disabled=locked;$('receiverRole').disabled=locked;
-  $('datasetSplit').disabled=locked||Boolean(split);if(split)$('datasetSplit').value=split;
+  $('datasetSplit').disabled=locked||Boolean(split)||(role==='receiver'&&automaticSession()&&Boolean(receiverAssignment?.collectionSessionId));if(split)$('datasetSplit').value=split;
   $('deviceLabel').disabled=locked||Boolean(split);$('captureNotes').disabled=uploading;
   $('environmentSummary').textContent=`Device: ${$('deviceLabel').value||identity.deviceId} · ${environment().deviceClass} (browser estimate). Camera labels and actual settings are recorded after camera permission.`;
   $('senderRole').setAttribute('aria-pressed',String(role==='sender'));
@@ -105,19 +185,24 @@ function refresh(){
   $('senderPanel').hidden=role!=='sender';$('receiverPanel').hidden=role!=='receiver';
   for(const id of ['senderSize','createSender','newSenderSession'])$(id).disabled=!supported||locked;
   $('downloadSender').disabled=!sender||locked;$('uploadSender').disabled=!sender||locked||!uploadConfig.enabled;
+  $('createSender').disabled||=uploadConfig.enabled&&(!serverSessionKnown||Boolean(serverSession));
+  $('newSenderSession').disabled||=Boolean(serverSession);
+  $('abandonCollection').disabled=locked||!serverSession;
   $('nextPhase').disabled=!sender||sender.frames.length<2||locked;
   $('focusMatrix').disabled=!sender||locked||$('senderCanvasWrap').hidden;
   $('senderSession').textContent=`Session: ${senderSession}`;$('receiverSession').textContent=`Session: ${receiverSession}`;
-  const assigned=assignment(),assignmentLocked=locked||collecting||Boolean(counts.records||counts.diagnostics);
+  const assigned=assignment(),assignmentLocked=locked||collecting||Boolean(counts.records||counts.diagnostics)||(automaticSession()&&Boolean(receiverAssignment?.collectionSessionId));
+  $('autoSession').disabled=locked||collecting||Boolean(counts.records||counts.diagnostics);
+  $('captureBudget').disabled=locked||collecting||Boolean(counts.records||counts.diagnostics);
   $('receiverCode').disabled=assignmentLocked;$('receiverSize').disabled=assignmentLocked;
   $('senderCollectionCode').textContent=sender?.manifest.collectionCode??'Create a matrix first';
-  $('startCamera').disabled=!supported||cameraStarting||Boolean(stream)||locked||!assigned;
+  $('startCamera').disabled=!supported||cameraStarting||Boolean(stream)||locked||!assigned||(automaticSession()&&sessionBlocked);
   $('stopCamera').disabled=!stream&&!cameraStarting;
   $('camera').disabled=Boolean(stream)||cameraStarting||uploading;$('resolution').disabled=Boolean(stream)||cameraStarting||uploading;
   $('cameraPreview').setAttribute('data-mirrored',String(previewMirrored));
   $('mirrorPreview').setAttribute('aria-pressed',String(previewMirrored));
   const phaseCount=buffer.phaseRecords(activeKey).length;
-  $('collectBurst').disabled=!stream||collecting||budgetFull||uploading||!assigned;
+  $('collectBurst').disabled=!stream||collecting||budgetFull||uploading||!assigned||(automaticSession()&&sessionBlocked);
   $('cancelBurst').disabled=!collecting;
   $('clearCaptures').disabled=collecting||uploading;$('newReceiverSession').disabled=collecting||uploading;
   $('downloadCaptures').disabled=collecting||uploading||(!counts.records&&!counts.diagnostics);
@@ -139,7 +224,7 @@ function refresh(){
   $('captureBytes').textContent=`${(counts.bytes/1048576).toFixed(1)} / ${(counts.maxBytes/1048576).toFixed(0)} MiB`;
 }
 function saveJSON(value,name){
-  const blob=new Blob([JSON.stringify(value)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
+  const blob=recordingBlob(value),url=URL.createObjectURL(blob),link=document.createElement('a');
   link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 function focusMatrix(){
@@ -165,14 +250,23 @@ async function displayPhase(index,token){
 async function createSender(){
   if(busy||uploading||!canDiscardSender())return;showError();busy=true;const token=++epoch;$('senderCanvasWrap').hidden=true;refresh();
   try{
+    stopDiscovery();
+    if(uploadConfig.enabled){const active=await fetchCollectionSession({config:uploadConfig});if(token!==epoch)return;serverSession=active;serverSessionKnown=true;if(active)throw Error('Finish the active receiver upload, or abandon the unfinished collection before creating another matrix.');}
     const created=await client.call('create',{...captureProfile(Number($('senderSize').value),16,4),sessionId:senderSession});
     if(token!==epoch)return;
     senderSplit??=$('datasetSplit').value;
     sender={...created,manifest:{...created.manifest,datasetSplit:senderSplit,environment:environment()}};
     senderSaved=false;$('senderUploadStatus').textContent='Save this manifest once; it describes every palette phase.';
     phase=0;await displayPhase(0,token);
+    if(token!==epoch)return;
+    if(uploadConfig.enabled){
+      uploadController=new AbortController();const result=await stageCollectionSession(sender.manifest,{split:senderSplit,config:uploadConfig,signal:uploadController.signal});
+      if(token!==epoch)return;senderSaved=true;senderManagedId=result.session?.id??null;serverSession=result.session??null;serverSessionKnown=true;
+      $('senderUploadStatus').textContent=result.session?'Sender staged. The receiver will discover this matrix automatically.':'This collection is already completed.';
+      $('collectionSessionStatus').textContent=result.session?`Active collection ${result.session.collectionCode} · G${result.session.profile.size} · ${result.session.datasetSplit}.`:'Collection completed.';
+    }
   }catch(error){if(token===epoch)showError(error.message);}
-  finally{if(token===epoch){busy=false;refresh();}}
+  finally{if(token===epoch){busy=false;uploadController=null;refresh();scheduleDiscovery();}}
 }
 async function nextPhase(){
   if(busy||uploading||!sender)return;showError();busy=true;const token=++epoch;refresh();
@@ -209,7 +303,7 @@ function currentImage(){
   return {image:{width:pixels.width,height:pixels.height,data:pixels.data},timestamp:Date.now(),camera};
 }
 function clearOverlay(){const canvas=$('alignmentOverlay');canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);}
-function restartScanner(){receiverEpoch++;scanner.stop();buffer.resetStability();if(stream)scanner.start();}
+function restartScanner(){receiverEpoch++;scanner.stop();buffer.resetStability();if(stream&&assignment()&&!(automaticSession()&&sessionBlocked))scanner.start();}
 async function scanOne(){
   const selected=assignment();if(!selected)throw Error('Enter the sender’s eight-character collection code and select its grid.');
   const options={...currentImage(),...selected};
@@ -238,7 +332,7 @@ async function receiveScan({record,width,height}){
     if(first&&first.camera?.deviceId&&record.camera?.deviceId&&first.camera.deviceId!==record.camera.deviceId){
       collecting=false;buffer.resetStability();status('Camera changed. Save this batch and start a new physical session before collecting.');refresh();return;
     }
-    const maximum=recommendedPhaseMaximum(record.info.size,record.info.phases);
+    const maximum=recommendedPhaseMaximum(record.info.size,record.info.phases,buffer.maxBytes);
     if(!first&&phaseMaximum()>maximum){$('phaseMaximum').value=String(maximum);previousMaximum=maximum;invalidateReceiver();}
   }
   if(collecting&&!record.probe){
@@ -290,10 +384,10 @@ async function receiveScan({record,width,height}){
   }
 }
 function collectBurst(){
-  if(!stream||collecting||budgetFull||uploading)return;
+  if(!stream||collecting||budgetFull||uploading||(automaticSession()&&sessionBlocked))return;
   const selected=assignment();if(!selected){showError('Enter the sender’s collection code and grid before recording.');return;}
   receiverAssignment=selected;
-  receiverSplit??=$('datasetSplit').value;receiverEnvironment??=environment();
+  receiverSplit??=selected.datasetSplit??$('datasetSplit').value;receiverEnvironment??=environment();
   sessionCameraId??=cameraInfo().deviceId??cameraInfo().label??null;
   showError();collecting=true;restartScanner();
   status('Collection armed. Keep this matrix static; samples save after orientation and phase cues settle.');refresh();
@@ -311,7 +405,7 @@ function changePoolSize(){
     return;
   }
   const first=buffer.records[0];
-  if(first&&maximum>recommendedPhaseMaximum(first.info.size,first.info.phases)){
+  if(first&&maximum>recommendedPhaseMaximum(first.info.size,first.info.phases,buffer.maxBytes)){
     $('phaseMaximum').value=String(previousMaximum);showError('That pool size would leave insufficient room for the other phases of this matrix.');return;
   }
   previousMaximum=maximum;invalidateReceiver();showError();
@@ -333,7 +427,7 @@ function stopCamera(){
   const canvas=$('alignmentOverlay');canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);refresh();
 }
 async function startCamera(){
-  if(cameraStarting||stream||busy||uploading)return;if(!assignment()){showError('Enter the sender’s collection code and grid first.');return;}showError();cameraStarting=true;const token=++cameraEpoch;refresh();
+  if(cameraStarting||stream||busy||uploading||(automaticSession()&&sessionBlocked))return;if(!assignment()){showError('Enter the sender’s collection code and grid first.');return;}showError();cameraStarting=true;const token=++cameraEpoch;refresh();
   try{
     if(!navigator.mediaDevices?.getUserMedia)throw Error('Camera access requires trusted HTTPS or localhost.');
     const height=Number($('resolution').value),width=height===480?640:Math.round(height*16/9);
@@ -352,9 +446,9 @@ async function startCamera(){
   }catch(error){if(token===cameraEpoch){stopCamera();showError(error.message);}}
   finally{if(token===cameraEpoch){cameraStarting=false;refresh();}}
 }
-function chooseRole(value){if(busy||uploading)return;if(value==='sender')stopCamera();role=value;showError();refresh();}
+function chooseRole(value){if(busy||uploading)return;stopDiscovery();if(value==='sender')stopCamera();role=value;showError();refresh();if(uploadConfig.enabled)pollSession();}
 function shutdown(){
-  closeFocus(false);epoch++;busy=false;
+  pageActive=false;stopDiscovery();closeFocus(false);epoch++;busy=false;
   if(uploading){$(role==='sender'?'senderUploadStatus':'receiverUploadStatus').textContent='Upload interrupted. The recording remains available; retrying is safe.';}
   uploadEpoch++;uploadController?.abort();uploadController=null;uploading=false;$('uploadProgress').hidden=true;
   stopCamera();client.cancel();
@@ -362,10 +456,10 @@ function shutdown(){
 function clearReceiver(newSession=false){
   if(collecting||uploading||!canDiscardReceiver())return;
   receiverEpoch++;scanner.stop();buffer.reset();budgetFull=false;distances.clear();originalAttempts.clear();phaseActivity.clear();phaseReferences.clear();
-  activeKey=null;activeInfo=null;receiverAssignment=null;invalidateReceiver();receiverSavedRevision=receiverRevision;
+  activeKey=null;activeInfo=null;receiverAssignment=null;sessionBlocked=false;invalidateReceiver();receiverSavedRevision=receiverRevision;
   if(newSession){receiverSession=session('receiver');receiverSplit=null;receiverEnvironment=null;sessionCameraId=null;}
-  $('receiverUploadStatus').textContent='';if(stream)scanner.start();
-  status(newSession?'A new physical receiver session is ready. Select its split before recording.':'Saved batch cleared. The physical session and split are retained for the next recording.');refresh();
+  $('receiverUploadStatus').textContent='';if(automaticSession()){$('receiverCode').value='';sessionBlocked=true;}else if(stream)scanner.start();
+  status(newSession?'A new physical receiver session is ready. Select its split before recording.':'Saved batch cleared. The physical session and split are retained for the next recording.');refresh();if(uploadConfig.enabled)pollSession();
 }
 $('senderRole').addEventListener('click',()=>chooseRole('sender'));
 $('receiverRole').addEventListener('click',()=>chooseRole('receiver'));
@@ -382,6 +476,9 @@ $('newSenderSession').addEventListener('click',()=>{if(uploading||busy||!canDisc
 $('uploadSender').addEventListener('click',()=>upload('sender'));
 $('uploadCaptures').addEventListener('click',()=>upload('receiver'));
 $('refreshUploads').addEventListener('click',checkUploads);
+$('abandonCollection').addEventListener('click',abandonActive);
+$('captureBudget').addEventListener('change',changeBudget);
+$('autoSession').addEventListener('change',()=>{stopDiscovery();if(buffer.records.length||buffer.diagnostics.length||collecting||uploading)return;receiverAssignment=null;sessionBlocked=false;changeAssignment();if(uploadConfig.enabled)pollSession();});
 $('deviceLabel').value=identity.deviceLabel;
 $('deviceLabel').addEventListener('input',()=>{saveDeviceLabel($('deviceLabel').value);refresh();});
 $('datasetSplit').addEventListener('change',()=>{invalidateReceiver();refresh();});
@@ -398,6 +495,6 @@ $('clearCaptures').addEventListener('click',()=>clearReceiver());
 $('newReceiverSession').addEventListener('click',()=>clearReceiver(true));
 $('downloadCaptures').addEventListener('click',()=>{if(collecting||uploading)return;const recording=snapshotReceiver();saveJSON(recording,recordingFilename(recording));receiverSavedRevision=receiverRevision;});
 window.addEventListener('beforeunload',event=>{if(receiverDirty()||sender&&!senderSaved||uploading){event.preventDefault();event.returnValue='';}});
-window.addEventListener('pagehide',shutdown);document.addEventListener('visibilitychange',()=>{if(document.hidden)shutdown();});
+window.addEventListener('pagehide',shutdown);window.addEventListener('pageshow',()=>{pageActive=true;if(uploadConfig.enabled)pollSession();});document.addEventListener('visibilitychange',()=>{if(document.hidden)shutdown();else{pageActive=true;if(uploadConfig.enabled)pollSession();}});
 if(!supported)showError('Use a current browser with Web Workers and Web Crypto on trusted HTTPS or localhost.');
 refresh();enumerateCameras();checkUploads();

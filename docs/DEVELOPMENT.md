@@ -98,10 +98,16 @@ trusted HTTPS static host. Keep tests, fixtures, and private results outside the
 served directory. No enrollment backend, server-side inference, or upload is
 required. The hosted test sites remain blank; repository work does not deploy.
 
-To enable explicit sender/capture uploads in **Capture Dataset**, add
+To enable automatic sender staging, receiver discovery and capture uploads in **Capture Dataset**, add
 `--recordings-dir local-data/recordings` to the color server command. The directory
 must be outside `dist/`; the server does not serve uploaded recordings. The
-collector retains downloads for static hosts. See [multires collection](MULTIRES_COLLECTION.md)
+collector retains downloads for static hosts. A sender creation stages its manifest
+as `.json.tmp` and publishes a small public `collection_session.json`. Uploading the
+matching receiver finalizes the sender and clears that descriptor. The receiver
+gets only association/profile metadata, never clean symbols. Uploads support up
+to 800 MiB; the browser defaults to 400 MiB with a budget selector. Restart the
+Python server and reload both pages when updating this workflow. Existing smaller
+recordings remain valid. See [multires collection](MULTIRES_COLLECTION.md)
 for the size/split layout, automatic metadata, budgets and offline joining.
 
 ## Benchmarks and formats

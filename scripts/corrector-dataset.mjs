@@ -4,6 +4,7 @@ import {readFile,writeFile,mkdir,stat,lstat,realpath,readdir} from 'node:fs/prom
 import {resolve,dirname,join,sep,isAbsolute,relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
+import {readRecordingJSON} from './lib/recording-json.mjs';
 import {senderFrames,captureKey,base64ToBytes,floatBytes,floatsFromBytes,DATASET_FORMAT,validateSessionId,canonicalJSON,MAX_RECORDS,MAX_CAPTURE_BYTES,validateProfile} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
 import {validateCapture} from '../apps/color-optical-bench/dist/js/dataset/capture.js';
 import {renderFrame,parseHeader,encodeSequence,phaseFrames,PALETTE,sameBytes,capacity,frameKey} from '../apps/color-optical-bench/dist/js/format.js';
@@ -142,7 +143,7 @@ export async function joinCaptures(options) {
   const dataset={format:NEURAL_QR_DATASET_FORMAT,version:1,created:new Date().toISOString(),association:'Operator-entered public collection code; not optically authenticated.',samples:[],excluded:[],diagnostics:[]},ids=new Set();
   await freshDirectory(out);
   for(const path of fileList(options.captures)) {
-    const bundle=validateCaptureBundle(await jsonFile(path,MAX_CAPTURE_JSON));
+    const bundle=validateCaptureBundle(await readRecordingJSON(path,{maxBytes:MAX_CAPTURE_JSON,maxArrayItems:MAX_RECORDS}));
     validateSessionId(bundle.sessionId);
     recordingSplit(bundle,split,path);
     for(let i=0;i<bundle.records.length;i++) {
@@ -164,7 +165,7 @@ export async function joinCaptures(options) {
       dataset.samples.push(await putSample(out,dataset.samples.length,{sessionId:bundle.sessionId,senderSessionId:sender.manifest.sessionId,payloadId:sender.manifest.payloadId,split,source:'real',size:info.size,colors:info.colors,pixelsPerCell,inputShape:[3,side,side],info,
         burstId:`${bundle.sessionId}/${record.key}`,timestamp:record.timestamp,
         devicePair:{sender:sender.manifest.environment?.deviceId??null,receiver:bundle.environment?.deviceId??null},
-        provenance:{captureId,stats:record.stats,camera:record.camera??bundle.camera,
+        provenance:{captureId,...(bundle.collectionSessionId?{collectionSessionId:bundle.collectionSessionId}:{}),stats:record.stats,camera:record.camera??bundle.camera,
           senderEnvironment:sender.manifest.environment,receiverEnvironment:bundle.environment,
           senderDatasetSplit:sender.manifest.datasetSplit,receiverDatasetSplit:bundle.datasetSplit,
           transform:record.transform,colorTransform:record.colorTransform,stability:record.stability,notes:bundle.notes??''}},
@@ -211,7 +212,7 @@ export async function joinUploads(options) {
   for(const path of paths) {
     const parts=relative(root,path).split(sep),[split,grid,kind]=parts;
     if(parts.length!==4||!['sender','receiver'].includes(kind)||!(/^(?:g(?:8|16|32|64|128|256)|unknown)$/.test(grid)))throw Error(`Unexpected upload location: ${path}`);
-    const bundle=await jsonFile(path,kind==='sender'?1024*1024:MAX_CAPTURE_JSON);
+    const bundle=kind==='sender'?await jsonFile(path,1024*1024):await readRecordingJSON(path,{maxBytes:MAX_CAPTURE_JSON,maxArrayItems:MAX_RECORDS});
     validateSessionId(bundle.sessionId);recordingSplit(bundle,split,path);
     own(sessionOwners,bundle.sessionId,split,'Physical session');
     const entry={path,split,grid,kind,records:[],sessionId:bundle.sessionId};

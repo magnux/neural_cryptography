@@ -8,19 +8,23 @@ include these notices; third-party licenses remain unchanged. See
 
 The next custom optical format is [Neural-QR](../../docs/NEURAL_QR.md), designed
 around neural correction with asymmetric markers and phase cues instead of a
-dense external header. The new renderer and acquisition run in **Capture Dataset** (`capture.html`) uses header-free **Neural-QR** acquisition:
+dense external header. **Capture Dataset** (`capture.html`) uses header-free **Neural-QR** acquisition:
 three ordinary localization markers and an asymmetric lower-right fiducial,
 repeated phase cues, and fixed palette references. It records G8/G16/G32/G64/G128/G256
 at 2×2 pixels per cell with 16 colors and four manually advanced phases.
-Copy the sender's eight-character collection code and choose its grid on the
-receiver. This public assignment pairs recordings offline; it does not optically
-prove matrix identity. No sender labels or clean matrix enter camera processing.
+With uploads enabled, creating a matrix automatically stages its sender manifest
+and publishes a small active-session descriptor. The receiver picks up the code,
+grid and split automatically. Uploading the receiver completes the sender file
+and clears that descriptor. This association supplies no sender labels or clean
+matrix to camera processing. Manual assignment remains available on static hosts.
 
 Orange fill means a tentative location with uncertain orientation/phase;
 green means current optical cues passed. Each phase settles for 500 ms before
 retention. Full pools favor a robust central cluster with controlled moderate/hard
 samples instead of maximizing distance. The reference survives pause/resume.
-Defaults retain 32 samples/phase through G64, 16 at G128 and six at G256.
+The default 400 MiB budget retains 32 samples/phase through G128 and 16 at G256.
+Choose 800 MiB for 32 samples/phase at G256, or 200 MiB for a smaller memory budget.
+Existing smaller recordings retain their format and remain valid.
 
 Uploads, downloads, automatic browser/device/camera metadata and display-only
 mirroring remain available. Start the server with

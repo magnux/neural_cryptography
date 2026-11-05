@@ -21,10 +21,12 @@ import ssl
 import stat
 import tempfile
 import threading
+import uuid
 from urllib.parse import parse_qs, urlsplit
 
 
-MAX_UPLOAD_BYTES = 160 * 1024 * 1024
+MAX_UPLOAD_BYTES = 800 * 1024 * 1024
+MAX_SESSION_BYTES = 1024 * 1024
 SIZES = (8, 16, 32, 64, 128, 256)
 SPLITS = ("train", "validation", "test")
 
@@ -125,9 +127,10 @@ class RecordingStore:
         self.max_bytes = max_bytes
         self.token = secrets.token_urlsafe(32)
         self.slots = threading.BoundedSemaphore(2)
+        self.session_lock = threading.RLock()
+        self.session_path = self.root / "collection_session.json"
 
-    def save(self, bundle, split, body):
-        relative = recording_destination(bundle, split)
+    def _save_bytes(self, relative, body):
         parent = self.root
         for part in relative.parts[:-1]:
             parent = parent / part
@@ -168,6 +171,179 @@ class RecordingStore:
                 "sha256": digest, "duplicate": duplicate}
 
 
+    @staticmethod
+    def _sync_directory(path):
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _read_session(self):
+        if not self.session_path.exists() and not self.session_path.is_symlink():
+            return None
+        if self.session_path.is_symlink() or not self.session_path.is_file() or self.session_path.stat().st_size > 65536:
+            raise RecordingError("Invalid collection session metadata; inspect server storage.", 409)
+        try:
+            value = json.loads(self.session_path.read_text(encoding="utf-8"))
+            self._sender_relative(value)
+        except (ValueError, TypeError, KeyError) as error:
+            raise RecordingError("Invalid collection session metadata; inspect server storage.", 409) from error
+        return value
+
+    @staticmethod
+    def _sender_relative(session):
+        # The file contains only this public descriptor. No target data is served.
+        fields = {"format", "version", "id", "collectionCode", "senderSessionId", "profile", "datasetSplit", "created"}
+        if (not isinstance(session, dict) or set(session) != fields
+                or session["format"] != "neural-qr-collection-session" or session["version"] != 1
+                or not isinstance(session["id"], str)
+                or not re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}", session["id"])):
+            raise ValueError("Invalid session descriptor")
+        profile, code = session["profile"], session["collectionCode"]
+        # Reuse the current recording envelope validator to check every path/profile field.
+        frames = [{"key": f"{code}/{profile['size']}/16/8/{phase}",
+                   "info": {**profile, "collectionCode": code, "id": code, "phase": phase, "bits": 4}}
+                  for phase in range(4)]
+        bundle = {"format": "neural-qr-sender", "version": 1, "sessionId": session["senderSessionId"],
+                  "created": session["created"], "collectionCode": code, "profile": profile,
+                  "datasetSplit": session["datasetSplit"], "payloadId": "0" * 64,
+                  "payloadBase64": "", "frames": frames}
+        return recording_destination(bundle, session["datasetSplit"])
+
+    def _write_session(self, descriptor):
+        if self.session_path.is_symlink():
+            raise RecordingError("Collection session metadata must not be a symlink.", 409)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix=".collection-", dir=self.root, delete=False) as output:
+                temporary = Path(output.name)
+                output.write(json.dumps(descriptor, separators=(",", ":")).encode("utf-8"))
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.session_path)
+            self._sync_directory(self.root)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _existing_matches(self, relative, body):
+        path = self.root / relative
+        if not path.exists() and not path.is_symlink():
+            return False
+        if path.is_symlink() or not path.is_file() or self.root not in path.resolve().parents or any(parent.is_symlink() for parent in path.parents if parent != self.root and self.root in parent.parents):
+            raise RecordingError("Recording destination is not a regular file.", 409)
+        if path.stat().st_size != len(body):
+            raise RecordingError("A different recording already uses this filename; nothing was overwritten.", 409)
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            while block := source.read(1024 * 1024):
+                digest.update(block)
+        if digest.hexdigest() != hashlib.sha256(body).hexdigest():
+            raise RecordingError("A different recording already uses this filename; nothing was overwritten.", 409)
+        return True
+
+    def current_session(self):
+        with self.session_lock:
+            return self._read_session()
+
+    def begin_session(self, bundle, split, body):
+        relative = recording_destination(bundle, split)
+        if bundle["format"] != "neural-qr-sender":
+            raise RecordingError("Start collection with a sender manifest.")
+        if len(body) > MAX_SESSION_BYTES:
+            raise RecordingError("Sender manifest exceeds the collection session limit.", 413)
+        staged = relative.with_name(relative.name + ".tmp")
+        with self.session_lock:
+            active = self._read_session()
+            if active is not None:
+                if self._sender_relative(active) != relative:
+                    raise RecordingError("Another matrix is still being collected. Finish or abandon that collection first.", 409)
+                source = staged if (self.root / staged).exists() else relative
+                if not self._existing_matches(source, body):
+                    raise RecordingError("Active sender file is missing; inspect server storage.", 409)
+                return {"ok": True, "storedPath": source.as_posix(), "bytes": len(body),
+                        "sha256": hashlib.sha256(body).hexdigest(), "duplicate": True, "session": active}
+            if self._existing_matches(relative, body):
+                return {"ok": True, "storedPath": relative.as_posix(), "bytes": len(body),
+                        "sha256": hashlib.sha256(body).hexdigest(), "duplicate": True,
+                        "session": None, "sessionCompleted": True}
+            result = self._save_bytes(staged, body)
+            self._sync_directory((self.root / staged).parent)
+            descriptor = {"format": "neural-qr-collection-session", "version": 1,
+                          "id": str(uuid.uuid4()), "collectionCode": bundle["collectionCode"],
+                          "senderSessionId": bundle["sessionId"], "profile": {key: bundle["profile"][key] for key in
+                              ("size", "colors", "phases", "gridBlock", "permute", "pixelsPerCell", "holdMs", "parity")},
+                          "datasetSplit": split, "created": bundle["created"]}
+            self._write_session(descriptor)
+            return {**result, "session": descriptor}
+
+    def abandon_session(self, identifier):
+        with self.session_lock:
+            active = self._read_session()
+            if not active or active["id"] != identifier:
+                raise RecordingError("That collection is no longer active. Refresh the collector.", 409)
+            self.session_path.unlink()
+            self._sync_directory(self.root)
+            return {"ok": True, "abandoned": True}
+
+    def _finish_session(self, active):
+        relative = self._sender_relative(active)
+        final = self.root / relative
+        staged = final.with_name(final.name + ".tmp")
+        # Parent paths were derived from validated fields. Never follow a symlink.
+        for path in (final, staged):
+            if path.is_symlink() or self.root not in path.parent.resolve().parents or any(parent.is_symlink() for parent in path.parents if parent != self.root and self.root in parent.parents):
+                raise RecordingError("Unsafe staged sender path.", 409)
+        if staged.exists():
+            try:
+                os.link(staged, final)
+            except FileExistsError:
+                if not final.is_file() or final.read_bytes() != staged.read_bytes():
+                    raise RecordingError("Final sender differs from staged data; neither file was removed.", 409)
+            self._sync_directory(final.parent)
+            staged.unlink()
+            self._sync_directory(final.parent)
+        elif not final.is_file():
+            raise RecordingError("Staged sender is missing; receiver was saved, retry after restoring the sender.", 409)
+        self.session_path.unlink()
+        self._sync_directory(self.root)
+
+    def save(self, bundle, split, body):
+        relative = recording_destination(bundle, split)
+        identifier = bundle.get("collectionSessionId")
+        if identifier is None:
+            # Already recorded files remain valid and never complete a managed session.
+            return self._save_bytes(relative, body)
+        if not isinstance(identifier, str) or bundle["format"] != "neural-qr-captures" or not bundle["records"]:
+            raise RecordingError("Completing a collection requires receiver captures and its active session ID.")
+        with self.session_lock:
+            active = self._read_session()
+            if active is None or active["id"] != identifier:
+                # A response may have been lost after durable completion. Only an exact
+                # existing receiver file may acknowledge storage of that old request.
+                # Inactivity alone cannot prove sender finalization: the user may
+                # have abandoned after an interrupted finalization.
+                if self._existing_matches(relative, body):
+                    return {"ok": True, "storedPath": relative.as_posix(), "bytes": len(body),
+                            "sha256": hashlib.sha256(body).hexdigest(), "duplicate": True,
+                            "sessionCompleted": False, "sessionInactive": True}
+                raise RecordingError("This collection is no longer active. Your captures have not been changed.", 409)
+            if (active["collectionCode"] != bundle["collectionCode"] or active["datasetSplit"] != split
+                    or active["profile"] != bundle["profile"]):
+                raise RecordingError("Receiver assignment disagrees with the active collection.", 409)
+            for row in bundle["records"]:
+                guard = row.get("stability", {})
+                if (type(guard.get("guardMs")) is not int or not 500 <= guard["guardMs"] <= 5000
+                        or not isinstance(guard.get("durationMs"), (int, float)) or guard["durationMs"] < guard["guardMs"]
+                        or type(guard.get("observations")) is not int or guard["observations"] < 2):
+                    raise RecordingError("Receiver capture has no phase settling evidence.")
+            result = self._save_bytes(relative, body)
+            self._sync_directory((self.root / relative).parent)
+            self._finish_session(active)
+            return {**result, "sessionCompleted": True}
+
+
 class BenchHandler(SimpleHTTPRequestHandler):
     extensions_map = {**SimpleHTTPRequestHandler.extensions_map, ".js": "text/javascript", ".mjs": "text/javascript"}
 
@@ -200,6 +376,14 @@ class BenchHandler(SimpleHTTPRequestHandler):
             if self.recordings:
                 config["uploadToken"] = self.recordings.token
             return self.json_response(200, config)
+        if path == "/api/collection-session":
+            if not self.same_origin():
+                return self.json_response(403, {"error": "Use the collector's own server origin."})
+            try:
+                return self.json_response(200, {"enabled": self.recordings is not None,
+                    "session": self.recordings.current_session() if self.recordings else None})
+            except RecordingError as error:
+                return self.json_response(error.status, {"error": str(error)})
         if path.startswith("/api/"):
             return self.json_response(404, {"error": "Not found."})
         return super().do_GET()
@@ -207,7 +391,7 @@ class BenchHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlsplit(self.path)
         self.close_connection = True
-        if parsed.path != "/api/recordings":
+        if parsed.path not in ("/api/recordings", "/api/collection-session", "/api/collection-session/abandon"):
             return self.json_response(404, {"error": "Not found."})
         if self.recordings is None:
             return self.json_response(404, {"error": "Uploads are disabled. Start the server with --recordings-dir."})
@@ -219,10 +403,15 @@ class BenchHandler(SimpleHTTPRequestHandler):
         if len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,12}", lengths[0]) or self.headers.get("Transfer-Encoding"):
             return self.json_response(411, {"error": "A single Content-Length is required."})
         length = int(lengths[0])
-        if not 1 <= length <= self.recordings.max_bytes:
+        limit = self.recordings.max_bytes if parsed.path == "/api/recordings" else min(MAX_SESSION_BYTES, self.recordings.max_bytes)
+        if not 1 <= length <= limit:
             return self.json_response(413, {"error": "Recording exceeds the server upload limit."})
         query = parse_qs(parsed.query, keep_blank_values=True)
-        if set(query) != {"split"} or len(query["split"]) != 1 or query["split"][0] not in SPLITS:
+        if parsed.path == "/api/collection-session/abandon":
+            valid_query = not query
+        else:
+            valid_query = set(query) == {"split"} and len(query["split"]) == 1 and query["split"][0] in SPLITS
+        if not valid_query:
             return self.json_response(422, {"error": "Select exactly one split: train, validation or test."})
         if not self.recordings.slots.acquire(blocking=False):
             return self.json_response(429, {"error": "Two uploads are already running. Retry shortly."})
@@ -234,10 +423,15 @@ class BenchHandler(SimpleHTTPRequestHandler):
             def invalid_constant(value):
                 raise ValueError(f"Invalid JSON number: {value}")
             try:
-                bundle = json.loads(body.decode("utf-8"), parse_constant=invalid_constant)
+                bundle = json.loads(body, parse_constant=invalid_constant)
             except (ValueError, UnicodeError, RecursionError) as error:
                 raise RecordingError("Recording must be valid UTF-8 JSON.", 400) from error
-            result = self.recordings.save(bundle, query["split"][0], body)
+            if parsed.path == "/api/collection-session/abandon":
+                if not isinstance(bundle, dict) or set(bundle) != {"id"} or not isinstance(bundle["id"], str):
+                    raise RecordingError("Provide the active collection ID.")
+                return self.json_response(200, self.recordings.abandon_session(bundle["id"]))
+            operation = self.recordings.begin_session if parsed.path == "/api/collection-session" else self.recordings.save
+            result = operation(bundle, query["split"][0], body)
             return self.json_response(200 if result["duplicate"] else 201, result)
         except RecordingError as error:
             return self.json_response(error.status, {"error": str(error)})
@@ -307,7 +501,7 @@ def main():
     shown_host = "localhost" if args.host in ("127.0.0.1", "0.0.0.0") else args.host
     print(f"Optical Bench: {scheme}://{shown_host}:{args.port}", flush=True)
     if recordings:
-        print(f"Recording uploads: {recordings.root} (train/validation/test, grouped by grid size; 160 MiB per upload)", flush=True)
+        print(f"Recording uploads: {recordings.root} (train/validation/test, grouped by grid size; 800 MiB maximum per upload)", flush=True)
     if args.host == "0.0.0.0":
         print(f"For another device, replace localhost with this computer's LAN IP. Camera access requires trusted HTTPS.", flush=True)
     try:

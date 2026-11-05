@@ -138,7 +138,12 @@ SHA-256 and labels for offline validation; the receiver receives neither labels
 nor clean pixels. The join checks code, profile, phase and manifest consistency
 and rejects conflicting sender assignments.
 
-The code is a manual association, **not a value recovered from the camera**.
+The code is an out-of-band association, **not a value recovered from the camera**.
+On the demo server, sender creation stages its manifest and publishes a public
+collection-session descriptor. The receiver automatically reads the code, profile
+and split; completed receiver upload finalizes the sender and clears the descriptor.
+Manual code entry remains available on static hosts. No sender labels enter
+acquisition. See [the collection workflow](MULTIRES_COLLECTION.md).
 Typing a valid code while photographing another matrix can mislabel a recording;
 phase agreement and image similarity cannot prove otherwise. Keep one static
 logical matrix assigned for all four phases, save the batch before changing it,
