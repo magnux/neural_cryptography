@@ -21,25 +21,27 @@ static serving and browser tests.
 
 The next integrated transport is [Neural-QR](../../docs/NEURAL_QR.md), designed to supply
 geometry, phase identity and normalized crops without a separately decoded dense
-header. The next planned architecture is `multires`, with independent per-size
-anchors and an alternating convolution/attention bottleneck. The
+header. The `multires` architecture shares a trunk across six sizes, with independent
+per-size anchors and an alternating convolution/attention bottleneck. The
 [multires collector](../../docs/MULTIRES_COLLECTION.md) already records G8…G256
 at 2×2 pixels per cell using the new header-free markers and phase cues, and
-supports server uploads with a public collection code for offline association. Its production training and
-browser model integration are pending; the implemented profiles below use their
-established four-pixels-per-axis inputs.
+supports server uploads with a public collection code for offline association. The production training and synthetic-generation pipeline accepts these recordings
+directly. Browser integration for the new model is a separate next step; the
+U-tube experiments retain their four-pixels-per-axis inputs.
 
 ## Model family
 
 | Profile | Input forms | Internal design | Parameters |
 | --- | --- | --- | --- |
+| `multires` | Four-phase burst, 4–8 observations in eight slots; G8…G256 | One-level 2G→G→2G U; alternating conv/attention; independent anchors | 195,472 shared + 2,795,520 anchors |
 | `U-tube` | Single RGB frame or fixed T-frame burst | Full-resolution U, 32 channels, two convs per block | 140,976 at T=1; 144,432 at T=5 |
 | `U-tube-2x` | Single RGB frame or fixed T-frame burst | Same U width; residual blocks with four outer/eight bottleneck convs | 276,336 at T=1; 279,792 at T=5 |
 | `U-tube-2x-attn` | Four-phase burst, 4–8 observations in eight slots | Residual U, learned global positional anchor, two window-attention blocks | 432,848 |
 
 `U-tube` is the default profile. The trained four-phase experiment uses
-`U-tube-2x-attn`. All profiles produce `[N,16,G,G]` logits and use four input pixels
-per output cell. For G64, their U operates at **256→128→64→128→256**, followed by a
+`U-tube-2x-attn`. Select `--model multires --frames 8` for new Neural-QR recordings.
+All profiles produce `[N,16,G,G]` logits. The three U-tube profiles use four input
+pixels per axis per output cell; `multires` uses two. For G64, their U operates at **256→128→64→128→256**, followed by a
 **256→128→64** outlet. Block outputs remain 32 channels. Skip concatenations
 briefly have 64 channels; the head produces 16 logits. No raw RGB bypass reaches
 the output.
@@ -69,10 +71,19 @@ for the distinction between these masks and the shifted-attention boundary mask.
 The recordings contain calibrated dense crops. Offline joins recover exact
 sender-derived targets, keeping receiver/sender sessions and payloads in their
 assigned train/validation split. New Neural-QR recordings use `join-uploads`;
-the old automatic rebuild command is paused until multires synthesis is ready. Real inputs can receive
+`rebuild-corrector-data.mjs` joins completed uploads and regenerates clean targets
+and paired synthetics. Its defaults generate eight bursts of eight captures per
+phase: **256 synthetic captures per target**, with **50/50 real/synthetic training**
+independent of their disk counts. Real inputs can receive
 mild photometric augmentation. Synthetics include curved moiré, capture-resolution
 loss, rolling shutter, motion/RGB-offset blur, white balance/exposure changes,
 shadows, reflections, glare and sensor noise.
+
+Multires training uses one resolution per update, chooses resolutions uniformly,
+and balances sources, recorded device directions and physical sessions. Its
+validation measures exact **logical data matrices** and masked cell error, with
+equal weight across resolutions, directions and K4…K8. There are no packet bytes
+or CRC recovery claims in the raw-symbol Neural-QR dataset.
 
 Current collection files use `neural-qr-sender` / `neural-qr-captures`, and their
 joined datasets use `neural-qr-dataset`. They are separate from existing prepared
@@ -112,7 +123,7 @@ browser performance remains the next measurement.
 | `synthetic.py`, `augmentation.py` | Coherent corruptions and training-only transformations |
 | `sampling.py`, `session_groups.py` | Source/direction balance and session assignments |
 | `train.py` | Optimization, progress summaries, compact history and checkpoint selection |
-| `evaluate.py` | Held-out cell metrics and canonical JavaScript payload recovery |
+| `evaluate.py` | Held-out cell metrics; exact Neural-QR matrices or independent OBM payload recovery |
 | `checkpoint.py` | Strict finite float32 parameter/metadata validation |
 | `export.py` | ONNX graph export, parity fixtures and manifest |
 | `browser-runtime/` | Pinned ONNX Runtime Web dependencies and Node WASM check |
@@ -131,7 +142,7 @@ python -m pip install -r experiments/neural-corrector/requirements.txt
 python -m unittest discover -s experiments/neural-corrector/tests -v
 ```
 
-For a trained checkpoint whose metadata uses its current profile name:
+For the existing U-tube browser demo, using a checkpoint whose metadata uses its current profile name:
 
 ```sh
 python experiments/neural-corrector/export.py \
@@ -158,6 +169,11 @@ inference runs locally inside the browser worker. Detailed commands and the
 one-time profile-metadata naming step for an existing checkpoint are in the
 [serving guide](../../docs/CORRECTOR_LAB.md).
 
+For multires, `export.py --checkpoint PATH --sizes 64 --out PATH` exports a
+static selected-size graph with only its own anchor. A trained checkpoint may
+export only sizes actually included in training. This does not yet update the
+existing browser worker or packet transport to the new input/format contract.
+
 Without `--checkpoint`, export produces **untrained** numerical smoke fixtures.
 Those fixtures establish execution/parity only and cannot establish optical
 recognition. Generated weights, crops, logs and runtime assets remain ignored by
@@ -174,7 +190,8 @@ before inference; matching tensor shapes alone do not prove matching semantics.
 | Layout | Input tensor | Output label space |
 | --- | --- | --- |
 | `stacked-rgb` | `[N,3T,4G,4G]` | Physical palette classes |
-| `phase-paired-rgb-presence-planes` | `[N,32,256,256]` | Canonical logical data classes |
+| `phase-paired-rgb-presence-planes` (U-tube-2x-attn) | `[N,32,256,256]` | Canonical logical data classes |
+| `phase-paired-rgb-presence-planes` (multires) | `[N,32,2G,2G]` | Canonical logical data classes |
 
 The output is always `[N,16,G,G]`. The score adapter applies softmax to active
 classes, reverses a phase mapping only for physical-output models, and excludes

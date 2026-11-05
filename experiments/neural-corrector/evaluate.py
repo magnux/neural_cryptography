@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Evaluate held-out physical labels and canonical JS CRC/RS payload recovery.
+"""Evaluate held-out optical matrices and, where defined, packet recovery.
 
-Predicted logits never receive expected bytes. Those bytes are compared only
+Neural-QR multires datasets measure exact logical data cells directly. The OBM
+experiment additionally uses canonical JS CRC/RS recovery. Predicted logits never receive expected bytes. Those bytes are compared only
 after the canonical decoder accepts/rejects a candidate. Both methods observe
 the same number of distinct captures; this report does not measure throughput.
 """
@@ -414,6 +415,13 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
         raise ValueError("detailed must be a boolean")
     if type(max_samples) is not int or max_samples < 0:
         raise ValueError("max_samples must be a nonnegative integer")
+    if getattr(model, "profile", None) == "multires":
+        from multires_evaluation import evaluate_matrices
+        result = evaluate_matrices(model, dataset, device=device, max_samples=max_samples,
+                                   session_groups=session_groups, detailed=detailed)
+        return {**result, "reportDetail": "detailed"} if detailed else compact_report(result)
+    if getattr(dataset, "dataset_format", "optical-decoder-dataset") != "optical-decoder-dataset":
+        raise ValueError("Neural-QR datasets require the multires model")
     supported = getattr(model, "supported_sizes", (64, 128))
     if any(sample.shape[0] not in supported for sample in dataset.samples):
         raise ValueError(f"Model supports only matrix sizes {supported}")
@@ -470,6 +478,10 @@ def main():
             session_groups = load_session_groups(args.session_groups)
         model, checkpoint = load_model_checkpoint(args.checkpoint)
         check_checkpoint_overlap(checkpoint, dataset, args.split)
+        if model.profile == "multires":
+            unseen = {sample.shape[0] for sample in dataset.samples} - set(checkpoint["training"]["trainedSizes"])
+            if unseen:
+                raise ValueError(f"Checkpoint anchors have not been trained for grids {sorted(unseen)}")
         result = evaluate_model(model, dataset, device=device, max_samples=args.max_samples,
                                 node=args.node, work_dir=args.out.resolve().parent, session_groups=session_groups,
                                 detailed=args.detailed_report is not None)
@@ -484,6 +496,12 @@ def main():
         args.out.write_text(json.dumps(result, indent=2)+"\n")
     except (OSError, ValueError, RuntimeError) as error:
         parser.exit(1, f"Evaluation failed: {error}\n")
+    if "matrixAccuracy" in result:
+        summary = {name: result[name] for name in ("samples", "uniqueCandidates", "framesPerInput",
+                   "cellErrorRate", "loss", "matrixAccuracy", "selectionScore", "bySize")}
+        summary["report"] = str(args.out.resolve())
+        print(json.dumps(summary, indent=2))
+        return
     summary = {"samples": result["samples"], "framesPerInput": result["framesPerInput"],
                       "inputCaptures": result["inputCaptures"], "cellErrorRate": result["cellErrorRate"],
                       "loss": result["loss"], "recovery": result["recovery"]["summary"],

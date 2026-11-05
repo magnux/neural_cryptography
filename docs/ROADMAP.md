@@ -1,6 +1,6 @@
 # Roadmap: fast optical authentication with Neural-QR
 
-Planning baseline: **4 November 2026**. The long-term goal is feasible, fast and
+Planning baseline: **5 November 2026**. The long-term goal is feasible, fast and
 safe optical authentication between devices. The immediate engineering goal is
 a repeatable **Neural-ZKBoo** POC carried entirely by **Neural-QR**, our custom
 optical format designed around the **neural-corrector**. The existing experiments
@@ -15,13 +15,15 @@ packet integration. Header-free `capture.html` now collects its training data;
 the working [device demo](NEURAL_ZKBOO_DEMO.md) still uses
 OBM5 color DATA and static standard QR ACKs.
 
-The model target is now **`multires`**, covering
+The implemented training model is **`multires`**, covering
 G8/G16/G32/G64/G128/G256 with **2×2 pixels per cell**. Small controls and larger
 data matrices share a convolution/attention trunk and select independent learned
 G×G anchors, enlarged exactly 2× at the inlet. The bottleneck alternates two
 convolutions, two attention blocks, two convolutions and two attention blocks;
 the intermediate encoder/decoder level is removed. This replaces the separate-G128
-model plan; layout, shared model support and integration can proceed together.
+model plan. Mixed-size training, paired synthetics, held-out matrix evaluation
+and per-size ONNX export are implemented; training on the new recordings and
+browser/packet integration remain next.
 
 ## What is established
 
@@ -31,7 +33,8 @@ model plan; layout, shared model support and integration can proceed together.
 | Canonical crypto and authentication | Browser/Python circuit and compact proof implementation; local key generation, pairing confirmation, fresh challenge, proof, result and acknowledgments |
 | Trained neural-corrector | G64 U-tube-2x-attn with four phases and 4–8 captures; successful recorded evaluation and live device recovery |
 | Hybrid optical authentication | The 4 November device reports confirm local proof acceptance and final result delivery for 32 repetitions |
-| Header-free acquisition | Neural-QR rendering, asymmetric orientation, repeated phase cues, 2×2-cell multires crops, balanced recording pools, uploads and offline joins; device tests pending |
+| Header-free acquisition | Neural-QR rendering, asymmetric orientation, repeated phase cues, 2×2-cell multires crops, balanced recording pools, uploads and offline joins; the user is collecting both directions across sizes |
+| Multires training | Six independent anchors; shared interleaved conv/attention trunk; paired 50/50 real/synthetic sampling; G8…G256 model checks and selected-size ONNX parity |
 | Optical engineering | Geometry, color references, temporal collection, ECC, CRC, multipart transfer and QR comparison tools are reusable |
 
 The completed exchange took about **6 min 17 s**. A **17,474-byte** proof took
@@ -70,7 +73,7 @@ saved challenge, identity minimum and repetition policy continue to govern accep
 
 | Milestone | Work | Completion criterion |
 | --- | --- | --- |
-| **N1 — Shared model and Neural-QR format** | Implement `multires` for G8…G256 with independent G-sized anchors, 2×2 pixels/cell and four attention blocks at G; fine-tune shared trunk and size-specific anchors; use the implemented header-free collector; add protected in-band metadata and bounded live packet association alongside model work | Export/WASM parity for supported profiles; exact packet recovery; mixed phases/packets reject or refresh cleanly; real-device recovery assessed by size |
+| **N1 — Shared model and Neural-QR format** | Use the implemented `multires` training/export pipeline for G8…G256 with independent anchors, 2×2 pixels/cell and four attention blocks at G; train the shared trunk and size-specific anchors; use the implemented header-free collector; add protected in-band metadata and bounded live packet association alongside model work | Export/WASM parity for supported profiles; exact packet recovery; mixed phases/packets reject or refresh cleanly; real-device recovery assessed by size |
 | **N2 — QR-free authentication** | Connect small Neural-QR controls and larger DATA profiles to the existing authentication session; choose controls that fit full framing/ECC/binding; use pre-agreed directional profiles initially | Complete identity/pairing/challenge/proof/result/final-ACK exchange with 32 repetitions in both role arrangements; no QR ACK or silent alternate reader; one exchange completes after server disconnection |
 | **N3 — Fast complete exchanges and larger proofs** | Tune profile size, capture/inference scheduling and ACK windows from measured costs; update payload limits and bounded deadlines; validate 219-repetition operation | Repeatable delivered bytes/s and complete-authentication time; losses/duplicates/corruption recover or time out; larger profiles improve actual goodput where enabled; compare standard QR under matched conditions |
 
@@ -170,3 +173,4 @@ of production or post-quantum security follows from successful optical transport
 Hosted sites remain parked unless deployment is separately requested. Source,
 documentation and current model tooling stay in the repository; private keys,
 recordings, training checkpoints and individual experiment logs stay out of it.
+

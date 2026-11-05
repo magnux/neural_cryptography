@@ -102,7 +102,7 @@ test('float/base64 contract rejects malformed, oversized, and non-finite tensors
   assert.throws(()=>floatBytes(Float32Array.of(NaN)),/Non-finite/);
 });
 
-test('current Neural-QR joined captures reject the established OBM5 target recipe before output creation',async()=>temp(async root=>{
+test('Neural-QR targets reconstruct all four phases offline from a partial observed phase set',async()=>temp(async root=>{
   const s=join(root,'sender.json'),r=join(root,'capture.json'),joined=join(root,'joined'),out=join(root,'targets');
   const b=new CaptureBuffer();let timestamp=1000;
   for(const phase of [1,3]) {
@@ -113,8 +113,12 @@ test('current Neural-QR joined captures reject the established OBM5 target recip
   await joinCaptures({out:joined,senders:s,captures:r,split:'validation'});
   const source=JSON.parse(await readFile(join(joined,'manifest.json'),'utf8'));
   assert.equal(source.format,'neural-qr-dataset');assert.equal(source.samples.length,4);
-  await assert.rejects(targets({dataset:joined,out}),/Neural-QR multires synthetic\/training integration is separate/);
-  await assert.rejects(readFile(join(out,'manifest.json')),{code:'ENOENT'});
+  const result=await targets({dataset:joined,out});
+  assert.equal(result.targets,1);assert.equal(result.samples,4);assert.equal(result.synthesizedMissingPhases,2);
+  const clean=JSON.parse(await readFile(join(out,'manifest.json'),'utf8'));
+  for(const sample of clean.samples){assert.equal(sample.source,'synthetic');assert.equal(sample.pixelsPerCell,2);assert.deepEqual(sample.inputShape,[3,128,128]);
+    assert.deepEqual(new Uint8Array(await readFile(join(out,sample.labels))),sender.frames[sample.info.phase].symbols);
+    assert.equal(sample.payloadId,source.samples[0].payloadId);assert.equal(sample.sessionId,'physical-target-session');}
   for(const sample of source.samples)assert.equal((await readFile(join(joined,sample.input))).length,3*128*128*4);
 }));
 

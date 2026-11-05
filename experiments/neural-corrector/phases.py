@@ -1,4 +1,4 @@
-"""The four-phase G64 corrector's label convention, shared by offline pipelines.
+"""Four-phase logical label conventions, shared by the offline corrector pipelines.
 
 The canonical JavaScript wire codec uses these public XOR palette mappings for
 the first four 16-color phases. Only data cells change color; pilot cells do not.
@@ -12,10 +12,11 @@ PHASE_MASKS = (0, 15, 7, 8)
 
 def phase_neutral_info(info):
     """Validate the model's optical profile and remove only the phase index."""
-    if (not isinstance(info, dict) or info.get("size") != 64 or info.get("colors") != 16
+    sizes = (8, 16, 32, 64, 128, 256) if isinstance(info, dict) and info.get("pixelsPerCell") == 2 else (64,)
+    if (not isinstance(info, dict) or type(info.get("size")) is not int or info["size"] not in sizes or info.get("colors") != 16
             or info.get("phases") != 4 or info.get("permute") is not True
             or type(info.get("phase")) is not int or info["phase"] not in range(4)):
-        raise ValueError("Phase grouping requires G64, 16 colors, four permuted phases")
+        raise ValueError("Phase grouping requires a supported grid, 16 colors and four permuted phases")
     return {key: value for key, value in info.items() if key != "phase"}
 
 

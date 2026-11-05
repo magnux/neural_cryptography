@@ -27,24 +27,25 @@ replaces the current separately decoded header with geometric anchors and phase
 cues while reusing the palette, phase grouping and logical-label conventions. The
 header-based descriptions below document the currently implemented OBM5 path;
 they are not used by the new Neural-QR collector. Its current cue-based acquisition
-and manual public-code association are documented in [the collection guide](MULTIRES_COLLECTION.md).
+and public-code session association are documented in [the collection guide](MULTIRES_COLLECTION.md).
 
-The next model is **`multires`**, with a shared convolution/attention trunk and
+The current multi-resolution training model is **`multires`**, with a shared convolution/attention trunk and
 an independent learned positional anchor for every supported size, G8…G256.
 Its bottleneck alternates two convolutions, two attention blocks, two
 convolutions and two attention blocks.
-See [multires design](#multires-next-architecture).
-The production implementation and trained checkpoint are currently G64.
-The new design uses **2×2 pixels per cell (four pixels total)**. The currently
-implemented models documented below use 4×4; the new shape contract and spatial
-strides are specified in the multi-resolution section, not yet in production code.
+See [multires architecture](#multires-architecture). Its model, paired synthetic
+generation, training, held-out evaluation and selected-size ONNX export are
+implemented. A trained multires checkpoint and browser integration remain to be
+validated. It uses **2×2 pixels per cell (four pixels total)**; the U-tube
+experiments keep their established 4×4 contract.
 
 ## Currently implemented input and output contract
 
 Let **G** be the matrix width in cells, **T** a fixed number of observations,
 **K** the number of available observations in a variable input, and **N** the
-batch size. A rectified crop has four pixels per cell along each axis: a G64
-matrix produces a 256×256 RGB crop. The crop includes the colored reference
+batch size. A U-tube rectified crop has four pixels per cell along each axis: a G64
+matrix produces a 256×256 RGB crop. Multires uses two pixels per cell, so G64
+produces a 128×128 crop. The crop includes the colored reference
 grid; it does not include the full camera image or monochrome transport header.
 Detection, header validation, rectification and color calibration remain outside
 the network.
@@ -54,6 +55,7 @@ the network.
 | Single frame | U-tube, U-tube-2x | `[N,3,4G,4G]` | One rectified observation |
 | Fixed frame burst | U-tube, U-tube-2x | `[N,3T,4G,4G]` | T distinct observations of the same logical matrix and palette phase; T=1…64 |
 | Phase-grouped burst | U-tube-2x-attn | `[N,32,256,256]` | Eight phase-paired RGB slots plus eight presence planes; K=4…8 |
+| Multi-resolution phase burst | multires | `[N,32,2G,2G]` | Same phase slots and presence planes; G8…G256, K=4…8 |
 
 Every model produces **`logits: [N,16,G,G]`**. These are unnormalized class
 scores, not a rendered RGB image. Softmax over the active palette produces
@@ -64,8 +66,8 @@ models use two internal label conventions:
 
 - **U-tube and U-tube-2x** predict physical displayed palette classes. The
   receiver uses the validated phase header to reverse that palette mapping.
-- **U-tube-2x-attn** predicts canonical, phase-zero logical data classes directly.
-  Its output must not undergo another phase reversal.
+- **U-tube-2x-attn and multires** predict canonical, phase-zero logical data classes directly.
+  Their output must not undergo another phase reversal.
 
 Reference-grid cells occupy positions in the output tensor but are excluded from
 payload scores and the supervised loss. The current fixed-frame models support
@@ -387,7 +389,7 @@ exchange is described below.
 The changes combined phase evidence, architecture, augmentation and additional
 sessions, so this run does not isolate the contribution of each change.
 
-## multires: next architecture
+## multires architecture
 
 The architecture name is **`multires`**. Share convolution, normalization,
 attention and classifier weights across G = **8, 16, 32, 64, 128, 256**, but
@@ -482,9 +484,10 @@ initial profiles above deliberately avoid that additional machinery.
 Presence planes still express exactly eight availability flags; only their
 spatial extent changes. The spatial loss mask must follow the actual reference
 grid at each size; never resize a G64 boolean mask with interpolation. Palette
-class masking remains independent of size. The current code hardcodes G64 in
-RGB reshaping, anchor interpolation, attention partition/reversal, mask creation,
-the tensor contract and browser validation. All must be parameterized together.
+class masking remains independent of size. The multires Python model and tensor contract parameterize RGB reshaping,
+anchor selection, attention partition/reversal and mask creation together.
+The existing browser contract remains specific to the established U-tube demo
+until its separate Neural-QR integration.
 
 ### Parameter and export sizes
 
@@ -541,28 +544,44 @@ matched PyTorch with maximum logit errors 2.38×10⁻⁶ / 1.94×10⁻⁶, no
 tolerance failures and no changed argmax cells. Each exported graph contained
 only its selected anchor; the full anchor bank was not duplicated into each
 profile. This used random weights and establishes small-profile execution/parity,
-not trained recovery or phone performance. Production model/export/browser code
-is unchanged by this design update.
+not trained recovery or phone performance. The production Python model/export now implement the same architecture; the
+browser worker still needs the new contract integration. On 5 November, native
+ONNX Runtime parity passed two public numerical fixtures each at G8, G16, G64
+and G256 with maximum absolute error below 1.90×10⁻⁶ and no argmax changes.
+These checks use untrained weights, not the newly collected camera dataset.
+Measured static ONNX sizes were 1.03 MB (G16), 3.48 MB (G64) and 42.81 MB
+(G256). G256 includes about 32 MiB of constant shifted-window boundary masks;
+only its selected anchor is included and it stays unexpanded. The parameter
+counts above therefore understate complete ONNX file sizes. Mask representation
+can be optimized during browser integration.
 
 ### Training and transport integration
 
-Initialize from the successful G64 checkpoint and fine-tune one model across
-sizes, retaining G64 examples. Copy only matching shared blocks and the G64
+Train one model across sizes, retaining G64 examples. Fresh initialization is
+the default; `--initialize` also supports an explicit warm start from the
+successful G64 U-tube-2x-attn checkpoint. Copy only matching shared blocks and the G64
 anchor; initialize the other size anchors and additional attention blocks
 independently. Do not manufacture the other anchors by resizing the G64 tensor.
 Removed encoder/decoder blocks have no destination. This is an explicit warm
 start, not an exact whole-checkpoint load.
 
-Use one size per minibatch and a mixture of sizes
-across updates; reduce the batch at large resolutions instead of padding every
-example to 512×512. Keep per-example loss normalization so large matrices do
+Use one size per optimizer update and select active resolutions uniformly.
+Keep microbatches small enough for G256 instead of padding every example to
+512×512; gradient accumulation increases the effective batch. Keep per-example loss normalization so large matrices do
 not dominate merely by having more labeled cells. Generate synthetic observations
-at each actual cell density and evaluate real capture recovery by size. Existing
-4×4-cell recording crops can be resampled to 2×2 for this training recipe; keep
-the original recordings. Halving input dimensions discards some subcell evidence,
-so the existing recovery rates do not transfer automatically to the new sampling.
+at each actual cell density and evaluate real capture recovery by size. Use the newly recorded 2×2-cell Neural-QR datasets directly; the pipeline does
+not silently resample or relabel older 4×4-cell OBM datasets. The changed input
+sampling means existing recovery rates do not transfer automatically.
 A shape change alone does not demonstrate accuracy at unseen resolutions.
-Only the selected anchor receives gradients from a minibatch; all examples
+Training pairs real observations with synthetic versions of the same logical
+matrix at `--real-fraction .5`. Generation defaults to 8 bursts × 8 captures ×
+4 phases, or 256 synthetic captures per target. Dataset counts do not determine
+the training source mixture. Validation uses fixed random, nonconsecutive phase
+subsets and reports K4…K8 separately at each resolution. The primary exact
+metric is the entire logical data matrix, excluding fixed reference cells;
+these collection matrices contain no application packet or CRC/ECC envelope.
+
+Only the selected anchor receives gradients from an update; all examples
 update the shared trunk. Clear gradients with `set_to_none=True` so an inactive
 anchor is not accidentally decayed or updated through stale optimizer gradients.
 

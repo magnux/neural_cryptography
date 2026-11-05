@@ -23,6 +23,9 @@ from phases import canonical_labels, phase_neutral_info
 
 
 CORRUPTION_KIND = "correlated-calibrated-crop-v8"
+MULTIRES_CORRUPTION_KIND = "correlated-calibrated-crop-multires-v1"
+NEURAL_QR_DATASET_FORMAT = "neural-qr-dataset"
+MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
 
 
 @dataclass(frozen=True)
@@ -64,7 +67,7 @@ class PhotometricConfig:
 
 @dataclass(frozen=True)
 class CaptureResolutionConfig:
-    """Effective crop resolution before rectification back to four pixels/cell."""
+    """Effective crop resolution as a fraction of the stored dense crop side."""
 
     probability: float = .75
     min_scale: float = .25
@@ -81,13 +84,38 @@ class CaptureResolutionConfig:
             raise ValueError("capture min_scale must not exceed max_scale")
 
 
-def sample_capture_resolution(side, seed, severity, config):
+def resolution_config(config, pixels_per_cell):
+    """Never simulate a lower capture resolution than one pixel per matrix cell."""
+    if type(pixels_per_cell) is not int or pixels_per_cell not in (2, 4):
+        raise ValueError("pixels-per-cell must be 2 (Neural-QR) or 4 (OBM)")
+    config = config or CaptureResolutionConfig(min_scale=1/pixels_per_cell)
+    if config.min_scale < 1/pixels_per_cell:
+        raise ValueError(f"capture-min-scale must be at least {1/pixels_per_cell:g} "
+                         f"for {pixels_per_cell} pixels/cell")
+    return config
+
+
+def _validate_crop_shape(clean, pixels_per_cell, grouped=False):
+    sizes = MULTIRES_SIZES if pixels_per_cell == 2 else (64, 128)
+    expected_prefix = (4, 3) if grouped else (3,)
+    if (type(pixels_per_cell) is not int or pixels_per_cell not in (2, 4)
+            or clean.ndim != len(expected_prefix)+2
+            or clean.shape[:-2] != expected_prefix
+            or clean.shape[-2] != clean.shape[-1]
+            or clean.shape[-1] not in tuple(g*pixels_per_cell for g in sizes)
+            or not np.isfinite(clean).all() or np.max(np.abs(clean)) > 1.50001):
+        kind = "four finite normalized RGB crops" if grouped else "a finite normalized RGB crop"
+        raise ValueError(f"Expected {kind} with a supported grid and {pixels_per_cell} pixels/cell")
+
+
+def sample_capture_resolution(side, seed, severity, config, *, pixels_per_cell=4):
     """Choose one effective pixel count and blur for a whole burst.
 
     Working distance is independent of photometric severity. Severity zero still
     means exact clean identity. The separate stream leaves all other effects and
     their frame-to-frame randomness unchanged when this simulation is toggled.
     """
+    config = resolution_config(config, pixels_per_cell)
     identity = {"side": side, "blurSigma": 0.}
     if severity == 0 or config.probability == 0:
         return identity
@@ -408,7 +436,8 @@ def apply_capture_resolution(image, capture):
 
 def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float = .65,
                   *, photometric: PhotometricConfig | None = None,
-                  resolution: CaptureResolutionConfig | None = None) -> np.ndarray:
+                  resolution: CaptureResolutionConfig | None = None,
+                  pixels_per_cell: int = 4) -> np.ndarray:
     """Return [T,3,H,W]; a shared texture evolves under small motion/focus shifts.
 
     Labels are unaffected by less than half-cell registration jitter. Spatial
@@ -419,20 +448,19 @@ def corrupt_burst(clean: np.ndarray, seed: int, frames: int = 7, severity: float
     noise vary independently of payload symbols. Seed is public augmentation data.
     """
     clean = np.asarray(clean, dtype=np.float32)
-    if clean.ndim != 3 or clean.shape[0] != 3 or clean.shape[1:] not in ((256, 256), (512, 512)):
-        raise ValueError("Expected normalized [3,256,256] or [3,512,512] input")
-    if not np.isfinite(clean).all() or np.max(np.abs(clean)) > 1.50001:
-        raise ValueError("Input violates the finite normalized crop contract")
+    _validate_crop_shape(clean, pixels_per_cell)
     if not 1 <= frames <= 16 or not 0 <= severity <= 1 or not 0 <= seed <= 0xffffffff:
         raise ValueError("Frames 1–16, severity 0–1, uint32 seed required")
     return _corrupt_sequence(clean[None], np.zeros(frames, dtype=np.int64), seed, severity,
-                             photometric=photometric, resolution=resolution)
+                             photometric=photometric, resolution=resolution,
+                             pixels_per_cell=pixels_per_cell)
 
 
 def corrupt_phase_group(clean: np.ndarray, seed: int, frames: int = 7, severity: float = .65,
                         *, photometric: PhotometricConfig | None = None,
-                        resolution: CaptureResolutionConfig | None = None) -> np.ndarray:
-    """Return [4,T,3,256,256] from one coherent phase-cycling camera trajectory.
+                        resolution: CaptureResolutionConfig | None = None,
+                        pixels_per_cell: int = 4) -> np.ndarray:
+    """Return [4,T,3,H,W] from one coherent phase-cycling camera trajectory.
 
     Slow optical conditions are drawn once. Frame p of each four-phase cycle
     sees the corresponding clean palette assignment; motion, moire, exposure
@@ -440,38 +468,57 @@ def corrupt_phase_group(clean: np.ndarray, seed: int, frames: int = 7, severity:
     `frames` retains its CLI meaning: captures per phase, not total inputs.
     """
     clean = np.asarray(clean, dtype=np.float32)
-    if clean.shape != (4, 3, 256, 256) or not np.isfinite(clean).all() or np.max(np.abs(clean)) > 1.50001:
-        raise ValueError("Phase grouping requires four finite normalized [3,256,256] crops")
+    _validate_crop_shape(clean, pixels_per_cell, grouped=True)
     if type(frames) is not int or not 2 <= frames <= 16:
         raise ValueError("Phase grouping requires 2–16 captures per phase")
     if not 0 <= severity <= 1 or not 0 <= seed <= 0xffffffff:
         raise ValueError("Severity 0–1 and uint32 seed required")
     phases = np.tile(np.arange(4, dtype=np.int64), frames)
     observed = _corrupt_sequence(clean, phases, seed, severity,
-                                photometric=photometric, resolution=resolution)
-    return np.ascontiguousarray(observed.reshape(frames, 4, 3, 256, 256).transpose(1, 0, 2, 3, 4))
+                                photometric=photometric, resolution=resolution,
+                                pixels_per_cell=pixels_per_cell)
+    side = clean.shape[-1]
+    return np.ascontiguousarray(observed.reshape(frames, 4, 3, side, side).transpose(1, 0, 2, 3, 4))
 
 
-def _corrupt_sequence(clean, views, seed, severity, *, photometric=None, resolution=None):
-    """Shared simulator for one clean view or a scheduled four-phase group."""
+def _corrupt_sequence(clean, views, seed, severity, **kwargs):
+    """Small in-memory convenience API; dataset generation streams the iterator."""
+    return np.stack(list(_iter_corrupt_sequence(clean, views, seed, severity, **kwargs)))
+
+
+def _iter_corrupt_sequence(clean, views, seed, severity, *, photometric=None,
+                           resolution=None, pixels_per_cell=4):
+    """Yield one crop at a time along a shared, scheduled optical trajectory.
+
+    Memory is bounded by the clean phase set and one simulated capture, not by
+    captures/burst or targets/dataset. Dense-pixel distortion lengths use the
+    four-pixel profile as their reference, so changing to two pixels/cell halves
+    registration offsets, blur travel and moire spacing in stored-pixel units.
+    Angles and relative image fractions retain their physical meaning.
+    """
     frames = len(views)
     photometric = photometric or PhotometricConfig()
+    resolution = resolution_config(resolution, pixels_per_cell)
     if severity == 0:
-        return clean[views].copy()
+        for view in views:
+            yield clean[int(view)].copy()
+        return
     rng = np.random.default_rng(seed)
     side = clean.shape[-1]
-    capture = sample_capture_resolution(side, seed, severity, resolution or CaptureResolutionConfig())
+    capture = sample_capture_resolution(side, seed, severity, resolution,
+                                        pixels_per_cell=pixels_per_cell)
+    pixel_scale = pixels_per_cell/4
     rgb = torch.from_numpy(np.clip((clean+1)/2, 0, 1))
     high = F.interpolate(rgb, scale_factor=2, mode="nearest")
     hy, hx = torch.meshgrid(torch.arange(2*side, dtype=torch.float32),
                            torch.arange(2*side, dtype=torch.float32), indexing="ij")
     # A high-resolution RGB stripe carrier is optically blurred before sampling.
-    screen_period = rng.uniform(1.6, 3.4)
+    screen_period = rng.uniform(1.6, 3.4)*pixel_scale
     carrier = torch.stack([torch.cos(2*np.pi*hx/screen_period+c*2*np.pi/3) for c in range(3)])
     high = (high * (1 + severity*rng.uniform(.04, .16)*carrier[None])).clamp(0, 1)
     y, x = torch.meshgrid(torch.linspace(-1, 1, side), torch.linspace(-1, 1, side), indexing="ij")
     angle, angle2 = rng.uniform(0, np.pi, 2)
-    period, period2 = rng.uniform(7, 35), rng.uniform(4, 18)
+    period, period2 = rng.uniform(7, 35)*pixel_scale, rng.uniform(4, 18)*pixel_scale
     curve, chirp = rng.uniform(-7, 7), rng.uniform(-5, 5)
     phase0 = rng.uniform(0, 2*np.pi)
     velocity = rng.uniform(.10, .5)
@@ -479,26 +526,32 @@ def _corrupt_sequence(clean, views, seed, severity, *, photometric=None, resolut
     color_mix = torch.tensor(np.eye(3)+rng.normal(0, .035*severity, (3, 3)), dtype=torch.float32)
     gamma = rng.uniform(1-.25*severity, 1+.3*severity)
     illumination = 1 + severity * (rng.uniform(-.14, .14)*x + rng.uniform(-.14, .14)*y)
-    base_sigma = rng.uniform(.15, 1.3) * severity
-    base_shift = rng.uniform(-.6, .6, 2) * severity
-    drift = rng.uniform(-.18, .18, 2) * severity
+    base_sigma = rng.uniform(.15, 1.3) * severity*pixel_scale
+    base_shift = rng.uniform(-.6, .6, 2) * severity*pixel_scale
+    drift = rng.uniform(-.18, .18, 2) * severity*pixel_scale
     # Separate stream: toggling photometric controls does not redraw moiré,
     # motion or sensor noise, making controlled ablations easier to interpret.
     lighting_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x50484f54]))
     lighting = sample_photometric(lighting_rng, frames, severity, photometric)
     shutter_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x53485554]))
     shutter = sample_rolling_shutter(shutter_rng, severity, photometric)
+    if shutter is not None:
+        shutter["skew"] *= pixel_scale
     motion_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x4d4f544e]))
     motion = sample_motion_blur(motion_rng, severity, photometric)
+    if motion is not None:
+        motion["linearPixels"] *= pixel_scale
     rgb_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x5247424f]))
     rgb_offset = sample_rgb_offset(rgb_rng, severity, photometric, motion)
+    if rgb_offset is not None:
+        rgb_offset["maxPixels"] *= pixel_scale
     glare_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x474c4152]))
     glare = sample_glare(glare_rng, severity, photometric)
-    outputs = []
     for t in range(frames):
         view = int(views[t])
-        blurred = gaussian_blur(high[view:view+1], base_sigma + severity*.15*np.sin(t*.6+phase0))
-        shift = np.clip(base_shift + np.sin(t*.55)*drift + rng.normal(0, .04, 2)*severity, -.9, .9)
+        blurred = gaussian_blur(high[view:view+1], base_sigma + severity*.15*pixel_scale*np.sin(t*.6+phase0))
+        shift = np.clip(base_shift + np.sin(t*.55)*drift + rng.normal(0, .04, 2)*severity*pixel_scale,
+                        -.9*pixel_scale, .9*pixel_scale)
         shutter_gains, row_offsets = rolling_shutter_maps(side, shutter, t)
         grid = torch.stack((x+2*(float(shift[0])+row_offsets)/side,
                             y+2*float(shift[1])/side), dim=-1)[None]
@@ -521,8 +574,7 @@ def _corrupt_sequence(clean, views, seed, severity, *, photometric=None, resolut
         noise = torch.from_numpy(rng.normal(size=clean.shape[1:]).astype(np.float32))
         observed = (observed + noise*std).clamp(0, 1)
         observed = apply_capture_resolution(observed, capture).clamp(0, 1)
-        outputs.append((observed*2-1).numpy())
-    return np.stack(outputs).astype(np.float32, copy=False)
+        yield (observed*2-1).numpy().astype(np.float32, copy=False)
 
 
 def clean_phase_groups(samples):
@@ -561,12 +613,25 @@ def clean_phase_groups(samples):
     return ordered
 
 
-def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
+def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=.65,
              max_output_mib=2**20, node="node", photometric: PhotometricConfig | None = None,
-             bursts_per_target=1, severity_min=None,
-             resolution: CaptureResolutionConfig | None = None, phase_grouped=False):
-    if type(phase_grouped) is not bool:
-        raise ValueError("phase-grouped must be boolean")
+             bursts_per_target=None, severity_min=None,
+             resolution: CaptureResolutionConfig | None = None, phase_grouped=None):
+    """Materialize deterministic corruptions, streaming one capture to disk.
+
+    Neural-QR uses eight independent trajectories with eight captures per phase
+    by default (256 crops/target). OBM's independent experiment retains its
+    single seven-capture burst default. Both paths preserve physical session and
+    target ownership; corruption never invents a new split identity.
+    """
+    dataset = Dataset(clean_directories)
+    neural_qr = dataset.dataset_format == NEURAL_QR_DATASET_FORMAT
+    pixels_per_cell = 2 if neural_qr else 4
+    frames = (8 if neural_qr else 7) if frames is None else frames
+    bursts_per_target = (8 if neural_qr else 1) if bursts_per_target is None else bursts_per_target
+    phase_grouped = neural_qr if phase_grouped is None else phase_grouped
+    if type(phase_grouped) is not bool or neural_qr and not phase_grouped:
+        raise ValueError("phase-grouped must be boolean; Neural-QR requires four coherent phases")
     if type(frames) is not int or not (2 if phase_grouped else 1) <= frames <= 16:
         raise ValueError("frames must be 2–16 per phase for grouped data, otherwise 1–16")
     if type(seed) is not int or not 0 <= seed <= 0xffffffff:
@@ -581,15 +646,17 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
             not np.isfinite(severity_min) or not 0 <= severity_min <= severity):
         raise ValueError("severity-min must be finite and in [0, severity]")
     photometric = photometric or PhotometricConfig()
-    resolution = resolution or CaptureResolutionConfig()
-    recipe = {"kind": CORRUPTION_KIND, "seed": seed, "severity": severity,
+    resolution = resolution_config(resolution, pixels_per_cell)
+    corruption_kind = MULTIRES_CORRUPTION_KIND if neural_qr else CORRUPTION_KIND
+    recipe = {"kind": corruption_kind, "seed": seed, "severity": severity,
               "severityMin": severity_min,
               "captureResolution": asdict(resolution),
               "frames": frames, "phaseGrouped": phase_grouped,
               "phaseSchedule": "round-robin-continuous" if phase_grouped else None,
               "burstsPerTarget": bursts_per_target, "photometric": asdict(photometric)}
+    if neural_qr:
+        recipe.update(pixelsPerCell=2, densePixelScale=.5)
     recipe_hash = hashlib.sha256(json.dumps(recipe, sort_keys=True, allow_nan=False).encode()).hexdigest()
-    dataset = Dataset(clean_directories)
     if any(sample.metadata["source"] != "synthetic" or "synthetic" in sample.metadata for sample in dataset.samples):
         raise ValueError("Generate corruptions from canonical synthetic clean datasets only; real captures remain unchanged")
     groups = clean_phase_groups(dataset.samples) if phase_grouped else [(s.id, (s,)) for s in dataset.samples]
@@ -601,6 +668,11 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
     out = Path(out).resolve()
     if out.exists() and any(out.iterdir()):
         raise ValueError("Choose an empty output directory")
+    disk_parent = out
+    while not disk_parent.exists():
+        disk_parent = disk_parent.parent
+    if estimated > shutil.disk_usage(disk_parent).free:
+        raise ValueError(f"Insufficient free space for approximately {estimated/1024**3:.2f} GiB of synthetic binaries")
     out.mkdir(parents=True, exist_ok=True)
     records = []
     for group_key, members in groups:
@@ -608,6 +680,8 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
         for sample in members:
             sample.read("baseline", "<f4")
             sample.read("expected", "u1")
+        _validate_crop_shape(pixels if phase_grouped else pixels[0], pixels_per_cell, grouped=phase_grouped)
+        views = np.tile(np.arange(len(members), dtype=np.int64), frames)
         for burst_index in range(bursts_per_target):
             derived = int.from_bytes(hashlib.sha256(
                 f"{seed}/{group_key}/{burst_index}".encode()).digest()[:4], "little")
@@ -616,48 +690,49 @@ def generate(clean_directories, out: Path, *, seed=7, frames=7, severity=.65,
             severity_rng = np.random.default_rng(np.random.SeedSequence([derived, 0x53455652]))
             burst_severity = (severity if severity_min is None else
                               float(severity_rng.uniform(severity_min, severity)))
-            capture = sample_capture_resolution(pixels.shape[-1], derived, burst_severity, resolution)
-            bursts = (corrupt_phase_group(pixels, derived, frames, burst_severity,
-                                         photometric=photometric, resolution=resolution)
-                      if phase_grouped else corrupt_burst(pixels[0], derived, frames, burst_severity,
-                                                         photometric=photometric, resolution=resolution)[None])
+            capture = sample_capture_resolution(pixels.shape[-1], derived, burst_severity, resolution,
+                                                 pixels_per_cell=pixels_per_cell)
             phase_group_id = hashlib.sha256(f"{group_key}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
-            for sample, burst in zip(members, bursts):
+            observations = _iter_corrupt_sequence(pixels, views, derived, burst_severity,
+                photometric=photometric, resolution=resolution, pixels_per_cell=pixels_per_cell)
+            for timeline_index, value in enumerate(observations):
+                sample = members[int(views[timeline_index])]
+                index = timeline_index//len(members)
                 burst_id = hashlib.sha256(f"{sample.id}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
-                for index, value in enumerate(burst):
-                    identifier = hashlib.sha256(f"{burst_id}/{index}".encode()).hexdigest()[:24]
-                    directory = out / identifier
-                    directory.mkdir()
-                    record = {**sample.metadata, "id": identifier, "hashes": {},
-                              "source": "synthetic", "burstId": f"synthetic-{burst_id}",
-                              "synthetic": {"seed": derived, "frame": index, "burst": burst_index,
-                              "frames": frames, "severity": burst_severity, "parentId": sample.id,
-                              "captureResolution": capture,
-                              "kind": CORRUPTION_KIND, "recipeSha256": recipe_hash},
-                              "baselineMode": "canonical-from-corrupted-input"}
-                    if phase_grouped:
-                        record["synthetic"].update(phaseGroupId=f"phase-group-{phase_group_id}",
-                            timelineFrame=index*4+sample.metadata["info"]["phase"])
-                    for field in ("input", "labels", "mask", "baseline", "expected"):
-                        suffix = {"input": "f32", "baseline": "f32", "expected": "bin"}.get(field, "u8")
-                        path = directory / f"{field}.{suffix}"
-                        if field == "input":
-                            path.write_bytes(np.ascontiguousarray(value, dtype="<f4").tobytes())
-                        else:
-                            shutil.copyfile(local_path(sample.root, sample.metadata[field]), path)
-                        record[field] = path.relative_to(out).as_posix()
-                        record["hashes"][field] = digest(path)
-                    # Other source-only file paths would point outside this bundle.
-                    record.pop("samples", None)
-                    record.pop("original", None)
-                    records.append(record)
-    manifest = {"format": DATASET_FORMAT, "version": 1, "samples": records,
+                identifier = hashlib.sha256(f"{burst_id}/{index}".encode()).hexdigest()[:24]
+                directory = out / identifier
+                directory.mkdir()
+                record = {**sample.metadata, "id": identifier, "hashes": {},
+                          "source": "synthetic", "burstId": f"synthetic-{burst_id}",
+                          "synthetic": {"seed": derived, "frame": index, "burst": burst_index,
+                          "frames": frames, "severity": burst_severity, "parentId": sample.id,
+                          "captureResolution": capture,
+                          "kind": corruption_kind, "recipeSha256": recipe_hash},
+                          "baselineMode": "canonical-from-corrupted-input"}
+                if phase_grouped:
+                    record["synthetic"].update(phaseGroupId=f"phase-group-{phase_group_id}",
+                        timelineFrame=timeline_index)
+                for field in ("input", "labels", "mask", "baseline", "expected"):
+                    suffix = {"input": "f32", "baseline": "f32", "expected": "bin"}.get(field, "u8")
+                    path = directory / f"{field}.{suffix}"
+                    if field == "input":
+                        path.write_bytes(np.ascontiguousarray(value, dtype="<f4").tobytes())
+                    else:
+                        shutil.copyfile(local_path(sample.root, sample.metadata[field]), path)
+                    record[field] = path.relative_to(out).as_posix()
+                    record["hashes"][field] = digest(path)
+                # Other source-only file paths would point outside this bundle.
+                record.pop("samples", None)
+                record.pop("original", None)
+                records.append(record)
+    manifest = {"format": dataset.dataset_format, "version": 1, "samples": records,
                 "generator": {**recipe, "recipeSha256": recipe_hash,
+                              "estimatedBinaryBytes": estimated,
                               "sourceManifestSha256": dataset.manifest_hash,
                               "note": "Correlated calibrated-crop approximation; real-device evaluation is required."}}
     (out/"manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
-    # Keep the stored baseline truthful too. The evaluation bridge independently
-    # recomputes synthetic scores from these pixels as an additional safeguard.
+    # Keep the stored baseline truthful too. Both transports use the canonical
+    # JavaScript crop scorer; the copied clean scores are never used as results.
     bridge = Path(__file__).resolve().parents[2]/"scripts/corrector-dataset.mjs"
     process = subprocess.run([node, str(bridge), "baselines", "--dataset", str(out)],
                              capture_output=True, text=True, timeout=max(60, len(records)*3))
@@ -671,18 +746,18 @@ def main():
     parser.add_argument("--clean", nargs="+", required=True, type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--frames", type=int, default=7, help="captures per phase burst, 1–16 (2–16 with --phase-grouped)")
-    parser.add_argument("--phase-grouped", action="store_true",
-                        help="joint four-phase G64/16-color trajectories for U-tube-2x-attn")
-    parser.add_argument("--bursts-per-target", type=int, default=1,
-                        help="independent corruption bursts per clean target (default: 1)")
+    parser.add_argument("--frames", type=int, default=None, help="captures per phase burst (Neural-QR default 8; OBM 7), 1–16 (grouped: 2–16)")
+    parser.add_argument("--phase-grouped", action="store_true", default=None,
+                        help="joint four-phase trajectories; automatically enabled for Neural-QR")
+    parser.add_argument("--bursts-per-target", type=int, default=None,
+                        help="independent trajectories per target (Neural-QR default 8; OBM 1)")
     parser.add_argument("--severity", type=float, default=.65)
     parser.add_argument("--severity-min", type=float, default=None,
                         help="sample severity uniformly per burst from this minimum to --severity; omitted uses fixed severity")
     parser.add_argument("--capture-probability", type=float, default=.75,
                         help="fraction of bursts with reduced capture resolution/blur (default: .75); 0 disables")
-    parser.add_argument("--capture-min-scale", type=float, default=.25,
-                        help="minimum capture side / crop side, .25–1 (default: .25, one pixel/cell)")
+    parser.add_argument("--capture-min-scale", type=float, default=None,
+                        help="minimum capture side / crop side; defaults to one pixel/cell (.5 Neural-QR, .25 OBM)")
     parser.add_argument("--capture-max-scale", type=float, default=1.,
                         help="maximum capture side / crop side, min-scale–1 (default: 1)")
     parser.add_argument("--capture-blur-sigma", type=float, default=.35,
@@ -735,12 +810,16 @@ def main():
                                          args.zoom_blur_fraction, args.motion_samples,
                                          args.glare_probability, args.glare_strength,
                                          args.rgb_offset_probability, args.rgb_offset_pixels)
+        dataset = Dataset(args.clean)
+        min_scale = args.capture_min_scale
+        if min_scale is None:
+            min_scale = .5 if dataset.dataset_format == NEURAL_QR_DATASET_FORMAT else .25
         result = generate(args.clean, args.out, seed=args.seed, frames=args.frames,
                           severity=args.severity, max_output_mib=args.max_output_mib, node=args.node,
                           photometric=photometric, bursts_per_target=args.bursts_per_target,
                           severity_min=args.severity_min, phase_grouped=args.phase_grouped,
                           resolution=CaptureResolutionConfig(probability=args.capture_probability,
-                              min_scale=args.capture_min_scale, max_scale=args.capture_max_scale,
+                              min_scale=min_scale, max_scale=args.capture_max_scale,
                               blur_sigma=args.capture_blur_sigma))
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f"Synthetic generation failed: {error}\n")

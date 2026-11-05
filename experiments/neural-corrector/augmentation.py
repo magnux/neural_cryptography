@@ -88,7 +88,8 @@ class PhaseAugmentation:
         from phases import PHASE_MASKS
         if (pixels.dtype != np.float32 or pixels.ndim != 3 or pixels.shape[0] != 32
                 or labels.ndim != 2 or mask.shape != labels.shape or mask.dtype != np.bool_
-                or pixels.shape[-2:] != tuple(4*size for size in labels.shape)
+                or pixels.shape[-2:] not in (tuple(2*size for size in labels.shape),
+                                             tuple(4*size for size in labels.shape))
                 or delta not in PHASE_MASKS):
             raise ValueError("Expected packed phase-paired RGB/presence, labels and boolean mask")
         source_phases = [PHASE_MASKS.index(value ^ delta) for value in PHASE_MASKS]

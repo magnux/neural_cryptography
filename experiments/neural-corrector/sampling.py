@@ -6,6 +6,7 @@ accumulation does not accidentally change source or direction quotas.
 """
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -96,6 +97,41 @@ def validate_session_groups(samples, mapping) -> set:
     if missing:
         raise ValueError("Missing session groups for real receiver sessions: " + ", ".join(sorted(missing)))
     return groups
+
+
+def infer_session_groups(samples) -> dict:
+    """Use recorded direction hints, falling back to an explicit device-pair ID.
+
+    Browser device classes are heuristics, not verified hardware identities.
+    Unknown devices are never silently labeled phone/PC. A caller can replace
+    this mapping with the existing explicit --session-groups sidecar.
+    """
+    result = {}
+    for sample in samples:
+        row = sample.metadata
+        if row["source"] != "real":
+            continue
+        provenance = row.get("provenance", {})
+        sender = provenance.get("senderEnvironment") or {}
+        receiver = provenance.get("receiverEnvironment") or {}
+        classes = (sender.get("deviceClass"), receiver.get("deviceClass"))
+        if classes == ("mobile", "desktop"):
+            group = "phone-to-pc"
+        elif classes == ("desktop", "mobile"):
+            group = "pc-to-phone"
+        else:
+            pair = row.get("devicePair") or {}
+            identities = (pair.get("sender") or sender.get("deviceId"),
+                          pair.get("receiver") or receiver.get("deviceId"))
+            group = ("device-pair-" + hashlib.sha256(json.dumps(identities).encode()).hexdigest()[:12]
+                     if all(isinstance(value, str) and value for value in identities)
+                     else "unclassified")
+        session = row["sessionId"]
+        previous = result.setdefault(session, group)
+        if previous != group:
+            raise ValueError(f"Receiver session has conflicting device/direction metadata: {session}")
+    _validate_mapping(result)
+    return result
 
 
 @dataclass(frozen=True)
@@ -189,7 +225,7 @@ class BalancedSampler:
     the same header/phase and verified target hashes, per optimizer update.
     """
 
-    def __init__(self, samples, session_groups, seed=7, real_fraction=.5, *, paired_targets=False):
+    def __init__(self, samples, session_groups, seed=7, real_fraction=.5, *, paired_targets=False, require_all_groups=True):
         if (type(seed) is not int or not 0 <= seed <= 0xffffffff
                 or isinstance(real_fraction, bool) or not math.isfinite(real_fraction)
                 or not 0 <= real_fraction <= 1):
@@ -207,7 +243,9 @@ class BalancedSampler:
             ids.add(sample.id)
             row = sample.metadata
             shape = sample.shape
-            if shape[0] not in (64, 128) or shape[1] not in (4, 16):
+            neural_qr = getattr(sample, "dataset_format", None) == "neural-qr-dataset"
+            if ((neural_qr and (shape[0] not in (8, 16, 32, 64, 128, 256) or shape[1] != 16))
+                    or (not neural_qr and (shape[0] not in (64, 128) or shape[1] not in (4, 16)))):
                 raise ValueError("Unsupported sampler grid/palette profile")
             source = row["source"]
             if source not in ("real", "synthetic"):
@@ -217,7 +255,7 @@ class BalancedSampler:
         required_groups = {group for shape in buckets.values() for group in shape.get("real", {})}
         for shape, sources in buckets.items():
             real_groups = set(sources.get("real", {}))
-            if real_groups and real_groups != required_groups:
+            if require_all_groups and real_groups and real_groups != required_groups:
                 raise ValueError(f"Real profile {shape} is missing groups: {sorted(required_groups-real_groups)}")
         self.pools = {shape: {source: {group: _Pool(rows) for group, rows in sorted(groups.items())}
                               for source, groups in sources.items()} for shape, sources in buckets.items()}

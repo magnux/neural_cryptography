@@ -64,6 +64,23 @@ def _metrics(report):
     return result
 
 
+def _matrix_metrics(report):
+    """Neural-QR raw-symbol summaries deliberately have no CRC/recovery fields."""
+    result = _fields(report, METRIC_FIELDS + ("wrongCells",))
+    if "matrixAccuracy" in report:
+        result["matrixAccuracy"] = _fields(report["matrixAccuracy"],
+                                           ("matrices", "exactMatrices", "exactRate"))
+    for kind in ("sources", "groups", "bySize", "byFrameCount"):
+        if kind in report:
+            key = (lambda item: int(item[0])) if kind in ("bySize", "byFrameCount") else (lambda item: item[0])
+            result[kind] = {name: _matrix_metrics(row) for name, row in sorted(report[kind].items(), key=key)}
+    if "burstGrouping" in report:
+        result["burstGrouping"] = _fields(report["burstGrouping"], ("method", "seed", "framesPerInput",
+            "frameCapacity", "actualFrameCounts", "inputCaptures", "usedCaptures", "discardedCaptures",
+            "remainderCaptures", "unusedCapacityCaptures", "insufficientBursts", "completeBursts"))
+    return result
+
+
 def compact_report(report):
     """Return a non-mutating, idempotent summary without session/burst rows.
 
@@ -73,6 +90,17 @@ def compact_report(report):
     """
     if not isinstance(report, dict):
         raise ValueError("An evaluation report must be an object")
+    if "matrixAccuracy" in report:
+        result = _fields(report, ("format", "version", "modelProfile", "datasetFormat", "split",
+                                  "checkpoint", "manifestSha256", "profiles", "pixelsPerCell", "metric", "note"))
+        result.update(_matrix_metrics(report))
+        result["reportDetail"] = "summary"
+        if "selectionScore" in report:
+            result["selectionScore"] = _fields(report["selectionScore"],
+                ("method", "sizes", "groups", "frameCounts", "exactRate", "loss", "cellErrorRate"))
+        if "inferenceMs" in report:
+            result["inferenceMs"] = _fields(report["inferenceMs"], ("p50", "p95", "note"))
+        return result
     result = _fields(report, ("format", "version", "modelProfile", "split",
                               "checkpoint", "manifestSha256", "profiles"))
     result["reportDetail"] = "summary"

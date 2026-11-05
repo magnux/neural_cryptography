@@ -5,7 +5,7 @@ import {resolve,dirname,join,sep,isAbsolute,relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {readRecordingJSON} from './lib/recording-json.mjs';
-import {senderFrames,captureKey,base64ToBytes,floatBytes,floatsFromBytes,DATASET_FORMAT,validateSessionId,canonicalJSON,MAX_RECORDS,MAX_CAPTURE_BYTES,validateProfile} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
+import {senderFrames,captureKey,base64ToBytes,bytesToBase64,floatBytes,floatsFromBytes,DATASET_FORMAT,validateSessionId,canonicalJSON,MAX_RECORDS,MAX_CAPTURE_BYTES,validateProfile} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
 import {validateCapture} from '../apps/color-optical-bench/dist/js/dataset/capture.js';
 import {renderFrame,parseHeader,encodeSequence,phaseFrames,PALETTE,sameBytes,capacity,frameKey} from '../apps/color-optical-bench/dist/js/format.js';
 import {gridLayout} from '../apps/color-optical-bench/dist/js/grid.js';
@@ -42,7 +42,7 @@ function capturePixelsPerCell(record) {
   return value;
 }
 function requireEstablishedRaster(sample) {
-  if(capturePixelsPerCell(sample)!==4)throw Error('This training/synthetic operation requires 4x4-pixel cells. Multires 2x2 captures can be joined now; multires training/synthetic integration is separate.');
+  if(capturePixelsPerCell(sample)!==4)throw Error('This training/synthetic operation requires 4x4-pixel cells. Use the Neural-QR multires training path for 2x2-cell datasets.');
 }
 function flags(args) {
   const result={};
@@ -88,12 +88,13 @@ function cleanCrop(frame) {
 }
 
 /** Calibrated-crop baseline for synthetic inputs; no clean truth used. */
-export function denseClassicalScores(input,info) {
-  const g=info.size,w=4*g,pixels=w*w;
+export function denseClassicalScores(input,info,pixelsPerCell=4) {
+  if(![2,4].includes(pixelsPerCell))throw Error('Unsupported calibrated crop raster.');
+  const g=info.size,w=pixelsPerCell*g,pixels=w*w;
   if(!(input instanceof Float32Array)||input.length!==3*pixels)throw Error('Wrong calibrated crop length.');
-  const samples=new Float32Array(g*g*3+96),offsets=[[1,1],[2,1],[1,2],[2,2],[0,1],[3,2],[1,0],[2,3]];
+  const samples=new Float32Array(g*g*3+96),offsets=pixelsPerCell===2?[[0,0],[1,0],[0,1],[1,1]]:[[1,1],[2,1],[1,2],[2,2],[0,1],[3,2],[1,0],[2,3]];
   for(let y=0;y<g;y++)for(let x=0;x<g;x++)for(let c=0;c<3;c++) {
-    let value=0;for(const [dx,dy] of offsets)value+=(input[c*pixels+(4*y+dy)*w+4*x+dx]+1)*127.5;
+    let value=0;for(const [dx,dy] of offsets)value+=(input[c*pixels+(pixelsPerCell*y+dy)*w+pixelsPerCell*x+dx]+1)*127.5;
     samples[3*(y*g+x)+c]=value/offsets.length;
   }
   let at=g*g*3;for(let side=0;side<2;side++)for(const rgb of PALETTE){samples.set(rgb,at);at+=3;}
@@ -182,7 +183,7 @@ export async function joinCaptures(options) {
  * Read all identities before creating outputs so leakage and missing counterparts
  * fail early. Directory names organize uploads; declared public codes/profiles pair them.
  */
-export async function joinUploads(options) {
+export async function planUploadJoin(options) {
   only(options,['recordings-root','out']);
   if(!options['recordings-root']||!options.out)throw Error('join-uploads requires --recordings-root DIRECTORY --out NEW_DIRECTORY.');
   const root=resolve(options['recordings-root']),out=resolve(options.out);
@@ -243,26 +244,37 @@ export async function joinUploads(options) {
   let diagnosticFiles=0;
   for(const entry of entries)if(entry.kind==='receiver') {
     if(!entry.records.length){diagnosticFiles++;continue;}
-    const key=`${entry.split}/${entry.grid}`,group=groups.get(key)??{split:entry.split,grid:entry.grid,senders:new Set(),captures:[],records:0};
+    const key=`${entry.split}/${entry.grid}`,group=groups.get(key)??{split:entry.split,grid:entry.grid,senders:new Set(),captures:[],records:0,targets:new Map()};
     for(const record of entry.records) {
       const sender=associations.get(record.key);
       if(!sender)throw Error(`No matching uploaded sender for ${entry.path}; upload its sender manifest first.`);
       if(sender.entry.split!==entry.split)throw Error(`Sender and receiver cross dataset splits: ${entry.path}`);
       if(canonicalJSON(sender.info)!==canonicalJSON(record.info))throw Error(`Capture metadata disagrees with sender acquisition profile: ${entry.path}`);
-      group.senders.add(sender.entry.path);group.records++;
+      group.senders.add(sender.entry.path);
+      const targetKey=canonicalJSON([entry.sessionId,record.info.id]),phaseCounts=group.targets.get(targetKey)??[0,0,0,0];
+      phaseCounts[record.info.phase]++;group.targets.set(targetKey,phaseCounts);group.records++;
     }
     group.captures.push(entry.path);groups.set(key,group);
   }
   if(!groups.size)throw Error('No matched uploaded captures to join. Upload sender manifests and receiver captures first.');
+  return {recordings:root,datasetRoot:out,diagnosticFiles,
+    groups:[...groups].sort(([a],[b])=>a.localeCompare(b)).map(([key,group])=>({
+      key,split:group.split,size:Number(group.grid.slice(1)),grid:group.grid,
+      senders:[...group.senders],captures:group.captures,records:group.records,targets:group.targets.size,
+      minCapturesPerPhase:[...group.targets.values()].reduce((minimum,counts)=>Math.min(minimum,...counts),Infinity)}))};
+}
+
+export async function joinUploads(options) {
+  const plan=await planUploadJoin(options),out=plan.datasetRoot;
   await freshDirectory(out);
   const datasets=[];
-  for(const [key,group]of [...groups].sort(([a],[b])=>a.localeCompare(b))) {
-    const result=await joinCaptures({out:join(out,group.split,group.grid),split:group.split,senders:[...group.senders],captures:group.captures});
-    if(result.samples!==group.records||result.excluded.length)throw Error(`Unexpected join exclusions for ${key}; uploaded recordings changed during processing.`);
-    datasets.push({split:group.split,size:Number(group.grid.slice(1)),dataset:result.dataset,samples:result.samples});
+  for(const group of plan.groups) {
+    const result=await joinCaptures({out:join(out,group.split,group.grid),split:group.split,senders:group.senders,captures:group.captures});
+    if(result.samples!==group.records||result.excluded.length)throw Error(`Unexpected join exclusions for ${group.key}; uploaded recordings changed during processing.`);
+    datasets.push({split:group.split,size:group.size,dataset:result.dataset,samples:result.samples,targets:group.targets,minCapturesPerPhase:group.minCapturesPerPhase});
   }
-  return {recordings:root,datasetRoot:out,datasets,diagnosticFiles,
-    scope:'Joined evidence only. No recordings deleted; multires training/synthetic integration is separate from the established G64 recipe.'};
+  return {recordings:plan.recordings,datasetRoot:out,datasets,diagnosticFiles:plan.diagnosticFiles,
+    scope:'Joined Neural-QR evidence and offline sender labels; recordings are never modified.'};
 }
 
 /** Re-render joined sender truth offline, once per physical session/frame/phase.
@@ -272,11 +284,13 @@ export async function joinUploads(options) {
 export async function targets(options) {
   only(options,['dataset','out']);
   if(!options.dataset||!options.out)throw Error('targets requires --dataset DIRECTORY[,DIRECTORY] --out DIRECTORY.');
+  const first=await jsonFile(await safeReadPath(resolve(fileList(options.dataset)[0]),'manifest.json'));
+  if(first.format===NEURAL_QR_DATASET_FORMAT)return neuralQRTargets(options);
   const grouped=new Map(),ids=new Set(),owners={sessionId:new Map(),payloadId:new Map()},sources=[];
   let captures=0;
   for(const location of fileList(options.dataset)) {
     const root=resolve(location),manifestPath=await safeReadPath(root,'manifest.json'),manifest=await jsonFile(manifestPath);
-    if(manifest.format===NEURAL_QR_DATASET_FORMAT)throw Error('Neural-QR multires synthetic/training integration is separate; this operation requires the established OBM5 4x4-pixel dataset.');
+    if(manifest.format===NEURAL_QR_DATASET_FORMAT)throw Error('Do not mix Neural-QR and OBM5 manifests in one target corpus.');
     if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length)throw Error('Unsupported joined dataset manifest.');
     sources.push({manifestSha256:hash(await readFile(manifestPath))});
     for(const sample of manifest.samples) {
@@ -325,6 +339,73 @@ export async function targets(options) {
     splits:[...new Set(dataset.samples.map(sample=>sample.split))]};
 }
 
+/** Render exact 2x2 palette cells. No camera pixels or labels enter inference. */
+function neuralQRCleanCrop(frame) {
+  const g=frame.size,w=2*g,plane=w*w,input=new Float32Array(3*plane);
+  for(let y=0;y<g;y++)for(let x=0;x<g;x++)for(let c=0;c<3;c++) {
+    const value=PALETTE[frame.symbols[y*g+x]][c]/127.5-1;
+    for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++)input[c*plane+(2*y+dy)*w+2*x+dx]=value;
+  }
+  return input;
+}
+
+async function neuralQRTargets(options) {
+  const grouped=new Map(),ids=new Set(),owners={sessionId:new Map(),payloadId:new Map()},sources=[];
+  let captures=0;
+  for(const location of fileList(options.dataset)) {
+    const root=resolve(location),path=await safeReadPath(root,'manifest.json'),manifest=await jsonFile(path);
+    if(manifest.format!==NEURAL_QR_DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length)
+      throw Error('Neural-QR targets require current Neural-QR manifests only.');
+    sources.push({manifestSha256:hash(await readFile(path))});
+    for(const sample of manifest.samples) {
+      if(!sample||sample.source!=='real'||sample.pixelsPerCell!==2)throw Error('Neural-QR target reconstruction requires joined real 2x2-cell captures.');
+      validateSessionId(sample.sessionId);validateSessionId(sample.senderSessionId);
+      const split=splitName(sample.split),info=sample.info;
+      if(sample.split===undefined||typeof sample.id!=='string'||!sample.id||ids.has(sample.id))throw Error('Missing/duplicate joined sample identity or split.');
+      ids.add(sample.id);
+      if(!info||sample.size!==info.size||sample.colors!==16||info.colors!==16||! /^[a-f0-9]{64}$/.test(sample.payloadId)||
+        canonicalJSON(sample.inputShape)!==canonicalJSON([3,2*sample.size,2*sample.size]))throw Error('Invalid Neural-QR joined target profile.');
+      const profile=validateProfile(Object.fromEntries(['size','colors','phases','gridBlock','parity','holdMs','permute','pixelsPerCell'].map(key=>[key,info[key]])));
+      for(const [kind,values] of Object.entries({sessionId:[sample.sessionId,sample.senderSessionId],payloadId:[sample.payloadId]}))for(const identity of values) {
+        const previous=owners[kind].get(identity);if(previous&&previous!==split)throw Error(`${kind} crosses dataset splits.`);
+        owners[kind].set(identity,split);
+      }
+      const g=sample.size,expected=await readSampleFile(root,sample,'expected',g*g),labels=await readSampleFile(root,sample,'labels',g*g),mask=await readSampleFile(root,sample,'mask',g*g);
+      if(expected.length!==g*g||labels.length!==g*g||mask.length!==g*g)throw Error('Wrong Neural-QR target array length.');
+      const frames=await senderFrames({format:'neural-qr-sender',version:1,sessionId:sample.senderSessionId,
+        collectionCode:info.collectionCode,payloadId:sample.payloadId,payloadBase64:bytesToBase64(expected),profile,
+        frames:Array.from({length:4},(_,phase)=>{const value={...info,phase};return {key:captureKey(value),info:value};})});
+      const frame=frames[info.phase];
+      if(!frame||canonicalJSON(frame.info)!==canonicalJSON(info)||!sameBytes(frame.symbols,labels)||!sameBytes(maskFor(info),mask))
+        throw Error('Regenerated Neural-QR target labels or mask disagree with joined truth.');
+      const {phase,...logicalInfo}=info,key=canonicalJSON([sample.sessionId,sample.payloadId,logicalInfo]),previous=grouped.get(key);
+      if(previous&&(previous.sample.senderSessionId!==sample.senderSessionId||previous.sample.split!==split))throw Error('Conflicting identities for one target matrix.');
+      if(!previous)grouped.set(key,{sample,frames,observed:new Set([phase])});else previous.observed.add(phase);
+      captures++;
+    }
+  }
+  const out=resolve(options.out);await freshDirectory(out);
+  const dataset={format:NEURAL_QR_DATASET_FORMAT,version:1,created:new Date().toISOString(),
+    description:'Four clean physical phases per joined logical target; direct 2x2 palette cells, no camera pixels.',sources,samples:[]};
+  let observedPhases=0;
+  for(const [key,{sample,frames,observed}] of [...grouped].sort(([a],[b])=>a.localeCompare(b))) {
+    observedPhases+=observed.size;
+    for(const frame of frames) {
+      const input=neuralQRCleanCrop(frame),info=frame.info;
+      dataset.samples.push(await putSample(out,dataset.samples.length,{
+        id:`target-${hash(Buffer.from(key+'/'+info.phase)).slice(0,24)}`,sessionId:sample.sessionId,senderSessionId:sample.senderSessionId,
+        payloadId:sample.payloadId,split:sample.split,source:'synthetic',size:sample.size,colors:16,pixelsPerCell:2,inputShape:[3,2*sample.size,2*sample.size],info,
+        burstId:`${sample.sessionId}/${captureKey(info)}`,timestamp:info.phase*500,devicePair:sample.devicePair,
+        provenance:{...sample.provenance,generator:'Neural-QR palette + validated joined sender truth',corruption:'none',
+          baseline:'calibrated-crop approximation',targetKey:key}},
+        {input,labels:frame.symbols,mask:maskFor(info),baseline:denseClassicalScores(input,info,2),expected:frame.chunk}));
+    }
+  }
+  await writeFile(join(out,'manifest.json'),JSON.stringify(dataset,null,2)+'\n');
+  return {dataset:out,captures,targets:grouped.size,samples:dataset.samples.length,observedPhases,
+    synthesizedMissingPhases:dataset.samples.length-observedPhases,splits:[...new Set(dataset.samples.map(sample=>sample.split))]};
+}
+
 function recoveryResult(info,scores,expected) {
   const result=decodeScores(info,scores,{}, {recovery:'erasures'});
   const exact=result.ok&&sameBytes(result.chunk,expected);
@@ -341,15 +422,16 @@ async function readSampleFile(root,sample,kind,maxBytes) {
 export async function baselines(options) {
   only(options,['dataset']);if(!options.dataset)throw Error('baselines requires --dataset DIRECTORY.');
   const root=resolve(options.dataset),manifestPath=await safeReadPath(root,'manifest.json'),manifest=await jsonFile(manifestPath);
-  if(manifest.format===NEURAL_QR_DATASET_FORMAT)throw Error('Neural-QR multires baseline/training integration is separate; this operation requires the established OBM5 4x4-pixel dataset.');
-  if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||manifest.samples.some(s=>s.source!=='synthetic'))throw Error('Baseline refresh accepts only a synthetic dataset.');
+  const neural=manifest.format===NEURAL_QR_DATASET_FORMAT;
+  if(![DATASET_FORMAT,NEURAL_QR_DATASET_FORMAT].includes(manifest.format)||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||manifest.samples.some(s=>s.source!=='synthetic'))throw Error('Baseline refresh accepts only a synthetic dataset.');
   if(new Set(manifest.samples.map(s=>s.id)).size!==manifest.samples.length)throw Error('Duplicate dataset sample ID.');
   for(const sample of manifest.samples) {
-    requireEstablishedRaster(sample);
-    const g=sample.size,info=sample.info;
-    if(![64,128].includes(g)||![4,16].includes(sample.colors)||info.size!==g||info.colors!==sample.colors)throw Error('Unsupported dataset shape.');
-    const input=floatsFromBytes(await readSampleFile(root,sample,'input',3*16*g*g*4),3*16*g*g);
-    const baseline=floatBytes(denseClassicalScores(input,info)),target=await safeReadPath(root,sample.baseline);
+    if(!neural)requireEstablishedRaster(sample);
+    const g=sample.size,info=sample.info,ppc=neural?2:4;
+    if(!(neural?[8,16,32,64,128,256]:[64,128]).includes(g)||!(neural?[16]:[4,16]).includes(sample.colors)||info.size!==g||info.colors!==sample.colors||neural&&sample.pixelsPerCell!==2)throw Error('Unsupported dataset shape.');
+    if(neural)validateProfile(info);
+    const count=3*(ppc*g)**2,input=floatsFromBytes(await readSampleFile(root,sample,'input',count*4),count);
+    const baseline=floatBytes(denseClassicalScores(input,info,ppc)),target=await safeReadPath(root,sample.baseline);
     await writeFile(target,baseline);sample.hashes.baseline=hash(baseline);
   }
   await writeFile(manifestPath,JSON.stringify(manifest,null,2)+'\n');
@@ -358,7 +440,7 @@ export async function baselines(options) {
 export async function evaluate(options) {
   only(options,['dataset','predictions','split']);if(!options.dataset||!options.predictions)throw Error('evaluate requires --dataset DIRECTORY --predictions FILE.');
   const root=resolve(options.dataset),manifest=await jsonFile(join(root,'manifest.json')),predictionPath=resolve(options.predictions),predictions=await jsonFile(predictionPath);
-  if(manifest.format===NEURAL_QR_DATASET_FORMAT)throw Error('Neural-QR multires recovery evaluation is not yet integrated; OBM5 packet CRC evaluation cannot be applied to unframed training matrices.');
+  if(manifest.format===NEURAL_QR_DATASET_FORMAT)throw Error('Use experiments/neural-corrector/evaluate.py for Neural-QR exact-matrix evaluation; OBM5 CRC evaluation cannot be applied to unframed training matrices.');
   if(manifest.format!==DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||!Array.isArray(predictions.samples)||!predictions.samples.length||!validFrameCount(predictions.framesPerInput)||!['physical','logical'].includes(predictions.outputLabelSpace))throw Error('Unsupported dataset/prediction manifest.');
   if(new Set(manifest.samples.map(s=>s.id)).size!==manifest.samples.length)throw Error('Duplicate dataset sample ID.');
   if(options.split)splitName(options.split);

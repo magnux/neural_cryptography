@@ -1,9 +1,10 @@
-"""Strict local M2 datasets. Labels are joined offline by the canonical JS codec.
+"""Strict local optical datasets. Labels are joined offline by the canonical JS codec.
 
 No wire-format, phase, CRC, or Reed–Solomon implementation lives in Python.
 Whole capture sessions and payloads, rather than adjacent frames, define splits.
 """
 
+from collections import OrderedDict
 from dataclasses import dataclass
 import hashlib
 import json
@@ -13,9 +14,21 @@ import re
 import numpy as np
 
 DATASET_FORMAT = "optical-decoder-dataset"
+NEURAL_QR_DATASET_FORMAT = "neural-qr-dataset"
+MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
 SPLITS = ("train", "validation", "test")
 MAX_MANIFEST_BYTES = 256 * 1024 * 1024
 SHA256 = re.compile(r"^[a-f0-9]{64}$")
+# Metadata only: do not keep decoded RGB crops resident as the corpus grows.
+# Include file identity/timestamps and expected digest, so rewrites and changed
+# manifests invalidate verification. Each newly encountered file is hashed from
+# the same bytes returned to the caller, rather than read twice from disk.
+_MAX_VERIFIED_FILES = 32_768
+_VERIFIED_READS = OrderedDict()
+
+
+def _file_identity(stat):
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
 def digest(path: Path) -> str:
@@ -40,6 +53,11 @@ class Sample:
     root: Path
     manifest: Path
     metadata: dict
+    dataset_format: str = DATASET_FORMAT
+
+    @property
+    def pixels_per_cell(self):
+        return 2 if self.dataset_format == NEURAL_QR_DATASET_FORMAT else 4
 
     @property
     def id(self):
@@ -51,27 +69,47 @@ class Sample:
 
     def read(self, name: str, dtype, count: int | None = None) -> np.ndarray:
         path = local_path(self.root, self.metadata[name])
-        if path.stat().st_size > 4*1024*1024:
+        before = path.stat()
+        if before.st_size > 4*1024*1024:
             raise ValueError(f"Dataset binary exceeds 4 MiB: {name}")
-        if count is not None and path.stat().st_size != count * np.dtype(dtype).itemsize:
+        if count is not None and before.st_size != count * np.dtype(dtype).itemsize:
             raise ValueError(f"Wrong {name} byte count for {self.id}")
         expected = self.metadata.get("hashes", {}).get(name)
-        if not isinstance(expected, str) or not SHA256.fullmatch(expected) or digest(path) != expected:
+        if not isinstance(expected, str) or not SHA256.fullmatch(expected):
             raise ValueError(f"Missing or mismatched {name} hash for {self.id}")
         value = np.fromfile(path, dtype=dtype)
+        identity = _file_identity(before)
+        if _file_identity(path.stat()) != identity or value.nbytes != before.st_size:
+            raise ValueError(f"Dataset binary changed while reading: {name}")
+        cache_key = str(path), identity, expected
+        if cache_key not in _VERIFIED_READS:
+            if hashlib.sha256(memoryview(value).cast("B")).hexdigest() != expected:
+                raise ValueError(f"Missing or mismatched {name} hash for {self.id}")
+            _VERIFIED_READS[cache_key] = True
+            if len(_VERIFIED_READS) > _MAX_VERIFIED_FILES:
+                _VERIFIED_READS.popitem(last=False)
+        else:
+            _VERIFIED_READS.move_to_end(cache_key)
         if np.issubdtype(value.dtype, np.floating) and not np.isfinite(value).all():
             raise ValueError(f"Non-finite {name} values for {self.id}")
         return value
 
     def tensors(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         g, colors = self.shape
-        pixels = self.read("input", "<f4", 3 * (4*g)**2).reshape(3, 4*g, 4*g)
+        side = self.pixels_per_cell*g
+        pixels = self.read("input", "<f4", 3 * side**2).reshape(3, side, side)
         labels = self.read("labels", "u1", g*g).reshape(g, g)
         mask = self.read("mask", "u1", g*g).reshape(g, g)
         if np.max(np.abs(pixels)) > 1.50001:
             raise ValueError(f"Input is outside the normalized tensor contract: {self.id}")
         if np.any(labels >= colors) or np.any(mask > 1) or not np.any(mask):
             raise ValueError(f"Invalid palette labels or empty/nonbinary loss mask: {self.id}")
+        if self.dataset_format == NEURAL_QR_DATASET_FORMAT:
+            from phases import canonical_labels
+            expected = self.read("expected", "u1", g*g).reshape(g, g)
+            if (self.metadata["hashes"]["expected"] != self.metadata["payloadId"]
+                    or not np.array_equal(canonical_labels(labels, mask, self.metadata["info"]["phase"]), expected)):
+                raise ValueError(f"Neural-QR phase labels disagree with their canonical target: {self.id}")
         return pixels, labels.astype(np.int64), mask.astype(bool)
 
 
@@ -83,17 +121,30 @@ class Dataset:
             raise ValueError(f"Unknown split: {split}")
         self.samples = []
         self.manifests = []
+        self.dataset_format = None
         owners = {"sessionId": {}, "payloadId": {}}
         ids = set()
+        manifests = []
         for location in directories:
-            manifest = Path(location).resolve()
-            if manifest.is_dir():
-                manifest /= "manifest.json"
+            path = Path(location).resolve()
+            found = ([path/"manifest.json"] if (path/"manifest.json").is_file()
+                     else sorted(path.rglob("manifest.json"))) if path.is_dir() else [path]
+            if not found:
+                raise ValueError(f"No dataset manifests beneath {path}")
+            manifests.extend(found)
+        if len(set(manifests)) != len(manifests):
+            raise ValueError("Duplicate dataset manifest paths")
+        for manifest in manifests:
             if manifest.stat().st_size > MAX_MANIFEST_BYTES:
                 raise ValueError("Dataset manifest exceeds 256 MiB")
             value = json.loads(manifest.read_text(encoding="utf8"))
-            if value.get("format") != DATASET_FORMAT or value.get("version") != 1:
-                raise ValueError("Unsupported dataset format; regenerate the current M2 dataset")
+            dataset_format = value.get("format")
+            if (dataset_format not in (DATASET_FORMAT, NEURAL_QR_DATASET_FORMAT)
+                    or type(value.get("version")) is not int or value["version"] != 1):
+                raise ValueError("Unsupported optical dataset format/version")
+            if self.dataset_format is not None and self.dataset_format != dataset_format:
+                raise ValueError("Cannot mix Neural-QR and OBM datasets in one training/evaluation set")
+            self.dataset_format = dataset_format
             entries = value.get("samples")
             if not isinstance(entries, list) or not entries:
                 raise ValueError("Dataset samples must be a nonempty list")
@@ -111,7 +162,13 @@ class Dataset:
                 ids.add(item["id"])
                 if item.get("split") not in SPLITS or item.get("source") not in ("synthetic", "real"):
                     raise ValueError("Explicit split and source are required")
-                if item.get("size") not in (64, 128) or item.get("colors") not in (4, 16):
+                if dataset_format == NEURAL_QR_DATASET_FORMAT:
+                    g = item.get("size")
+                    if (type(g) is not int or g not in MULTIRES_SIZES or item.get("colors") != 16
+                            or type(item.get("pixelsPerCell")) is not int or item["pixelsPerCell"] != 2
+                            or item.get("inputShape") != [3, 2*g, 2*g]):
+                        raise ValueError("Neural-QR requires G8–256, 16 colors and 2x2 pixels per cell")
+                elif item.get("size") not in (64, 128) or item.get("colors") not in (4, 16):
                     raise ValueError("Unsupported neural-corrector dataset profile")
                 for name in ("sessionId", "payloadId"):
                     identities = [item[name]]
@@ -132,11 +189,24 @@ class Dataset:
                     raise ValueError("Missing canonical decoder frame metadata")
                 if item["info"].get("size") != item["size"] or item["info"].get("colors") != item["colors"]:
                     raise ValueError("Canonical frame metadata disagrees with the tensor profile")
+                if dataset_format == NEURAL_QR_DATASET_FORMAT:
+                    from phases import phase_neutral_info
+                    info = item["info"]
+                    phase_neutral_info(info)
+                    if (info.get("pixelsPerCell") != 2 or info.get("gridBlock") != 8
+                            or info.get("parity") != 0):
+                        raise ValueError("Unsupported current Neural-QR phase/reference geometry")
+                    if item["hashes"]["expected"] != item["payloadId"]:
+                        raise ValueError("Neural-QR target identity must hash the logical matrix")
                 if split is None or item["split"] == split:
-                    self.samples.append(Sample(manifest.parent, manifest, item))
+                    self.samples.append(Sample(manifest.parent, manifest, item, dataset_format))
         if not self.samples:
             raise ValueError(f"No samples for split {split!r}")
         self.samples.sort(key=lambda item: item.id)
+
+    @property
+    def pixels_per_cell(self):
+        return 2 if self.dataset_format == NEURAL_QR_DATASET_FORMAT else 4
 
     @property
     def session_ids(self):

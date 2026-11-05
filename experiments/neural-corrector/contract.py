@@ -9,6 +9,7 @@ import numpy as np
 FORMAT = "neural-corrector"
 VERSION = 1
 SIZES = (64, 128)
+MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
 PIXELS_PER_CELL = 4
 CHANNELS = 3
 MAX_FRAMES = 64
@@ -29,18 +30,24 @@ ATOL = 1e-4
 RTOL = 1e-3
 
 
-def shapes(size: int, frames: int = 1, *, presence: bool = False) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    if isinstance(size, bool) or not isinstance(size, int) or size not in SIZES:
-        raise ValueError("The corrector supports physical grid sizes 64 and 128 only")
+def shapes(size: int, frames: int = 1, *, presence: bool = False,
+           pixels_per_cell: int = PIXELS_PER_CELL) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    if type(pixels_per_cell) is not int or pixels_per_cell not in (2, 4):
+        raise ValueError("Use 2 pixels per cell for multires or 4 for U-tube")
+    sizes = MULTIRES_SIZES if pixels_per_cell == 2 else SIZES
+    if isinstance(size, bool) or not isinstance(size, int) or size not in sizes:
+        raise ValueError(f"Unsupported grid size for {pixels_per_cell} pixels per cell: {size}")
     if type(frames) is not int or frames not in FRAME_COUNTS:
         raise ValueError(f"The corrector supports 1 to {MAX_FRAMES} input frames")
-    if type(presence) is not bool or presence and (size != 64 or frames != 8):
-        raise ValueError("Presence-plane inputs require eight slots and a 64-cell grid")
+    if type(presence) is not bool or presence and (frames != 8 or pixels_per_cell == 4 and size != 64):
+        raise ValueError("Presence-plane inputs require eight slots and a supported phase-grouped grid")
+    if pixels_per_cell == 2 and not presence:
+        raise ValueError("Multires requires phase-paired RGB and presence planes")
     channels = (CHANNELS + int(presence)) * frames
-    return (1, channels, size * PIXELS_PER_CELL, size * PIXELS_PER_CELL), (1, CLASSES, size, size)
+    return (1, channels, size * pixels_per_cell, size * pixels_per_cell), (1, CLASSES, size, size)
 
 
-def normalize_rgb(calibrated_hwc: np.ndarray) -> np.ndarray:
+def normalize_rgb(calibrated_hwc: np.ndarray, *, pixels_per_cell: int = PIXELS_PER_CELL) -> np.ndarray:
     """Calibrated RGB [H,W,3] in 0..255 units -> float32 [1,3,H,W].
 
     Calibration may produce values outside the camera byte range. Preserve
@@ -54,8 +61,11 @@ def normalize_rgb(calibrated_hwc: np.ndarray) -> np.ndarray:
     rgb = np.asarray(calibrated_hwc)
     if rgb.ndim != 3 or rgb.shape[2] != CHANNELS or rgb.shape[0] != rgb.shape[1]:
         raise ValueError("Expected a square calibrated HWC RGB crop")
-    if rgb.shape[0] not in tuple(s * PIXELS_PER_CELL for s in SIZES):
-        raise ValueError("Expected a 256x256 or 512x512 crop")
+    if type(pixels_per_cell) is not int or pixels_per_cell not in (2, 4):
+        raise ValueError("Use 2 pixels per cell for multires or 4 for U-tube")
+    sizes = MULTIRES_SIZES if pixels_per_cell == 2 else SIZES
+    if rgb.shape[0] not in tuple(s * pixels_per_cell for s in sizes):
+        raise ValueError(f"Unsupported calibrated crop for {pixels_per_cell} pixels per cell")
     if (not np.issubdtype(rgb.dtype, np.number) or np.iscomplexobj(rgb)
             or not np.isfinite(rgb).all()):
         raise ValueError("RGB samples must be finite real numeric values")
@@ -65,14 +75,15 @@ def normalize_rgb(calibrated_hwc: np.ndarray) -> np.ndarray:
 
 
 def fixture_input(size: int, seed: int, frames: int = 1, *, presence: bool = False,
-                  available_frames: int | None = None) -> np.ndarray:
+                  available_frames: int | None = None,
+                  pixels_per_cell: int = PIXELS_PER_CELL) -> np.ndarray:
     """Public diagnostic input with variation in space and all RGB channels.
 
     This input has no transmitted payload or symbol labels. It tests numerical
     inference agreement only; it cannot measure a corrector's recovery accuracy.
     Retained calibrated overshoot exercises the model's final [-1,1] input clip.
     """
-    input_shape, _ = shapes(size, frames, presence=presence)
+    input_shape, _ = shapes(size, frames, presence=presence, pixels_per_cell=pixels_per_cell)
     available = (4 if presence else frames) if available_frames is None else available_frames
     if type(available) is not int or (presence and available not in (4, 5, 6, 7, 8)) or \
             (not presence and available != frames):
@@ -87,7 +98,7 @@ def fixture_input(size: int, seed: int, frames: int = 1, *, presence: bool = Fal
         texture = rng.uniform(-45.0, 45.0, (side, side, CHANNELS))
         rgb = texture + np.stack((255.0 * x / (side - 1), 255.0 * y / (side - 1),
                                   127.5 + 100.0 * np.sin((x + y) / 11.0 + index*.2)), axis=-1)
-        values.append(normalize_rgb(rgb))
+        values.append(normalize_rgb(rgb, pixels_per_cell=pixels_per_cell))
     rgb = np.ascontiguousarray(np.concatenate(values, axis=1), dtype=np.float32)
     if not presence:
         return rgb

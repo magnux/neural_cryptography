@@ -22,7 +22,7 @@ import onnx
 import torch
 
 from contract import (ATOL, CLASSES, FORMAT, FRAME_COUNTS, MAX_FRAMES, INPUT_NAME, OUTPUT_NAME,
-                      PIXELS_PER_CELL, RTOL, VERSION, CAPTURE_INPUT_MIN, CAPTURE_INPUT_MAX,
+                      RTOL, VERSION, CAPTURE_INPUT_MIN, CAPTURE_INPUT_MAX,
                       NETWORK_INPUT_MIN, NETWORK_INPUT_MAX,
                       describe_file, fixture_input, shapes, write_f32)
 from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, NeuralCorrector, parameter_count
@@ -78,8 +78,8 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
 
     Validate every graph and, unless explicitly disabled, two independent inputs
     per size against Python ONNX Runtime before publishing manifest.json.
-    The CLI exports the selected profile's supported grids. U-tube-2x-attn has
-    one learned G64 anchor; the fixed-frame tube profiles also support G128.
+    The CLI exports the selected profile's supported grids. Trained multires
+    checkpoints export only their trained sizes; --sizes can select a subset.
     Existing unrelated output files are not deleted.
     """
     if not isinstance(seed, int) or isinstance(seed, bool) or not 0 <= seed <= 0xFFFFFFFF:
@@ -106,13 +106,18 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
                       "training": training_provenance(loaded["training"])}
     else:
         model = NeuralCorrector(profile or DEFAULT_MODEL_PROFILE, frames=frames).cpu().eval()
-    sizes = model.supported_sizes if sizes is None else sizes
+    available_sizes = (tuple(loaded["training"]["trainedSizes"])
+                       if checkpoint is not None and model.profile == "multires"
+                       else model.supported_sizes)
+    sizes = available_sizes if sizes is None else sizes
     if not sizes or len(sizes) != len(set(sizes)):
         raise ValueError("Choose each requested grid size once")
     for size in sizes:
         if size not in model.supported_sizes:
             raise ValueError(f"Model {model.profile} supports grid sizes {model.supported_sizes}")
-        shapes(size, model.frames, presence=model.variable_frames)
+        if size not in available_sizes:
+            raise ValueError(f"G{size} has no trained anchor in this checkpoint; trainedSizes={list(available_sizes)}")
+        shapes(size, model.frames, presence=model.variable_frames, pixels_per_cell=model.pixels_per_cell)
     count = parameter_count(model)
     out = Path(out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -124,7 +129,8 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
             versions[name] = "not-installed"
     manifest = {
         "format": FORMAT, "version": VERSION, "status": "trained" if checkpoint is not None else "untrained", "seed": seed,
-        "modelProfile": model.profile, "parameterCount": count, "pixelsPerCell": PIXELS_PER_CELL,
+        "modelProfile": model.profile, "parameterCount": count, "pixelsPerCell": model.pixels_per_cell,
+        "datasetFormat": "neural-qr-dataset" if model.profile == "multires" else "optical-decoder-dataset",
         "framesPerInput": model.frames, "channels": model.input_channels,
         "inputLayout": model.input_layout, "minFramesPerInput": model.min_frames,
         "outputLabelSpace": model.output_label_space, "phaseMasks": list(model.phase_masks),
@@ -146,9 +152,10 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
         for name, contents in project_notices.items():
             (stage / name).write_bytes(contents)
         for size in sizes:
-            input_shape, output_shape = shapes(size, model.frames, presence=model.variable_frames)
+            input_shape, output_shape = shapes(size, model.frames, presence=model.variable_frames,
+                                              pixels_per_cell=model.pixels_per_cell)
             pixels = fixture_input(size, seed, model.frames, presence=model.variable_frames,
-                                   available_frames=model.min_frames)
+                                   available_frames=model.min_frames, pixels_per_cell=model.pixels_per_cell)
             with torch.inference_mode():
                 logits = model(torch.from_numpy(pixels)).numpy()
             if logits.shape != output_shape:
@@ -161,6 +168,11 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
                               opset_version=OPSET, dynamo=False, do_constant_folding=True)
             graph = onnx.load(model_path)
             onnx.checker.check_model(graph, full_check=True)
+            if model.profile == "multires":
+                anchors = {item.name: list(item.dims) for item in graph.graph.initializer
+                           if item.name.startswith("anchors.")}
+                if anchors != {f"anchors.{size}": [1, 32, size, size]}:
+                    raise RuntimeError(f"Export must retain only its selected unexpanded anchor: {anchors}")
             operators = sorted({node.op_type for node in graph.graph.node})
             unexpected = set(operators) - ALLOWED_OPERATORS
             if unexpected or any(node.domain not in ("", "ai.onnx") for node in graph.graph.node):
@@ -171,7 +183,8 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
                 for index, fixture_seed in enumerate((seed, (seed + 1) & 0xFFFFFFFF)):
                     check_pixels = fixture_input(size, fixture_seed, model.frames,
                                                  presence=model.variable_frames,
-                                                 available_frames=model.min_frames if index == 0 else model.frames)
+                                                 available_frames=model.min_frames if index == 0 else model.frames,
+                                                 pixels_per_cell=model.pixels_per_cell)
                     with torch.inference_mode():
                         expected = model(torch.from_numpy(check_pixels)).numpy()
                     pairs.update({f"input{index}": check_pixels, f"expected{index}": expected,
@@ -207,14 +220,17 @@ def main() -> None:
     parser.add_argument("--model", choices=MODEL_PROFILES,
                         help=f"untrained profile (default {DEFAULT_MODEL_PROFILE}); checkpoints select their own profile")
     parser.add_argument("--frames", type=int, choices=FRAME_COUNTS, metavar=f"1..{MAX_FRAMES}",
-                        help="untrained input capacity (default 1; U-tube-2x-attn requires 8); checkpoints select their own capacity")
+                        help="untrained input capacity (default 1; phase-grouped models require 8); checkpoints select their own capacity")
+    parser.add_argument("--sizes", type=int, nargs="+", metavar="G",
+                        help="static grid profiles to export (default: all supported/trained sizes)")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--skip-ort-check", action="store_true",
                         help="explicitly skip Python ONNX Runtime parity; record not_run in manifest")
     args = parser.parse_args()
     try:
         manifest = export_smoke(args.out, args.seed, threads=args.threads, check_ort=not args.skip_ort_check,
-                                checkpoint=args.checkpoint, profile=args.model, frames=args.frames)
+                                checkpoint=args.checkpoint, profile=args.model, frames=args.frames,
+                                sizes=None if args.sizes is None else tuple(args.sizes))
     except (ValueError, RuntimeError, OSError, zipfile.BadZipFile) as error:
         parser.exit(1, f"Export failed: {error}\n")
     print(f"{manifest['status'].capitalize()} model: {manifest['parameterCount']:,} parameters; CPU export, opset {OPSET}.")
@@ -236,6 +252,8 @@ def main() -> None:
         print("This model is untrained. Benchmark execution/parity only; do not use it for live payload decisions.")
     else:
         print("Trained checkpoint exported. Runtime parity and held-out real-device recovery still require validation.")
+    if manifest["modelProfile"] == "multires":
+        print("Multires profiles require the Neural-QR 2-pixel-cell receiver; the existing U-tube browser demo does not load them yet.")
 
 
 if __name__ == "__main__":

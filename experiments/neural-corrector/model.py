@@ -1,7 +1,9 @@
 """Neural matrix correctors with a shared browser tensor contract.
 
 Fixed-frame profiles accept stacked RGB, [N,3*T,4G,4G]. U-tube-2x-attn accepts
-eight RGB slots followed by eight presence planes, [N,32,256,256]. All produce
+eight RGB slots followed by eight presence planes, [N,32,256,256]. Multires
+uses the same channel packing at [N,32,2G,2G] with independent G8..G256 anchors.
+All produce
 palette logits [N,16,G,G]: physical classes for fixed-frame models, canonical
 logical data classes for the phase-grouped model. The public output adapter
 maps both to corrected logical matrix scores. No model receives payload truth
@@ -15,8 +17,9 @@ from torch.nn import functional as F
 from contract import CHANNELS, FRAME_COUNTS, MAX_FRAMES, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 
 
-MODEL_PROFILES = ("U-tube", "U-tube-2x", "U-tube-2x-attn")
+MODEL_PROFILES = ("U-tube", "U-tube-2x", "U-tube-2x-attn", "multires")
 DEFAULT_MODEL_PROFILE = "U-tube"
+MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
 
 
 class ChannelLayerNorm(nn.Module):
@@ -76,7 +79,7 @@ class ResidualBlock(nn.Module):
 
 
 class WindowAttentionBlock(nn.Module):
-    """C32, four-head attention over 8x8 windows on the fixed 64x64 cell grid.
+    """C32, four-head attention over 8x8 windows on a supported cell grid.
 
     The second block shifts windows by four cells. Its additive mask prevents
     cyclic roll from connecting opposite image edges. Channel norms are per
@@ -93,45 +96,57 @@ class WindowAttentionBlock(nn.Module):
         self.projection = nn.Linear(32, 32)
         self.norm2 = ChannelLayerNorm(32)
         self.ffn = nn.Sequential(nn.Linear(32, 64), nn.ReLU(), nn.Linear(64, 32))
-        mask = torch.empty(0)
-        if shift:
-            regions = torch.zeros(1, 1, 64, 64)
-            label = 0
-            for ys in (slice(0, -8), slice(-8, -4), slice(-4, None)):
-                for xs in (slice(0, -8), slice(-8, -4), slice(-4, None)):
-                    regions[:, :, ys, xs] = label
-                    label += 1
-            windows = self.partition(regions).squeeze(-1)
-            difference = windows[:, :, None] - windows[:, None, :]
-            mask = torch.where(difference == 0, 0., -10000.).unsqueeze(1)
-        self.register_buffer("window_mask", mask, persistent=False)
+        # These are derived geometry, not weights. Keeping them out of the
+        # checkpoint preserves the exact established G64 attention state.
+        self.register_buffer("window_mask", self.boundary_mask(64) if shift else torch.empty(0),
+                             persistent=False)
 
     @staticmethod
     def partition(values: torch.Tensor) -> torch.Tensor:
-        batch, channels = values.shape[:2]
-        return values.reshape(batch, channels, 8, 8, 8, 8).permute(
+        batch, channels, height, width = values.shape
+        return values.reshape(batch, channels, height//8, 8, width//8, 8).permute(
             0, 2, 4, 3, 5, 1).reshape(-1, 64, channels)
 
     @staticmethod
-    def reverse(windows: torch.Tensor, batch: int) -> torch.Tensor:
-        return windows.reshape(batch, 8, 8, 8, 8, 32).permute(
-            0, 5, 1, 3, 2, 4).reshape(batch, 32, 64, 64)
+    def reverse(windows: torch.Tensor, batch: int, size: int = 64) -> torch.Tensor:
+        return windows.reshape(batch, size//8, size//8, 8, 8, 32).permute(
+            0, 5, 1, 3, 2, 4).reshape(batch, 32, size, size)
+
+    @classmethod
+    def boundary_mask(cls, size: int, *, device=None, dtype=torch.float32) -> torch.Tensor:
+        # Region IDs reproduce the shifted-window boundary mask without image
+        # slice mutation. At G8 the forward path disables shifts altogether.
+        coordinates = torch.arange(size, device=device)
+        regions = (coordinates >= size-8).to(torch.int64) + (coordinates >= size-4).to(torch.int64)
+        labels = (regions[:, None]*3 + regions[None, :]).reshape(1, 1, size, size)
+        windows = cls.partition(labels).squeeze(-1)
+        different = windows[:, :, None] != windows[:, None, :]
+        return (different.to(dtype)*-10000.).unsqueeze(1)
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
         batch = values.shape[0]
+        # Browser artifacts are one static G each. Keep geometry in Python so
+        # tracing folds window counts/masks rather than adding shape arithmetic
+        # to the deployed graph. Eager training still selects G per minibatch.
+        size, width = int(values.shape[2]), int(values.shape[3])
+        if not torch.jit.is_tracing() and (size != width or size not in MULTIRES_SIZES):
+            raise ValueError("Attention requires a supported square grid, G8 through G256")
+        shift = self.shift if size > 8 else 0
         normalized = self.norm1(values)
-        if self.shift:
-            normalized = torch.roll(normalized, shifts=(-self.shift, -self.shift), dims=(2, 3))
+        if shift:
+            normalized = torch.roll(normalized, shifts=(-shift, -shift), dims=(2, 3))
         windows = self.partition(normalized)
         qkv = self.qkv(windows).reshape(-1, 64, 3, 4, 8).permute(2, 0, 3, 1, 4)
         scores = (qkv[0] @ qkv[1].transpose(-2, -1)) * (8 ** -.5)
-        if self.shift:
-            scores = (scores.reshape(batch, 64, 4, 64, 64) + self.window_mask.unsqueeze(0)).reshape(-1, 4, 64, 64)
+        if shift:
+            mask = (self.window_mask if size == 64 else
+                    self.boundary_mask(size, device=values.device, dtype=scores.dtype))
+            scores = (scores.reshape(batch, (size//8)**2, 4, 64, 64) + mask.unsqueeze(0)).reshape(-1, 4, 64, 64)
         attention = torch.softmax(scores, dim=-1)
         attended = (attention @ qkv[2]).transpose(1, 2).reshape(-1, 64, 32)
-        attended = self.reverse(self.projection(attended), batch)
-        if self.shift:
-            attended = torch.roll(attended, shifts=(self.shift, self.shift), dims=(2, 3))
+        attended = self.reverse(self.projection(attended), batch, size)
+        if shift:
+            attended = torch.roll(attended, shifts=(shift, shift), dims=(2, 3))
         values = values + attended
         feed_forward = self.ffn(self.norm2(values).permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
         return values + feed_forward
@@ -140,7 +155,7 @@ class WindowAttentionBlock(nn.Module):
 class NeuralCorrector(nn.Module):
     """Full-resolution 32-channel tube, residual U-tube-2x and anchored attention.
 
-    All U-Nets start and end at the rectified crop resolution, 4G by 4G.
+    The established U-tube profiles start and end at the rectified 4G crop.
     Their bottleneck is G by G, exactly the target symbol-grid size. Only the
     outlet reduces the reconstructed full-resolution features to that grid.
     U-tube preserves the established two-convolution normalized stages;
@@ -148,6 +163,8 @@ class NeuralCorrector(nn.Module):
     bottleneck, with one normalization per block. U-tube-2x-attn keeps U-tube-2x's
     convolutional path, adds a learned global bias after the inlet and two
     attention blocks at the target-sized bottleneck. No model has an RGB shortcut.
+    Multires shares a one-level 2G->G->2G trunk with a separate anchor per G,
+    alternating two-convolution segments and two-block window-attention pairs.
     """
 
     def __init__(self, profile: str = DEFAULT_MODEL_PROFILE, frames: int | None = None) -> None:
@@ -155,20 +172,21 @@ class NeuralCorrector(nn.Module):
         if profile not in MODEL_PROFILES:
             raise ValueError(f"Choose model profile from {MODEL_PROFILES}")
         if frames is None:
-            frames = 8 if profile == "U-tube-2x-attn" else 1
+            frames = 8 if profile in ("U-tube-2x-attn", "multires") else 1
         if type(frames) is not int or frames not in FRAME_COUNTS:
             raise ValueError(f"Choose 1 to {MAX_FRAMES} input frames")
-        if profile == "U-tube-2x-attn" and frames != 8:
-            raise ValueError("U-tube-2x-attn uses eight phase-paired slots, with four to eight present frames")
+        if profile in ("U-tube-2x-attn", "multires") and frames != 8:
+            raise ValueError(f"{profile} uses eight phase-paired slots, with four to eight present frames")
         self.profile = profile
         self.frames = frames
-        self.variable_frames = profile == "U-tube-2x-attn"
+        self.variable_frames = profile in ("U-tube-2x-attn", "multires")
         self.min_frames = 4 if self.variable_frames else frames
         self.input_channels = 4 * frames if self.variable_frames else 3 * frames
         self.input_layout = "phase-paired-rgb-presence-planes" if self.variable_frames else "stacked-rgb"
         self.output_label_space = "logical" if self.variable_frames else "physical"
         self.phase_masks = (0, 15, 7, 8) if self.variable_frames else ()
-        self.supported_sizes = (64,) if self.variable_frames else (64, 128)
+        self.supported_sizes = MULTIRES_SIZES if profile == "multires" else ((64,) if self.variable_frames else (64, 128))
+        self.pixels_per_cell = 2 if profile == "multires" else 4
         self.inlet = nn.Sequential(conv(self.input_channels, 32, normalize=profile == "U-tube"),
                                    conv(32, 32, normalize=True))
         if profile == "U-tube":
@@ -177,6 +195,17 @@ class NeuralCorrector(nn.Module):
             self.bottleneck = nn.Sequential(conv(32, 32, 2, True), conv(32, 32, normalize=True))
             self.d1 = nn.Sequential(conv(64, 32, normalize=True), conv(32, 32, normalize=True))
             self.d0 = nn.Sequential(conv(64, 32, normalize=True), conv(32, 32, normalize=True))
+        elif profile == "multires":
+            self.e0 = ResidualBlock(32, pairs=2)
+            self.bottleneck = ResidualBlock(32, pairs=1, stride=2)
+            self.attention = nn.Sequential(WindowAttentionBlock(), WindowAttentionBlock(shift=4))
+            self.bottleneck_second = ResidualBlock(32, pairs=1)
+            self.attention_second = nn.Sequential(WindowAttentionBlock(), WindowAttentionBlock(shift=4))
+            self.d0 = ResidualBlock(64, pairs=2)
+            self.anchors = nn.ParameterDict({str(size): nn.Parameter(torch.empty(1, 32, size, size))
+                                            for size in self.supported_sizes})
+            for anchor in self.anchors.values():
+                nn.init.normal_(anchor, mean=0., std=.02)
         else:
             self.e0 = ResidualBlock(32, pairs=2)
             self.e1 = ResidualBlock(32, pairs=2, stride=2)
@@ -184,9 +213,9 @@ class NeuralCorrector(nn.Module):
             self.d1 = ResidualBlock(64, pairs=2)
             self.d0 = ResidualBlock(64, pairs=2)
         self.outlet = nn.Sequential(conv(32, 32, 2, normalize=True),
-                                    conv(32, 32, 2, normalize=True))
+                                    conv(32, 32, 1 if profile == "multires" else 2, normalize=True))
         self.head = nn.Conv2d(32, 16, 1, bias=True)
-        if self.variable_frames:
+        if profile == "U-tube-2x-attn":
             # Learned per-channel global anchor, not a positional sinusoid or
             # observed image. The compact lattice expands only the bias: all
             # incoming image evidence remains at full 256x256 resolution.
@@ -194,27 +223,44 @@ class NeuralCorrector(nn.Module):
             nn.init.normal_(self.position_anchor, mean=0., std=.02)
             self.attention = nn.Sequential(WindowAttentionBlock(), WindowAttentionBlock(shift=4))
 
-    def forward(self, pixels: torch.Tensor) -> torch.Tensor:
+    def forward(self, pixels: torch.Tensor, grid_size: int | None = None) -> torch.Tensor:
         # Preserve calibrated overshoot in recordings/preprocessing; every
         # learned layer consumes the same bounded range for real and synthetic
         # inputs. ONNX exports this operation, including browser camera inference.
         if self.variable_frames:
-            if not torch.jit.is_tracing() and (pixels.ndim != 4 or pixels.shape[1:] != (32, 256, 256)):
-                raise ValueError("U-tube-2x-attn requires packed eight-slot G64 input [N,32,256,256]")
+            if not torch.jit.is_tracing():
+                if (pixels.ndim != 4 or pixels.shape[1] != 32 or pixels.shape[2] != pixels.shape[3]
+                        or pixels.shape[2] % self.pixels_per_cell
+                        or pixels.shape[2] // self.pixels_per_cell not in self.supported_sizes):
+                    raise ValueError(f"{self.profile} requires packed eight-slot input at "
+                                     f"{self.pixels_per_cell} pixels/cell, grids "
+                                     f"{', '.join('G'+str(size) for size in self.supported_sizes)}")
+            side = pixels.shape[-1]
+            # Export one static geometry at a time; tracing selects only its
+            # matching anchor, never the full bank or an interpolated other G.
+            size = int(side) // self.pixels_per_cell
+            if grid_size is not None and grid_size != size:
+                raise ValueError("Explicit grid size disagrees with the packed input")
             # The tensor contract supplies spatially constant binary planes.
             # Read their flags once and reconstruct planes, so gating and
             # conditioning always use exactly the same eight availability bits.
             presence = pixels[:, 24:, :1, :1].clamp(0., 1.)
             rgb = torch.clamp(pixels[:, :24], NETWORK_INPUT_MIN, NETWORK_INPUT_MAX)
-            rgb = (rgb.reshape(-1, 8, 3, 256, 256) * presence.unsqueeze(2)).reshape(-1, 24, 256, 256)
-            pixels = torch.cat((rgb, presence.expand(-1, -1, 256, 256)), dim=1)
+            rgb = (rgb.reshape(-1, 8, 3, side, side) * presence.unsqueeze(2)).reshape(-1, 24, side, side)
+            pixels = torch.cat((rgb, presence.expand(-1, -1, side, side)), dim=1)
         else:
             pixels = torch.clamp(pixels, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX)
         features = self.inlet(pixels)
         if self.variable_frames:
-            features = features + F.interpolate(self.position_anchor, size=(256, 256),
+            anchor = self.anchors[str(size)] if self.profile == "multires" else self.position_anchor
+            features = features + F.interpolate(anchor, scale_factor=self.pixels_per_cell,
                                                  mode="bilinear", align_corners=False)
         e0 = self.e0(features)
+        if self.profile == "multires":
+            context = self.attention(self.bottleneck(e0))
+            context = self.attention_second(self.bottleneck_second(context))
+            d0 = self.d0(torch.cat((F.interpolate(context, scale_factor=2, mode="nearest"), e0), dim=1))
+            return self.head(self.outlet(d0))
         e1 = self.e1(e0)
         context = self.bottleneck(e1)
         if self.variable_frames:
@@ -235,6 +281,9 @@ def profile_from_state(state: dict) -> str:
     inlet = state.get("inlet.0.0.weight")
     if not isinstance(inlet, torch.Tensor) or inlet.ndim != 4:
         raise ValueError("Checkpoint has no valid corrector inlet")
+    if ("anchors.64" in state and "attention_second.0.qkv.weight" in state
+            and "bottleneck_second.pairs.0.conv1.weight" in state and inlet.shape[1] == 32):
+        return "multires"
     signature = (tuple(state["head.weight"].shape), inlet.shape[0],
                  "inlet.0.1.weight" in state, "e0.0.1.weight" in state,
                  "e0.pairs.0.conv1.weight" in state, "outlet.0.0.weight" in state,
@@ -251,7 +300,7 @@ def profile_from_state(state: dict) -> str:
 def frames_from_state(state: dict) -> int:
     """Read the input width; remaining tensor shapes are checked by the loader."""
     weight = state.get("inlet.0.0.weight") if isinstance(state, dict) else None
-    if profile_from_state(state) == "U-tube-2x-attn":
+    if profile_from_state(state) in ("U-tube-2x-attn", "multires"):
         return 8
     if (not isinstance(weight, torch.Tensor) or weight.ndim != 4
             or weight.shape[1] % CHANNELS != 0 or weight.shape[1] // CHANNELS not in FRAME_COUNTS):
@@ -288,3 +337,9 @@ def initialize_frames(model: NeuralCorrector, frames: int) -> NeuralCorrector:
 
 def parameter_count(model: nn.Module) -> int:
     return sum(parameter.numel() for parameter in model.parameters())
+
+
+def processing_parameter_count(model: NeuralCorrector) -> int:
+    """Conv/attention budget excludes learned positional anchor storage."""
+    return sum(parameter.numel() for name, parameter in model.named_parameters()
+               if name != "position_anchor" and not name.startswith("anchors."))

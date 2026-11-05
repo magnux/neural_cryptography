@@ -54,8 +54,8 @@ test('uploaded recordings join by size and split with exact 2x2 crops and both e
     }
   }
   assert.deepEqual(await readFile(first.b),before,'raw uploads remain untouched');
-  await assert.rejects(targets({dataset:join(out,'train','g8'),out:join(root,'targets')}),/Neural-QR multires/);
-  await assert.rejects(access(join(root,'targets')));
+  const clean=await targets({dataset:join(out,'train','g8'),out:join(root,'targets')});
+  assert.equal(clean.samples,4);assert.equal(clean.targets,1);assert.equal(clean.synthesizedMissingPhases,0);
   await assert.rejects(joinUploads({'recordings-root':recordings,out:join(recordings,'joined')}),/separate directories/);
 }));
 

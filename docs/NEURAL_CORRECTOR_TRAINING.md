@@ -1,108 +1,229 @@
-# Neural corrector — capture, train, evaluate, and export
+# Neural corrector — collect, train, evaluate, and export
 
-The neural corrector learns to recover optical matrix symbols from calibrated
-camera frames. The family accepts single frames, fixed same-phase bursts, or
-four-phase burst groups, and returns per-cell palette logits. The existing
-optical codec converts corrected symbol evidence to bytes and checks RS/CRC.
-See [the architecture and mask definitions](NEURAL_CORRECTOR.md).
+The current **multires** training path consumes header-free Neural-QR recordings
+at G8/G16/G32/G64/G128/G256 with **2×2 pixels per cell**, sixteen colors, and
+four palette phases. One checkpoint shares its convolution/attention trunk
+across sizes and learns a separate anchor for each grid. Its input has eight
+capture slots; every training example uses four to eight observations, with
+one or two observations from each phase. Its output is a corrected logical
+matrix of sixteen-class logits. See [architecture and masks](NEURAL_CORRECTOR.md).
 
-The completed `U-tube-2x-attn` run reached **100% recorded validation recovery at
-K=7 and K=8 in both directions** and subsequently completed a live Neural-ZKBoo
-exchange. The next architecture is `multires`; its separate size anchors and
-interleaved convolution/attention design are specified in the model guide.
+The trained `U-tube-2x-attn` model and its existing 4×4-cell datasets remain a
+separate experiment. Their commands are retained [below](#independent-u-tube-experiment-prepared-44-cell-datasets).
+The new acquisition matrices carry raw symbols: multires **exact matrix** metrics
+are not the earlier OBM5 CRC/RS recovery metrics, and are not an authentication
+or goodput measurement.
 
-## Collect real examples
+## Collect and organize real examples
 
-The current collector uses the new **header-free Neural-QR** layout. Follow
-[Multires collection](MULTIRES_COLLECTION.md) for G8/G16/G32/G64/G128/G256,
-16 colors, four phases, 2×2 pixels per cell, server uploads and automatic
-browser/device/camera metadata. Copy the sender's public collection code to the
-receiver and select the same grid before recording. The receiver reads the
-asymmetric orientation marker and phase cues; it never loads clean symbols.
+Follow [Multires collection](MULTIRES_COLLECTION.md) for the device workflow.
+The server stages the sender automatically; the receiver loads the active
+public session configuration and uploads its own captures when finished.
+Sender truth is joined only offline and never enters receiver inference.
+Already recorded current Neural-QR files remain valid, including the smaller
+capture pools used before the increased collection budget.
 
-This guide's later synthetic/training commands describe the **established
-4×4-cell U-tube experiment**. They remain usable with its already prepared
-`optical-decoder-dataset` datasets and checkpoints. They do not accept the new
-`neural-qr-dataset` evidence. Production multires training and synthetic generation
-are the next integration step. Keep the new recordings and joined outputs in
-separate directories so existing training jobs can continue unchanged.
+Uploaded files are organized as:
 
-### Interpreting capture distance
+```text
+local-data/recordings/
+  train/g64/sender/*.json
+  train/g64/receiver/*.json
+  validation/g64/sender/*.json
+  validation/g64/receiver/*.json
+```
 
-The collector samples 1,024 stratified, deterministically jittered RGB positions
-in each aligned crop. The displayed value is mean pairwise sampled RMS distance
-within the same assigned matrix and observed phase, expressed relative to the
-nominal RGB range. It measures variation, not correctness, and does not need to
-increase. Signatures remain temporary evidence-selection features.
+The other grid sizes follow the same structure. Keep every physical recording
+session and logical target entirely within one split. Record both directions
+and distinct lighting conditions in training and validation. Device/camera
+metadata is retained automatically; the training sampler derives direction
+labels from that metadata, with an optional explicit `--session-groups` override.
 
-Retention now favors a stable core of similar samples with a controlled shoulder
-and tail, rather than maximizing novelty. It uses a frozen warm-up medoid and
-robust scale, nominal 70/25/5 band quotas, isolated-outlier rejection and randomized
-within-band refresh. Small pools use rounded quotas. The full algorithm and its
-limits are documented under [balanced retention](MULTIRES_COLLECTION.md#admission-and-balanced-retention).
-No sender labels or CRC outcomes enter the selection. Keep one logical matrix
-static across each phase's capture; similarity alone cannot detect a wrong
-manual code or a consistently wrong view.
+The collector retains a stable core, a controlled shoulder and a small tail of
+samples. Its sampled RGB distance measures variation, not correctness; there
+is no requirement for the distance to increase. See [balanced retention](MULTIRES_COLLECTION.md#admission-and-balanced-retention).
+Each target must have **at least two captures of every phase** to support all
+K=4…8 training and validation inputs. Current 8-, 16- and 32-capture pools all
+meet this requirement when complete.
 
-## Organize recordings and rebuild datasets
+## Rebuild paired multires datasets
 
-Current downloads are named `<collection-code>_neural-qr-sender-…json` and
-`<collection-code>_neural-qr-captures-…json`. The code is a CRC32 of the logical
-matrix, assigned explicitly on the receiver. It groups files but is not an
-optically verified identity. Uploads organize recordings by declared split,
-grid size and sender/receiver role; both environments and the camera remain in
-metadata. Keep every physical session and all phases of a matrix in one split.
+Install the training dependencies in the Python environment you intend to use:
 
-For uploaded Neural-QR recordings, use the current join:
+```sh
+python -m pip install -r experiments/neural-corrector/requirements.txt
+```
+
+Inspect the counts and disk estimate first, then generate:
+
+```sh
+node scripts/rebuild-corrector-data.mjs --plan
+node scripts/rebuild-corrector-data.mjs --python python
+```
+
+Defaults are `--recordings-root local-data/recordings` and
+`--out local-data/multires`. The resulting stable tree is:
+
+```text
+local-data/multires/
+  real/train/g8/manifest.json
+  real/validation/g8/manifest.json
+  clean/train/g8/manifest.json
+  clean/validation/g8/manifest.json
+  synthetic/train/g8/manifest.json
+  synthetic/validation/g8/manifest.json
+  build.json
+```
+
+Every recorded grid gets the same structure, and a `test` split is included if
+present. Each split/grid has its own manifest. The real files preserve calibrated
+camera evidence; the clean files contain four exact palette renders per target;
+the synthetic files corrupt those same targets. Target identity, both physical
+session identities, device pair, split and camera metadata remain attached.
+The join verifies sender hashes, phase profile and split ownership. This cannot
+prove that an operator aimed at the correctly assigned matrix.
+
+The generation recipe defaults to:
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `--bursts-per-target` | `8` | Independent corruption trajectories for each real target. |
+| `--frames` | `8` | Captures per phase of each trajectory; **not** model input slots. |
+| phases | `4` | All phases share a coherent camera/environment trajectory. |
+| `--severity-min` / `--severity` | `.35` / `.8` | Random severity within this interval per trajectory. |
+| `--max-output-mib` | `1048576` | Conservative aggregate disk budget; `0` explicitly removes the budget check. |
+
+This makes **8 × 8 × 4 = 256 synthetic captures per target**. The existing
+realistic noise, curved moiré, exposure/white balance, reflection/glare,
+rolling shutter, motion/RGB-offset blur and capture-resolution effects are
+retained. The resolution stage never drops below one camera pixel per logical
+cell. Synthetic classical baselines are recomputed from the corrupted crop;
+clean labels never influence them.
+
+Generation is an offline disk workload. At G256, 256 float32 crops plus their
+classical score arrays take roughly **1.8 GiB per target**, before filesystem
+and metadata overhead. `--plan` includes all recorded sizes and splits in its
+estimate. The generator streams captures instead of holding a complete corpus
+in RAM. Rebuild stages the replacement and only swaps it into place after all
+joins and generation succeed; allow enough disk for the old and new dataset
+simultaneously. It removes the previous **managed** dataset after the swap.
+It refuses to replace an unmarked directory or one containing unrelated files,
+and never deletes recordings or checkpoints. Existing `multires-joined` or
+older independently prepared dataset directories are not touched.
+
+Repeat the same rebuild command after collecting new sessions. Training should
+be stopped before replacing datasets it is reading. Do not change a recorded
+split merely to improve the validation score; reserve genuinely new sessions
+for final testing.
+
+### Individual pipeline commands
+
+The wrapper is optional. These commands perform the same operations for one grid:
 
 ```sh
 node scripts/corrector-dataset.mjs join-uploads \
-  --recordings-root local-data/recordings \
-  --out local-data/multires-joined
+  --recordings-root local-data/recordings --out local-data/multires-joined
+node scripts/corrector-dataset.mjs targets \
+  --dataset local-data/multires-joined/train/g64 \
+  --out local-data/multires-clean-g64
+python experiments/neural-corrector/synthetic.py \
+  --clean local-data/multires-clean-g64 --out local-data/multires-synthetic-g64 \
+  --phase-grouped --bursts-per-target 8 --frames 8 \
+  --severity-min .35 --severity .8 --capture-min-scale .5 --seed 41
 ```
 
-The output must be new or empty. It contains size-separated
-`<split>/g<size>/manifest.json` datasets and hashed evidence/label arrays. The
-command does not delete or rewrite recordings. Missing or conflicting sender
-assignments must be resolved before joining. Follow the
-[recording workflow](MULTIRES_COLLECTION.md#device-workflow) for collection and
-[upload organization](MULTIRES_COLLECTION.md#storage-and-automatic-metadata).
+Each output must be new or empty. For downloaded current Neural-QR recordings,
+use `corrector-dataset.mjs join --senders FILE[,FILE] --captures FILE[,FILE]
+--split train --out NEW_DIRECTORY` before `targets`. Optional exclusions are a
+JSON array of `receiverSessionId/timestamp` capture IDs passed with `--exclude`.
+Unmatched captures remain unlabeled; conflicting assignments are rejected.
 
-The previous rebuild entry point now stops before cleanup and directs current
-recordings to this join. It does not regenerate 4×4-cell datasets from the new
-layout, nor convert previous raw recording formats. Existing prepared 4×4-cell
-datasets and their independent synthetic-generation commands below remain usable.
+## Train multires
 
-## Join labels offline manually
-
-For downloaded **current Neural-QR** files, an explicit join is also available:
+Start a fresh shared model for the first multires run:
 
 ```sh
-node scripts/corrector-dataset.mjs join \
-  --senders local-data/sender-a.json,local-data/sender-b.json \
-  --captures local-data/receiver-batch-a.json,local-data/receiver-batch-b.json \
-  --split train --out local-data/neural-qr-train
+python experiments/neural-corrector/train.py \
+  --model multires --frames 8 \
+  --train local-data/multires/real/train local-data/multires/synthetic/train \
+  --validation local-data/multires/real/validation \
+  --paired-targets --real-fraction .5 \
+  --batch-size 2 --accumulate 8 --lr .0001 --steps 32000 \
+  --validation-samples 0 --device cuda \
+  --out checkpoints/neural-corrector/multires-phase8
 ```
 
-Use actual downloaded names and a new or empty output directory. Repeat into
-separate outputs for validation and test. The join validates collection code,
-profile, phase, sender digest and split consistency. It cannot prove that the
-operator pointed the camera at the assigned matrix. Unmatched captures remain
-unlabeled; conflicting manifests are rejected.
+Parent directories are scanned recursively for manifests. Each optimizer update
+uses one grid size selected uniformly among available training sizes, with
+homogeneous-size microbatches. Within that grid, source/group/session/target
+sampling prevents a recording with more captures from dominating. Paired mode
+uses equal numbers of real and synthetic examples of the **same logical target**
+and the same K observation budget. Dataset counts do not determine this ratio:
+`--real-fraction .5` keeps training **50/50**. Loss first averages over data cells
+within each example and then over examples, so a larger matrix does not receive
+a larger gradient simply because it has more cells.
 
-To remove a questionable sample, provide a JSON array of
-`receiverSessionId/timestamp` capture IDs with `--exclude exclusions.json`.
-These IDs appear in sample provenance. Rejoin into a new directory instead of
-editing pixel/label binaries. The new `neural-qr-dataset` stores `[3,2G,2G]`
-inputs, physical palette labels, data-cell masks, classical score diagnostics
-and logical target symbols. Packet recovery/ECC is not yet defined for this
-acquisition-only format. These files await multires training integration.
+`--batch-size 2 --accumulate 8` is a conservative starting point for the largest
+512×512 input on the 4090, giving sixteen examples per optimizer update. Measure
+actual VRAM before increasing the microbatch. The samples per phase in a stored
+burst can exceed eight; the model randomly draws only the four to eight captures
+needed by that example. Sampling is not restricted to consecutive frames.
+Training retains spatial flips, phase-pair permutations and small real-only
+photometric augmentation with aligned targets/masks.
 
-## Generate the synthetic pilot
+The command defaults to 32,000 total optimizer updates even if `--steps` is
+omitted. With all six sizes, each receives about one sixth of those updates;
+this is not 32,000 updates per size. All updates train the shared trunk. The live bar
+shows training CE/CER and source metrics. Validation prints separately, with
+per-grid, per-direction and per-K summaries. Lean reports contain aggregate
+metrics, not per-session or per-burst arrays. Checkpoint selection uses the
+reported size-balanced exact-matrix score, with CE as a tiebreak; inspect the
+per-size values so success at G8 does not conceal failure at G256.
+
+To continue a multires checkpoint in a **new output directory**, add:
+
+```sh
+--initialize checkpoints/neural-corrector/multires-phase8/best.pt --lr .00005
+```
+
+Initialization loads weights with a fresh optimizer; it is not an exact resume
+of AdamW state. An explicit `--model multires --initialize
+checkpoints/neural-corrector/u-tube-2x-attn-phase8/best.pt` can also warm-start
+matching shared layers and the G64 anchor, leaving new anchors/layers fresh.
+The changed 2×2-cell input geometry still needs training, so fresh initialization
+is the recommended first run. Checkpoints record which grid sizes were actually
+optimized; exporting an untrained size is rejected.
+
+## Evaluate multires
+
+```sh
+python experiments/neural-corrector/evaluate.py \
+  --dataset local-data/multires/real/validation --split validation \
+  --checkpoint checkpoints/neural-corrector/multires-phase8/best.pt \
+  --max-samples 0 --device cuda \
+  --out local-results/neural-corrector/multires-validation.json
+```
+
+Every K=4…8 evaluation preset uses seeded, fixed random draws from held-out
+bursts, not consecutive frames. Every phase is represented, with at most two
+captures per phase. Results include CE, data-cell error rate and exact logical
+matrix rate, grouped by grid, direction and K. Fixed reference cells are visible
+to the model but excluded from loss/error scoring. Exact matrix means every
+scored data cell is correct, **before any packet framing or error correction**.
+The same score cannot be compared directly with the old CRC/RS-assisted recovery
+rate. Use `--split test` with `local-data/multires/real/test` for a final new-session
+evaluation; train and checkpoint-selection sessions are rejected there.
+
+The deployment path exports a selected trained size from the shared checkpoint
+and includes only that size's anchor. This task prepares training/evaluation;
+new Neural-QR packet/authentication integration remains a separate step. See
+[model deployment design](NEURAL_CORRECTOR.md) for that boundary.
+
+## Independent U-tube experiment: prepared 4×4-cell datasets
 
 Use the experiment's pinned dependencies in a virtual environment. Select an
 appropriate PyTorch CUDA build for the 4090; CPU works for small smoke runs.
-**For the recommended U-tube-2x-attn run, skip this optional pilot generation
+**For a U-tube-2x-attn run on prepared 4×4-cell data, skip this optional pilot generation
 and use the [target-paired run below](#training-another-run).** It
 starts fresh combined-model weights using the current paired synthetics. Existing
 U-tube and U-tube-2x checkpoints remain available for their own evaluation or continuation.

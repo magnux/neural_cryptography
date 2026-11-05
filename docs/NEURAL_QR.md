@@ -48,7 +48,7 @@ per size, enlarged exactly 2× at its inlet. At G the bottleneck alternates
 **2 convolutions → 2 attention blocks → 2 convolutions → 2 attention blocks**.
 G64 is the existing trained starting point;
 small controls and larger data matrices will use different profiles after training.
-The [model design](NEURAL_CORRECTOR.md#multires-next-architecture)
+The [model design](NEURAL_CORRECTOR.md#multires-architecture)
 specifies crop sizes, anchors, masks, export and training changes.
 Rectification uses **2×2 pixels per cell**: G32 → 64×64, G64 → 128×128 and
 G256 → 512×512. Drawing cell dimensions are illustrative display units, not
@@ -246,9 +246,10 @@ audited cryptographic security result.
    acquisition, 2×2-pixel crops, public collection assignment, bounded collection,
    uploads and offline joining. Validate the new marker/cue layout on both device
    directions before recording the full multires dataset.
-2. Implement production `multires` training and synthetic generation for these
-   recordings, using independent size anchors and alternating convolution and
-   attention blocks. Train across sizes and export the required static profiles.
+2. **Implemented:** `multires` model, paired synthetic generation, size-balanced
+   training, held-out matrix evaluation and static per-size ONNX export. Train
+   on the collected sessions and measure exact logical matrices per size and
+   direction before integrating the model into the receiver.
 3. Add the in-band ECC/CRC packet codec and full identifier checks, bounded
    packet/phase association and small Neural-QR controls to authentication. This
    replaces the working OBM5/QR-ACK path when both endpoints are ready.

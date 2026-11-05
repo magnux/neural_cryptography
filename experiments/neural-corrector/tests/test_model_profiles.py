@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT))
 HAS_TORCH = importlib.util.find_spec("torch") is not None
 if HAS_TORCH:
     import torch
-    from model import MODEL_PROFILES, DEFAULT_MODEL_PROFILE, NeuralCorrector, parameter_count, profile_from_state
+    from model import MODEL_PROFILES, DEFAULT_MODEL_PROFILE, NeuralCorrector, processing_parameter_count, profile_from_state
     from checkpoint import load_model_checkpoint, validate_split_provenance, training_provenance
     torch.set_num_threads(1)
 
@@ -23,11 +23,16 @@ def training_metadata(model=None):
         result.update(framesPerInput=8, inputLayout=model.input_layout, minFramesPerInput=4,
                       frameCounts=[4, 5, 6, 7, 8], frameCountPolicy="uniform-4-8",
                       outputLabelSpace="logical", phaseMasks=[0, 15, 7, 8])
+    if model is not None and model.profile == "multires":
+        result.update(modelProfile="multires", datasetFormat="neural-qr-dataset",
+                      pixelsPerCell=2, supportedSizes=list(model.supported_sizes),
+                      trainedSizes=list(model.supported_sizes))
     return result
 
 
 def model_input(model, size=64, batch=1):
-    result = torch.randn(batch, model.input_channels, 4*size, 4*size).clamp(-1.5, 1.5)
+    side = model.pixels_per_cell*size
+    result = torch.randn(batch, model.input_channels, side, side).clamp(-1.5, 1.5)
     if model.variable_frames:
         result[:, 24:] = 1
     return result
@@ -57,7 +62,7 @@ class ProfileTests(unittest.TestCase):
                     single = model(pixels)
                     batch = model(torch.cat((pixels, model_input(model)), dim=0))[:1]
                 torch.testing.assert_close(single, batch, rtol=1e-4, atol=1e-5)
-                self.assertLess(parameter_count(model), 500000)
+                self.assertLess(processing_parameter_count(model), 500000)
         self.assertEqual(DEFAULT_MODEL_PROFILE, "U-tube")
         self.assertEqual(NeuralCorrector().profile, DEFAULT_MODEL_PROFILE)
 
@@ -82,7 +87,7 @@ class ProfileTests(unittest.TestCase):
                     torch.testing.assert_close(pair(pixels), expected, rtol=0, atol=0)
 
     def test_only_current_full_resolution_profiles_are_constructible(self):
-        self.assertEqual(MODEL_PROFILES, ("U-tube", "U-tube-2x", "U-tube-2x-attn"))
+        self.assertEqual(MODEL_PROFILES, ("U-tube", "U-tube-2x", "U-tube-2x-attn", "multires"))
         for obsolete in ("compact", "wide", "normalized-compact", "unknown"):
             with self.subTest(profile=obsolete), self.assertRaises(ValueError):
                 NeuralCorrector(obsolete)

@@ -3,7 +3,8 @@
 
 Plain PyTorch, float32, AdamW. Optional target pairing places real captures and
 synthetic renders of the same matrix in each optimizer update. Validation uses
-held-out sessions and canonical exact recovery, never the final test split.
+held-out sessions: exact logical matrices for Neural-QR multires, canonical
+packet recovery for the OBM experiment; never the final test split.
 """
 
 import argparse
@@ -22,12 +23,12 @@ from torch.nn import functional as F
 from augmentation import RealAugmentation, PhaseAugmentation
 from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED, VARIABLE_EVALUATION_POLICY
 from contract import FRAME_COUNTS, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
-from checkpoint import load_model_checkpoint
+from checkpoint import load_model_checkpoint, initialize_multires
 from data import DATASET_FORMAT, Dataset, assert_disjoint, check_checkpoint_overlap, digest
 from evaluate import evaluate_model
 from reporting import compact_report
-from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, NeuralCorrector, initialize_frames
-from sampling import BalancedSampler, load_session_groups, validate_session_groups
+from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, MULTIRES_SIZES, NeuralCorrector, initialize_frames
+from sampling import BalancedSampler, load_session_groups, validate_session_groups, infer_session_groups
 
 
 def training_defaults(initialize=None, steps=None, learning_rate=None):
@@ -80,21 +81,29 @@ def format_training_metrics(interval):
     return text
 
 
+def exact_metrics(report):
+    """Uniform display counters without claiming raw Neural-QR targets have CRCs."""
+    if "matrixAccuracy" in report:
+        row = report["matrixAccuracy"]
+        return {"exactFrames": row["exactMatrices"], "frames": row["matrices"], "exactRate": row["exactRate"]}
+    return report["recovery"]["summary"]["learned"]
+
+
 def format_validation_metrics(report):
-    learned = report["recovery"]["summary"]["learned"]
+    learned = exact_metrics(report)
     selection = report["selectionScore"]
     text = (f"CE {report['loss']:.4f} CER {report['cellErrorRate']:.2%}"
             f" | exact {learned['exactFrames']}/{learned['frames']} ({learned['exactRate']:.2%})"
             f" | selection {selection['exactRate']:.2%} [{selection['method']}]")
     if "byFrameCount" in report:
-        text += " | " + " ".join(f"K{k}:{row['recovery']['summary']['learned']['exactRate']:.1%}"
+        text += " | " + " ".join(f"K{k}:{exact_metrics(row)['exactRate']:.1%}"
                                     for k, row in sorted(report["byFrameCount"].items(), key=lambda item: int(item[0])))
     return text
 
 
 def format_validation_groups(report):
     return "; ".join(f"{name} CE {row['loss']:.4f} CER {row['cellErrorRate']:.2%}"
-                     f" exact {row['learnedExactRate']:.1%}"
+                     f" exact {row['matrixAccuracy']['exactRate'] if 'matrixAccuracy' in row else row['learnedExactRate']:.1%}"
                      for name, row in sorted(report["groups"].items()))
 
 
@@ -172,6 +181,11 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     if any(s.metadata["split"] != "validation" for s in validation.samples):
         raise ValueError("Only validation samples may select checkpoints")
     assert_disjoint(train, validation)
+    multires_data = train.dataset_format == "neural-qr-dataset"
+    if validation.dataset_format != train.dataset_format:
+        raise ValueError("Training and validation must use the same experiment dataset format")
+    if multires_data and session_groups is None:
+        session_groups = infer_session_groups(train.samples+validation.samples)
     if session_groups is not None:
         validate_session_groups(train.samples, session_groups)
         validate_session_groups(validation.samples, session_groups)
@@ -179,7 +193,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     sampler_groups = session_groups if session_groups is not None else {
         s.metadata["sessionId"]: "all-real" for s in train.samples if s.metadata["source"] == "real"}
     sampler = BalancedSampler(train.samples, sampler_groups, seed=seed, real_fraction=real_fraction,
-                              paired_targets=paired_targets)
+                              paired_targets=paired_targets, require_all_groups=not multires_data)
     if paired_targets and batch_size*accumulate % 2:
         raise ValueError("Paired targets require an even effective batch size")
     out = Path(out).resolve()
@@ -188,15 +202,19 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     if model_profile is not None and model_profile not in MODEL_PROFILES:
         raise ValueError("Unknown neural-corrector model profile")
     torch.manual_seed(seed)
-    previous = None
+    previous, transfer = None, None
     if initialize is None:
         model = NeuralCorrector(model_profile or DEFAULT_MODEL_PROFILE, frames=frames)
     else:
         model, previous = load_model_checkpoint(initialize)
-        if model_profile is not None and model.profile != model_profile:
+        if model_profile == "multires" and model.profile == "U-tube-2x-attn":
+            model, transfer = initialize_multires(model)
+        elif model_profile is not None and model.profile != model_profile:
             raise ValueError("Requested --model differs from the initialized checkpoint profile; train that architecture from scratch")
         if frames is not None:
             model = initialize_frames(model, frames)
+    if (model.profile == "multires") != multires_data:
+        raise ValueError("multires requires Neural-QR 2-pixel-cell data; U-tube profiles require their 4-pixel-cell experiment data")
     variable_frames = getattr(model, "variable_frames", False)
     minimum_frames = getattr(model, "min_frames", model.frames)
     phase_augmentation = PhaseAugmentation(seed=seed, flip_probability=phase_flip_probability,
@@ -219,6 +237,11 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         train_payloads.update(ancestry["trainPayloadIds"])
         validation_sessions.update(ancestry["validationSessionIds"])
         validation_payloads.update(ancestry["validationPayloadIds"])
+    training_sizes = sorted({sample.shape[0] for sample in train.samples})
+    if multires_data and {sample.shape[0] for sample in validation.samples} - set(training_sizes):
+        raise ValueError("Validation grids must have training data for their independent anchors")
+    # A new anchor is not labeled trained until an optimizer update sees its G.
+    learned_sizes = set(previous["training"].get("trainedSizes", [])) if previous and transfer is None else set()
     out.mkdir(parents=True, exist_ok=True)
     model.to(device).train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
@@ -239,7 +262,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                "sampling": "paired-targets" if paired_targets else "source-group-session-payload-phase"}
     provenance = {"seed": seed, "samples": len(train.samples), "batchSize": batch_size,
                   "gradientAccumulation": accumulate, "device": str(device), "realFraction": real_fraction,
-                  "pairedTargets": paired_targets, "framesPerInput": model.frames, "selection": "validation-exact", "datasetFormat": DATASET_FORMAT,
+                  "pairedTargets": paired_targets, "framesPerInput": model.frames, "selection": "validation-exact", "datasetFormat": train.dataset_format,
                   "inputLayout": model.input_layout, "minFramesPerInput": minimum_frames,
                   "frameCounts": frame_counts, "frameCountPolicy": "uniform-4-8" if variable_frames else "fixed",
                   "modelProfile": model.profile, "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
@@ -247,6 +270,14 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                   "trainSessionIds": sorted(train_sessions), "trainPayloadIds": sorted(train_payloads),
                   "validationSessionIds": sorted(validation_sessions), "validationPayloadIds": sorted(validation_payloads),
                   "settings": options}
+    if multires_data:
+        geometry = {"pixelsPerCell": 2, "supportedSizes": list(MULTIRES_SIZES)}
+        options.update({**geometry, "trainingSizes": training_sizes,
+                        "sampling": "uniform-size/source-group-session-payload-phase",
+                        "selectionMetric": "size-group-frame-balanced-real/exact-logical-data-matrix"})
+        provenance.update(geometry)
+        if transfer is not None:
+            options["warmStartTransfer"] = transfer
     if variable_frames:
         phase_metadata = {"outputLabelSpace": "logical", "phaseMasks": [0, 15, 7, 8]}
         options.update(phase_metadata)
@@ -269,14 +300,17 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         nonlocal best, selected_step
         report = compact_report(evaluate_model(model, validation, device=device, max_samples=validation_samples,
                                 node=node, work_dir=out, session_groups=session_groups))
-        summary = report["recovery"]["summary"]
-        if summary["learned"]["wrongAcceptedFrames"]:
+        learned = exact_metrics(report)
+        summary = report.get("recovery", {}).get("summary", {})
+        if summary.get("learned", {}).get("wrongAcceptedFrames", 0):
             (out/"validation-failed.json").write_text(json.dumps(report, indent=2)+"\n")
             raise RuntimeError("Validation accepted incorrect payload bytes; inspect validation-failed.json")
         selection = report["selectionScore"]
         score = selection["exactRate"], -selection["loss"]
         # Step zero with fresh weights is diagnostic only, not a trained model.
-        selected = score > best and (step > 0 or previous is not None)
+        baseline_eligible = (previous is not None and transfer is None
+                             and (not multires_data or set(training_sizes) <= learned_sizes))
+        selected = score > best and (step > 0 or baseline_eligible)
         current_lr = optimizer.param_groups[0]["lr"]
         if selected:
             best, selected_step = score, step
@@ -284,6 +318,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                         "baselineSelection": step == 0, "learningRate": current_lr,
                         "selectionAggregation": selection["method"],
                         "bestValidationExact": selection["exactRate"], "bestValidationLoss": selection["loss"]}
+            if multires_data:
+                training["trainedSizes"] = sorted(learned_sizes)
             save_checkpoint(out/"best.pt", model, training)
             (out/"validation.json").write_text(json.dumps(report, indent=2)+"\n")
         source_metrics = summarize_training_counters(interval["sources"], sources=True)
@@ -294,22 +330,36 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                   "trainSources": source_metrics, "trainGroups": group_metrics,
                   "sampling": interval["sampling"], "validationLoss": report["loss"],
                   "validationCellErrorRate": report["cellErrorRate"],
-                  "validationExact": summary["learned"]["exactRate"],
-                  "classicalExact": summary["classical"]["exactRate"],
+                  "validationExact": learned["exactRate"],
                   "validationSelection": selection, "validationGroups": report["groups"],
                   "selected": selected, "learningRate": current_lr,
                   "elapsedSeconds": time.perf_counter()-started}
+        if "classical" in summary:
+            record["classicalExact"] = summary["classical"]["exactRate"]
+        if multires_data:
+            record["trainBySize"] = summarize_training_counters(interval["sizes"])
+            record["validationBySize"] = report["bySize"]
         if variable_frames:
             record["trainFrameCounts"] = interval["frameCounts"]
             record["validationByFrameCount"] = report["byFrameCount"]
-            record["phoneToPCGoal"] = report["phoneToPCGoal"]
+            if "phoneToPCGoal" in report:
+                record["phoneToPCGoal"] = report["phoneToPCGoal"]
         history.append(record)
         lines = [f"Step {step}/{steps} | lr {current_lr:.2g}{' | best' if selected else ''}",
                  f"  Train | {format_training_metrics(interval)}",
                  f"  Val   | {format_validation_metrics(report)}"]
         if report["groups"]:
             lines.append(f"  Val groups | {format_validation_groups(report)}")
-        if variable_frames and show_goal:
+        if multires_data:
+            training_grids = summarize_training_counters(interval["sizes"])
+            if training_grids:
+                lines.append("  Train grids | " + "; ".join(
+                    f"G{size} CE {row['meanCE']:.4f} CER {row['cellErrorRate']:.2%}"
+                    for size, row in sorted(training_grids.items(), key=lambda item: int(item[0]))))
+            lines.append("  Val grids | " + "; ".join(
+                f"G{size} CE {row['loss']:.4f} CER {row['cellErrorRate']:.2%} exact {row['matrixAccuracy']['exactRate']:.1%}"
+                for size, row in sorted(report["bySize"].items(), key=lambda item: int(item[0]))))
+        if variable_frames and show_goal and "phoneToPCGoal" in report:
             goal = report["phoneToPCGoal"]
             lines.append("  Goal phone→PC | " + " ".join(
                 f"K{k}:{row['exactRate']:.1%}" if row['exactRate'] is not None else f"K{k}:n/a"
@@ -319,7 +369,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         (out/target).write_text(json.dumps(report, indent=2)+"\n")
 
     def empty_interval():
-        return {"loss": 0., "updates": 0, "wrongCells": 0, "dataCells": 0, "sources": {}, "groups": {},
+        return {"loss": 0., "updates": 0, "wrongCells": 0, "dataCells": 0, "sources": {}, "groups": {}, "sizes": {},
                 "frameCounts": {str(count): 0 for count in frame_counts},
                 "sampling": {"repeatedBursts": 0, "repeatedSamples": 0, "pairedTargets": 0}}
 
@@ -365,7 +415,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                         interval["wrongCells"] += wrong_count
                         interval["dataCells"] += cell_count
                         interval["frameCounts"][str(count)] += 1
-                        counters = [interval["sources"].setdefault(source, metric_counter())]
+                        counters = [interval["sources"].setdefault(source, metric_counter()),
+                                    interval["sizes"].setdefault(str(sample.shape[0]), metric_counter())]
                         if source == "real":
                             name = sampler_groups[sample.metadata["sessionId"]]
                             counters.append(interval["groups"].setdefault(name, metric_counter()))
@@ -377,6 +428,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                             counter["dataCells"] += cell_count
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
                 optimizer.step()
+                if multires_data:
+                    learned_sizes.update(sample.shape[0] for samples in batches for sample in samples)
                 interval["loss"] += update_loss
                 interval["updates"] += 1
                 for name in interval["sampling"]:
@@ -414,7 +467,7 @@ def main():
     parser.add_argument("--lr", type=float, help="default: 1e-4 fresh weights, 5e-5 initialized weights")
     parser.add_argument("--weight-decay", type=float, default=.01, help="AdamW decay (default: .01)")
     parser.add_argument("--frames", type=int, choices=FRAME_COUNTS,
-                        metavar="1..64", help="input capacity: U-tube-2x-attn uses 8 phase-paired slots with 4–8 observations; other fresh profiles default to 1")
+                        metavar="1..64", help="input capacity: U-tube-2x-attn/multires use 8 phase-paired slots with 4–8 observations; other fresh profiles default to 1")
     parser.add_argument("--paired-targets", action="store_true",
                         help="pair real captures with synthetic examples of the same target; requires real-fraction .5")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -430,12 +483,12 @@ def main():
     parser.add_argument("--real-exposure-stops", type=float, default=.08,
                         help="real training exposure range in stops, shared by the burst (default: .08); set all three strengths to 0 to disable")
     parser.add_argument("--phase-flip-probability", type=float, default=.25,
-                        help="U-tube-2x-attn training: independent horizontal/vertical flip probability (default: .25)")
+                        help="Phase-grouped training: independent horizontal/vertical flip probability (default: .25)")
     parser.add_argument("--no-phase-permutations", action="store_true",
-                        help="disable U-tube-2x-attn exact XOR phase-group augmentation")
+                        help="disable exact XOR phase-group augmentation")
     parser.add_argument("--model", choices=MODEL_PROFILES,
                         help=f"default: {DEFAULT_MODEL_PROFILE} fresh, otherwise checkpoint profile")
-    parser.add_argument("--initialize", type=Path, help="initialize validated weights; optimizer starts fresh")
+    parser.add_argument("--initialize", type=Path, help="initialize validated weights; --model multires also allows an explicit U-tube-2x-attn warm start; optimizer starts fresh")
     parser.add_argument("--node", default="node")
     parser.add_argument("--no-progress", action="store_true", help="hide the live bar; keep concise validation summaries")
     parser.add_argument("--show-goal", action="store_true", help="include the phone-to-PC 50%% recovery goal at validation events")

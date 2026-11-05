@@ -27,7 +27,7 @@ has a compatibility fallback to the other format.
 | Neural-corrector checkpoint | `optical-decoder-checkpoint`, version 1 | [`checkpoint.py`](../experiments/neural-corrector/checkpoint.py); local state dict and training/split provenance |
 | Neural-QR acquisition layout | `neural-qr`, version 1 | [`layout.js`](../apps/color-optical-bench/dist/js/neural-qr/layout.js), [`vision.js`](../apps/color-optical-bench/dist/js/neural-qr/vision.js); G8…G256, 16 colors, four phases, grid-8 references, 2×2 pixels/cell |
 | Capture sender / receiver exports | `neural-qr-sender` / `neural-qr-captures`, version 1 | [Multires collection](MULTIRES_COLLECTION.md); public collection code and profile, phase cues, independently saved/uploaded evidence and sender labels |
-| Joined Neural-QR evidence | `neural-qr-dataset`, version 1 | [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); 2×2-cell CHW inputs and offline labels; multires training integration pending |
+| Joined Neural-QR evidence | `neural-qr-dataset`, version 1 | [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); 2×2-cell CHW inputs and offline labels; paired multires training/evaluation |
 | Established OBM5 training dataset | `optical-decoder-dataset`, version 1 | [`data.py`](../experiments/neural-corrector/data.py), [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); hashed NCHW inputs, physical labels, mask, baseline, expected bytes |
 
 ## Collector session coordination

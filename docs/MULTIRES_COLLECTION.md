@@ -1,7 +1,7 @@
 # Multires recordings: collect by size and upload to the demo server
 
 The collector supports **8, 16, 32, 64, 128 and 256 cells per side**, with new
-captures rectified to **2×2 pixels per cell**. The intended `multires` training
+captures rectified to **2×2 pixels per cell**. The `multires` training
 profile uses **16 colors and four palette phases**. It records camera evidence;
 the receiver never receives sender payloads or labels. Sender manifests provide
 the labels during the offline join.
@@ -14,8 +14,9 @@ The demo server automatically shares the active collection code, grid profile an
 dataset split with the receiver. This small session descriptor contains no clean
 pixels or labels. Static hosts still support manually entering the collection code.
 
-The [multires architecture](NEURAL_CORRECTOR.md#multires-next-architecture) is
-specified and prototyped; production training/browser integration is pending.
+The [multires architecture](NEURAL_CORRECTOR.md#multires-architecture), paired
+synthetic generation, training and selected-size ONNX export are implemented.
+Browser model/packet integration is the next separate step.
 The established 4×4-cell training commands must not be used on these new
 2×2-cell Neural-QR data. The existing authentication demo remains a separate
 OBM5/QR-ACK baseline until the new model and packet codec are integrated.
@@ -226,12 +227,14 @@ physical-session grouping. Source recordings are never deleted or overwritten.
 Unmatched captures must be resolved by uploading the missing sender manifest;
 the tool does not guess labels from filenames.
 
-The existing four-pixel-per-axis synthetic/training pipeline does not accept
-these Neural-QR datasets. The old rebuild entry point stops before cleanup and
-directs new recordings to `join-uploads`; it does not delete datasets. Keep the
-new joined output separate from existing training inputs. Multires dataset generation
-and training are the next implementation step. Existing 4×4-cell datasets and
-their documented training recipe remain usable.
+For the complete training preparation, use `scripts/rebuild-corrector-data.mjs`;
+it stages a fresh join, clean targets and paired synthetics before replacing its
+managed output tree. Source recordings and checkpoints are untouched. Defaults
+produce 8 bursts × 8 captures × 4 phases = 256 synthetic captures per target;
+training samples real and synthetic observations at 50/50 independently of disk
+counts. See the [multires training commands](NEURAL_CORRECTOR_TRAINING.md).
+Existing 4×4-cell datasets remain usable with their U-tube profiles; they are not
+silently converted into new-format inputs.
 
 Browser API references: [track settings](https://developer.mozilla.org/en-US/docs/Web/API/MediaStreamTrack/getSettings),
 [camera labels](https://developer.mozilla.org/en-US/docs/Web/API/MediaDeviceInfo/label),
