@@ -13,7 +13,7 @@ METRIC_FIELDS = (
     "uniqueAvailableCandidates", "framesPerInput", "frameCapacity",
     "actualFrameCounts", "outputLabelSpace", "inputCaptures",
     "uniqueInputCaptures", "availableInputCaptures", "dataCells", "loss",
-    "cellErrorRate", "expectedCalibrationError",
+    "cellErrorRate", "sizeMacroCellErrorRate", "expectedCalibrationError",
 )
 GROUP_FIELDS = (
     "samples", "inputCaptures", "dataCells", "wrongCells", "loss",

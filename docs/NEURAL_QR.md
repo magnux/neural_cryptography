@@ -43,9 +43,11 @@ cells, not an encoded application packet. It is suitable for learning the optica
 correction task without requiring a trained model to label recordings.
 
 The target is a **multi-resolution family**, G8/G16/G32/G64/G128/G256, read by
-**`multires`**: a shared convolution/attention trunk with one learned G×G anchor
-per size, enlarged exactly 2× at its inlet. At G the bottleneck alternates
-**2 convolutions → 2 attention blocks → 2 convolutions → 2 attention blocks**.
+**`multires`**: a shared convolution/attention trunk with independent
+low-frequency cosine coefficients per size. Each bank reconstructs a G×G anchor,
+enlarged exactly 2× at the inlet. At G the bottleneck has six alternating blocks
+**C → A → C → A → C → A**, each containing two convolutions or two
+window-attention layers.
 G64 is the existing trained starting point;
 small controls and larger data matrices will use different profiles after training.
 The [model design](NEURAL_CORRECTOR.md#multires-architecture)

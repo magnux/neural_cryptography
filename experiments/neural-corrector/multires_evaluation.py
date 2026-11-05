@@ -74,13 +74,22 @@ def _selection(leaves):
             "exactRate": exact, "loss": loss, "cellErrorRate": cer}
 
 
+def _summary_with_size_macro(leaves):
+    result = summarize(combine(leaves.values()))
+    grids = defaultdict(list)
+    for key, row in leaves.items():
+        grids[key[0]].append(row)
+    result["sizeMacroCellErrorRate"] = float(np.mean([
+        summarize(combine(rows))["cellErrorRate"] for rows in grids.values()]))
+    return result
+
+
 def _breakdown(leaves):
-    summary = summarize(combine(leaves.values()))
+    summary = _summary_with_size_macro(leaves)
     for label, position in (("sources", 1), ("groups", 2)):
-        grouped = defaultdict(list)
-        for key, value in leaves.items():
-            grouped[key[position]].append(value)
-        summary[label] = {str(name): summarize(combine(rows)) for name, rows in sorted(grouped.items())}
+        names = sorted({key[position] for key in leaves})
+        summary[label] = {str(name): _summary_with_size_macro({
+            key: row for key, row in leaves.items() if key[position] == name}) for name in names}
     return summary
 
 
@@ -158,7 +167,7 @@ def evaluate_matrices(model, dataset, *, device="cpu", max_samples=0, session_gr
     result = {"format": "neural-corrector-evaluation", "version": 1,
               "modelProfile": "multires", "datasetFormat": "neural-qr-dataset",
               "outputLabelSpace": "logical", "metric": "exact-masked-logical-matrix",
-              "note": "Exact means every data cell is correct, excluding fixed references. No CRC, error correction or packet recovery is measured. K presets reuse nested captures and are not independent trials.",
+              "note": "cellErrorRate pools data cells; sizeMacroCellErrorRate averages per-grid CER over represented grids. Exact means every data cell is correct, excluding fixed references. No CRC, error correction or packet recovery is measured. K presets reuse nested captures and are not independent trials.",
               "manifestSha256": dataset.manifest_hash, "framesPerInput": 8,
               "frameCapacity": 8, "actualFrameCounts": [4, 5, 6, 7, 8],
               "pixelsPerCell": 2, "profiles": {str(size): sum(v["samples"] for k, v in leaves.items() if k[0] == size) for size in sizes},

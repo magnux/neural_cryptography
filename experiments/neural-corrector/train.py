@@ -67,16 +67,63 @@ def summarize_training_counters(counters, *, sources=False):
             for name in names for row in (counters[name],)}
 
 
+def summarize_training_grids(counters, source_counters):
+    """Same-resolution real/synthetic summaries, with numeric grid ordering."""
+    mixed = summarize_training_counters(counters)
+    return {size: {**mixed[size],
+                   "sources": summarize_training_counters(source_counters.get(size, {}), sources=True)}
+            for size in sorted(mixed, key=int)}
+
+
+def size_macro_cer(by_size):
+    """Equal weight for each represented grid, independent of its cell count."""
+    return (sum(row["cellErrorRate"] for row in by_size.values()) / len(by_size)
+            if by_size else None)
+
+
+def training_source_summaries(interval):
+    result = summarize_training_counters(interval["sources"], sources=True)
+    if "sizeSources" in interval:
+        for name, row in result.items():
+            grids = {size: summarize_training_counters(values, sources=True)[name]
+                     for size, values in interval["sizeSources"].items() if name in values}
+            row["sizeMacroCellErrorRate"] = size_macro_cer(grids)
+    return result
+
+
+def format_multires_grids(training, validation):
+    """One concise row per grid; never compare mixed train to real validation."""
+    def metrics(row, *, train=False, exact=False):
+        if row is None:
+            return "n/a"
+        text = f"CE {row['meanCE' if train else 'loss']:.4f} CER {row['cellErrorRate']:.2%}"
+        if exact:
+            text += f" exact {row['matrixAccuracy']['exactRate']:.1%}"
+        return text
+    lines = []
+    for size in sorted(set(training) | set(validation), key=int):
+        train_sources = training.get(size, {}).get("sources", {})
+        val_sources = validation.get(size, {}).get("sources", {})
+        lines.append(f"  G{size:<3} | train real {metrics(train_sources.get('real'), train=True)}"
+                     f" | train synthetic {metrics(train_sources.get('synthetic'), train=True)}"
+                     f" | val real {metrics(val_sources.get('real'), exact=True)}")
+    return lines
+
+
 def format_training_metrics(interval):
     """Only current training-interval metrics; never cached validation values."""
     if not interval["updates"]:
         return "no optimizer updates"
     text = (f"CE {interval['loss']/interval['updates']:.4f}"
-            f" CER {interval['wrongCells']/interval['dataCells']:.2%}")
-    for values in (summarize_training_counters(interval["sources"], sources=True),
+            f" CER {interval['wrongCells']/interval['dataCells']:.2%} (cell)")
+    if "sizeSources" in interval:
+        macro = size_macro_cer(summarize_training_counters(interval["sizes"]))
+        if macro is not None:
+            text += f" CER(size) {macro:.2%}"
+    for values in (training_source_summaries(interval),
                    summarize_training_counters(interval["groups"])):
         if values:
-            text += " | " + "; ".join(f"{name} CE {row['meanCE']:.4f} CER {row['cellErrorRate']:.2%}"
+            text += " | " + "; ".join(f"{name} CE {row['meanCE']:.4f} CER {row['cellErrorRate']:.2%} (cell)"
                                        for name, row in values.items())
     return text
 
@@ -92,8 +139,9 @@ def exact_metrics(report):
 def format_validation_metrics(report):
     learned = exact_metrics(report)
     selection = report["selectionScore"]
-    text = (f"CE {report['loss']:.4f} CER {report['cellErrorRate']:.2%}"
-            f" | exact {learned['exactFrames']}/{learned['frames']} ({learned['exactRate']:.2%})"
+    text = (f"CE {report['loss']:.4f} CER {report['cellErrorRate']:.2%} (cell)"
+            + (f" CER(size) {report['sizeMacroCellErrorRate']:.2%}" if "sizeMacroCellErrorRate" in report else "")
+            + f" | exact {learned['exactFrames']}/{learned['frames']} ({learned['exactRate']:.2%})"
             f" | selection {selection['exactRate']:.2%} [{selection['method']}]")
     if "byFrameCount" in report:
         text += " | " + " ".join(f"K{k}:{exact_metrics(row)['exactRate']:.1%}"
@@ -102,7 +150,7 @@ def format_validation_metrics(report):
 
 
 def format_validation_groups(report):
-    return "; ".join(f"{name} CE {row['loss']:.4f} CER {row['cellErrorRate']:.2%}"
+    return "; ".join(f"{name} CE {row['loss']:.4f} CER {row['cellErrorRate']:.2%} (cell)"
                      f" exact {row['matrixAccuracy']['exactRate'] if 'matrixAccuracy' in row else row['learnedExactRate']:.1%}"
                      for name, row in sorted(report["groups"].items()))
 
@@ -276,6 +324,13 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                         "sampling": "uniform-size/source-group-session-payload-phase",
                         "selectionMetric": "size-group-frame-balanced-real/exact-logical-data-matrix"})
         provenance.update(geometry)
+        architecture = {"anchor": model.anchor_metadata, "bottleneck": model.bottleneck_metadata}
+        options.update(architecture)
+        provenance.update(architecture)
+        options["metricAggregation"] = {
+            "cellErrorRate": "sum wrong data cells / sum data cells",
+            "sizeMacroCellErrorRate": "mean of per-grid cellErrorRate over represented grids",
+            "gridSources": "separate real and synthetic metrics within each grid"}
         if transfer is not None:
             options["warmStartTransfer"] = transfer
     if variable_frames:
@@ -322,7 +377,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                 training["trainedSizes"] = sorted(learned_sizes)
             save_checkpoint(out/"best.pt", model, training)
             (out/"validation.json").write_text(json.dumps(report, indent=2)+"\n")
-        source_metrics = summarize_training_counters(interval["sources"], sources=True)
+        source_metrics = training_source_summaries(interval)
         group_metrics = summarize_training_counters(interval["groups"])
         record = {"step": step, "trainLoss": interval["loss"]/interval["updates"] if interval["updates"] else None,
                   "trainCellErrorRate": interval["wrongCells"]/interval["dataCells"] if interval["dataCells"] else None,
@@ -337,7 +392,10 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         if "classical" in summary:
             record["classicalExact"] = summary["classical"]["exactRate"]
         if multires_data:
-            record["trainBySize"] = summarize_training_counters(interval["sizes"])
+            record["trainBySize"] = summarize_training_grids(interval["sizes"], interval["sizeSources"])
+            record["trainSizeMacroCellErrorRate"] = size_macro_cer(record["trainBySize"])
+            record["validationSizeMacroCellErrorRate"] = report["sizeMacroCellErrorRate"]
+            record["validationSources"] = report["sources"]
             record["validationBySize"] = report["bySize"]
         if variable_frames:
             record["trainFrameCounts"] = interval["frameCounts"]
@@ -351,14 +409,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         if report["groups"]:
             lines.append(f"  Val groups | {format_validation_groups(report)}")
         if multires_data:
-            training_grids = summarize_training_counters(interval["sizes"])
-            if training_grids:
-                lines.append("  Train grids | " + "; ".join(
-                    f"G{size} CE {row['meanCE']:.4f} CER {row['cellErrorRate']:.2%}"
-                    for size, row in sorted(training_grids.items(), key=lambda item: int(item[0]))))
-            lines.append("  Val grids | " + "; ".join(
-                f"G{size} CE {row['loss']:.4f} CER {row['cellErrorRate']:.2%} exact {row['matrixAccuracy']['exactRate']:.1%}"
-                for size, row in sorted(report["bySize"].items(), key=lambda item: int(item[0]))))
+            lines.extend(format_multires_grids(record["trainBySize"], report["bySize"]))
         if variable_frames and show_goal and "phoneToPCGoal" in report:
             goal = report["phoneToPCGoal"]
             lines.append("  Goal phone→PC | " + " ".join(
@@ -370,6 +421,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
 
     def empty_interval():
         return {"loss": 0., "updates": 0, "wrongCells": 0, "dataCells": 0, "sources": {}, "groups": {}, "sizes": {},
+                **({"sizeSources": {}} if multires_data else {}),
                 "frameCounts": {str(count): 0 for count in frame_counts},
                 "sampling": {"repeatedBursts": 0, "repeatedSamples": 0, "pairedTargets": 0}}
 
@@ -378,6 +430,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             "requestedSteps": steps, "completedSteps": completed, "selectedStep": selected_step,
             "stopReason": stop_reason, "device": str(device), "settings": options, "history": history,
             "note": "Training CE/CER include configured photometric and phase/spatial augmentation; validation inputs are unchanged. "
+                    "CER(cell) pools data cells; CER(size) averages per-grid CER over represented grids. "
+                    "Grid metrics separate real and synthetic training sources. "
                     "Validation selects checkpoints; untouched real test sessions establish generalization."}, indent=2)+"\n")
 
     def update_progress(progress, interval, refresh=False):
@@ -417,6 +471,9 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                         interval["frameCounts"][str(count)] += 1
                         counters = [interval["sources"].setdefault(source, metric_counter()),
                                     interval["sizes"].setdefault(str(sample.shape[0]), metric_counter())]
+                        if multires_data:
+                            counters.append(interval["sizeSources"].setdefault(str(sample.shape[0]), {}).setdefault(
+                                source, metric_counter()))
                         if source == "real":
                             name = sampler_groups[sample.metadata["sessionId"]]
                             counters.append(interval["groups"].setdefault(name, metric_counter()))

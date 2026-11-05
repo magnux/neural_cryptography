@@ -1,4 +1,4 @@
-"""Static deployment profiles keep one learned size anchor and exact input packing."""
+"""Static deployment bakes one low-frequency size anchor and exact input packing."""
 
 import importlib.util
 from pathlib import Path
@@ -55,7 +55,11 @@ class MultiresExportTests(unittest.TestCase):
             manifest = export_smoke(output, seed=19, sizes=(8, 16), profile="multires", check_ort=False)
             self.assertEqual(manifest["pixelsPerCell"], 2)
             self.assertEqual(manifest["datasetFormat"], "neural-qr-dataset")
-            self.assertEqual(manifest["parameterCount"], 2_990_992)
+            self.assertEqual(manifest["parameterCount"], 274_128)
+            self.assertEqual(manifest["anchorDeployment"], "baked-selected-spatial-grid")
+            self.assertEqual(manifest["anchor"]["representation"], "dct-low-frequency")
+            self.assertEqual(manifest["anchor"]["maxModes"], 16)
+            self.assertEqual(manifest["bottleneck"]["blocks"], ["conv", "attention"]*3)
             self.assertEqual(manifest["frameCounts"], [4, 5, 6, 7, 8])
             torch.manual_seed(19)
             model = NeuralCorrector("multires").eval()
@@ -63,13 +67,40 @@ class MultiresExportTests(unittest.TestCase):
                 size = case["size"]
                 graph = onnx.load(output/case["model"]["file"])
                 self.assertEqual({item.name: list(item.dims) for item in graph.graph.initializer
-                                  if item.name.startswith("anchors.")},
-                                 {f"anchors.{size}": [1, 32, size, size]})
+                                  if "anchor" in item.name},
+                                 {"baked_anchor": [1, 32, size, size]})
+                self.assertFalse(any("basis" in item.name or "cosine" in item.name
+                                     for item in graph.graph.initializer))
+                self.assertNotIn("DFT", case["operators"])
                 self.assertEqual(case["inputShape"], [1, 32, 2*size, 2*size])
                 pixels = np.fromfile(output/case["input"]["file"], "<f4").reshape(case["inputShape"])
                 expected = np.fromfile(output/case["expected"]["file"], "<f4").reshape(case["outputShape"])
                 with torch.inference_mode():
                     np.testing.assert_array_equal(expected, model(torch.from_numpy(pixels)).numpy())
+
+    def test_baking_is_export_only_and_preserves_coefficients_weights_and_rng(self):
+        import torch
+        from export import static_export_model
+        from model import NeuralCorrector
+
+        torch.set_num_threads(1)
+        torch.manual_seed(117)
+        source = NeuralCorrector("multires").eval()
+        before = {name: tensor.clone() for name, tensor in source.state_dict().items()}
+        random_state = torch.get_rng_state().clone()
+        baked = static_export_model(source, 32)
+        torch.testing.assert_close(torch.get_rng_state(), random_state, rtol=0, atol=0)
+        self.assertIsNot(baked, source)
+        self.assertTrue(hasattr(source, "anchor_coefficients"))
+        self.assertFalse(hasattr(baked, "anchor_coefficients"))
+        torch.testing.assert_close(baked.baked_anchor, source.spatial_anchor(32), rtol=0, atol=0)
+        for name, tensor in source.state_dict().items():
+            torch.testing.assert_close(tensor, before[name], rtol=0, atol=0)
+        pixels = torch.from_numpy(fixture_input(32, 23, 8, presence=True, pixels_per_cell=2))
+        with torch.inference_mode():
+            torch.testing.assert_close(baked(pixels), source(pixels), rtol=0, atol=0)
+        with self.assertRaisesRegex(ValueError, "selected grid"):
+            baked.spatial_anchor(16)
 
     def test_trained_checkpoint_defaults_to_trained_sizes_and_rejects_other_anchors(self):
         import torch
@@ -86,6 +117,7 @@ class MultiresExportTests(unittest.TestCase):
                     "phaseMasks": [0, 15, 7, 8], "trainSessionIds": ["train-session"],
                     "trainPayloadIds": ["train-target"], "validationSessionIds": ["validation-session"],
                     "validationPayloadIds": ["validation-target"]}
+        training.update(anchor=dict(model.anchor_metadata), bottleneck=dict(model.bottleneck_metadata))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             checkpoint = root/"model.pt"

@@ -22,7 +22,8 @@ static serving and browser tests.
 The next integrated transport is [Neural-QR](../../docs/NEURAL_QR.md), designed to supply
 geometry, phase identity and normalized crops without a separately decoded dense
 header. The `multires` architecture shares a trunk across six sizes, with independent
-per-size anchors and an alternating convolution/attention bottleneck. The
+per-size low-frequency anchors and six alternating convolution/attention
+blocks, with two layers in each block. The
 [multires collector](../../docs/MULTIRES_COLLECTION.md) already records G8…G256
 at 2×2 pixels per cell using the new header-free markers and phase cues, and
 supports server uploads with a public collection code for offline association. The production training and synthetic-generation pipeline accepts these recordings
@@ -33,7 +34,7 @@ U-tube experiments retain their four-pixels-per-axis inputs.
 
 | Profile | Input forms | Internal design | Parameters |
 | --- | --- | --- | --- |
-| `multires` | Four-phase burst, 4–8 observations in eight slots; G8…G256 | One-level 2G→G→2G U; alternating conv/attention; independent anchors | 195,472 shared + 2,795,520 anchors |
+| `multires` | Four-phase burst, 4–8 observations in eight slots; G8…G256 | One-level 2G→G→2G U; six alternating conv/attention blocks; independent cosine anchors | 231,120 shared + 43,008 anchor coefficients = 274,128 |
 | `U-tube` | Single RGB frame or fixed T-frame burst | Full-resolution U, 32 channels, two convs per block | 140,976 at T=1; 144,432 at T=5 |
 | `U-tube-2x` | Single RGB frame or fixed T-frame burst | Same U width; residual blocks with four outer/eight bottleneck convs | 276,336 at T=1; 279,792 at T=5 |
 | `U-tube-2x-attn` | Four-phase burst, 4–8 observations in eight slots | Residual U, learned global positional anchor, two window-attention blocks | 432,848 |
@@ -41,7 +42,7 @@ U-tube experiments retain their four-pixels-per-axis inputs.
 `U-tube` is the default profile. The trained four-phase experiment uses
 `U-tube-2x-attn`. Select `--model multires --frames 8` for new Neural-QR recordings.
 All profiles produce `[N,16,G,G]` logits. The three U-tube profiles use four input
-pixels per axis per output cell; `multires` uses two. For G64, their U operates at **256→128→64→128→256**, followed by a
+pixels per axis per output cell; `multires` uses two. For G64, the U-tube path operates at **256→128→64→128→256**, followed by a
 **256→128→64** outlet. Block outputs remain 32 channels. Skip concatenations
 briefly have 64 channels; the head produces 16 logits. No raw RGB bypass reaches
 the output.
@@ -52,6 +53,12 @@ labels, which the receiver maps back to logical symbols. The attention profile
 requires **G64, sixteen colors and four permuted phases**, and predicts canonical
 logical data symbols directly. Its spatial anchor and attention windows are
 currently tied to G64.
+
+`multires` reconstructs a separate G×G positional field from at most 16×16
+learned cosine coefficients per channel, then enlarges that field 2× at the
+inlet. Only the anchor is frequency-limited; image features and output logits
+retain full spatial detail. Its bottleneck is C→A→C→A→C→A, where C contains two
+convolutions and A contains two window-attention layers.
 
 The four-phase input uses slots **P0a, P0b, P1a, P1b, P2a, P2b, P3a, P3b**:
 one or two captures per phase, with K uniformly drawn from 4…8 during training.
@@ -103,7 +110,9 @@ changing those direction weights.
 Training defaults to 32,000 updates, AdamW weight decay .01, LR `1e-4` fresh or
 `5e-5` initialized, and validation every 1,000 updates. The live bar displays
 training metrics; validation checkpoints print a separate consolidated summary.
-Default JSON reports retain aggregate, source/group and per-K statistics without
+Per-grid rows separate real training, synthetic training and real validation.
+`CER (cell)` pools data cells; `CER(size)` averages per-grid rates equally.
+Default JSON reports retain aggregate, source-by-grid/group and per-K statistics without
 per-session or per-burst records. Detailed diagnostics are opt-in; see the
 training guide for the current switches and report schema.
 
@@ -162,17 +171,21 @@ marks the native check as not run, and still requires browser runtime validation
 
 The prepared browser assets are **ONNX, a manifest, numerical fixtures and the
 pinned JavaScript/WASM runtime**. The `.pt` file stays on the training/export
-machine. Its roughly 1.7 MB weight size does not determine the entire browser
-bundle size; the attention ONNX graph is approximately 2.84 MB, and runtime
+machine. That U-tube checkpoint's roughly 1.7 MB weight size does not determine the entire
+browser bundle size; the attention ONNX graph is approximately 2.84 MB, and runtime
 assets are additional. The static demo server serves these files normally;
 inference runs locally inside the browser worker. Detailed commands and the
 one-time profile-metadata naming step for an existing checkpoint are in the
 [serving guide](../../docs/CORRECTOR_LAB.md).
 
 For multires, `export.py --checkpoint PATH --sizes 64 --out PATH` exports a
-static selected-size graph with only its own anchor. A trained checkpoint may
-export only sizes actually included in training. This does not yet update the
-existing browser worker or packet transport to the new input/format contract.
+static selected-size graph with only its own reconstructed G×G anchor, baked
+into an export-only model copy. Training keeps independent coefficient tensors;
+no FFT operator is required by the browser. A trained checkpoint may
+export only sizes actually included in training. Current multires checkpoints
+record low-frequency anchor and six-block bottleneck metadata; prior dense-anchor
+multires runs belong to their source revision and are not automatically loaded.
+This does not yet update the existing browser worker or packet transport to the new input/format contract.
 
 Without `--checkpoint`, export produces **untrained** numerical smoke fixtures.
 Those fixtures establish execution/parity only and cannot establish optical

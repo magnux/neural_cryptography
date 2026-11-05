@@ -103,7 +103,10 @@ class MultiresTrainingTests(unittest.TestCase):
                                       paired_targets=True, steps=2, batch_size=2, accumulate=1,
                                       eval_every=2, no_progress=True, seed=7)
             self.assertEqual(result["steps"], 2)
-            self.assertIn("Val grids", output.getvalue())
+            self.assertIn("train real", output.getvalue())
+            self.assertIn("train synthetic", output.getvalue())
+            self.assertIn("val real", output.getvalue())
+            self.assertIn("CER(size)", output.getvalue())
             model, checkpoint = load_model_checkpoint(result["checkpoint"])
             metadata = checkpoint["training"]
             self.assertEqual(metadata["datasetFormat"], "neural-qr-dataset")
@@ -115,6 +118,16 @@ class MultiresTrainingTests(unittest.TestCase):
             self.assertEqual(update["trainSources"]["real"]["samples"], 2)
             self.assertEqual(update["trainSources"]["synthetic"]["samples"], 2)
             self.assertNotIn("classicalExact", update)
+            grids = update["trainBySize"]
+            self.assertTrue(grids)
+            for row in grids.values():
+                self.assertEqual(list(row["sources"]), ["real", "synthetic"])
+                self.assertEqual(row["samples"], sum(source["samples"] for source in row["sources"].values()))
+            self.assertAlmostEqual(update["trainSizeMacroCellErrorRate"],
+                sum(row["cellErrorRate"] for row in grids.values())/len(grids))
+            self.assertIn("sizeMacroCellErrorRate", update["validationSources"]["real"])
+            self.assertIn("anchor", metadata)
+            self.assertIn("bottleneck", metadata)
             report = evaluate_model(model, validation, detailed=True)
             lean = compact_report(report)
             self.assertEqual(lean, compact_report(lean))
@@ -155,7 +168,7 @@ class MultiresTrainingTests(unittest.TestCase):
             torch.manual_seed(7)
             fresh = NeuralCorrector("multires", frames=8)
             for size in (32, 64, 128, 256):
-                torch.testing.assert_close(model.anchors[str(size)], fresh.anchors[str(size)], rtol=0, atol=0)
+                torch.testing.assert_close(model.anchor_coefficients[str(size)], fresh.anchor_coefficients[str(size)], rtol=0, atol=0)
 
 
 if __name__ == "__main__":

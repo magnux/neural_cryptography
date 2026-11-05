@@ -26,7 +26,8 @@ def training_metadata(model=None):
     if model is not None and model.profile == "multires":
         result.update(modelProfile="multires", datasetFormat="neural-qr-dataset",
                       pixelsPerCell=2, supportedSizes=list(model.supported_sizes),
-                      trainedSizes=list(model.supported_sizes))
+                      trainedSizes=list(model.supported_sizes), anchor=model.anchor_metadata,
+                      bottleneck=model.bottleneck_metadata)
     return result
 
 

@@ -10,6 +10,8 @@ maps both to corrected logical matrix scores. No model receives payload truth
 or keys.
 """
 
+import math
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -20,6 +22,47 @@ from contract import CHANNELS, FRAME_COUNTS, MAX_FRAMES, NETWORK_INPUT_MIN, NETW
 MODEL_PROFILES = ("U-tube", "U-tube-2x", "U-tube-2x-attn", "multires")
 DEFAULT_MODEL_PROFILE = "U-tube"
 MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
+ANCHOR_MAX_MODES = 16
+ANCHOR_METADATA = {"representation": "dct-low-frequency", "maxModes": ANCHOR_MAX_MODES,
+                   "normalization": "ortho", "spatialScale": "grid-over-modes"}
+BOTTLENECK_METADATA = {"blocks": ["conv", "attention", "conv", "attention", "conv", "attention"],
+                       "layersPerBlock": 2}
+
+
+def dct_anchor_basis(size: int, *, device=None, dtype=torch.float32) -> torch.Tensor:
+    """Orthonormal DCT-II synthesis columns for the retained low frequencies.
+
+    Construct derived geometry in float64 before the final cast, so G256's
+    cosine basis has the same accuracy as smaller grids. These columns are
+    deterministic buffers, not learned spatial values or checkpoint payload.
+    """
+    if type(size) is not int or size not in MULTIRES_SIZES:
+        raise ValueError("Anchor grid must be one of G8, G16, G32, G64, G128 or G256")
+    modes = min(size, ANCHOR_MAX_MODES)
+    positions = torch.arange(size, device=device, dtype=torch.float64)[:, None] + .5
+    frequencies = torch.arange(modes, device=device, dtype=torch.float64)[None]
+    basis = torch.cos(math.pi * positions * frequencies / size) * math.sqrt(2./size)
+    basis[:, 0] /= math.sqrt(2.)
+    return basis.to(dtype=dtype)
+
+
+def project_anchor(spatial: torch.Tensor) -> torch.Tensor:
+    """Project a dense learned anchor onto this model's scaled cosine basis.
+
+    This is an explicit initialization primitive, not checkpoint compatibility.
+    A=(G/m) Q theta Q.T, so theta=(m/G) Q.T A Q. Its reconstruction is the
+    least-squares low-frequency projection. The scale keeps mean squared anchor
+    amplitude equal to mean squared coefficient amplitude at every grid size.
+    """
+    if (not isinstance(spatial, torch.Tensor) or spatial.ndim != 4
+            or tuple(spatial.shape[:2]) != (1, 32)
+            or spatial.shape[-2] != spatial.shape[-1]
+            or not spatial.is_floating_point() or not bool(torch.isfinite(spatial).all())):
+        raise ValueError("Anchor projection requires a finite floating [1,32,G,G] tensor")
+    size = int(spatial.shape[-1])
+    basis = dct_anchor_basis(size, device=spatial.device, dtype=spatial.dtype)
+    modes = basis.shape[1]
+    return (basis.transpose(0, 1) @ spatial @ basis) * (modes/size)
 
 
 class ChannelLayerNorm(nn.Module):
@@ -164,7 +207,9 @@ class NeuralCorrector(nn.Module):
     convolutional path, adds a learned global bias after the inlet and two
     attention blocks at the target-sized bottleneck. No model has an RGB shortcut.
     Multires shares a one-level 2G->G->2G trunk with a separate anchor per G,
-    alternating two-convolution segments and two-block window-attention pairs.
+    six alternating blocks: three two-convolution segments and three pairs of
+    window-attention layers. Each independent anchor is limited to 16x16 cosine
+    modes per channel; no learned dense position map exists.
     """
 
     def __init__(self, profile: str = DEFAULT_MODEL_PROFILE, frames: int | None = None) -> None:
@@ -201,11 +246,18 @@ class NeuralCorrector(nn.Module):
             self.attention = nn.Sequential(WindowAttentionBlock(), WindowAttentionBlock(shift=4))
             self.bottleneck_second = ResidualBlock(32, pairs=1)
             self.attention_second = nn.Sequential(WindowAttentionBlock(), WindowAttentionBlock(shift=4))
+            self.bottleneck_third = ResidualBlock(32, pairs=1)
+            self.attention_third = nn.Sequential(WindowAttentionBlock(), WindowAttentionBlock(shift=4))
             self.d0 = ResidualBlock(64, pairs=2)
-            self.anchors = nn.ParameterDict({str(size): nn.Parameter(torch.empty(1, 32, size, size))
-                                            for size in self.supported_sizes})
-            for anchor in self.anchors.values():
-                nn.init.normal_(anchor, mean=0., std=.02)
+            self.anchor_metadata = dict(ANCHOR_METADATA)
+            self.bottleneck_metadata = {**BOTTLENECK_METADATA, "blocks": list(BOTTLENECK_METADATA["blocks"])}
+            self.anchor_coefficients = nn.ParameterDict({
+                str(size): nn.Parameter(torch.empty(1, 32, min(size, ANCHOR_MAX_MODES),
+                                                      min(size, ANCHOR_MAX_MODES)))
+                for size in self.supported_sizes})
+            for size in self.supported_sizes:
+                self.register_buffer(f"anchor_basis_{size}", dct_anchor_basis(size), persistent=False)
+                nn.init.normal_(self.anchor_coefficients[str(size)], mean=0., std=.02)
         else:
             self.e0 = ResidualBlock(32, pairs=2)
             self.e1 = ResidualBlock(32, pairs=2, stride=2)
@@ -222,6 +274,20 @@ class NeuralCorrector(nn.Module):
             self.position_anchor = nn.Parameter(torch.empty(1, 32, 64, 64))
             nn.init.normal_(self.position_anchor, mean=0., std=.02)
             self.attention = nn.Sequential(WindowAttentionBlock(), WindowAttentionBlock(shift=4))
+
+    def spatial_anchor(self, size: int) -> torch.Tensor:
+        """Reconstruct only the selected independent anchor at target resolution.
+
+        The G/m scale makes spatial RMS equal coefficient RMS (up to float32
+        rounding), keeping initialization and coefficient step units consistent
+        across resolutions. The model's ordinary 2x interpolation follows this
+        reconstruction; only the positional prior is bandwidth-limited.
+        """
+        if self.profile != "multires" or type(size) is not int or size not in self.supported_sizes:
+            raise ValueError("Spatial anchor requires a supported multires grid")
+        coefficients = self.anchor_coefficients[str(size)]
+        basis = getattr(self, f"anchor_basis_{size}")
+        return (basis @ coefficients @ basis.transpose(0, 1)) * (size/coefficients.shape[-1])
 
     def forward(self, pixels: torch.Tensor, grid_size: int | None = None) -> torch.Tensor:
         # Preserve calibrated overshoot in recordings/preprocessing; every
@@ -252,13 +318,14 @@ class NeuralCorrector(nn.Module):
             pixels = torch.clamp(pixels, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX)
         features = self.inlet(pixels)
         if self.variable_frames:
-            anchor = self.anchors[str(size)] if self.profile == "multires" else self.position_anchor
+            anchor = self.spatial_anchor(size) if self.profile == "multires" else self.position_anchor
             features = features + F.interpolate(anchor, scale_factor=self.pixels_per_cell,
                                                  mode="bilinear", align_corners=False)
         e0 = self.e0(features)
         if self.profile == "multires":
             context = self.attention(self.bottleneck(e0))
             context = self.attention_second(self.bottleneck_second(context))
+            context = self.attention_third(self.bottleneck_third(context))
             d0 = self.d0(torch.cat((F.interpolate(context, scale_factor=2, mode="nearest"), e0), dim=1))
             return self.head(self.outlet(d0))
         e1 = self.e1(e0)
@@ -281,9 +348,12 @@ def profile_from_state(state: dict) -> str:
     inlet = state.get("inlet.0.0.weight")
     if not isinstance(inlet, torch.Tensor) or inlet.ndim != 4:
         raise ValueError("Checkpoint has no valid corrector inlet")
-    if ("anchors.64" in state and "attention_second.0.qkv.weight" in state
-            and "bottleneck_second.pairs.0.conv1.weight" in state and inlet.shape[1] == 32):
+    if ("anchor_coefficients.64" in state and "attention_third.0.qkv.weight" in state
+            and "bottleneck_third.pairs.0.conv1.weight" in state and inlet.shape[1] == 32):
         return "multires"
+    if any(name.startswith(("anchors.", "anchor_coefficients.")) for name in state):
+        raise ValueError("Unsupported multires weights: the current model requires low-frequency anchors "
+                         "and six bottleneck blocks; start a new run for this architecture")
     signature = (tuple(state["head.weight"].shape), inlet.shape[0],
                  "inlet.0.1.weight" in state, "e0.0.1.weight" in state,
                  "e0.pairs.0.conv1.weight" in state, "outlet.0.0.weight" in state,
@@ -342,4 +412,4 @@ def parameter_count(model: nn.Module) -> int:
 def processing_parameter_count(model: NeuralCorrector) -> int:
     """Conv/attention budget excludes learned positional anchor storage."""
     return sum(parameter.numel() for name, parameter in model.named_parameters()
-               if name != "position_anchor" and not name.startswith("anchors."))
+               if name != "position_anchor" and not name.startswith("anchor_coefficients."))

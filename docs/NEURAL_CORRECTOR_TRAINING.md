@@ -3,7 +3,9 @@
 The current **multires** training path consumes header-free Neural-QR recordings
 at G8/G16/G32/G64/G128/G256 with **2×2 pixels per cell**, sixteen colors, and
 four palette phases. One checkpoint shares its convolution/attention trunk
-across sizes and learns a separate anchor for each grid. Its input has eight
+across sizes and learns separate low-frequency cosine coefficients for each
+grid. Its six alternating bottleneck blocks contain six convolutions and six
+attention layers in total. Its input has eight
 capture slots; every training example uses four to eight observations, with
 one or two observations from each phase. Its output is a corrected logical
 matrix of sixteen-class logits. See [architecture and masks](NEURAL_CORRECTOR.md).
@@ -140,7 +142,9 @@ Unmatched captures remain unlabeled; conflicting assignments are rejected.
 
 ## Train multires
 
-Start a fresh shared model for the first multires run:
+Start the low-frequency, six-block model in a new run directory. Reuse the
+existing `local-data/multires` datasets; this architecture update does not require
+regenerating recordings or synthetics:
 
 ```sh
 python experiments/neural-corrector/train.py \
@@ -148,9 +152,9 @@ python experiments/neural-corrector/train.py \
   --train local-data/multires/real/train local-data/multires/synthetic/train \
   --validation local-data/multires/real/validation \
   --paired-targets --real-fraction .5 \
-  --batch-size 2 --accumulate 8 --lr .0001 --steps 32000 \
+  --batch-size 8 --accumulate 4 --lr .0001 --steps 32000 \
   --validation-samples 0 --device cuda \
-  --out checkpoints/neural-corrector/multires-phase8
+  --out checkpoints/neural-corrector/multires-frequency6
 ```
 
 Parent directories are scanned recursively for manifests. Each optimizer update
@@ -163,45 +167,67 @@ and the same K observation budget. Dataset counts do not determine this ratio:
 within each example and then over examples, so a larger matrix does not receive
 a larger gradient simply because it has more cells.
 
-`--batch-size 2 --accumulate 8` is a conservative starting point for the largest
-512×512 input on the 4090, giving sixteen examples per optimizer update. Measure
-actual VRAM before increasing the microbatch. The samples per phase in a stored
-burst can exceed eight; the model randomly draws only the four to eight captures
+`--batch-size 8 --accumulate 4` gives **32 sample bursts per optimizer update**:
+16 real and 16 synthetic, all at one selected grid. The six-block bottleneck uses
+more activation memory than the preceding run. If G256 exceeds available VRAM,
+use `--batch-size 4 --accumulate 8` or `--batch-size 2 --accumulate 16` to retain
+32 samples per update while reducing the microbatch. The samples per phase in
+a stored burst can exceed eight; the model randomly draws only the four to eight captures
 needed by that example. Sampling is not restricted to consecutive frames.
 Training retains spatial flips, phase-pair permutations and small real-only
 photometric augmentation with aligned targets/masks.
 
 The command defaults to 32,000 total optimizer updates even if `--steps` is
 omitted. With all six sizes, each receives about one sixth of those updates;
-this is not 32,000 updates per size. All updates train the shared trunk. The live bar
-shows training CE/CER and source metrics. Validation prints separately, with
-per-grid, per-direction and per-K summaries. Lean reports contain aggregate
-metrics, not per-session or per-burst arrays. Checkpoint selection uses the
-reported size-balanced exact-matrix score, with CE as a tiebreak; inspect the
+this is not 32,000 updates per size. All updates train the shared trunk. The live
+bar shows training metrics only; validation prints at checkpoint intervals.
+Each grid row has a stable order: **train real → train synthetic → val real**,
+with CE/CER for each and exact matrices for validation. Unavailable sources
+appear as `n/a`. This prevents a 50/50 mixed training number from being mistaken
+for a directly comparable real-only validation number.
+
+`CER (cell)` divides total wrong data cells by total data cells, giving large
+matrices more weight. `CER(size)` averages the per-grid CER values equally over
+represented sizes. Training CE averages examples, and exact-matrix checkpoint
+selection still balances size, real acquisition group and K before using CE as
+a tiebreak. The added metrics do not alter optimization or selection. Compare
+real training and validation within the same grid; training numbers include
+augmentation and average an interval of updates, whereas validation uses the
+current checkpoint on unchanged held-out captures.
+
+Lean JSON reports retain `trainBySize[G].sources.real` and `.synthetic`,
+`trainSizeMacroCellErrorRate`, `validationSizeMacroCellErrorRate`, and grouped
+validation summaries. Per-session and per-burst records remain opt-in. Inspect
 per-size values so success at G8 does not conceal failure at G256.
 
-To continue a multires checkpoint in a **new output directory**, add:
+To continue a checkpoint trained with this current low-frequency/six-block
+architecture in a **new output directory**, add:
 
 ```sh
---initialize checkpoints/neural-corrector/multires-phase8/best.pt --lr .00005
+--initialize checkpoints/neural-corrector/multires-frequency6/best.pt --lr .00005
 ```
 
 Initialization loads weights with a fresh optimizer; it is not an exact resume
 of AdamW state. An explicit `--model multires --initialize
-checkpoints/neural-corrector/u-tube-2x-attn-phase8/best.pt` can also warm-start
-matching shared layers and the G64 anchor, leaving new anchors/layers fresh.
-The changed 2×2-cell input geometry still needs training, so fresh initialization
-is the recommended first run. Checkpoints record which grid sizes were actually
-optimized; exporting an untrained size is rejected.
+checkpoints/neural-corrector/u-tube-2x-attn-phase8/best.pt` can also copy
+matching shared layers and project its G64 anchor into the retained cosine
+modes, leaving other coefficients and unmatched layers fresh. The changed
+2×2-cell input geometry still needs training, so fresh initialization is the
+recommended run. **A dense-anchor/four-block multires checkpoint from the
+previous experiment is a different architecture and is rejected**, including
+by `--initialize`; it is not silently converted or partially loaded. Keep that
+run with its source revision. New checkpoints record the anchor representation,
+six-block layout and grid sizes actually optimized; exporting an untrained size
+is rejected.
 
 ## Evaluate multires
 
 ```sh
 python experiments/neural-corrector/evaluate.py \
   --dataset local-data/multires/real/validation --split validation \
-  --checkpoint checkpoints/neural-corrector/multires-phase8/best.pt \
+  --checkpoint checkpoints/neural-corrector/multires-frequency6/best.pt \
   --max-samples 0 --device cuda \
-  --out local-results/neural-corrector/multires-validation.json
+  --out local-results/neural-corrector/multires-frequency6-validation.json
 ```
 
 Every K=4…8 evaluation preset uses seeded, fixed random draws from held-out
@@ -215,7 +241,10 @@ rate. Use `--split test` with `local-data/multires/real/test` for a final new-se
 evaluation; train and checkpoint-selection sessions are rejected there.
 
 The deployment path exports a selected trained size from the shared checkpoint
-and includes only that size's anchor. This task prepares training/evaluation;
+and bakes only that size's reconstructed G×G anchor into an export copy, keeping
+training coefficients unchanged. No browser FFT is required. The baked spatial
+field and attention masks can make the ONNX file larger than the compressed
+training parameter count suggests. This task prepares training/evaluation;
 new Neural-QR packet/authentication integration remains a separate step. See
 [model deployment design](NEURAL_CORRECTOR.md) for that boundary.
 
@@ -629,8 +658,8 @@ not an additional model input or a browser decoding oracle.
 
 Use the **already prepared 4×4-cell OBM5 datasets** for this recipe. If you need
 fresh synthetic partners for those datasets, use the target-paired commands
-above, writing into empty output directories. The current Neural-QR join cannot
-feed this training command until production multires support is implemented.
+above, writing into empty output directories. Current 2×2-cell Neural-QR datasets use the multires commands above; they do not
+feed this independent U-tube recipe.
 
 For a fresh U-tube experiment, train `U-tube-2x-attn` from scratch with eight
 phase-paired slots and randomly selected 4–8 observations at `1e-4` for 32,000

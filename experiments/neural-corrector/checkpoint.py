@@ -9,7 +9,8 @@ import numpy as np
 import torch
 
 from contract import FRAME_COUNTS, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
-from model import MODEL_PROFILES, MULTIRES_SIZES, NeuralCorrector, profile_from_state, frames_from_state
+from model import (MODEL_PROFILES, MULTIRES_SIZES, ANCHOR_METADATA, BOTTLENECK_METADATA,
+                   NeuralCorrector, profile_from_state, frames_from_state, project_anchor)
 
 
 MAX_CHECKPOINT_BYTES = 512 * 1024 * 1024
@@ -88,6 +89,14 @@ def training_provenance(training: dict) -> dict:
         if training["modelProfile"] not in MODEL_PROFILES:
             raise ValueError("Invalid checkpoint modelProfile")
         result["modelProfile"] = training["modelProfile"]
+    for key, expected in (("anchor", ANCHOR_METADATA), ("bottleneck", BOTTLENECK_METADATA)):
+        if key in training:
+            value = training[key]
+            integer_key = "maxModes" if key == "anchor" else "layersPerBlock"
+            if (not isinstance(value, dict) or value != expected
+                    or type(value.get(integer_key)) is not int):
+                raise ValueError(f"Invalid checkpoint {key}: use the current multires architecture")
+            result[key] = json.loads(json.dumps(value))
     for key in ("supportedSizes", "trainedSizes"):
         if key in training:
             values = training[key]
@@ -210,7 +219,8 @@ def load_checkpoint(path: Path, model: NeuralCorrector | None = None) -> dict:
         raise ValueError(f"{model.profile} checkpoint requires eight-slot frame metadata")
     if model.profile == "multires":
         geometry = {"modelProfile": "multires", "datasetFormat": "neural-qr-dataset",
-                    "pixelsPerCell": 2, "supportedSizes": list(MULTIRES_SIZES)}
+                    "pixelsPerCell": 2, "supportedSizes": list(MULTIRES_SIZES),
+                    "anchor": model.anchor_metadata, "bottleneck": model.bottleneck_metadata}
         for name, expected_value in geometry.items():
             if checkpoint["training"].get(name) != expected_value:
                 raise ValueError(f"multires checkpoint requires {name}={expected_value}")
@@ -235,9 +245,10 @@ def load_model_checkpoint(path: Path) -> tuple[NeuralCorrector, dict]:
 def initialize_multires(source: NeuralCorrector) -> tuple[NeuralCorrector, dict]:
     """Explicit partial warm start from the successful four-pixel attention U.
 
-    Shape-compatible shared blocks and the G64 anchor transfer. The second
-    convolution segment, extra attention pair and five other anchors start
-    fresh. Optimizer/step state is deliberately not inherited: this changes the
+    Shape-compatible shared blocks transfer exactly. The G64 anchor is projected
+    onto the retained low-frequency basis. The second and third convolution/
+    attention segments and five other anchors start fresh. Optimizer/step state
+    is deliberately not inherited: this changes the
     computation and input cell density. Exact multires initialization uses
     load_model_checkpoint instead, which never tolerates missing tensors.
     """
@@ -250,17 +261,20 @@ def initialize_multires(source: NeuralCorrector) -> tuple[NeuralCorrector, dict]
     copied = []
     source_keys = set()
     for name, value in target_state.items():
-        source_name = "position_anchor" if name == "anchors.64" else name
-        candidate = source_state.get(source_name)
+        candidate = source_state.get(name)
         if candidate is not None and candidate.shape == value.shape:
             target_state[name] = candidate.detach().clone()
             copied.append(name)
-            source_keys.add(source_name)
+            source_keys.add(name)
+    projected = ["anchor_coefficients.64"]
+    target_state[projected[0]] = project_anchor(source.position_anchor.detach()).clone()
+    source_keys.add("position_anchor")
     model.load_state_dict(target_state, strict=True)
     model.train(source.training)
     report = {"mode": "warm-start", "sourceProfile": source.profile,
               "targetProfile": model.profile, "copied": sorted(copied),
-              "fresh": sorted(set(target_state)-set(copied)),
+              "projected": projected,
+              "fresh": sorted(set(target_state)-set(copied)-set(projected)),
               "discarded": sorted(set(source_state)-source_keys),
               "transferredAnchors": [64]}
     return model, report

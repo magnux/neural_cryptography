@@ -36,6 +36,41 @@ ALLOWED_OPERATORS = {"Conv", "Relu", "Concat", "Resize", "Constant", "ReduceMean
                      "Slice", "Unsqueeze", "Where", "Equal", "Expand", "ConstantOfShape"}
 
 
+class _StaticMultires(NeuralCorrector):
+    """Export-only copy with one reconstructed, unexpanded spatial anchor.
+
+    Training stores independent low-frequency coefficients and differentiates
+    through their cosine reconstruction. A selected static deployment profile
+    needs only the resulting GxG tensor. Baking it here keeps reconstruction
+    and unused anchors out of ONNX without altering the training checkpoint.
+    """
+
+    def __init__(self, source: NeuralCorrector, size: int) -> None:
+        super().__init__("multires", frames=source.frames)
+        self.load_state_dict(source.state_dict(), strict=True)
+        self._selected_grid = size
+        with torch.no_grad():
+            anchor = source.spatial_anchor(size).detach().cpu().clone()
+        self.register_buffer("baked_anchor", anchor)
+        del self.anchor_coefficients
+
+    def spatial_anchor(self, size: int) -> torch.Tensor:
+        if size != self._selected_grid:
+            raise ValueError("A baked export profile can use only its selected grid")
+        return self.baked_anchor
+
+
+def static_export_model(model: NeuralCorrector, size: int) -> NeuralCorrector:
+    """Create a static multires copy; other profile graphs use their own model."""
+    if model.profile != "multires":
+        return model
+    if size not in model.supported_sizes:
+        raise ValueError("Cannot bake an unsupported multires grid")
+    # Constructing the copy must not consume the caller's random stream.
+    with torch.random.fork_rng(devices=[]):
+        return _StaticMultires(model, size).eval()
+
+
 def native_parity(model_path: Path, pairs: Path, threads: int) -> list[dict]:
     """Run native inference out of process: a native backend failure must be explicit."""
     script = """
@@ -147,6 +182,10 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
         "cases": [],
         **provenance,
     }
+    if model.profile == "multires":
+        manifest.update(anchor=dict(model.anchor_metadata),
+                        bottleneck=dict(model.bottleneck_metadata),
+                        anchorDeployment="baked-selected-spatial-grid")
     with tempfile.TemporaryDirectory(prefix=".optical-export-", dir=out.parent) as temporary:
         stage = Path(temporary)
         for name, contents in project_notices.items():
@@ -161,18 +200,21 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
             if logits.shape != output_shape:
                 raise RuntimeError(f"Unexpected output shape: {logits.shape}")
             model_path = stage / f"model-{size}.onnx"
+            deployment_model = static_export_model(model, size)
             # Explicit legacy exporter avoids requiring onnxscript and emits a
             # static batch-one graph using only validated basic operators.
-            torch.onnx.export(model, (torch.from_numpy(pixels),), str(model_path),
+            torch.onnx.export(deployment_model, (torch.from_numpy(pixels),), str(model_path),
                               input_names=[INPUT_NAME], output_names=[OUTPUT_NAME],
                               opset_version=OPSET, dynamo=False, do_constant_folding=True)
             graph = onnx.load(model_path)
             onnx.checker.check_model(graph, full_check=True)
             if model.profile == "multires":
                 anchors = {item.name: list(item.dims) for item in graph.graph.initializer
-                           if item.name.startswith("anchors.")}
-                if anchors != {f"anchors.{size}": [1, 32, size, size]}:
+                           if "anchor" in item.name}
+                if anchors != {"baked_anchor": [1, 32, size, size]}:
                     raise RuntimeError(f"Export must retain only its selected unexpanded anchor: {anchors}")
+                if any("cosine" in item.name or "basis" in item.name for item in graph.graph.initializer):
+                    raise RuntimeError("Baked deployment must not retain cosine reconstruction tensors")
             operators = sorted({node.op_type for node in graph.graph.node})
             unexpected = set(operators) - ALLOWED_OPERATORS
             if unexpected or any(node.domain not in ("", "ai.onnx") for node in graph.graph.node):

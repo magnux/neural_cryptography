@@ -13,7 +13,7 @@ if HAS_TORCH:
     import torch
     from torch.nn import functional as F
     from model import (NeuralCorrector, MULTIRES_SIZES, WindowAttentionBlock,
-                       parameter_count, processing_parameter_count)
+                       parameter_count, processing_parameter_count, ANCHOR_METADATA, BOTTLENECK_METADATA, project_anchor)
     from checkpoint import initialize_multires, load_model_checkpoint, load_checkpoint
     torch.set_num_threads(1)
 
@@ -33,6 +33,7 @@ def metadata():
             "outputLabelSpace": "logical", "phaseMasks": [0, 15, 7, 8],
             "pixelsPerCell": 2, "supportedSizes": list(MULTIRES_SIZES),
             "trainedSizes": [8, 16, 64], "datasetFormat": "neural-qr-dataset",
+            "anchor": ANCHOR_METADATA, "bottleneck": BOTTLENECK_METADATA,
             "trainSessionIds": ["train"], "trainPayloadIds": ["train-payload"],
             "validationSessionIds": ["val"], "validationPayloadIds": ["val-payload"]}
 
@@ -43,26 +44,27 @@ class MultiresModelTests(unittest.TestCase):
         model = NeuralCorrector("multires")
         self.assertEqual(model.supported_sizes, MULTIRES_SIZES)
         self.assertEqual((model.frames, model.min_frames, model.pixels_per_cell), (8, 4, 2))
-        self.assertEqual(parameter_count(model), 2990992)
-        self.assertEqual(processing_parameter_count(model), 195472)
+        self.assertEqual(parameter_count(model), 274128)
+        self.assertEqual(processing_parameter_count(model), 231120)
         self.assertFalse(hasattr(model, "e1"))
         self.assertFalse(hasattr(model, "d1"))
         self.assertEqual(len(model.bottleneck.pairs), 1)
         self.assertEqual(len(model.bottleneck_second.pairs), 1)
-        self.assertEqual([block.shift for block in (*model.attention, *model.attention_second)], [0, 4, 0, 4])
-        self.assertEqual({name: tuple(anchor.shape) for name, anchor in model.anchors.items()},
-                         {str(size): (1, 32, size, size) for size in MULTIRES_SIZES})
+        self.assertEqual(len(model.bottleneck_third.pairs), 1)
+        self.assertEqual([block.shift for block in (*model.attention, *model.attention_second, *model.attention_third)], [0, 4, 0, 4, 0, 4])
+        self.assertEqual({name: tuple(anchor.shape) for name, anchor in model.anchor_coefficients.items()},
+                         {str(size): (1, 32, min(size, 16), min(size, 16)) for size in MULTIRES_SIZES})
         stages = []
         hooks = [getattr(model, name).register_forward_hook(
             lambda _module, _args, output, name=name: stages.append((name, output.shape[-1])))
-            for name in ("e0", "bottleneck", "attention", "bottleneck_second", "attention_second", "d0", "outlet")]
+            for name in ("e0", "bottleneck", "attention", "bottleneck_second", "attention_second", "bottleneck_third", "attention_third", "d0", "outlet")]
         with torch.inference_mode():
             self.assertEqual(tuple(model(pixels(16)).shape), (1, 16, 16, 16))
         for hook in hooks:
             hook.remove()
         self.assertEqual(stages, [("e0", 32), ("bottleneck", 16), ("attention", 16),
                                   ("bottleneck_second", 16), ("attention_second", 16),
-                                  ("d0", 32), ("outlet", 16)])
+                                  ("bottleneck_third", 16), ("attention_third", 16), ("d0", 32), ("outlet", 16)])
 
     def test_presence_gating_and_anchor_gradient_isolation(self):
         torch.manual_seed(71)
@@ -70,7 +72,7 @@ class MultiresModelTests(unittest.TestCase):
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         for size in (8, 16):
             optimizer.zero_grad(set_to_none=True)
-            unchanged = {key: anchor.detach().clone() for key, anchor in model.anchors.items() if key != str(size)}
+            unchanged = {key: anchor.detach().clone() for key, anchor in model.anchor_coefficients.items() if key != str(size)}
             sample = pixels(size)
             corrupted = sample.clone()
             for slot in (1, 3, 5, 7):
@@ -78,14 +80,14 @@ class MultiresModelTests(unittest.TestCase):
             expected = model(sample)
             torch.testing.assert_close(model(corrupted), expected, rtol=0, atol=0)
             F.cross_entropy(expected, torch.randint(16, (1, size, size))).backward()
-            self.assertGreater(float(model.anchors[str(size)].grad.abs().sum()), 0)
+            self.assertGreater(float(model.anchor_coefficients[str(size)].grad.abs().sum()), 0)
             for key in unchanged:
-                self.assertIsNone(model.anchors[key].grad)
-            for block in (*model.attention, *model.attention_second):
+                self.assertIsNone(model.anchor_coefficients[key].grad)
+            for block in (*model.attention, *model.attention_second, *model.attention_third):
                 self.assertGreater(float(block.qkv.weight.grad.abs().sum()), 0)
             optimizer.step()
             for key, before in unchanged.items():
-                torch.testing.assert_close(model.anchors[key], before, rtol=0, atol=0)
+                torch.testing.assert_close(model.anchor_coefficients[key], before, rtol=0, atol=0)
 
     def test_anchor_enlarges_exactly_two_times_and_grid_validation(self):
         model = NeuralCorrector("multires")
@@ -94,7 +96,7 @@ class MultiresModelTests(unittest.TestCase):
         hook = model.e0.register_forward_pre_hook(lambda _module, args: seen.append(args[0]))
         model(sample, grid_size=8)
         hook.remove()
-        expected = model.inlet(sample) + F.interpolate(model.anchors["8"], scale_factor=2,
+        expected = model.inlet(sample) + F.interpolate(model.spatial_anchor(8), scale_factor=2,
                                                        mode="bilinear", align_corners=False)
         torch.testing.assert_close(seen[0], expected, rtol=0, atol=0)
         for bad in (torch.zeros(1, 32, 24, 24), torch.zeros(1, 24, 16, 16), torch.zeros(1, 32, 16, 32)):
@@ -123,14 +125,16 @@ class MultiresModelTests(unittest.TestCase):
             source.position_anchor.fill_(.4)
         model, report = initialize_multires(source)
         self.assertEqual(report["transferredAnchors"], [64])
-        self.assertIn("anchors.64", report["copied"])
-        self.assertIn("anchors.128", report["fresh"])
+        self.assertEqual(report["projected"], ["anchor_coefficients.64"])
+        torch.testing.assert_close(model.anchor_coefficients["64"], project_anchor(source.position_anchor), rtol=0, atol=0)
+        torch.testing.assert_close(model.spatial_anchor(64), source.position_anchor, rtol=1e-5, atol=1e-6)
+        self.assertIn("anchor_coefficients.128", report["fresh"])
         self.assertIn("attention_second.0.qkv.weight", report["fresh"])
         self.assertIn("e1.pairs.0.conv1.weight", report["discarded"])
         for name in report["copied"]:
-            source_name = "position_anchor" if name == "anchors.64" else name
+            source_name = name
             torch.testing.assert_close(model.state_dict()[name], source.state_dict()[source_name], rtol=0, atol=0)
-        self.assertFalse(bool((model.anchors["128"] == .4).all()))
+        self.assertFalse(bool((model.anchor_coefficients["128"] == .4).all()))
         with self.assertRaisesRegex(ValueError, "source"):
             initialize_multires(model)
         value = {"format": "optical-decoder-checkpoint", "version": 1, "status": "trained",
@@ -145,12 +149,20 @@ class MultiresModelTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_checkpoint(path, source)
             for field, wrong in (("pixelsPerCell", 4), ("supportedSizes", [64]),
-                                 ("trainedSizes", []), ("datasetFormat", "optical-decoder-dataset")):
+                                 ("trainedSizes", []), ("datasetFormat", "optical-decoder-dataset"),
+                                 ("anchor", {**ANCHOR_METADATA, "maxModes": 32}),
+                                 ("bottleneck", {**BOTTLENECK_METADATA, "layersPerBlock": 4})):
                 torch.save({**value, "training": {**metadata(), field: wrong}}, path)
                 with self.subTest(field=field), self.assertRaises(ValueError):
                     load_model_checkpoint(path)
+            for field in ("anchor", "bottleneck"):
+                incomplete = metadata()
+                del incomplete[field]
+                torch.save({**value, "training": incomplete}, path)
+                with self.subTest(missing=field), self.assertRaises(ValueError):
+                    load_model_checkpoint(path)
             malformed = dict(value["modelState"])
-            del malformed["anchors.256"]
+            del malformed["anchor_coefficients.256"]
             torch.save({**value, "modelState": malformed}, path)
             with self.assertRaisesRegex(ValueError, "parameters"):
                 load_model_checkpoint(path)
