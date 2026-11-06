@@ -1,6 +1,6 @@
 # Roadmap: fast optical authentication with Neural-QR
 
-Planning baseline: **5 November 2026**. The long-term goal is feasible, fast and
+Planning baseline: **6 November 2026**. The long-term goal is feasible, fast and
 safe optical authentication between devices. The immediate engineering goal is
 a repeatable **Neural-ZKBoo** POC carried entirely by **Neural-QR**, our custom
 optical format designed around the **neural-corrector**. The existing experiments
@@ -9,22 +9,25 @@ cryptographic security.
 
 Neural-QR is not standards-compatible QR. Its implemented collector acquisition replaces
 the dense, separately decoded monochrome header with asymmetric geometry and
-large phase/reference cues; data and packet metadata pass through neural recovery.
+large size/phase/reference cues; future data and packet metadata pass through
+neural recovery.
 The [Neural-QR design](NEURAL_QR.md) specifies the implemented layout and remaining
 packet integration. Header-free `capture.html` now collects its training data;
 the working [device demo](NEURAL_ZKBOO_DEMO.md) still uses
 OBM5 color DATA and static standard QR ACKs.
 
-The implemented training model is **`multires`**, covering
-G8/G16/G32/G64/G128/G256 with **2×2 pixels per cell**. Small controls and larger
-data matrices share a convolution/attention trunk and select independent learned
-low-frequency coefficient banks that reconstruct G×G anchors, enlarged exactly
-2× at the inlet. The bottleneck has six alternating blocks C→A→C→A→C→A,
-each with two convolution or attention layers;
-the intermediate encoder/decoder level is removed. This replaces the separate-G128
-model plan. Mixed-size training, paired synthetics, held-out matrix evaluation
-and per-size ONNX export are implemented; training on the new recordings and
-browser/packet integration remain next.
+The next model is **W-tube**, using native **4×4 pixels per cell** at
+G16/G32/G64/G128. Two complete U stages preserve full-resolution features and
+reach the target G at each bottleneck. Each bottleneck has one two-convolution
+block and one two-attention-layer block. Independent low-frequency anchors and
+four-phase K4–K8 inputs remain part of the design. This model is not yet
+implemented.
+
+The current `multires` model remains the preceding 2×2-cell experiment. Its
+completed run learned G16 and G32, but real G64+ recovery was insufficient;
+constraining anchors did not resolve the real/synthetic gap. Collection version 2
+now provides the richer crops required for the next experiment. Its files must
+not be passed directly into the current Python multires training command.
 
 ## What is established
 
@@ -34,8 +37,8 @@ browser/packet integration remain next.
 | Canonical crypto and authentication | Browser/Python circuit and compact proof implementation; local key generation, pairing confirmation, fresh challenge, proof, result and acknowledgments |
 | Trained neural-corrector | G64 U-tube-2x-attn with four phases and 4–8 captures; successful recorded evaluation and live device recovery |
 | Hybrid optical authentication | The 4 November device reports confirm local proof acceptance and final result delivery for 32 repetitions |
-| Header-free acquisition | Neural-QR rendering, asymmetric orientation, repeated phase cues, 2×2-cell multires crops, balanced recording pools, uploads and offline joins; the user is collecting both directions across sizes |
-| Multires training | Six independent low-frequency anchors; shared six-block conv/attention trunk; paired 50/50 real/synthetic sampling; G8…G256 model checks and selected-size ONNX parity |
+| Header-free acquisition | Version-2 Neural-QR rendering, asymmetric orientation, repeated optical size/phase cues, direct 4×4-cell G16–G128 crops, bounded recording pools, uploads and offline joins; new device checks pending |
+| Previous multires experiment | Six independent low-frequency anchors; shared six-block conv/attention trunk; 2×2-cell G8…G256 model checks and ONNX parity; insufficient real G64+ recovery motivates W-tube |
 | Optical engineering | Geometry, color references, temporal collection, ECC, CRC, multipart transfer and QR comparison tools are reusable |
 
 The completed exchange took about **6 min 17 s**. A **17,474-byte** proof took
@@ -74,8 +77,8 @@ saved challenge, identity minimum and repetition policy continue to govern accep
 
 | Milestone | Work | Completion criterion |
 | --- | --- | --- |
-| **N1 — Shared model and Neural-QR format** | Use the implemented `multires` training/export pipeline for G8…G256 with independent anchors, 2×2 pixels/cell and six attention layers at G; train the shared trunk and size-specific anchors; use the implemented header-free collector; add protected in-band metadata and bounded live packet association alongside model work | Export/WASM parity for supported profiles; exact packet recovery; mixed phases/packets reject or refresh cleanly; real-device recovery assessed by size |
-| **N2 — QR-free authentication** | Connect small Neural-QR controls and larger DATA profiles to the existing authentication session; choose controls that fit full framing/ECC/binding; use pre-agreed directional profiles initially | Complete identity/pairing/challenge/proof/result/final-ACK exchange with 32 repetitions in both role arrangements; no QR ACK or silent alternate reader; one exchange completes after server disconnection |
+| **N1 — W-tube and Neural-QR format** | Collect native 4×4-cell G16/G32/G64/G128 with optical size codes; implement W-tube, tagged auxiliary imports and harder paired synthetics; train and export; add protected in-band metadata and bounded packet association | Native G64 recovery, then G128; export/WASM parity; exact packet recovery; mixed phases/packets reject or refresh cleanly |
+| **N2 — QR-free authentication** | Connect small Neural-QR controls and larger DATA profiles to the existing authentication session; choose controls that fit full framing/ECC/binding; read and validate directional size profiles optically | Complete identity/pairing/challenge/proof/result/final-ACK exchange with 32 repetitions in both role arrangements; no QR ACK or silent alternate reader; one exchange completes after server disconnection |
 | **N3 — Fast complete exchanges and larger proofs** | Tune profile size, capture/inference scheduling and ACK windows from measured costs; update payload limits and bounded deadlines; validate 219-repetition operation | Repeatable delivered bytes/s and complete-authentication time; losses/duplicates/corruption recover or time out; larger profiles improve actual goodput where enabled; compare standard QR under matched conditions |
 
 N1 and N2 deliver the new all-Neural-QR POC; they do not require a sequence of
@@ -85,37 +88,56 @@ format on both endpoints together; maintain one current format per layer and
 keep earlier implementations in Git history instead of adding compatibility readers.
 The separate standard-QR experiment remains useful for comparison.
 
-### Important implementation decisions
+### Current iteration checklist
 
-- **Keep four anchors.** Replacing a corner with an oriented asymmetric finder
-  preserves perspective geometry; removing it requires additional constraints.
-- **Preserve geometry contrast.** Phase colors belong in separate large patches;
-  compare repeated cues with fixed references from that exposure.
-- **Make packet grouping explicit.** Phase labels do not identify a packet. Begin
-  with stop-and-wait and bounded latest-per-phase pools, resetting and replacing
-  evidence across transitions. Only valid full packet metadata can advance the
-  transfer. Add a coarse generation cue only if the measured transition behavior
-  needs it; defer windows until grouping is reliable.
-- **Use `multires`.** Share a six-block convolution/attention bottleneck, with
-  independent `[1,32,min(G,16),min(G,16)]` cosine coefficient banks and
-  size-specific attention/loss masks. Reconstruct each anchor at G and enlarge
-  exactly 2×; no bank serves another size. Static exports bake only the selected
-  spatial anchor. The processing trunk has 231,120 parameters and all six
-  coefficient banks add 43,008, giving 274,128 trainable parameters. Exported
-  spatial anchors and geometry masks still affect bundle size. Load only needed
-  sessions.
-- **Fit controls to real capacity.** G8 has only 32 raw bytes before overhead.
-  Select the smallest profile that fits the complete ACK and its binding/ECC;
-  retain four phases initially rather than assuming single-frame recovery.
-- **Train the current architecture.** Keep palette, phase masks, reference-grid
-  conventions and normalization. Reuse the current 2×2-cell datasets in a new
-  run; the low-frequency, six-block model does not automatically load the
-  preceding dense-anchor multires checkpoint. The supported U-tube attention
-  warm start can project its G64 anchor explicitly. Existing G64 recovery is
-  not a claim about the new model.
-- **Bound long transfers.** The current ten-minute message limit would interrupt
-  a 219-repetition proof at the observed rate. Configure deadlines from message
-  size and tested throughput, with hard limits; duplicates must not extend them forever.
+- [x] Freeze the collector profile at G16/G32/G64/G128, 16 colors, four phases
+  and four rectified pixels per cell.
+- [x] Add repeated optical size codes while retaining four finder cores, fixed
+  asymmetric orientation, phase cues and color references. Read G independently,
+  then cross-check the active assignment.
+- [x] Update direct camera rectification, collection UI, byte budgets, version-2
+  sender/receiver/session files, uploads and offline joining. Validate on devices
+  before a long recording session; see [collection checks](MULTIRES_COLLECTION.md).
+- [ ] Import eligible older G64 payload crops without resizing and enlarge
+  selected 2-pixel Neural-QR crops to four pixels/cell. Preserve original session
+  splits and source provenance; keep fresh native validation primary. These are
+  explicit offline dataset conversions, not live compatibility readers.
+- [ ] Generate harder paired synthetic bursts at a target **4:1 synthetic/real
+  dataset volume**, retaining **50/50 training sampling**. Preserve coherent
+  phase trajectories and vary camera resolution, blur, curved moiré, rolling
+  shutter, glare, exposure and color effects across readable and hard examples.
+- [ ] Implement **W-tube**: two `4G → 2G → G → 2G → 4G` stages, 32-channel
+  normalized feature paths, residual fusion, two convolution layers and two
+  attention layers per bottleneck, independent low-frequency anchors, and a
+  learned `4G → 2G → G` outlet. Retain presence/loss masks and phase/flip
+  augmentation. Start a new training run.
+- [ ] Balance sizes, directions and real origins. Keep native data the majority
+  of the real quota once available. Preserve an effective batch of 32 and
+  separately report native versus auxiliary validation.
+- [ ] Trim histories to static metadata plus canonical training and validation
+  tables; derive aggregate views rather than nesting repeated copies.
+- [ ] Export each supported geometry, check numerical parity and measure actual
+  browser latency/memory. A small parameter count does not imply fast G128
+  inference.
+- [ ] Restore the authentication path with native G64 DATA, G16 controls where
+  full framing fits, and G128 as a measured throughput extension.
+
+### Integration decisions
+
+- **Keep four anchors.** The asymmetric bottom-right finder retains its square
+  localization core; size bits live in separate patches and do not change its
+  orientation meaning.
+- **Preserve optical independence.** The expected collection profile only
+  cross-checks size. It never fills uncertain code bits. Phase cues are compared
+  to measured color references from the same exposure.
+- **Make packet grouping explicit.** Size and phase do not identify a packet.
+  Begin with stop-and-wait and bounded per-phase pools, replace stale evidence
+  across transitions, and advance only on valid full packet metadata.
+- **Fit controls to real capacity.** G16 is the smallest supported profile;
+  include references, complete identifiers and ECC when determining whether a
+  control fits. Retain four phases initially.
+- **Bound long transfers.** Configure deadlines from message size and tested
+  throughput with hard limits; duplicates must not extend them forever.
 
 ## Byte integrity and authentication gates
 
@@ -154,7 +176,7 @@ not only marginal cell accuracy or one favorable frame. Compare G64/G128 and
 standard QR with equivalent payloads and completion criteria. Keep the successful
 G64 implementation as the measurement baseline while evaluating the new shared
 model. Export parameter size, activation memory and attention work depend on
-the chosen profile; G256 still requires device measurements.
+the chosen profile; G128 still requires device measurements.
 
 ## Later research
 

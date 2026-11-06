@@ -26,7 +26,7 @@ test('metadata uses available browser hints and camera settings without requesti
 });
 
 const config={enabled:true,maxUploadBytes:4096,uploadToken:'csrf-token'};
-const recording={format:'neural-qr-captures',version:1,datasetSplit:'validation',created:'2026-11-04T12:00:00.000Z',records:[]};
+const recording={format:'neural-qr-captures',version:2,datasetSplit:'validation',created:'2026-11-04T12:00:00.000Z',records:[]};
 class Request{
   constructor(result={ok:true,storedPath:'validation/g64/receiver/example.json',duplicate:false}){this.upload={};this.headers={};this.result=result;this.status=201;}
   open(method,url){this.method=method;this.url=url;}
@@ -60,8 +60,8 @@ test('upload rejects wrong splits, oversize data, failed server writes and cance
 });
 
 
-const profile={size:64,colors:16,phases:4,gridBlock:8,parity:0,holdMs:4000,permute:true,pixelsPerCell:2};
-const descriptor={format:'neural-qr-collection-session',version:1,id:'public-session',collectionCode:'1234abcd',senderSessionId:'sender-physical',profile,datasetSplit:'validation',created:'2026-11-05T12:00:00.000Z'};
+const profile={size:64,colors:16,phases:4,gridBlock:8,parity:0,holdMs:4000,permute:true,pixelsPerCell:4};
+const descriptor={format:'neural-qr-collection-session',version:2,id:'public-session',collectionCode:'1234abcd',senderSessionId:'sender-physical',profile,datasetSplit:'validation',created:'2026-11-05T12:00:00.000Z'};
 test('session discovery copies only public assignment metadata and never sender truth',async()=>{
   let request;
   const response={...descriptor,payloadBase64:'forbidden',labels:[1,2],seed:123,profile:{...profile,expectedSymbols:[1,2]}};
@@ -73,7 +73,7 @@ test('session discovery copies only public assignment metadata and never sender 
   await assert.rejects(fetchCollectionSession({config,fetcher:async()=>({ok:false,json:async()=>({error:'unavailable'})})}),/unavailable/);
 });
 test('sender staging is explicit and bound to the manifest; completed retries do not reopen sessions',async()=>{
-  const sender={format:'neural-qr-sender',version:1,sessionId:descriptor.senderSessionId,collectionCode:descriptor.collectionCode,profile,datasetSplit:'validation'};
+  const sender={format:'neural-qr-sender',version:2,sessionId:descriptor.senderSessionId,collectionCode:descriptor.collectionCode,profile,datasetSplit:'validation'};
   const request=new Request({ok:true,storedPath:'validation/g64/sender/sender.json.tmp',session:descriptor});
   const staged=await stageCollectionSession(sender,{split:'validation',config,xhrFactory:()=>request});
   assert.deepEqual(staged.session,descriptor);assert.equal(request.url,'/api/collection-session?split=validation');assert.equal(request.timeout,300000);

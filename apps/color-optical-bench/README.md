@@ -6,38 +6,45 @@ Original project code and documentation are licensed under
 include these notices; third-party licenses remain unchanged. See
 [licensing scope](../../docs/LICENSING.md).
 
-The next custom optical format is [Neural-QR](../../docs/NEURAL_QR.md), designed
-around neural correction with asymmetric markers and phase cues instead of a
-dense external header. **Capture Dataset** (`capture.html`) uses header-free **Neural-QR** acquisition:
-three ordinary localization markers and an asymmetric lower-right fiducial,
-repeated phase cues, and fixed palette references. It records G8/G16/G32/G64/G128/G256
-at 2×2 pixels per cell with 16 colors and four manually advanced phases.
-With uploads enabled, creating a matrix automatically stages its sender manifest
-and publishes a small active-session descriptor. The receiver picks up the code,
-grid and split automatically. Uploading the receiver completes the sender file
-and clears that descriptor. This association supplies no sender labels or clean
-matrix to camera processing. Manual assignment remains available on static hosts.
+The current collector uses [Neural-QR version 2](../../docs/NEURAL_QR.md),
+designed around neural correction. **Capture Dataset** (`capture.html`) keeps
+four localization markers, asymmetric orientation patches, fixed palette
+references and repeated phase cues. Two repeated binary size codes identify
+**G16/G32/G64/G128** optically. The receiver samples directly from the camera
+at **4×4 pixels per cell**, with 16 colors and four manually advanced phases.
 
-Orange fill means a tentative location with uncertain orientation/phase;
-green means current optical cues passed. Each phase settles for 500 ms before
-retention. Full pools favor a robust central cluster with controlled moderate/hard
-samples instead of maximizing distance. The reference survives pause/resume.
-The default 400 MiB budget retains 32 samples/phase through G128 and 16 at G256.
-Choose 800 MiB for 32 samples/phase at G256, or 200 MiB for a smaller memory budget.
-Existing smaller recordings retain their format and remain valid.
+With uploads enabled, creating a matrix stages its sender manifest and publishes
+a small active-session descriptor. The receiver loads the collection code,
+expected grid and split automatically, then cross-checks the optically observed
+G before recording. Uploading the receiver finalizes the sender and clears the
+descriptor. No sender labels or clean matrix enter camera processing. Manual
+assignment remains available on static hosts.
 
-Uploads, downloads, automatic browser/device/camera metadata and display-only
-mirroring remain available. Start the server with
-`--recordings-dir local-data/recordings`, or use downloads on a static host.
-Current files are `neural-qr-sender` / `neural-qr-captures`, version 1. The offline
-join produces `neural-qr-dataset`; production multires training and synthetics
-are the next integration task. Existing prepared U-tube datasets remain usable
-with their established training tools. The obsolete rebuild command stops before
-changing files and directs new recordings to `join-uploads`.
+Orange fill marks tentative geometry with uncertain orientation, size or phase,
+or a mismatched expected profile. Green means the current optical cues passed.
+Each phase settles for 500 ms before retention. Full pools favor a robust central
+cluster with controlled variation; the reference survives pause/resume. The
+default **400 MiB** budget permits 32 samples/phase through G64 and 16 at G128.
+Use **800 MiB** for 32 at G128, or **200 MiB** for eight. Actual camera pixels per
+cell are reported separately from the fixed rectified sampling density.
 
-Follow the [multires recording guide](../../docs/MULTIRES_COLLECTION.md) for setup,
-association, collection budgets, uploads and size-separated joining. No trained
-model is needed for this acquisition step.
+Uploads, streamed JSON downloads, browser/device/camera metadata and display-only
+mirroring remain available. Use
+`--recordings-dir local-data/recordings-wtube` for new recordings. Current
+`neural-qr-sender`, `neural-qr-captures`, active-session descriptors and joined
+`neural-qr-dataset` manifests use **version 2**. Reload both devices together.
+Keep earlier recordings outside this new directory for the planned offline
+import; current readers do not guess between versions.
+
+The collection milestone is ready independently of model training. The existing
+Python `multires` model expects its earlier 2×2-cell experiment data. The new
+**W-tube**, auxiliary-data conversion, stronger synthetics and browser model
+integration remain next steps. Full rebuild stops before replacing datasets;
+use `join-uploads` to validate the new recording pairs.
+
+Follow the [collection guide](../../docs/MULTIRES_COLLECTION.md) for setup,
+recording budgets, optical checks and offline joining. No trained model is needed
+for acquisition.
 
 The reusable crypto engine and worker have one canonical source in
 [`shared/browser-crypto/`](../../shared/browser-crypto/). `npm run prepare:app`

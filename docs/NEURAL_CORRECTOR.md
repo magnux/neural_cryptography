@@ -1,5 +1,11 @@
 # Neural corrector: model family and architecture
 
+> **Current collection:** Neural-QR v2 records G16/G32/G64/G128 at 4×4 pixels
+> per cell with optical size cues. The [collection guide](MULTIRES_COLLECTION.md)
+> describes this input contract. W-tube is the agreed next model; its training
+> and export are not implemented yet. The `multires` architecture below remains
+> the implemented 2×2-cell experiment, evaluated on already prepared datasets.
+
 The **neural corrector** estimates a corrected optical matrix from one or more
 camera observations. It learns to resolve color ambiguity, moiré, blur, lighting
 variation and capture noise after the receiver has detected and rectified the

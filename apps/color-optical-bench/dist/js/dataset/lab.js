@@ -2,7 +2,7 @@ import {CaptureClient} from './client.js';
 import {CaptureBuffer} from './capture.js';
 import {ScanLoop} from './scan-loop.js';
 import {recordingFilename} from './filenames.js';
-import {captureProfile,recommendedPhaseMaximum,canonicalJSON} from './contract.js';
+import {captureProfile,recommendedPhaseMaximum,canonicalJSON,CAPTURE_PIXELS_PER_CELL} from './contract.js';
 import {recordingBlob} from './recording-json.js';
 import {collectionIdentity,environmentMetadata,cameraMetadata,saveDeviceLabel} from './metadata.js';
 import {recordingUploadConfig,uploadRecording,stageCollectionSession,fetchCollectionSession,abandonCollectionSession} from './upload.js';
@@ -147,7 +147,7 @@ async function checkUploads(){
   $('uploadAvailability').textContent=uploadConfig.enabled
     ? 'Recording server ready. New sender matrices stage automatically; receiver uploads complete the pair.'
     :uploadConfig.reason;
-  $('refreshUploads').disabled=false;refresh();if(uploadConfig.enabled)await pollSession();else{stopDiscovery();$('collectionSessionStatus').textContent='Manual collection: enter the sender code and grid. Downloads remain available.';}
+  $('refreshUploads').disabled=false;refresh();if(uploadConfig.enabled)await pollSession();else{stopDiscovery();$('collectionSessionStatus').textContent='Manual collection: enter the sender code and expected grid. The camera checks the optical grid-size markers. Downloads remain available.';}
 }
 async function upload(kind){
   if(uploading||busy)return;
@@ -245,7 +245,7 @@ async function displayPhase(index,token){
   const canvas=$('senderCanvas');canvas.width=image.width;canvas.height=image.height;
   canvas.getContext('2d').putImageData(new ImageData(image.data,image.width,image.height),0,0);
   $('senderCanvasWrap').hidden=false;
-  $('senderStatus').textContent=`${frame.size}×${frame.size}, ${frame.colors} colors · phase ${phase+1}/${sender.frames.length} · collection ${sender.manifest.collectionCode}. Keep this image unchanged while the receiver collects.`;
+  $('senderStatus').textContent=`Optical G${frame.size} · ${frame.colors} colors · phase ${phase+1}/${sender.frames.length} · ${CAPTURE_PIXELS_PER_CELL*frame.size}×${CAPTURE_PIXELS_PER_CELL*frame.size} rectified crop · collection ${sender.manifest.collectionCode}. Keep this image unchanged while the receiver collects.`;
 }
 async function createSender(){
   if(busy||uploading||!canDiscardSender())return;showError();busy=true;const token=++epoch;$('senderCanvasWrap').hidden=true;refresh();
@@ -282,13 +282,23 @@ function overlay(record,width,height){
   points.forEach(([x,y],i)=>i?context.lineTo(x,y):context.moveTo(x,y));context.closePath();context.fillStyle=record.ok?'rgba(50,235,135,0.26)':'rgba(255,190,50,0.25)';context.fill();context.stroke();
 }
 function showCapture(record){
+  const stats=record.stats??{},size=record.ok?record.info.size:stats.detectedSize;
+  const measured=Number(stats.pixelsPerCell),cameraPixels=Number.isFinite(measured)?measured.toFixed(2):'—';
+  const side=record.ok?CAPTURE_PIXELS_PER_CELL*size:null;
+  const profile=$('opticalProfile');profile.setAttribute('data-state',record.ok?'accepted':'uncertain');
+  profile.textContent=record.ok
+    ? `Optical G${size} · rectified ${side}×${side} (${CAPTURE_PIXELS_PER_CELL} px/cell) · camera ${cameraPixels} px/cell`
+    : record.stage==='profile'&&size
+      ? `Optical G${size} ≠ expected G${stats.expectedSize??assignment()?.profile.size} · no sample saved`
+      : `${size?`Optical G${size}`:'Optical grid —'} · ${record.stage==='size'?'size markers unclear':record.stage==='phase'?'phase cues unclear':'waiting for clear markers'} · camera ${cameraPixels} px/cell`;
   $('latestCapture').textContent=record.ok
-    ? `Orientation and phase cues accepted · ${record.info.size}×${record.info.size} / ${record.info.colors} colors · phase ${record.info.phase+1}/${record.info.phases}. Collection ${record.info.id}; payload labels are joined offline.`
+    ? `Orientation, optical size and phase cues accepted · G${record.info.size} / ${record.info.colors} colors · phase ${record.info.phase+1}/${record.info.phases}. Collection ${record.info.id}; payload labels are joined offline.`
     : `${record.stage??'Capture'}: ${record.error??'No usable image.'}`;
-  const stats=record.stats??{};
   $('latestDetails').textContent=record.ok
-    ? `${Number(stats.pixelsPerCell??0).toFixed(2)} camera pixels/cell · color RMSE ${stats.colorRMSE==null?'—':Number(stats.colorRMSE).toFixed(1)} · processing ${Number(stats.preprocessMs??stats.ms??0).toFixed(0)} ms.${record.originalNote?` ${record.originalNote}`:''}`
-    : 'Keep the full border visible. Enlarge the displayed matrix or move closer; try 720p if focus or moiré is unstable.';
+    ? `${cameraPixels} camera pixels/cell → ${side}×${side} rectified crop at ${CAPTURE_PIXELS_PER_CELL} pixels/cell · color RMSE ${stats.colorRMSE==null?'—':Number(stats.colorRMSE).toFixed(1)} · processing ${Number(stats.preprocessMs??stats.ms??0).toFixed(0)} ms.${record.originalNote?` ${record.originalNote}`:''}`
+    : record.stage==='profile'&&size
+      ? 'Show the matrix assigned to this collection. Save and clear the batch before changing its assignment.'
+      : 'Keep both size-code strips, all four markers and the full border visible. Enlarge the displayed matrix or move closer; try 720p if focus or moiré is unstable.';
 }
 function currentImage(){
   const video=$('video');
@@ -318,6 +328,11 @@ async function receiveScan({record,width,height}){
   if(uploading)return;
   overlay(record,width,height);showCapture(record);
   const selected=assignment();
+  if(!record.ok&&record.stage==='profile'&&record.stats?.detectedSize){
+    collecting=false;buffer.resetStability();activeKey=null;activeInfo=null;
+    status(`Optical G${record.stats.detectedSize} does not match this collection’s expected G${selected?.profile.size}. No sample saved. Show the assigned matrix, or save and clear this batch before changing its assignment.`);
+    refresh();return;
+  }
   if(record.ok&&(!selected||record.info.id!==selected.collectionCode||record.info.size!==selected.profile.size||record.info.colors!==16||record.info.phases!==4)){
     collecting=false;buffer.resetStability();status('Received a different profile or collection code. Save and clear the batch before changing its assignment.');refresh();return;
   }
@@ -362,8 +377,8 @@ async function receiveScan({record,width,height}){
     if(outcome.stage==='full'){
       collecting=false;budgetFull=true;
       status('Export budget reached. Save or upload receiver captures, clear the saved batch, then resume.');
-    }else if(!record.ok)status('Looking for clear orientation and matching phase cues. Payload errors remain useful training evidence.');
-    else if(outcome.stage==='settling')status('Matrix detected. Waiting for stable geometry and phase cues before saving samples…');
+    }else if(!record.ok)status(record.stage==='size'?'Grid-size markers are unclear. Keep both size codes visible; no training sample saved.':'Looking for clear orientation, grid-size markers and matching phase cues. Payload errors remain useful training evidence.');
+    else if(outcome.stage==='settling')status('Matrix detected. Waiting for stable geometry, optical size and phase cues before saving samples…');
     else status(buffer.phaseRecords(activeKey).length>=phaseMaximum()
       ? 'Pool full: balancing core, shoulder and tail samples as new captures arrive. Pause when ready to save.'
       : 'Collecting this phase. Keep the matrix static; small changes in angle or focus can add variety.');
@@ -373,7 +388,7 @@ async function receiveScan({record,width,height}){
       : 'Collection armed. Waiting for stable captures of the detected phase…');
   }else if(budgetFull)status('Export budget reached. Save or upload receiver captures, clear the saved batch, then resume.');
   else if(record.ok)status('Matrix detected. Start / resume collection when ready.');
-  else status('Looking for a Neural-QR. Fit all four markers, phase cues and palette strips in view.');
+  else status(record.stage==='size'?'Grid-size markers are unclear. Keep both size codes visible; orange marks the detected geometry.':'Looking for a Neural-QR. Fit all four markers, size codes, phase cues and palette strips in view.');
   refresh();
   const revision=buffer.revision(activeKey),previous=distances.get(activeKey);
   if(activeKey&&buffer.phaseRecords(activeKey).length&&previous?.revision!==revision){
@@ -390,7 +405,7 @@ function collectBurst(){
   receiverSplit??=selected.datasetSplit??$('datasetSplit').value;receiverEnvironment??=environment();
   sessionCameraId??=cameraInfo().deviceId??cameraInfo().label??null;
   showError();collecting=true;restartScanner();
-  status('Collection armed. Keep this matrix static; samples save after orientation and phase cues settle.');refresh();
+  status('Collection armed. Keep this matrix static; samples save after orientation, optical size and phase cues settle.');refresh();
 }
 function cancel(){
   collecting=false;restartScanner();
@@ -440,7 +455,7 @@ async function startCamera(){
     }
     stream=acquired;$('video').srcObject=stream;await $('video').play();if(token!==cameraEpoch)return;
     lastMediaTime=-1;$('cameraPlaceholder').hidden=true;const actual=cameraInfo();
-    $('cameraStatus').textContent=`Actual capture ${actual.width}×${actual.height}, ${actual.frameRate?.toFixed(0)??'unknown'} fps. Fit all four markers, phase cues and palette strips in view.`;
+    $('cameraStatus').textContent=`Actual capture ${actual.width}×${actual.height}, ${actual.frameRate?.toFixed(0)??'unknown'} fps. Fit all four markers, size codes, phase cues and palette strips in view.`;
     await enumerateCameras();
     if(token===cameraEpoch)scanner.start();
   }catch(error){if(token===cameraEpoch){stopCamera();showError(error.message);}}

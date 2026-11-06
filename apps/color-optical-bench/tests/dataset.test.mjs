@@ -116,10 +116,10 @@ test('Neural-QR targets reconstruct all four phases offline from a partial obser
   const result=await targets({dataset:joined,out});
   assert.equal(result.targets,1);assert.equal(result.samples,4);assert.equal(result.synthesizedMissingPhases,2);
   const clean=JSON.parse(await readFile(join(out,'manifest.json'),'utf8'));
-  for(const sample of clean.samples){assert.equal(sample.source,'synthetic');assert.equal(sample.pixelsPerCell,2);assert.deepEqual(sample.inputShape,[3,128,128]);
+  for(const sample of clean.samples){assert.equal(sample.source,'synthetic');assert.equal(sample.pixelsPerCell,4);assert.deepEqual(sample.inputShape,[3,256,256]);
     assert.deepEqual(new Uint8Array(await readFile(join(out,sample.labels))),sender.frames[sample.info.phase].symbols);
     assert.equal(sample.payloadId,source.samples[0].payloadId);assert.equal(sample.sessionId,'physical-target-session');}
-  for(const sample of source.samples)assert.equal((await readFile(join(joined,sample.input))).length,3*128*128*4);
+  for(const sample of source.samples)assert.equal((await readFile(join(joined,sample.input))).length,3*256*256*4);
 }));
 
 test('target reconstruction preserves G128/4 phases and refuses split leakage or inconsistent canonical truth',async()=>temp(async root=>{

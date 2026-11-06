@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {createSender,captureKey} from '../dist/js/dataset/contract.js';
+import {createSender,captureKey,NEURAL_QR_VERSION} from '../dist/js/dataset/contract.js';
 import {captureFrame} from '../dist/js/dataset/capture.js';
 import {recordingFilename} from '../dist/js/dataset/filenames.js';
 import {meanCaptureDistance} from '../dist/js/dataset/diversity.js';
@@ -14,7 +14,7 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
   const sender=await createSender({seed:90,sessionId:'flow'});
   const record=captureFrame(renderNeuralQR(sender.frames[0],1024),{signature:true,collectionCode:sender.manifest.collectionCode,profile:sender.manifest.profile});
   let phase=0,grid=64,clock=1000,media=1,stopped=0,filled=0,replacementChoice=null,holdSelection=false,lateSelection=null,download=null,downloadName=null;
-  const uploaded=[],uploadPaths=[],acquisitionOptions=[],selectionOptions=[];let activeServerSession=null;let failUpload=true,phaseFailure=false,noMajority=false;
+  const uploaded=[],uploadPaths=[],acquisitionOptions=[],selectionOptions=[];let activeServerSession=null;let failUpload=true,phaseFailure=false,sizeFailure=false,noMajority=false;
   const frozenReference={ready:true,center:record.signature.slice(),radius:1,scale:1,limits:[2,3,4],samples:32};
   const timers=new Map();let timerId=0;const operations=[],cameraInputs=[],draws=[];
   const rawPixels=Uint8ClampedArray.from({length:4096},(_,i)=>(i*17+Math.floor(i/128))%256);
@@ -32,6 +32,12 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
   const intervalOptions=html.match(/<select id="scanInterval">(.*?)<\/select>/s)[1];
   assert.deepEqual([...intervalOptions.matchAll(/value="(\d+)"/g)].map(match=>Number(match[1])),[100,250,500,1000,2000]);
   assert.match(intervalOptions,/<option value="100" selected>/);
+  for(const id of ['senderSize','receiverSize']){
+    const options=html.match(new RegExp(`<select id="${id}">(.*?)<\\/select>`,'s'))[1];
+    assert.deepEqual([...options.matchAll(/value="(\d+)"/g)].map(match=>Number(match[1])),[16,32,64,128]);
+  }
+  assert.match(html,/4 × 4 pixels per rectified cell/);
+  assert.ok(html.indexOf('id="opticalProfile"')<html.indexOf('id="video"'));
   for(const [id,value] of Object.entries({phaseMaximum:'32',scanInterval:'100',resolution:'720',datasetSplit:'train',receiverCode:sender.manifest.collectionCode,receiverSize:'64',captureBudget:'400',senderSize:'64'}))get(id).value=value;
   assert.equal(elements.has('keepCount'),false);assert.equal(elements.has('thinCaptures'),false);
   assert.ok(html.indexOf('id="collectBurst"')<html.indexOf('id="video"'));
@@ -49,7 +55,11 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
       const info={...record.info,size:grid,phase},key=captureKey(info);
       if(options.image){cameraInputs.push(options.image.data.slice());acquisitionOptions.push({collectionCode:options.collectionCode,profile:options.profile});}
       if(operation==='select')selectionOptions.push(options);
-      const result=operation==='select'?{replaceIndex:replacementChoice,reason:noMajority?'no-majority-cluster':'test selection',...(!options.reference?{reference:frozenReference}:{})}:operation==='compare'?meanCaptureDistance(options.signatures):phaseFailure
+      const result=operation==='select'?{replaceIndex:replacementChoice,reason:noMajority?'no-majority-cluster':'test selection',...(!options.reference?{reference:frozenReference}:{})}:operation==='compare'?meanCaptureDistance(options.signatures):grid!==options.profile?.size
+        ?{ok:false,probe:operation==='probe',stage:'profile',error:'Optical grid disagrees with assignment',stats:{detectedSize:grid,expectedSize:options.profile?.size},tentativeCorners:[[1,1],[30,1],[30,30],[1,30]],timestamp:options.timestamp}
+        :sizeFailure
+        ?{ok:false,probe:operation==='probe',stage:'size',error:'Size codes disagree',tentativeCorners:[[1,1],[30,1],[30,30],[1,30]],timestamp:options.timestamp}
+        :phaseFailure
         ?{ok:false,probe:operation==='probe',stage:'phase',error:'Phase cues disagree',tentativeCorners:[[1,1],[30,1],[30,30],[1,30]],timestamp:options.timestamp}
         :operation==='probe'?{ok:true,probe:true,info,key,transform:record.transform,stats:record.stats}
         :{...record,info,key,timestamp:options.timestamp};
@@ -64,7 +74,7 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     open(method,url){this.url=url;}setRequestHeader(){}abort(){this.onabort?.();}
     send(body){uploaded.push(body);uploadPaths.push(this.url);queueMicrotask(async()=>{if(failUpload){failUpload=false;this.onerror?.();}else{
       const value=JSON.parse(await body.text());let result={ok:true,storedPath:'train/g64/receiver/test.json'};
-      if(this.url.startsWith('/api/collection-session?')){activeServerSession={format:'neural-qr-collection-session',version:1,id:'managed-session',collectionCode:value.collectionCode,senderSessionId:value.sessionId,profile:value.profile,datasetSplit:value.datasetSplit,created:value.created};result={ok:true,storedPath:'train/g64/sender/test.json.tmp',session:activeServerSession};}
+      if(this.url.startsWith('/api/collection-session?')){activeServerSession={format:'neural-qr-collection-session',version:NEURAL_QR_VERSION,id:'managed-session',collectionCode:value.collectionCode,senderSessionId:value.sessionId,profile:value.profile,datasetSplit:value.datasetSplit,created:value.created};result={ok:true,storedPath:'train/g64/sender/test.json.tmp',session:activeServerSession};}
       else if(value.collectionSessionId){activeServerSession=null;result.sessionCompleted=true;}
       this.responseText=JSON.stringify(result);this.onload?.();
     }});}
@@ -90,8 +100,15 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     assert.equal(get('mirrorPreview').getAttribute('aria-pressed'),'true');
     await get('receiverRole').fire();await get('startCamera').fire();await flush();
     assert.ok(operations.includes('probe'));assert.ok(filled>0,'matrix overlay fills its area');
-    for(const options of acquisitionOptions){assert.equal(options.collectionCode,sender.manifest.collectionCode);assert.equal(options.profile.size,64);assert.equal(options.profile.colors,16);assert.equal(options.profile.phases,4);assert.equal(options.profile.payloadBase64,undefined);}
+    for(const options of acquisitionOptions){assert.equal(options.collectionCode,sender.manifest.collectionCode);assert.equal(options.profile.size,64);assert.equal(options.profile.colors,16);assert.equal(options.profile.phases,4);assert.equal(options.profile.pixelsPerCell,4);assert.equal(options.profile.payloadBase64,undefined);}
     assert.equal(get('sampleCount').textContent,'0 / 128');
+    assert.match(get('opticalProfile').textContent,/Optical G64.*rectified 256×256.*camera/);
+    assert.equal(get('opticalProfile').getAttribute('data-state'),'accepted');
+    sizeFailure=true;await tick();
+    assert.equal(context.fillStyle,'rgba(255,190,50,0.25)');
+    assert.match(get('opticalProfile').textContent,/size markers unclear/);
+    assert.equal(get('opticalProfile').getAttribute('data-state'),'uncertain');
+    assert.equal(get('sampleCount').textContent,'0 / 128');sizeFailure=false;
     const fillsBeforeFailure=filled;phaseFailure=true;await tick();assert.ok(filled>fillsBeforeFailure,'tentative phase-failed geometry is filled');assert.equal(context.fillStyle,'rgba(255,190,50,0.25)');assert.equal(context.strokeStyle,'#ffbe32');assert.match(get('latestCapture').textContent,/Phase cues disagree/);phaseFailure=false;
     await get('mirrorPreview').fire();await tick();
     assert.equal(get('cameraPreview').getAttribute('data-mirrored'),'false');
@@ -119,7 +136,8 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     phase=1;await tick();await tick();
     assert.equal(get('phaseCount').textContent,'1 / 32');assert.equal(get('sampleCount').textContent,'33 / 128');
     grid=128;await tick();assert.equal(get('sampleCount').textContent,'33 / 128');
-    assert.match(get('receiverStatus').textContent,/different profile/);assert.equal(get('cancelBurst').disabled,true);
+    assert.match(get('receiverStatus').textContent,/Optical G128 does not match.*expected G64/);
+    assert.match(get('opticalProfile').textContent,/Optical G128 ≠ expected G64/);assert.equal(context.fillStyle,'rgba(255,190,50,0.25)');assert.equal(get('cancelBurst').disabled,true);
     assert.equal(get('datasetSplit').disabled,true,'split remains fixed for the physical session');
     grid=64;phase=0;await get('collectBurst').fire();await flush();noMajority=true;await tick();assert.equal(get('cancelBurst').disabled,true);assert.match(get('captureError').textContent,/no consistent majority/);assert.equal(get('sampleCount').textContent,'33 / 128');noMajority=false;phase=1;await get('collectBurst').fire();await flush();
     await get('cancelBurst').fire();await flush();const count=get('sampleCount').textContent;
@@ -133,7 +151,7 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     const exported=JSON.parse(await download.text());
     assert.equal(downloadName,recordingFilename(exported));
     assert.ok(downloadName.startsWith(`${sender.manifest.collectionCode}_`));
-    assert.equal(exported.format,'neural-qr-captures');assert.equal(exported.version,1);
+    assert.equal(exported.format,'neural-qr-captures');assert.equal(exported.version,NEURAL_QR_VERSION);
     assert.equal(exported.collectionCode,sender.manifest.collectionCode);assert.equal(exported.profile.size,64);
     assert.equal(exported.datasetSplit,'train');assert.ok(exported.environment.deviceId);
     assert.equal(exported.camera.label,'Flow camera');assert.equal(exported.camera.deviceId,'flow-camera-id');
@@ -155,7 +173,7 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     assert.equal(get('datasetSplit').disabled,true,'saving and clearing a batch does not reset its physical split');
     assert.equal(get('receiverCode').disabled,false);assert.equal(get('receiverSize').disabled,false);
     get('receiverCode').value='invalid';await get('receiverCode').fire('input');assert.equal(get('startCamera').disabled,true);
-    get('receiverCode').value='abcdef01';await get('receiverCode').fire('input');get('receiverSize').value='256';await get('receiverSize').fire('change');assert.equal(get('phaseMaximum').value,'16');
+    get('receiverCode').value='abcdef01';await get('receiverCode').fire('input');get('receiverSize').value='128';await get('receiverSize').fire('change');assert.equal(get('phaseMaximum').value,'16');
     await get('newReceiverSession').fire();assert.equal(get('datasetSplit').disabled,false);
     // The next matrix is automatically staged by the sender; no manual sender upload.
     document.hidden=false;documentEvents.visibilitychange();await flush();

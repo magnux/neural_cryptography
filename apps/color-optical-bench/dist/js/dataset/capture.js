@@ -1,7 +1,7 @@
 /** Receiver evidence; a public collection assignment contains no sender labels. */
 import {extractNeuralQR} from '../neural-qr/vision.js';
 import {captureSignature} from './diversity.js';
-import {captureKey,bytesToBase64,floatBytes,base64ToBytes,floatsFromBytes,validateSessionId,validateCollectionCode,validateProfile,captureProfile,MAX_CAPTURE_BYTES,DEFAULT_CAPTURE_BYTES,MAX_RECORDS} from './contract.js';
+import {captureKey,bytesToBase64,floatBytes,base64ToBytes,floatsFromBytes,validateSessionId,validateCollectionCode,validateProfile,captureProfile,NEURAL_QR_VERSION,CAPTURE_PIXELS_PER_CELL,MAX_CAPTURE_BYTES,DEFAULT_CAPTURE_BYTES,MAX_RECORDS} from './contract.js';
 
 export function captureFrame(image,{timestamp=Date.now(),camera={},signature=false,profile,collectionCode,previousGeometry=null,probe=false}={}) {
   if(!Number.isFinite(timestamp)||timestamp<0)throw Error('Invalid capture timestamp.');
@@ -10,21 +10,25 @@ export function captureFrame(image,{timestamp=Date.now(),camera={},signature=fal
   const base={timestamp,camera,probe,ok:capture.ok,stage:capture.stage,error:capture.error,
     stats:capture.stats,transform:capture.transform,geometry:capture.geometry,corners:capture.corners,tentativeCorners:capture.tentativeCorners};
   if(!capture.ok)return base;
-  const info={...profile,id:collectionCode,collectionCode,phase:capture.info.phase,bits:4};
-  const common={...base,info,key:captureKey(info),pixelsPerCell:2,
-    acquisition:{format:'neural-qr',association:'manual-public-code',phase:'repeated-color-cues'}};
+  // The expected assignment never supplies optical size evidence. Acquisition
+  // must identify the same profile before it can enter a retained phase pool.
+  if(!capture.info||['size','colors','phases','gridBlock','permute','pixelsPerCell'].some(key=>capture.info[key]!==profile[key]))
+    return {...base,ok:false,stage:'profile',error:'Optical matrix size/profile does not match the collection assignment.'};
+  const info={...profile,...capture.info,id:collectionCode,collectionCode,phase:capture.info.phase,bits:4};
+  const common={...base,info,key:captureKey(info),pixelsPerCell:CAPTURE_PIXELS_PER_CELL,
+    acquisition:{format:'neural-qr',version:NEURAL_QR_VERSION,association:'manual-public-code',phase:'repeated-color-cues',geometry:'repeated-binary-size-cues'}};
   if(probe)return common;
-  return {...common,...(signature?{signature:captureSignature(capture.input,info.size,2)}:{}),
+  return {...common,...(signature?{signature:captureSignature(capture.input,info.size,CAPTURE_PIXELS_PER_CELL)}:{}),
     inputBase64:bytesToBase64(floatBytes(capture.input)),samplesBase64:bytesToBase64(floatBytes(capture.samples)),
     colorTransform:capture.colorTransform};
 }
 export function validateCapture(record){
   if(!record||record.ok!==true||!record.info||!Number.isFinite(record.timestamp)||record.timestamp<0)throw Error('Invalid capture record.');
   validateProfile(record.info);validateCollectionCode(record.info.collectionCode);
-  if(record.info.id!==record.info.collectionCode||record.key!==captureKey(record.info)||record.pixelsPerCell!==2||
+  if(record.info.id!==record.info.collectionCode||record.key!==captureKey(record.info)||record.pixelsPerCell!==CAPTURE_PIXELS_PER_CELL||
     !Number.isInteger(record.info.phase)||record.info.phase<0||record.info.phase>=4||record.info.bits!==4||
-    record.acquisition?.format!=='neural-qr'||record.acquisition.association!=='manual-public-code'||record.acquisition.phase!=='repeated-color-cues')throw Error('Invalid Neural-QR acquisition record.');
-  const g=record.info.size,values=3*(2*g)**2;
+    record.acquisition?.format!=='neural-qr'||record.acquisition.version!==NEURAL_QR_VERSION||record.acquisition.geometry!=='repeated-binary-size-cues'||record.acquisition.association!=='manual-public-code'||record.acquisition.phase!=='repeated-color-cues')throw Error('Invalid Neural-QR acquisition record.');
+  const g=record.info.size,values=3*(CAPTURE_PIXELS_PER_CELL*g)**2;
   const input=floatsFromBytes(base64ToBytes(record.inputBase64,values*4),values);
   for(const value of input)if(value < -1.5||value > 1.5)throw Error('Input tensor outside normalization bounds.');
   floatsFromBytes(base64ToBytes(record.samplesBase64,(g*g*3+96)*4),g*g*3+96);
@@ -103,10 +107,10 @@ export class CaptureBuffer {
   }
   export({notes='',sessionId=crypto.randomUUID(),camera={}}={}) {
     validateSessionId(sessionId);
-    return {format:'neural-qr-captures',version:1,created:new Date().toISOString(),sessionId,
+    return {format:'neural-qr-captures',version:NEURAL_QR_VERSION,created:new Date().toISOString(),sessionId,
       ...(this.records.length?{collectionCode:this.records[0].info.collectionCode,profile:{...captureProfile(this.records[0].info.size),holdMs:this.records[0].info.holdMs}}:{}),
       notes:String(notes).slice(0,2000),camera,limits:{maxRecords:this.maxRecords,maxBytes:this.maxBytes,stableMs:this.stableMs},
-      transitionPolicy:'Manual static sender and public collection assignment; consecutive agreeing geometry/phase cues after guard. Association is not optically authenticated. Review mixed/wrong-matrix captures offline.',
+      transitionPolicy:'Manual static sender and public collection assignment; consecutive agreeing optical size, geometry and phase cues after guard. Association is not optically authenticated. Review mixed/wrong-matrix captures offline.',
       selection:{method:'centered-band-reservoir',recentThinning:this.thinning},
       records:this.records,diagnostics:this.diagnostics};
   }

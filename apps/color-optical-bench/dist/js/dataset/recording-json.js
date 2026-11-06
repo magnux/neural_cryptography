@@ -1,5 +1,5 @@
-/** Same recording JSON schema, without a single full-file JavaScript string.
- * A G256 four-phase/32-sample recording exceeds common engines' string limit.
+/** Recording JSON serialization without a single full-file JavaScript string.
+ * A G128 four-phase/32-sample recording at 4 pixels/cell exceeds common engines' string limit.
  * Materialize one record at a time into Blob storage, then compose those blobs.
  * Existing input strings stay in the recording; only the serialization is chunked.
  */

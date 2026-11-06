@@ -36,12 +36,12 @@ test('32-sample pools continue via guarded replacements and isolate other phases
   assert.equal(exported.records.length,35);
   assert.ok(exported.records.every(x=>!('signature' in x)));
   assert.deepEqual(Object.keys(exported),['format','version','created','sessionId','collectionCode','profile','notes','camera','limits','transitionPolicy','selection','records','diagnostics']);
-  assert.equal(exported.format,'neural-qr-captures');assert.equal(exported.version,1);
+  assert.equal(exported.format,'neural-qr-captures');assert.equal(exported.version,2);
   assert.deepEqual(exported.selection,{method:'centered-band-reservoir',recentThinning:[]});
 });
 
 test('net byte accounting allows full-count replacement and declines oversized new evidence',()=>{
-  const b=new CaptureBuffer({maxRecords:2,maxBytes:800*1024});
+  const b=new CaptureBuffer({maxRecords:2,maxBytes:3000*1024});
   fill(b,2);
   const count=b.records.length,bytes=b.bytes,diagnostics=b.diagnostics.length;
   assert.equal(b.add({...sample,timestamp:3000},{alreadyValidated:true,maxPerPhase:2,replaceIndex:0}).stage,'replaced');

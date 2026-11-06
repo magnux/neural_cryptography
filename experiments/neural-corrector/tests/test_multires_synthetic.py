@@ -1,4 +1,4 @@
-"""Neural-QR synthetic phase trajectories, bounds and target ownership."""
+"""Synthetic kernels and the current collection/training format boundary."""
 
 import importlib.util
 import json
@@ -31,7 +31,7 @@ JOINED_FIXTURE = r"""
 import {mkdir,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {join} from 'node:path';
-import {createSender,floatBytes} from './apps/color-optical-bench/dist/js/dataset/contract.js';
+import {createSender,floatBytes,NEURAL_QR_VERSION} from './apps/color-optical-bench/dist/js/dataset/contract.js';
 import {gridLayout} from './apps/color-optical-bench/dist/js/grid.js';
 import {targets} from './scripts/corrector-dataset.mjs';
 const root=process.argv[1],size=Number(process.argv[2]),folder=join(root,'joined');
@@ -40,16 +40,16 @@ const {manifest,frames}=await createSender({size,seed:71,sessionId:'synthetic-se
 const frame=frames[0],mask=new Uint8Array(size*size);
 for(const cell of gridLayout(size,16,8).cells)mask[cell]=1;
 const sample={id:'real-frame',sessionId:'synthetic-receiver',senderSessionId:manifest.sessionId,
- payloadId:manifest.payloadId,split:'train',source:'real',size,colors:16,pixelsPerCell:2,
- inputShape:[3,2*size,2*size],info:frame.info,burstId:'real-burst',timestamp:1,
+ payloadId:manifest.payloadId,split:'train',source:'real',size,colors:16,pixelsPerCell:4,
+ inputShape:[3,4*size,4*size],info:frame.info,burstId:'real-burst',timestamp:1,
  devicePair:{sender:'phone',receiver:'pc'},hashes:{}};
-const data={input:floatBytes(new Float32Array(3*(2*size)**2)),labels:frame.symbols,
+const data={input:floatBytes(new Float32Array(3*(4*size)**2)),labels:frame.symbols,
  mask,baseline:floatBytes(new Float32Array(16*size*size)),expected:frame.chunk};
 for(const [key,value] of Object.entries(data)){
  sample[key]=key+'.bin';sample.hashes[key]=createHash('sha256').update(value).digest('hex');
  await writeFile(join(folder,sample[key]),value);
 }
-await writeFile(join(folder,'manifest.json'),JSON.stringify({format:'neural-qr-dataset',version:1,samples:[sample]}));
+await writeFile(join(folder,'manifest.json'),JSON.stringify({format:'neural-qr-dataset',version:NEURAL_QR_VERSION,samples:[sample]}));
 await targets({dataset:folder,out:join(root,'clean')});
 """
 
@@ -95,50 +95,39 @@ class MultiresSyntheticTests(unittest.TestCase):
         self.assertEqual(large.shape, (3, 512, 512))
         self.assertTrue(np.isfinite(large).all())
 
-    def test_default_256_captures_pairing_determinism_and_clean_truth(self):
+    def test_current_four_pixel_collection_is_rejected_by_two_pixel_training_pipeline(self):
         base = ROOT/'validation/tmp'
         base.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=base) as temporary:
             root = Path(temporary)
-            subprocess.run(['node', '--input-type=module', '-e', JOINED_FIXTURE, str(root), '8'],
+            subprocess.run(['node', '--input-type=module', '-e', JOINED_FIXTURE, str(root), '16'],
                            cwd=ROOT, check=True, capture_output=True, text=True)
-            with patch('synthetic._corrupt_sequence', side_effect=AssertionError('Must stream crops')):
-                first = generate([root/'clean'], root/'generated', severity=0)
-            self.assertEqual(first['format'], 'neural-qr-dataset')
-            self.assertEqual(len(first['samples']), 256)
-            self.assertEqual(first['generator']['frames'], 8)
-            self.assertEqual(first['generator']['burstsPerTarget'], 8)
-            self.assertEqual(first['generator']['captureResolution']['min_scale'], .5)
-            groups = {}
-            dataset = Dataset([root/'generated'])
-            clean = Dataset([root/'clean'])
-            for sample in dataset.samples:
-                row = sample.metadata
-                groups.setdefault(row['synthetic']['phaseGroupId'], []).append(row)
+            joined = json.loads((root/'joined/manifest.json').read_text())
+            clean = json.loads((root/'clean/manifest.json').read_text())
+            self.assertEqual(joined['version'], 2)
+            self.assertEqual(clean['version'], 2)
+            self.assertEqual(len(clean['samples']), 4)
+            self.assertEqual({row['info']['phase'] for row in clean['samples']}, {0, 1, 2, 3})
+            for row in clean['samples']:
+                self.assertEqual(row['pixelsPerCell'], 4)
+                self.assertEqual(row['inputShape'], [3, 64, 64])
                 self.assertEqual(row['sessionId'], 'synthetic-receiver')
                 self.assertEqual(row['senderSessionId'], 'synthetic-sender')
-                self.assertEqual(row['split'], 'train')
-                self.assertEqual(row['devicePair'], {'sender':'phone', 'receiver':'pc'})
-                pixels, labels, mask = sample.tensors()
-                self.assertEqual(pixels.shape, (3, 16, 16))
-                expected = sample.read('expected', 'u1').reshape(8, 8)
-                np.testing.assert_array_equal(canonical_labels(labels, mask, row['info']['phase']), expected)
-                source = next(s for s in clean.samples if s.id == row['synthetic']['parentId'])
-                np.testing.assert_array_equal(pixels, source.tensors()[0])
-            self.assertEqual(len(groups), 8)
-            for group in groups.values():
-                self.assertEqual(sorted(row['synthetic']['timelineFrame'] for row in group), list(range(32)))
-                self.assertEqual(len({row['burstId'] for row in group}), 4)
-            first = generate([root/'clean'], root/'small', frames=2, bursts_per_target=1, severity=.35)
-            repeated = generate([root/'clean'], root/'repeat', frames=2, bursts_per_target=1, severity=.35)
-            self.assertEqual(first['samples'], repeated['samples'])
-            self.assertTrue(any(row['hashes']['baseline'] != next(s.metadata['hashes']['baseline']
-                for s in clean.samples if s.id == row['synthetic']['parentId']) for row in first['samples']))
-            with self.assertRaisesRegex(ValueError, 'max-output-mib'):
-                generate([root/'clean'], root/'too-large', bursts_per_target=100000, max_output_mib=1)
-            self.assertFalse((root/'too-large').exists())
-            with self.assertRaisesRegex(ValueError, 'four coherent phases'):
-                generate([root/'clean'], root/'ungrouped', phase_grouped=False)
+                self.assertEqual(row['devicePair'], {'sender': 'phone', 'receiver': 'pc'})
+                self.assertEqual((root/'clean'/row['input']).stat().st_size, 3*64*64*4)
+                labels = np.fromfile(root/'clean'/row['labels'], dtype='u1').reshape(16, 16)
+                mask = np.fromfile(root/'clean'/row['mask'], dtype='u1').reshape(16, 16)
+                target = np.fromfile(root/'clean'/row['expected'], dtype='u1').reshape(16, 16)
+                np.testing.assert_array_equal(canonical_labels(labels, mask, row['info']['phase']), target)
+            # Collection/clean-target creation is ready. Python training still
+            # implements the earlier 2-pixel contract until W-tube is added.
+            # Reject the new contract explicitly, before writing any outputs.
+            for folder in ('joined', 'clean'):
+                with self.assertRaisesRegex(ValueError, 'Unsupported optical dataset format/version'):
+                    Dataset([root/folder])
+            with self.assertRaisesRegex(ValueError, 'Unsupported optical dataset format/version'):
+                generate([root/'clean'], root/'generated', severity=0)
+            self.assertFalse((root/'generated').exists())
 
 
 if __name__ == '__main__':

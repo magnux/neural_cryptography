@@ -6,7 +6,8 @@ fixtures when changing one.
 
 **Neural-QR acquisition is now implemented in `capture.html`.** Its
 [layout](NEURAL_QR.md) uses asymmetric geometric markers, repeated phase-color
-cues, an explicitly configured grid size and no dense monochrome byte header.
+cues, repeated optical size codes and no dense monochrome byte header. Current
+collection covers G16/G32/G64/G128 at four rectified pixels per cell.
 The collector records random training symbols; the in-band packet codec and
 QR-free authentication integration remain pending. The separate runnable
 Neural-ZKBoo demo still uses OBM5 data and standard QR ACKs. Neither receiver
@@ -25,25 +26,27 @@ has a compatibility fallback to the other format.
 | Neural-ZKBoo authentication envelope | `NZA1`, `neural-zkboo-auth-v1` | [Authentication protocol](../apps/qr-neural-key/AUTHENTICATION.md), [QR formats](../apps/qr-neural-key/FORMAT.md) |
 | Optical model bundle | `neural-corrector`, version 1 | [Model/export contract](../experiments/neural-corrector/README.md); untrained or trained status, hashed graphs and fixtures |
 | Neural-corrector checkpoint | `optical-decoder-checkpoint`, version 1 | [`checkpoint.py`](../experiments/neural-corrector/checkpoint.py); local state dict and training/split provenance |
-| Neural-QR acquisition layout | `neural-qr`, version 1 | [`layout.js`](../apps/color-optical-bench/dist/js/neural-qr/layout.js), [`vision.js`](../apps/color-optical-bench/dist/js/neural-qr/vision.js); G8…G256, 16 colors, four phases, grid-8 references, 2×2 pixels/cell |
-| Capture sender / receiver exports | `neural-qr-sender` / `neural-qr-captures`, version 1 | [Multires collection](MULTIRES_COLLECTION.md); public collection code and profile, phase cues, independently saved/uploaded evidence and sender labels |
-| Joined Neural-QR evidence | `neural-qr-dataset`, version 1 | [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); 2×2-cell CHW inputs and offline labels; paired multires training/evaluation |
+| Neural-QR acquisition layout | `neural-qr`, version 2 | [`layout.js`](../apps/color-optical-bench/dist/js/neural-qr/layout.js), [`vision.js`](../apps/color-optical-bench/dist/js/neural-qr/vision.js); optical G16/G32/G64/G128 size codes, 16 colors, four phases, grid-8 references, 4×4 pixels/cell |
+| Capture sender / receiver exports | `neural-qr-sender` / `neural-qr-captures`, version 2 | [Multires collection](MULTIRES_COLLECTION.md); public collection code and profile, phase cues, independently saved/uploaded evidence and sender labels |
+| Joined Neural-QR evidence | `neural-qr-dataset`, version 2 | [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); 4×4-cell CHW inputs and offline labels; W-tube training integration pending |
 | Established OBM5 training dataset | `optical-decoder-dataset`, version 1 | [`data.py`](../experiments/neural-corrector/data.py), [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); hashed NCHW inputs, physical labels, mask, baseline, expected bytes |
 
 ## Collector session coordination
 
 `collection_session.json` is temporary server coordination metadata, separate
 from the optical format and recording schema. Its public descriptor uses
-`neural-qr-collection-session`, version 1, and contains only an opaque ID,
+`neural-qr-collection-session`, version 2, and contains only an opaque ID,
 collection code, sender session ID, profile, dataset split and creation time.
 No sender symbols, payload bytes or labels are returned to the receiver.
 
-Managed receiver exports add the optional `collectionSessionId`; existing files
-without it remain valid. Successful managed upload saves receiver evidence,
+Managed receiver exports include the optional `collectionSessionId`; manually
+assigned current-format files may omit it. Successful managed upload saves receiver evidence,
 finalizes the matching `.json.tmp` sender, then removes the active descriptor.
-The stored capture format/version and all existing tensor encodings are unchanged.
-Recordings can now be up to 800 MiB, within 128 retained captures; smaller recorded
-pools are not required to grow. JSON serialization and capture-file reading avoid
+All current Neural-QR endpoints use version 2. Earlier recordings are retained
+for a planned offline import, not accepted through a compatibility parser. Use
+a new recording directory when updating both devices. Recordings may be up to
+800 MiB, within 128 retained captures; current-format pools may contain fewer
+samples. JSON serialization and capture-file reading avoid
 one whole-file JavaScript string.
 
 ## Neural-QR collection association
@@ -51,17 +54,21 @@ one whole-file JavaScript string.
 The sender's collection code is eight hexadecimal CRC32 characters over its
 logical training matrix; the full SHA-256 and logical symbols remain in the
 sender manifest. The receiver records that code and profile from the server’s active session
-(or manual assignment), then observes orientation and phase from the camera. Joining checks these values and
+(or manual assignment), then observes orientation, grid size and phase from the
+camera. An observed grid must match the assignment. Joining checks these values and
 manifest consistency, including split ownership. It does not establish that a
 manually assigned code matches the pixels actually photographed. This collection
 mechanism is not a packet identifier, authenticator or cryptographic key.
 
-The input is normalized RGB evidence at `[3,2G,2G]`. Joined labels are physical
+The input is normalized RGB evidence at `[3,4G,4G]`, sampled directly from the
+camera at the selected size. Joined labels are physical
 palette indices; the known phase map relates them to logical symbols. Reference
 cells have a separate loss mask. Current training matrices contain random
 logical symbols and fixed reference cells; no packet framing, ECC or payload CRC
 is implied. The future Neural-QR packet layer must add those checks before
-accepting bytes or advancing authentication.
+accepting bytes or advancing authentication. The present Python `multires`
+model uses the separate earlier 2×2-cell contract; W-tube and conversion of older
+recordings are not part of this collection release.
 
 ## Content and transport
 

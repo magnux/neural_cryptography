@@ -1,15 +1,16 @@
 # Neural-QR: optical transport designed for a neural corrector
 
-**Status: header-free acquisition and dataset collection implemented, 4 November 2026.**
-`capture.html` now renders and acquires Neural-QR without an OBM5 header. It uses
-asymmetric orientation markers, repeated phase cues and an explicitly configured
-matrix size. Neural-QR is the project's custom optical format, not a
-standards-compatible QR code.
+**Status: version-2 acquisition and collection implemented, 6 November 2026.**
+`capture.html` renders and acquires Neural-QR without an OBM5 header. It uses
+asymmetric orientation markers, repeated optical size codes and phase cues.
+The supported grids are G16/G32/G64/G128, rectified directly from the camera
+to four pixels per cell along each axis. Neural-QR is the project's custom optical
+format, not a standards-compatible QR code.
 
 This milestone collects training evidence. It does not yet deliver Neural-QR
 packets or perform QR-free authentication. The working
 [Neural-ZKBoo demo](NEURAL_ZKBOO_DEMO.md) still uses its OBM5 color DATA and
-standard QR ACKs while the new multires model and in-band packet codec are built.
+standard QR ACKs while W-tube and the in-band packet codec are built.
 The collector accepts only the new acquisition layout; it has no OBM5 fallback.
 
 The goal is fast, reliable optical authentication, with Neural-QR carrying both
@@ -20,10 +21,7 @@ It does not remove packet framing, error correction, or cryptographic verificati
 
 ## Visual layout and implemented acquisition
 
-![Rendered Neural-QR G32 at phase 2: four anchors with asymmetric bottom-right satellites, repeated phase cues, fixed palettes and a header-free symbol matrix](images/neural-qr-acquisition.png)
-
-The image is produced by the current renderer from a public random G32 training
-matrix at phase 2. The executable layout is defined in
+The executable version-2 layout is defined in
 [`neural-qr/layout.js`](../apps/color-optical-bench/dist/js/neural-qr/layout.js).
 The implemented bottom-right fiducial preserves the square localization core and
 adds six asymmetric black/white satellite patches. The satellites distinguish
@@ -37,30 +35,30 @@ only the phase patches and phase-permuted data colors change.
 | Fixed palettes | x22/x234; 16 colors centered at y52+10i |
 | Phase pairs | x104/x132 at y20, repeated at y236; 20-unit patches |
 | Bottom-right satellites | x214 at y226/234/242 has bits100; y214 at x226/234/242 has bits110 |
+| Size-code copy 1 | 8-unit patches; row-major x48/60/72/84 at y16 and y32 |
+| Size-code copy 2 | 8-unit patches; row-major x160/172/184/196 at y224 and y240 |
 
 The collector displays uniformly random logical symbols with fixed reference
 cells, not an encoded application packet. It is suitable for learning the optical
 correction task without requiring a trained model to label recordings.
 
-The target is a **multi-resolution family**, G8/G16/G32/G64/G128/G256, read by
-**`multires`**: a shared convolution/attention trunk with independent
-low-frequency cosine coefficients per size. Each bank reconstructs a G×G anchor,
-enlarged exactly 2× at the inlet. At G the bottleneck has six alternating blocks
-**C → A → C → A → C → A**, each containing two convolutions or two
-window-attention layers.
-G64 is the existing trained starting point;
-small controls and larger data matrices will use different profiles after training.
-The [model design](NEURAL_CORRECTOR.md#multires-architecture)
-specifies crop sizes, anchors, masks, export and training changes.
-Rectification uses **2×2 pixels per cell**: G32 → 64×64, G64 → 128×128 and
-G256 → 512×512. Drawing cell dimensions are illustrative display units, not
-camera sampling pixels.
+The next model is **W-tube**, with shared processing weights and independent
+low-frequency anchors for G16/G32/G64/G128. It is planned, not implemented in
+this collection milestone. The existing `multires` model and its 2×2-cell
+training/export path remain a separate experiment and cannot load version-2
+recordings directly. The [roadmap](ROADMAP.md) separates these tasks.
+
+Current rectification uses **4×4 pixels per cell**: G16 → 64×64, G32 → 128×128,
+G64 → 256×256 and G128 → 512×512. It samples directly from the camera image,
+without creating a smaller intermediate crop. Drawing cell dimensions are
+illustrative display units, not camera sampling pixels; the receiver also
+reports actual camera pixels per cell.
 
 ## Design boundaries
 
 | Layer | Responsibility |
 | --- | --- |
-| Neural-QR geometry and optical cues | Locate and orient the image; identify a clear palette phase; measure color references |
+| Neural-QR geometry and optical cues | Locate and orient the image; read G and a clear palette phase; measure color references |
 | neural-corrector | Convert distinct captured frames into logical symbol scores |
 | Error correction and packet parsing | Recover bytes; reject damaged or malformed packets; check session, message and sequence context |
 | Neural-ZKBoo | Verify the existing proof against the pinned public identity and fresh challenge |
@@ -72,13 +70,15 @@ The existing proof and authentication envelope remain the canonical crypto layer
 ## Starting profile and shared multi-resolution model
 
 The acquisition profile is **16 colors, four palette phases and grid-8
-references**. Error correction belongs to the future packet profile. Both apps know
-the directional grid sizes before scanning; no dense header is needed to discover
-them. Preserve palette masks `(0, 15, 7, 8)`, logical-label output and phase pairing:
-four to eight distinct exposures, at most two per phase. The planned model takes
-`2G×2G` RGB crops. Compatible weights can be initialized from the trained G64
-checkpoint, but the changed sampling and shared size family require training.
-The current model/export pipeline is not a drop-in reader for these recordings.
+references**. Repeated binary size codes optically select G16/G32/G64/G128.
+The receiver checks that observed size against its public collection assignment;
+a different or uncertain size is rejected rather than guessed from the expected
+profile. Error correction belongs to the future packet profile.
+
+Preserve palette masks `(0, 15, 7, 8)`, logical-label output and phase pairing:
+four to eight distinct exposures, at most two per phase. The planned W-tube
+accepts `4G×4G` RGB crops. Its training, export and live packet integration are
+next steps; no existing checkpoint is declared compatible with the new design.
 
 Preserve the reference-grid convention and measured color normalization. Retain
 the G64/RS32 data profile as a comparison while adding smaller controls and larger
@@ -105,9 +105,39 @@ geometry detection independent of phase color, exposure shifts and palette noise
 Known ordered border references also provide an orientation consistency check.
 The acquisition implementation tries recent geometry first, then reacquires when
 current cues disagree or the 400 ms geometry-age bound expires. Finder cores,
-rings and asymmetric patches are checked again against the current exposure.
+rings, asymmetric patches, repeated size codes and phase cues are checked again
+against the current exposure.
 Reusing coordinates never supplies old phase data or extends the original
 geometry acquisition time.
+
+## Optical size code
+
+The two eight-patch codewords are read in row-major order, with black=1 and
+white=0. Their pairwise Hamming distance is four:
+
+| Grid | Codeword |
+| --- | --- |
+| G16 | `11110000` |
+| G32 | `11001100` |
+| G64 | `10101010` |
+| G128 | `10011001` |
+
+The patches are separate from the fixed orientation satellites, so grid choice
+does not change handedness or corner localization. Both copies remain unchanged
+through every phase of a matrix.
+
+After orientation, acquisition estimates a black/white midpoint from the finder
+measurements. Each patch must be at least 0.18 times finder contrast away from
+that midpoint; uncertain patches are rejected before codeword classification.
+Each copy must match an exact valid word and both copies must agree. The code's
+separation provides error detection; this implementation does not repair a
+nearby word or use the expected profile to fill missing bits.
+
+Only after reading G does the detector read phase cues and sample the `4G×4G`
+crop. A supplied expected profile is a cross-check, never the source of G.
+Cached geometry is subject to the same current-exposure code checks. The code
+routes acquisition/model geometry; it does not identify or authenticate the
+logical matrix and cannot replace packet integrity checks.
 
 ## Phase cues without the dense header
 
@@ -133,8 +163,8 @@ under blur, clipping, glare and camera color processing before freezing the layo
 
 Without an optically decoded packet identifier, a phase number alone cannot
 identify which random matrix is on screen. The collector therefore uses an
-explicit **public collection code**, shown by the sender and entered on the
-receiver together with the grid size. The eight hexadecimal characters are the
+explicit **public collection code**, shown by the sender and assigned to the
+receiver together with the expected grid size. The eight hexadecimal characters are the
 CRC32 of the logical training matrix. The sender manifest retains its full
 SHA-256 and labels for offline validation; the receiver receives neither labels
 nor clean pixels. The join checks code, profile, phase and manifest consistency
@@ -152,7 +182,8 @@ logical matrix assigned for all four phases, save the batch before changing it,
 and review suspect recordings offline. Full packet identity will move in-band
 when the trained receiver and codec are integrated.
 
-Admission requires clear geometric orientation and agreeing phase cues. The
+Admission requires clear geometric orientation, agreeing size and phase cues,
+and agreement with the assigned collection profile. The
 collector then waits at least 500 ms and two observations of the same assigned
 phase before retaining evidence. A corner displacement exceeding 4% of the
 current diagonal restarts this settling guard. Payload CRC success is not an
@@ -191,7 +222,7 @@ This is a design decision to test, not an already implemented grouping guarantee
 
 ```mermaid
 flowchart TD
-  A["Current camera exposure"] --> B["Geometry and repeated phase cues"]
+  A["Current camera exposure"] --> B["Geometry, size and phase cues"]
   B -->|"clear cues"| C["Bounded phase pool"]
   B -->|"uncertain"| A
   C --> D["Neural symbol scores"]
@@ -204,8 +235,9 @@ flowchart TD
 
 The shared multi-resolution corrector makes a **smaller Neural-QR control profile**
 the preferred path. Select the smallest grid that fits the complete ACK plus
-reference cells, framing, ECC and integrity checks. G8 carries only 32 raw bytes
-at 16 colors before any overhead, so do not assume it can hold the present ACK.
+reference cells, framing, ECC and integrity checks. G16 is the smallest current
+profile; its nominal 128 bytes before reference/framing overhead do not guarantee
+that it can hold every control message.
 Keep ACK binding to transfer, message, acknowledged sequence and digest.
 
 Use the same four-phase, four-to-eight-capture contract initially; smaller grids
@@ -223,6 +255,9 @@ without retaining the receiver's missing-packet state.
 
 - Geometry: perspective, all rotations, reflection, partial occlusion and confusing
   background shapes. A tentative location is distinct from an accepted packet.
+- Size codes: all four grids, uncertain patches, corrupted words, conflicting
+  copies and a valid optical G that disagrees with the expected assignment. No
+  rejected exposure may enter a retained training pool.
 - Phase cues: same-exposure color correction, clipped colors, motion blur, glare,
   rolling shutter and frames spanning a phase transition. Uncertainty causes retry.
 - Burst membership: skipped phases, repeated exposures, old/new packet mixtures,
@@ -244,14 +279,14 @@ audited cryptographic security result.
 
 ## Implementation sequence
 
-1. **Implemented:** header-free renderer, asymmetric orientation, repeated phase
-   acquisition, 2×2-pixel crops, public collection assignment, bounded collection,
-   uploads and offline joining. Validate the new marker/cue layout on both device
-   directions before recording the full multires dataset.
-2. **Implemented:** `multires` model, paired synthetic generation, size-balanced
-   training, held-out matrix evaluation and static per-size ONNX export. Train
-   on the collected sessions and measure exact logical matrices per size and
-   direction before integrating the model into the receiver.
+1. **Implemented:** version-2 header-free renderer, asymmetric orientation,
+   repeated size/phase cues, direct 4×4-pixel crops for G16/G32/G64/G128, public
+   collection assignment, bounded recording pools, uploads and offline joining.
+   Validate this layout on both devices before a large recording session.
+2. **Next:** implement W-tube, import eligible older G64 and upsampled recordings
+   into an explicitly tagged auxiliary corpus, generate harder paired synthetics,
+   and train/evaluate against fresh native captures. Leaner history reports and
+   selected-size ONNX/browser parity belong to this model milestone.
 3. Add the in-band ECC/CRC packet codec and full identifier checks, bounded
    packet/phase association and small Neural-QR controls to authentication. This
    replaces the working OBM5/QR-ACK path when both endpoints are ready.

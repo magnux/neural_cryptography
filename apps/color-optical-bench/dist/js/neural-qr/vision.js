@@ -1,4 +1,4 @@
-/** Header-free acquisition. The known profile contains no sender target data. */
+/** Header-free acquisition. Size and phase are measured before raster sampling. */
 import {findMarkers,quadProposals,homography,project,sample,patch,calibrate} from '../vision.js';
 import {normalizeCalibratedRGB} from '../learned-input.js';
 import {NQR_LAYOUT as L,validateNeuralQRProfile} from './layout.js';
@@ -25,7 +25,26 @@ function readOrientation(image,h){
     if(bit?value>threshold-.12*contrast:value<threshold+.12*contrast)
       throw Error('Asymmetric orientation marker is unclear.');
   }
-  return contrast;
+  return {dark:d,light:w,contrast};
+}
+
+function readSize(image,h,levels){
+  const threshold=(levels.dark+levels.light)/2;
+  const decisions=L.sizeCopies.map(copy=>{
+    let bits='',margin=Infinity;
+    for(const [x,y] of copy){
+      const value=luma(patch(image,h,x,y,1.5)),confidence=Math.abs(value-threshold)/levels.contrast;
+      // A near-threshold measurement is an erasure, not a freely guessed bit.
+      // No nearest-code fallback or expected-profile hint repairs an exposure.
+      if(confidence<.18)throw Error('Grid-size patches are uncertain; avoid glare or a display transition.');
+      margin=Math.min(margin,confidence);bits+=value<threshold?'1':'0';
+    }
+    const index=L.sizeCodes.indexOf(bits);
+    if(index<0)throw Error('Grid-size pattern is invalid; keep both binary codes visible.');
+    return {size:L.sizes[index],margin};
+  });
+  if(decisions[0].size!==decisions[1].size)throw Error('Opposite grid-size codes disagree; skipping a transition exposure.');
+  return {detectedSize:decisions[0].size,sizeMargin:Math.min(...decisions.map(d=>d.margin))};
 }
 
 function readReferences(image,h){
@@ -62,24 +81,32 @@ function readPhase(image,h,references){
 /** A successful result is optical evidence, not an accepted packet. */
 export function extractNeuralQR(image,{profile,previousGeometry=null,now=Date.now(),dense=true}={}){
   const start=performance.now(),result={ok:false,stage:'detect',markers:[],tentativeCorners:[],stats:{geometrySource:'none',previousGeometryTried:false},error:'Find all four Neural-QR markers.'};
-  let known;
-  try{known=validateNeuralQRProfile(profile);}catch(error){return {...result,stage:'profile',error:error.message};}
+  let expected=null;
+  try{if(profile!=null)expected=validateNeuralQRProfile(profile);}catch(error){return {...result,stage:'profile',error:error.message};}
+  if(expected)result.stats.expectedSize=expected.size;
   if(!Number.isFinite(now)||!image||!Number.isInteger(image.width)||!Number.isInteger(image.height)||image.width<32||image.height<32||image.width*image.height>20_000_000||
     !(image.data instanceof Uint8Array||image.data instanceof Uint8ClampedArray)||image.data.length!==4*image.width*image.height)
     return {...result,error:'Unsupported camera image or timestamp.'};
-  let selected=null,oriented=false,lastError=null;
+  let selected=null,oriented=false,lastError=null,failureStage=null;
   function inspect(h,source,acquiredAt){
-    readOrientation(image,h);oriented=true;result.tentativeCorners=corners(h);
+    const levels=readOrientation(image,h);oriented=true;result.tentativeCorners=corners(h);
+    let size;
+    try{size=readSize(image,h,levels);}catch(error){error.neuralQRStage='size';throw error;}
+    Object.assign(result.stats,size);
+    if(expected&&size.detectedSize!==expected.size){
+      const error=Error(`Optical G${size.detectedSize} does not match collection G${expected.size}.`);
+      error.neuralQRStage='profile';throw error;
+    }
     try{
       const references=readReferences(image,h),phase=readPhase(image,h,references);
-      return {h,references,phase,source,acquiredAt};
+      return {h,references,phase,size,source,acquiredAt};
     }catch(error){error.neuralQRStage='phase';throw error;}
   }
   const previous=previousGeometry;
   if(previous?.width===image.width&&previous?.height===image.height&&Number.isFinite(previous.acquiredAt)&&now>=previous.acquiredAt&&now-previous.acquiredAt<GEOMETRY_MAX_AGE_MS&&
     Array.isArray(previous.transform)&&previous.transform.length===9&&previous.transform.every(Number.isFinite)){
     result.stats.previousGeometryTried=true;
-    try{selected=inspect(previous.transform.slice(),'previous',previous.acquiredAt);}catch(error){lastError=error.message;}
+    try{selected=inspect(previous.transform.slice(),'previous',previous.acquiredAt);}catch(error){lastError=error.message;failureStage=error.neuralQRStage??null;}
   }
   if(!selected){
     const found=findMarkers(image);result.markers=found.markers;
@@ -89,16 +116,17 @@ export function extractNeuralQR(image,{profile,previousGeometry=null,now=Date.no
       try{
         const ordered=Array.from({length:4},(_,i)=>q[(rotation+direction*i+8)%4]);
         selected=inspect(homography(L.centers,ordered),'detected',now);break outer;
-      }catch(error){if(error.neuralQRStage==='phase')lastError=error.message;}
+      }catch(error){if(error.neuralQRStage){lastError=error.message;failureStage=error.neuralQRStage;}}
     }
   }
   result.stats.markerCount=result.markers.length;
-  if(!selected){result.stage=oriented?'phase':result.markers.length>=4?'orientation':'detect';result.error=lastError??(result.stage==='orientation'?'Markers found; asymmetric orientation is unclear.':result.error);result.stats.ms=performance.now()-start;return result;}
-  const {h,references,phase,source,acquiredAt}=selected,info={...known,phase:phase.phase};
-  Object.assign(result,{info,transform:h,corners:corners(h),tentativeCorners:[],geometry:{width:image.width,height:image.height,transform:h.slice(),acquiredAt}});
-  Object.assign(result.stats,{geometrySource:source,...phase});
+  if(!selected){result.stage=failureStage??(oriented?'size':result.markers.length>=4?'orientation':'detect');result.error=lastError??(result.stage==='orientation'?'Markers found; asymmetric orientation is unclear.':result.error);result.stats.ms=performance.now()-start;return result;}
+  const {h,references,phase,size,source,acquiredAt}=selected;
+  const info={...validateNeuralQRProfile({size:size.detectedSize,colors:16,phases:4,gridBlock:8,pixelsPerCell:4}),phase:phase.phase};
+  Object.assign(result,{info,transform:h,corners:corners(h),tentativeCorners:[],geometry:{width:image.width,height:image.height,transform:h.slice(),acquiredAt,size:info.size}});
+  Object.assign(result.stats,{geometrySource:source,...phase,...size});
   try{
-    const calibration=calibrate(references,0),p=L.payload,g=info.size,cell=p.side/g,side=2*g;
+    const calibration=calibrate(references,0),p=L.payload,g=info.size,cell=p.side/g,side=4*g;
     const horizontal=Math.hypot(...project(h,p.x+p.side,p.y).map((v,k)=>v-project(h,p.x,p.y)[k]))/g;
     const vertical=Math.hypot(...project(h,p.x,p.y+p.side).map((v,k)=>v-project(h,p.x,p.y)[k]))/g;
     Object.assign(result.stats,{pixelsPerCell:Math.min(horizontal,vertical),colorRMSE:calibration.rmse});
@@ -111,7 +139,7 @@ export function extractNeuralQR(image,{profile,previousGeometry=null,now=Date.no
       if(!observed)throw Error('Payload extends outside the camera image.');
       rgb.set(calibration.apply(observed),3*(y*side+x));
     }
-    Object.assign(result,{ok:true,stage:'acquired',error:null,samples,input:normalizeCalibratedRGB(rgb,side,side),dims:[1,3,side,side],pixelsPerCell:2,colorTransform:calibration.coefficients,observedPalette:calibration.observed});
+    Object.assign(result,{ok:true,stage:'acquired',error:null,samples,input:normalizeCalibratedRGB(rgb,side,side),dims:[1,3,side,side],pixelsPerCell:4,colorTransform:calibration.coefficients,observedPalette:calibration.observed});
   }catch(error){result.error=error.message;}
   result.stats.ms=performance.now()-start;return result;
 }

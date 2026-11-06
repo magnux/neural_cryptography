@@ -21,7 +21,7 @@ SPEC.loader.exec_module(MODULE)
 
 def profile(size=64):
     return {"size": size, "colors": 16, "phases": 4, "gridBlock": 8,
-            "permute": True, "pixelsPerCell": 2, "holdMs": 4000, "parity": 0}
+            "permute": True, "pixelsPerCell": 4, "holdMs": 4000, "parity": 0}
 
 
 def info(size=64, phase=0):
@@ -30,7 +30,7 @@ def info(size=64, phase=0):
 
 
 def sender(size=64):
-    return {"format": "neural-qr-sender", "version": 1,
+    return {"format": "neural-qr-sender", "version": 2,
             "created": "2026-11-04T12:34:56.789Z", "sessionId": "sender-abc",
             "datasetSplit": "train", "collectionCode": "1234abcd",
             "payloadId": "a" * 64, "payloadBase64": "AQID",
@@ -40,14 +40,16 @@ def sender(size=64):
 
 
 def receiver(size=64):
-    return {"format": "neural-qr-captures", "version": 1,
+    return {"format": "neural-qr-captures", "version": 2,
             "created": "2026-11-04T12:34:56.789Z", "sessionId": "receiver-abc",
             "datasetSplit": "train", "collectionCode": "1234abcd", "profile": profile(size),
             "environment": {"deviceId": "device-two"},
             "camera": {"label": "Front camera", "deviceId": "origin-scoped-camera"},
-            "records": [{"ok": True, "info": info(size, phase), "pixelsPerCell": 2,
+            "records": [{"ok": True, "info": info(size, phase), "pixelsPerCell": 4,
                          "key": f"1234abcd/{size}/16/8/{phase}",
                          "inputBase64": "AA==", "samplesBase64": "AA==",
+                         "acquisition": {"format": "neural-qr", "version": 2,
+                                         "geometry": "repeated-binary-size-cues", "phase": "repeated-color-cues"},
                          "stability": {"guardMs": 500, "durationMs": 600, "observations": 3}} for phase in range(4)],
             "diagnostics": []}
 
@@ -114,11 +116,11 @@ class RecordingServerTests(unittest.TestCase):
     def test_sender_and_receiver_upload_group_by_split_size_and_keep_metadata(self):
         with self.server():
             for make, role in ((sender, "sender"), (receiver, "receiver")):
-                recording = make(256)
+                recording = make(128)
                 recording["datasetSplit"] = "validation"
                 status, result = self.request("POST", "/api/recordings?split=validation", recording)
                 self.assertEqual(status, 201, result)
-                self.assertTrue(result["storedPath"].startswith(f"validation/g256/{role}/1234abcd_neural-qr-"))
+                self.assertTrue(result["storedPath"].startswith(f"validation/g128/{role}/1234abcd_neural-qr-"))
                 saved = self.store.root / result["storedPath"]
                 self.assertEqual(json.loads(saved.read_text()), recording)
                 self.assertFalse(result["duplicate"])
@@ -188,9 +190,12 @@ class RecordingServerTests(unittest.TestCase):
         with self.server():
             mutations = [
                 lambda b: b.update(format="optical-decoder-sender"),
+                lambda b: b.update(version=1),
+                lambda b: b["profile"].update(size=8),
+                lambda b: b["profile"].update(size=256),
                 lambda b: b.update(collectionCode="ABCDEF12"),
                 lambda b: b["profile"].update(colors=4),
-                lambda b: b["profile"].update(pixelsPerCell=4),
+                lambda b: b["profile"].update(pixelsPerCell=2),
                 lambda b: b["profile"].update(phases=4.0),
                 lambda b: b["frames"][0]["info"].update(phase=True),
                 lambda b: b["frames"][0].update(key="wrong"),
@@ -201,9 +206,13 @@ class RecordingServerTests(unittest.TestCase):
                 change(recording)
                 with self.subTest(recording=recording):
                     self.assertEqual(self.request("POST", "/api/recordings?split=train", recording)[0], 422)
-            malformed = receiver()
-            malformed["records"][0]["pixelsPerCell"] = 4
-            self.assertEqual(self.request("POST", "/api/recordings?split=train", malformed)[0], 422)
+            for mutate in (
+                    lambda r: r.update(pixelsPerCell=2),
+                    lambda r: r["acquisition"].update(version=1),
+                    lambda r: r["acquisition"].pop("geometry")):
+                malformed = receiver()
+                mutate(malformed["records"][0])
+                self.assertEqual(self.request("POST", "/api/recordings?split=train", malformed)[0], 422)
         self.assertFalse(list(self.store.root.rglob("*.json")))
 
     def test_storage_must_be_private_and_symlink_cannot_redirect_writes(self):
@@ -291,7 +300,7 @@ class RecordingServerTests(unittest.TestCase):
             self.assertEqual(self.request("POST", "/api/recordings?split=train", captured)[0], 422)
             self.assertTrue((self.store.root / started["storedPath"]).exists())
             self.assertEqual(self.store.current_session()["id"], identifier)
-            # Existing smaller recordings have no session field and remain valid.
+            # Current manual recordings may have fewer captures and no managed session field.
             captured = receiver()
             captured["records"] = captured["records"][:1]
             self.assertEqual(self.request("POST", "/api/recordings?split=train", captured)[0], 201)

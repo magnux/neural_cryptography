@@ -5,7 +5,7 @@ import {resolve,dirname,join,sep,isAbsolute,relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {readRecordingJSON} from './lib/recording-json.mjs';
-import {senderFrames,captureKey,base64ToBytes,bytesToBase64,floatBytes,floatsFromBytes,DATASET_FORMAT,validateSessionId,canonicalJSON,MAX_RECORDS,MAX_CAPTURE_BYTES,validateProfile} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
+import {senderFrames,captureKey,base64ToBytes,bytesToBase64,floatBytes,floatsFromBytes,DATASET_FORMAT,validateSessionId,canonicalJSON,MAX_RECORDS,MAX_CAPTURE_BYTES,validateProfile,NEURAL_QR_VERSION,CAPTURE_SIZES,CAPTURE_PIXELS_PER_CELL} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
 import {validateCapture} from '../apps/color-optical-bench/dist/js/dataset/capture.js';
 import {renderFrame,parseHeader,encodeSequence,phaseFrames,PALETTE,sameBytes,capacity,frameKey} from '../apps/color-optical-bench/dist/js/format.js';
 import {gridLayout} from '../apps/color-optical-bench/dist/js/grid.js';
@@ -27,7 +27,7 @@ function recordingSplit(bundle,split,path) {
   if(bundle.datasetSplit!==undefined&&(splitName(bundle.datasetSplit)!==split))throw Error(`Recording split disagrees with selected split: ${path}`);
 }
 function validateCaptureBundle(bundle) {
-  if(bundle?.format!=='neural-qr-captures'||bundle.version!==1||!Array.isArray(bundle.records)||bundle.records.length>MAX_RECORDS||
+  if(bundle?.format!=='neural-qr-captures'||bundle.version!==NEURAL_QR_VERSION||!Array.isArray(bundle.records)||bundle.records.length>MAX_RECORDS||
       !Array.isArray(bundle.diagnostics??[])||(bundle.diagnostics??[]).length>100||! /^[a-f0-9]{8}$/.test(bundle.collectionCode??''))throw Error('Unsupported receiver capture bundle.');
   validateSessionId(bundle.sessionId);validateProfile(bundle.profile);
   for(const record of bundle.records) {
@@ -42,7 +42,7 @@ function capturePixelsPerCell(record) {
   return value;
 }
 function requireEstablishedRaster(sample) {
-  if(capturePixelsPerCell(sample)!==4)throw Error('This training/synthetic operation requires 4x4-pixel cells. Use the Neural-QR multires training path for 2x2-cell datasets.');
+  if(capturePixelsPerCell(sample)!==4)throw Error('This operation requires 4x4-pixel cells.');
 }
 function flags(args) {
   const result={};
@@ -141,7 +141,7 @@ export async function joinCaptures(options) {
     }
   }
   let exclusions=[];if(options.exclude){exclusions=await jsonFile(options.exclude,65536);if(!Array.isArray(exclusions)||exclusions.some(x=>typeof x!=='string'))throw Error('Exclusions must be capture IDs in a JSON array.');}
-  const dataset={format:NEURAL_QR_DATASET_FORMAT,version:1,created:new Date().toISOString(),association:'Operator-entered public collection code; not optically authenticated.',samples:[],excluded:[],diagnostics:[]},ids=new Set();
+  const dataset={format:NEURAL_QR_DATASET_FORMAT,version:NEURAL_QR_VERSION,created:new Date().toISOString(),association:'Public collection assignment; geometry and phase are optically read. Matrix identity is not optically authenticated.',samples:[],excluded:[],diagnostics:[]},ids=new Set();
   await freshDirectory(out);
   for(const path of fileList(options.captures)) {
     const bundle=validateCaptureBundle(await readRecordingJSON(path,{maxBytes:MAX_CAPTURE_JSON,maxArrayItems:MAX_RECORDS}));
@@ -212,7 +212,7 @@ export async function planUploadJoin(options) {
   };
   for(const path of paths) {
     const parts=relative(root,path).split(sep),[split,grid,kind]=parts;
-    if(parts.length!==4||!['sender','receiver'].includes(kind)||!(/^(?:g(?:8|16|32|64|128|256)|unknown)$/.test(grid)))throw Error(`Unexpected upload location: ${path}`);
+    if(parts.length!==4||!['sender','receiver'].includes(kind)||!(/^(?:g(?:16|32|64|128)|unknown)$/.test(grid)))throw Error(`Unexpected upload location: ${path}`);
     const bundle=kind==='sender'?await jsonFile(path,1024*1024):await readRecordingJSON(path,{maxBytes:MAX_CAPTURE_JSON,maxArrayItems:MAX_RECORDS});
     validateSessionId(bundle.sessionId);recordingSplit(bundle,split,path);
     own(sessionOwners,bundle.sessionId,split,'Physical session');
@@ -339,12 +339,12 @@ export async function targets(options) {
     splits:[...new Set(dataset.samples.map(sample=>sample.split))]};
 }
 
-/** Render exact 2x2 palette cells. No camera pixels or labels enter inference. */
+/** Render exact 4x4 palette cells. No camera pixels or labels enter inference. */
 function neuralQRCleanCrop(frame) {
-  const g=frame.size,w=2*g,plane=w*w,input=new Float32Array(3*plane);
+  const g=frame.size,ppc=CAPTURE_PIXELS_PER_CELL,w=ppc*g,plane=w*w,input=new Float32Array(3*plane);
   for(let y=0;y<g;y++)for(let x=0;x<g;x++)for(let c=0;c<3;c++) {
     const value=PALETTE[frame.symbols[y*g+x]][c]/127.5-1;
-    for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++)input[c*plane+(2*y+dy)*w+2*x+dx]=value;
+    for(let dy=0;dy<ppc;dy++)for(let dx=0;dx<ppc;dx++)input[c*plane+(ppc*y+dy)*w+ppc*x+dx]=value;
   }
   return input;
 }
@@ -354,17 +354,17 @@ async function neuralQRTargets(options) {
   let captures=0;
   for(const location of fileList(options.dataset)) {
     const root=resolve(location),path=await safeReadPath(root,'manifest.json'),manifest=await jsonFile(path);
-    if(manifest.format!==NEURAL_QR_DATASET_FORMAT||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length)
+    if(manifest.format!==NEURAL_QR_DATASET_FORMAT||manifest.version!==NEURAL_QR_VERSION||!Array.isArray(manifest.samples)||!manifest.samples.length)
       throw Error('Neural-QR targets require current Neural-QR manifests only.');
     sources.push({manifestSha256:hash(await readFile(path))});
     for(const sample of manifest.samples) {
-      if(!sample||sample.source!=='real'||sample.pixelsPerCell!==2)throw Error('Neural-QR target reconstruction requires joined real 2x2-cell captures.');
+      if(!sample||sample.source!=='real'||sample.pixelsPerCell!==CAPTURE_PIXELS_PER_CELL)throw Error('Neural-QR target reconstruction requires joined real 4x4-cell captures.');
       validateSessionId(sample.sessionId);validateSessionId(sample.senderSessionId);
       const split=splitName(sample.split),info=sample.info;
       if(sample.split===undefined||typeof sample.id!=='string'||!sample.id||ids.has(sample.id))throw Error('Missing/duplicate joined sample identity or split.');
       ids.add(sample.id);
       if(!info||sample.size!==info.size||sample.colors!==16||info.colors!==16||! /^[a-f0-9]{64}$/.test(sample.payloadId)||
-        canonicalJSON(sample.inputShape)!==canonicalJSON([3,2*sample.size,2*sample.size]))throw Error('Invalid Neural-QR joined target profile.');
+        canonicalJSON(sample.inputShape)!==canonicalJSON([3,CAPTURE_PIXELS_PER_CELL*sample.size,CAPTURE_PIXELS_PER_CELL*sample.size]))throw Error('Invalid Neural-QR joined target profile.');
       const profile=validateProfile(Object.fromEntries(['size','colors','phases','gridBlock','parity','holdMs','permute','pixelsPerCell'].map(key=>[key,info[key]])));
       for(const [kind,values] of Object.entries({sessionId:[sample.sessionId,sample.senderSessionId],payloadId:[sample.payloadId]}))for(const identity of values) {
         const previous=owners[kind].get(identity);if(previous&&previous!==split)throw Error(`${kind} crosses dataset splits.`);
@@ -372,7 +372,7 @@ async function neuralQRTargets(options) {
       }
       const g=sample.size,expected=await readSampleFile(root,sample,'expected',g*g),labels=await readSampleFile(root,sample,'labels',g*g),mask=await readSampleFile(root,sample,'mask',g*g);
       if(expected.length!==g*g||labels.length!==g*g||mask.length!==g*g)throw Error('Wrong Neural-QR target array length.');
-      const frames=await senderFrames({format:'neural-qr-sender',version:1,sessionId:sample.senderSessionId,
+      const frames=await senderFrames({format:'neural-qr-sender',version:NEURAL_QR_VERSION,sessionId:sample.senderSessionId,
         collectionCode:info.collectionCode,payloadId:sample.payloadId,payloadBase64:bytesToBase64(expected),profile,
         frames:Array.from({length:4},(_,phase)=>{const value={...info,phase};return {key:captureKey(value),info:value};})});
       const frame=frames[info.phase];
@@ -385,8 +385,8 @@ async function neuralQRTargets(options) {
     }
   }
   const out=resolve(options.out);await freshDirectory(out);
-  const dataset={format:NEURAL_QR_DATASET_FORMAT,version:1,created:new Date().toISOString(),
-    description:'Four clean physical phases per joined logical target; direct 2x2 palette cells, no camera pixels.',sources,samples:[]};
+  const dataset={format:NEURAL_QR_DATASET_FORMAT,version:NEURAL_QR_VERSION,created:new Date().toISOString(),
+    description:'Four clean physical phases per joined logical target; direct 4x4 palette cells, no camera pixels.',sources,samples:[]};
   let observedPhases=0;
   for(const [key,{sample,frames,observed}] of [...grouped].sort(([a],[b])=>a.localeCompare(b))) {
     observedPhases+=observed.size;
@@ -394,11 +394,11 @@ async function neuralQRTargets(options) {
       const input=neuralQRCleanCrop(frame),info=frame.info;
       dataset.samples.push(await putSample(out,dataset.samples.length,{
         id:`target-${hash(Buffer.from(key+'/'+info.phase)).slice(0,24)}`,sessionId:sample.sessionId,senderSessionId:sample.senderSessionId,
-        payloadId:sample.payloadId,split:sample.split,source:'synthetic',size:sample.size,colors:16,pixelsPerCell:2,inputShape:[3,2*sample.size,2*sample.size],info,
+        payloadId:sample.payloadId,split:sample.split,source:'synthetic',size:sample.size,colors:16,pixelsPerCell:CAPTURE_PIXELS_PER_CELL,inputShape:[3,CAPTURE_PIXELS_PER_CELL*sample.size,CAPTURE_PIXELS_PER_CELL*sample.size],info,
         burstId:`${sample.sessionId}/${captureKey(info)}`,timestamp:info.phase*500,devicePair:sample.devicePair,
         provenance:{...sample.provenance,generator:'Neural-QR palette + validated joined sender truth',corruption:'none',
           baseline:'calibrated-crop approximation',targetKey:key}},
-        {input,labels:frame.symbols,mask:maskFor(info),baseline:denseClassicalScores(input,info,2),expected:frame.chunk}));
+        {input,labels:frame.symbols,mask:maskFor(info),baseline:denseClassicalScores(input,info,CAPTURE_PIXELS_PER_CELL),expected:frame.chunk}));
     }
   }
   await writeFile(join(out,'manifest.json'),JSON.stringify(dataset,null,2)+'\n');
@@ -423,12 +423,12 @@ export async function baselines(options) {
   only(options,['dataset']);if(!options.dataset)throw Error('baselines requires --dataset DIRECTORY.');
   const root=resolve(options.dataset),manifestPath=await safeReadPath(root,'manifest.json'),manifest=await jsonFile(manifestPath);
   const neural=manifest.format===NEURAL_QR_DATASET_FORMAT;
-  if(![DATASET_FORMAT,NEURAL_QR_DATASET_FORMAT].includes(manifest.format)||manifest.version!==1||!Array.isArray(manifest.samples)||!manifest.samples.length||manifest.samples.some(s=>s.source!=='synthetic'))throw Error('Baseline refresh accepts only a synthetic dataset.');
+  if(![DATASET_FORMAT,NEURAL_QR_DATASET_FORMAT].includes(manifest.format)||manifest.version!==(neural?NEURAL_QR_VERSION:1)||!Array.isArray(manifest.samples)||!manifest.samples.length||manifest.samples.some(s=>s.source!=='synthetic'))throw Error('Baseline refresh accepts only a synthetic dataset.');
   if(new Set(manifest.samples.map(s=>s.id)).size!==manifest.samples.length)throw Error('Duplicate dataset sample ID.');
   for(const sample of manifest.samples) {
     if(!neural)requireEstablishedRaster(sample);
-    const g=sample.size,info=sample.info,ppc=neural?2:4;
-    if(!(neural?[8,16,32,64,128,256]:[64,128]).includes(g)||!(neural?[16]:[4,16]).includes(sample.colors)||info.size!==g||info.colors!==sample.colors||neural&&sample.pixelsPerCell!==2)throw Error('Unsupported dataset shape.');
+    const g=sample.size,info=sample.info,ppc=4;
+    if(!(neural?CAPTURE_SIZES:[64,128]).includes(g)||!(neural?[16]:[4,16]).includes(sample.colors)||info.size!==g||info.colors!==sample.colors||neural&&sample.pixelsPerCell!==CAPTURE_PIXELS_PER_CELL)throw Error('Unsupported dataset shape.');
     if(neural)validateProfile(info);
     const count=3*(ppc*g)**2,input=floatsFromBytes(await readSampleFile(root,sample,'input',count*4),count);
     const baseline=floatBytes(denseClassicalScores(input,info,ppc)),target=await safeReadPath(root,sample.baseline);

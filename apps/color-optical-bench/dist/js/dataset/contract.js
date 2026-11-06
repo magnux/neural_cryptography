@@ -5,12 +5,13 @@ import {gridLayout,paletteMap} from '../grid.js';
 export const DATASET_FORMAT = 'optical-decoder-dataset'; // Established offline training experiment.
 export const NEURAL_QR_DATASET_FORMAT = 'neural-qr-dataset';
 export const DATASET_VERSION = 1;
+export const NEURAL_QR_VERSION = 2;
 export const MAX_CAPTURE_BYTES = 800 * 1024 * 1024;
 export const DEFAULT_CAPTURE_BYTES = 400 * 1024 * 1024;
 export const CAPTURE_BUDGET_MIB = Object.freeze([200,400,800]);
 export const MAX_RECORDS = 128;
-export const CAPTURE_SIZES = Object.freeze([8,16,32,64,128,256]);
-export const CAPTURE_PIXELS_PER_CELL = 2;
+export const CAPTURE_SIZES = Object.freeze([16,32,64,128]);
+export const CAPTURE_PIXELS_PER_CELL = 4;
 /** Header-free Neural-QR acquisition profile; training symbols have no packet framing. */
 export function captureProfile(size=64,colors=16,phases=4){
   const profile={size,colors,phases,gridBlock:8,parity:0,holdMs:4000,permute:true,pixelsPerCell:CAPTURE_PIXELS_PER_CELL};
@@ -18,7 +19,7 @@ export function captureProfile(size=64,colors=16,phases=4){
 }
 /** Conservative JSON budget across all phases, including camera metadata and two PNGs. */
 export function recommendedPhaseMaximum(size,phases=4,budgetBytes=DEFAULT_CAPTURE_BYTES){
-  if(!CAPTURE_SIZES.includes(size)||![1,2,4,8,16].includes(phases))throw Error('Unsupported capture pool profile.');
+  if(!CAPTURE_SIZES.includes(size)||phases!==4)throw Error('Unsupported capture pool profile.');
   if(!Number.isSafeInteger(budgetBytes)||budgetBytes<1024||budgetBytes>MAX_CAPTURE_BYTES)throw Error('Invalid capture byte budget.');
   const inputBytes=3*(CAPTURE_PIXELS_PER_CELL*size)**2*4,sampleBytes=(3*size*size+96)*4;
   const perRecord=4*Math.ceil(inputBytes/3)+4*Math.ceil(sampleBytes/3)+8192;
@@ -75,7 +76,7 @@ export function validateSessionId(value) {
 }
 export function validateProfile(profile) {
   if(!profile||!CAPTURE_SIZES.includes(profile.size)||profile.colors!==16||profile.phases!==4||
-    profile.gridBlock!==8||profile.parity!==0||profile.permute!==true||profile.pixelsPerCell!==2||
+    profile.gridBlock!==8||profile.parity!==0||profile.permute!==true||profile.pixelsPerCell!==CAPTURE_PIXELS_PER_CELL||
     !Number.isInteger(profile.holdMs)||profile.holdMs<500||profile.holdMs>10000) throw Error('Unsupported Neural-QR capture profile.');
   return profile;
 }
@@ -87,7 +88,7 @@ function seededBytes(length,seed) {
 
 /** One static logical matrix; identity is assigned publicly, never read from hidden truth. */
 export async function createSender({size=64,colors=16,phases=4,gridBlock=8,parity=0,holdMs=4000,
-  pixelsPerCell=2,permute=true,sessionId=crypto.randomUUID(),seed}={}) {
+  pixelsPerCell=CAPTURE_PIXELS_PER_CELL,permute=true,sessionId=crypto.randomUUID(),seed}={}) {
   validateSessionId(sessionId);
   const profile=validateProfile({size,colors,phases,gridBlock,parity,holdMs,pixelsPerCell,permute});
   if(seed!==undefined&&(!Number.isInteger(seed)||seed<0||seed>0xffffffff))throw Error('Invalid public synthetic seed.');
@@ -96,7 +97,7 @@ export async function createSender({size=64,colors=16,phases=4,gridBlock=8,parit
   const layout=gridLayout(size,colors,gridBlock);
   for(const cell of layout.pilots)logical[cell]=layout.reference[cell];
   const collectionCode=crc32(logical).toString(16).padStart(8,'0');
-  const manifest={format:'neural-qr-sender',version:1,created:new Date().toISOString(),sessionId,
+  const manifest={format:'neural-qr-sender',version:NEURAL_QR_VERSION,created:new Date().toISOString(),sessionId,
     collectionCode,payloadId:await sha256(logical),payloadBase64:bytesToBase64(logical),profile};
   const frames=makeFrames(logical,profile,collectionCode);
   manifest.frames=frames.map(frame=>({key:captureKey(frame),info:frame.info}));
@@ -112,7 +113,7 @@ function makeFrames(logical,profile,collectionCode){
 }
 /** Offline/sender only. The receiver never imports a manifest or clean symbols. */
 export async function senderFrames(manifest){
-  if(!manifest||manifest.format!=='neural-qr-sender'||manifest.version!==1)throw Error('Unsupported Neural-QR sender manifest.');
+  if(!manifest||manifest.format!=='neural-qr-sender'||manifest.version!==NEURAL_QR_VERSION)throw Error('Unsupported Neural-QR sender manifest.');
   validateSessionId(manifest.sessionId);const profile=validateProfile(manifest.profile);
   const code=validateCollectionCode(manifest.collectionCode),logical=base64ToBytes(manifest.payloadBase64,profile.size**2);
   if(logical.length!==profile.size**2||logical.some(v=>v>=16)||await sha256(logical)!==manifest.payloadId||

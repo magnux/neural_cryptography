@@ -1,6 +1,6 @@
 /** Same-origin recording/session transport. Receiver discovery exposes no sender labels. */
 import {recordingBlob} from './recording-json.js';
-import {validateProfile,validateCollectionCode,validateSessionId,canonicalJSON} from './contract.js';
+import {NEURAL_QR_VERSION,validateProfile,validateCollectionCode,validateSessionId,canonicalJSON} from './contract.js';
 export const DATASET_SPLITS=Object.freeze(['train','validation','test']);
 export async function recordingUploadConfig(fetcher=globalThis.fetch){
   try{
@@ -14,12 +14,12 @@ export async function recordingUploadConfig(fetcher=globalThis.fetch){
   }catch{return {enabled:false,reason:'Cannot reach the recording server. Downloads remain available.'};}
 }
 export function validateCollectionSession(value){
-  if(!value||value.format!=='neural-qr-collection-session'||value.version!==1||!DATASET_SPLITS.includes(value.datasetSplit)||
+  if(!value||value.format!=='neural-qr-collection-session'||value.version!==NEURAL_QR_VERSION||!DATASET_SPLITS.includes(value.datasetSplit)||
     typeof value.created!=='string'||!Number.isFinite(Date.parse(value.created)))throw Error('Invalid active collection session.');
   validateSessionId(value.id);validateSessionId(value.senderSessionId);validateCollectionCode(value.collectionCode);validateProfile(value.profile);
   // Explicit allowlist: response metadata cannot carry sender pixels, labels, hashes or seeds into acquisition.
   const {size,colors,phases,gridBlock,parity,holdMs,permute,pixelsPerCell}=value.profile;
-  return {format:value.format,version:1,id:value.id,collectionCode:value.collectionCode,senderSessionId:value.senderSessionId,
+  return {format:value.format,version:NEURAL_QR_VERSION,id:value.id,collectionCode:value.collectionCode,senderSessionId:value.senderSessionId,
     profile:{size,colors,phases,gridBlock,parity,holdMs,permute,pixelsPerCell},datasetSplit:value.datasetSplit,created:value.created};
 }
 export async function fetchCollectionSession({config,signal,fetcher=globalThis.fetch}={}){

@@ -13,8 +13,8 @@ async function withFile(content,fn){
 }
 
 test('stream reader preserves current recording values across tiny UTF-8/token boundaries',async()=>{
-  const expected={format:'neural-qr-captures',version:1,notes:'á 😀 \\" ] } , \n',
-    profile:{size:8,colors:16,phases:4,enabled:true,optional:null},
+  const expected={format:'neural-qr-captures',version:2,notes:'á 😀 \\" ] } , \n',
+    profile:{size:16,colors:16,phases:4,enabled:true,optional:null},
     records:[{key:'a/0',inputBase64:'AQID'.repeat(400),nested:[false,null,3.25,-1e-7,{},[]]},
       {key:'a/1',camera:{label:'“front”'},escaped:'\\\\\\"x'}],
     diagnostics:[{error:'{quoted: "]"}',timestamp:0}],after:[1,{deep:['x']}],empty:[]};

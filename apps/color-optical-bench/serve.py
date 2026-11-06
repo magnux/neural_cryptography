@@ -27,7 +27,8 @@ from urllib.parse import parse_qs, urlsplit
 
 MAX_UPLOAD_BYTES = 800 * 1024 * 1024
 MAX_SESSION_BYTES = 1024 * 1024
-SIZES = (8, 16, 32, 64, 128, 256)
+SIZES = (16, 32, 64, 128)
+NEURAL_QR_VERSION = 2
 SPLITS = ("train", "validation", "test")
 
 
@@ -45,7 +46,7 @@ def recording_destination(bundle, split):
     """
     if split not in SPLITS:
         raise RecordingError("Choose train, validation or test.")
-    if not isinstance(bundle, dict) or type(bundle.get("version")) is not int or bundle["version"] != 1:
+    if not isinstance(bundle, dict) or type(bundle.get("version")) is not int or bundle["version"] != NEURAL_QR_VERSION:
         raise RecordingError("Expected a current recording JSON.")
     if bundle.get("datasetSplit", split) != split:
         raise RecordingError("Recording datasetSplit does not match the selected upload split.")
@@ -63,7 +64,7 @@ def recording_destination(bundle, split):
     if not isinstance(code, str) or not re.fullmatch(r"[a-f0-9]{8}", code):
         raise RecordingError("Invalid public collection code.")
     profile = bundle.get("profile")
-    required = {"colors": 16, "phases": 4, "gridBlock": 8, "pixelsPerCell": 2,
+    required = {"colors": 16, "phases": 4, "gridBlock": 8, "pixelsPerCell": 4,
                 "holdMs": 4000, "parity": 0}
     if (not isinstance(profile, dict) or type(profile.get("size")) is not int
             or profile["size"] not in SIZES or profile.get("permute") is not True
@@ -106,9 +107,17 @@ def recording_destination(bundle, split):
                 raise RecordingError("Sender phase list contains duplicates.")
             seen_phases.add(phase)
         elif (row.get("ok") is not True or type(row.get("pixelsPerCell")) is not int
-              or row["pixelsPerCell"] != 2
+              or row["pixelsPerCell"] != 4
               or not all(isinstance(row.get(key), str) for key in ("inputBase64", "samplesBase64"))):
             raise RecordingError("Missing receiver evidence.")
+        if role == "receiver":
+            acquisition = row.get("acquisition")
+            if (not isinstance(acquisition, dict) or acquisition.get("format") != "neural-qr"
+                    or type(acquisition.get("version")) is not int
+                    or acquisition["version"] != NEURAL_QR_VERSION
+                    or acquisition.get("geometry") != "repeated-binary-size-cues"
+                    or acquisition.get("phase") != "repeated-color-cues"):
+                raise RecordingError("Receiver requires current optical size and phase acquisition metadata.")
     grid = f"g{profile['size']}" if rows else "unknown"
     filename = (f"{code}_neural-qr-sender-{session}.json" if role == "sender" else
                 f"{code}_neural-qr-captures-{session}-{created.replace(':', '-').replace('.', '-')}.json")
@@ -196,7 +205,7 @@ class RecordingStore:
         # The file contains only this public descriptor. No target data is served.
         fields = {"format", "version", "id", "collectionCode", "senderSessionId", "profile", "datasetSplit", "created"}
         if (not isinstance(session, dict) or set(session) != fields
-                or session["format"] != "neural-qr-collection-session" or session["version"] != 1
+                or session["format"] != "neural-qr-collection-session" or session["version"] != NEURAL_QR_VERSION
                 or not isinstance(session["id"], str)
                 or not re.fullmatch(r"[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}", session["id"])):
             raise ValueError("Invalid session descriptor")
@@ -205,7 +214,7 @@ class RecordingStore:
         frames = [{"key": f"{code}/{profile['size']}/16/8/{phase}",
                    "info": {**profile, "collectionCode": code, "id": code, "phase": phase, "bits": 4}}
                   for phase in range(4)]
-        bundle = {"format": "neural-qr-sender", "version": 1, "sessionId": session["senderSessionId"],
+        bundle = {"format": "neural-qr-sender", "version": NEURAL_QR_VERSION, "sessionId": session["senderSessionId"],
                   "created": session["created"], "collectionCode": code, "profile": profile,
                   "datasetSplit": session["datasetSplit"], "payloadId": "0" * 64,
                   "payloadBase64": "", "frames": frames}
@@ -270,7 +279,7 @@ class RecordingStore:
                         "session": None, "sessionCompleted": True}
             result = self._save_bytes(staged, body)
             self._sync_directory((self.root / staged).parent)
-            descriptor = {"format": "neural-qr-collection-session", "version": 1,
+            descriptor = {"format": "neural-qr-collection-session", "version": NEURAL_QR_VERSION,
                           "id": str(uuid.uuid4()), "collectionCode": bundle["collectionCode"],
                           "senderSessionId": bundle["sessionId"], "profile": {key: bundle["profile"][key] for key in
                               ("size", "colors", "phases", "gridBlock", "permute", "pixelsPerCell", "holdMs", "parity")},
@@ -313,7 +322,7 @@ class RecordingStore:
         relative = recording_destination(bundle, split)
         identifier = bundle.get("collectionSessionId")
         if identifier is None:
-            # Already recorded files remain valid and never complete a managed session.
+            # Manual current-format recordings never complete a managed session.
             return self._save_bytes(relative, body)
         if not isinstance(identifier, str) or bundle["format"] != "neural-qr-captures" or not bundle["records"]:
             raise RecordingError("Completing a collection requires receiver captures and its active session ID.")

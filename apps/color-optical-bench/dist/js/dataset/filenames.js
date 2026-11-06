@@ -1,8 +1,8 @@
 /** Public collection-code grouping, never an optical authentication key. */
-import {validateSessionId} from './contract.js';
+import {validateSessionId,NEURAL_QR_VERSION} from './contract.js';
 
 function kind(bundle) {
-  if(!bundle||bundle.version!==1||!['neural-qr-sender','neural-qr-captures'].includes(bundle.format))
+  if(!bundle||bundle.version!==NEURAL_QR_VERSION||!['neural-qr-sender','neural-qr-captures'].includes(bundle.format))
     throw Error('Expected a current Neural-QR sender or receiver recording.');
   return bundle.format==='neural-qr-sender'?'sender':'captures';
 }

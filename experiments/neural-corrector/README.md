@@ -1,5 +1,12 @@
 # Neural corrector
 
+> The current collector records **Neural-QR v2, 4×4 pixels/cell,
+> G16/G32/G64/G128**. Collection and offline joining are available; the proposed
+> **W-tube** training/export implementation is still pending. The implemented
+> `multires` profile described below consumes existing prepared **2×2-cell**
+> datasets and cannot train on the new recordings. Keep them in a separate
+> directory; see [collection instructions](../../docs/MULTIRES_COLLECTION.md).
+
 Original Neural-Corrector code and documentation are part of **Neural Cryptography**
 by **Alejandro Hernandez Ruiz (magnux)**, licensed under [Apache-2.0](../../LICENSE).
 Preserve the project [NOTICE](../../NOTICE) on redistribution; see
@@ -40,7 +47,7 @@ U-tube experiments retain their four-pixels-per-axis inputs.
 | `U-tube-2x-attn` | Four-phase burst, 4–8 observations in eight slots | Residual U, learned global positional anchor, two window-attention blocks | 432,848 |
 
 `U-tube` is the default profile. The trained four-phase experiment uses
-`U-tube-2x-attn`. Select `--model multires --frames 8` for new Neural-QR recordings.
+`U-tube-2x-attn`. Select `--model multires --frames 8` only for prepared 2×2-cell Neural-QR datasets.
 All profiles produce `[N,16,G,G]` logits. The three U-tube profiles use four input
 pixels per axis per output cell; `multires` uses two. For G64, the U-tube path operates at **256→128→64→128→256**, followed by a
 **256→128→64** outlet. Block outputs remain 32 channels. Skip concatenations

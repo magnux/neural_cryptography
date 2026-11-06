@@ -13,7 +13,7 @@ import {fetchCollectionSession} from '../dist/js/dataset/upload.js';
 import {joinUploads} from '../../../scripts/corrector-dataset.mjs';
 
 const root=fileURLToPath(new URL('../../../',import.meta.url));
-test('actual acquisition, HTTP staging/finalization and offline joining preserve current and smaller recordings',async()=>{
+test('actual acquisition, HTTP staging/finalization and offline joining preserve current4ppc and shorter recordings',async()=>{
   const scratch=join(root,'validation');await mkdir(scratch,{recursive:true});
   const dir=await mkdtemp(join(scratch,'session-stack-'));
   const child=spawn('python3',['-u','-c',`
@@ -41,15 +41,18 @@ server.serve_forever()
       const response=await fetch(origin+path,{method:'POST',headers:{'Content-Type':'application/json','X-Upload-Token':config.uploadToken},body:recordingBlob(value)});
       const body=await response.json();assert.ok(response.ok,JSON.stringify(body));return body;
     };
-    const {manifest,frames}=await createSender({size:8,seed:554,sessionId:'stack-sender'});
+    const {manifest,frames}=await createSender({size:16,seed:554,sessionId:'stack-sender'});
     manifest.datasetSplit='train';
     const staged=await post('/api/collection-session?split=train',manifest);
     assert.ok(staged.storedPath.endsWith('.json.tmp'));
     const assignment=await fetchCollectionSession({config,fetcher:(url,options)=>fetch(origin+url,options)});
     assert.equal(assignment.id,staged.session.id);
     assert.equal(assignment.collectionCode,manifest.collectionCode);
+    assert.equal(assignment.version,2);assert.equal(assignment.profile.pixelsPerCell,4);
+    const mismatch=captureFrame(renderNeuralQR(frames[0],512),{timestamp:1,profile:{...assignment.profile,size:32},collectionCode:assignment.collectionCode});
+    assert.equal(mismatch.ok,false);assert.equal(mismatch.stage,'profile');
     assert.equal(assignment.payloadBase64,undefined);assert.equal(assignment.payloadId,undefined);
-    const buffer=new CaptureBuffer({maxBytes:160*1024*1024}); // Previously recorded budget stays valid.
+    const buffer=new CaptureBuffer({maxBytes:160*1024*1024}); // Smaller byte budgets remain valid.
     for(const frame of frames){
       const timestamp=1000+frame.phase*2000;
       const captured=captureFrame(renderNeuralQR(frame,512),{timestamp,profile:assignment.profile,collectionCode:assignment.collectionCode});
@@ -67,13 +70,16 @@ server.serve_forever()
     const smaller={...recording,sessionId:'previous-manual-receiver'};delete smaller.collectionSessionId;
     await post('/api/recordings?split=train',smaller);
     // A pending next matrix must be excluded from finalized dataset discovery.
-    const next=await createSender({size:8,seed:555,sessionId:'stack-sender-next'});
+    const next=await createSender({size:16,seed:555,sessionId:'stack-sender-next'});
     await post('/api/collection-session?split=train',{...next.manifest,datasetSplit:'train'});
     const joined=await joinUploads({'recordings-root':join(dir,'recordings'),out:join(dir,'joined')});
     assert.equal(joined.datasets.length,1);assert.equal(joined.datasets[0].samples,8);
-    const dataset=JSON.parse(await readFile(join(dir,'joined/train/g8/manifest.json'),'utf8'));
+    const dataset=JSON.parse(await readFile(join(dir,'joined/train/g16/manifest.json'),'utf8'));
+    assert.equal(dataset.version,2);
     for(const sample of dataset.samples){
-      assert.deepEqual(new Uint8Array(await readFile(join(dir,'joined/train/g8',sample.labels))),frames[sample.info.phase].symbols);
+      assert.equal(sample.pixelsPerCell,4);assert.deepEqual(sample.inputShape,[3,64,64]);
+      assert.equal((await readFile(join(dir,'joined/train/g16',sample.input))).length,3*64*64*4);
+      assert.deepEqual(new Uint8Array(await readFile(join(dir,'joined/train/g16',sample.labels))),frames[sample.info.phase].symbols);
     }
   }finally{
     const closed=child.exitCode===null?once(child,'close'):Promise.resolve();child.kill();await closed;

@@ -5,7 +5,7 @@ import {recordingPrefix,recordingFilename} from '../dist/js/dataset/filenames.js
 
 const {manifest}=await createSender({seed:19,sessionId:'sender-filename-test'});
 const created='2026-11-03T12:34:56.789Z';manifest.created=created;
-function capture(phase=0){return {format:'neural-qr-captures',version:1,created,sessionId:'receiver-filename-test',
+function capture(phase=0){return {format:'neural-qr-captures',version:2,created,sessionId:'receiver-filename-test',
   collectionCode:manifest.collectionCode,profile:manifest.profile,records:[{ok:true,info:manifest.frames[phase].info}],diagnostics:[]};}
 
 test('sender and receiver names share the explicitly assigned public collection code across phases',()=>{

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createSender} from '../dist/js/dataset/contract.js';
+import {createSender,captureProfile,base64ToBytes} from '../dist/js/dataset/contract.js';
 import {renderNeuralQR} from '../dist/js/neural-qr/layout.js';
 import {CaptureClient} from '../dist/js/dataset/client.js';
 
@@ -51,14 +51,19 @@ test('capture worker rejects oversized frames before extraction',async()=>{
     const sender=await createSender({seed:4,sessionId:'worker'}),image=renderNeuralQR(sender.frames[0],1024),assignment={collectionCode:sender.manifest.collectionCode,profile:sender.manifest.profile};
     await self.onmessage({data:{id:3,operation:'probe',options:{image,timestamp:1000,...assignment}}});
     assert.equal(messages[2].result.ok,true);assert.equal(messages[2].result.probe,true);
-    assert.equal(messages[2].result.info.phase,0);assert.ok(messages[2].result.transform);
+    assert.equal(messages[2].result.info.phase,0);assert.equal(messages[2].result.info.size,64);assert.equal(messages[2].result.info.pixelsPerCell,4);assert.ok(messages[2].result.transform);
     assert.equal(messages[2].result.inputBase64,undefined,'alignment does not serialize a training tensor');
     await self.onmessage({data:{id:4,operation:'capture',options:{image,timestamp:1600,...assignment}}});
     assert.equal(messages[3].result.ok,true);assert.equal(messages[3].result.signature.length,3072);
+    assert.equal(base64ToBytes(messages[3].result.inputBase64).byteLength,3*256*256*4,'capture stores the native4ppc crop');
     await self.onmessage({data:{id:5,operation:'compare',options:{signatures:[messages[3].result.signature,messages[3].result.signature]}}});
     assert.equal(messages[4].result.mean,0);
     await self.onmessage({data:{id:6,operation:'select',options:{key:messages[3].result.key,signatures:[messages[3].result.signature,messages[3].result.signature],incomingSignature:messages[3].result.signature}}});
     assert.equal(messages[5].result.replaceIndex,null);assert.equal(messages[5].result.reason,'near-duplicate');
+    await self.onmessage({data:{id:7,operation:'capture',options:{image,timestamp:1700,collectionCode:assignment.collectionCode,profile:captureProfile(128)}}});
+    assert.equal(messages[6].type,'result');assert.equal(messages[6].result.ok,false);
+    assert.equal(messages[6].result.stage,'profile');assert.equal(messages[6].result.stats.detectedSize,64);
+    assert.equal(messages[6].result.inputBase64,undefined,'a mismatched optical grid never becomes a saved tensor');
   }finally{if(previous===undefined)delete globalThis.self;else globalThis.self=previous;}
 });
 

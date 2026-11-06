@@ -1,5 +1,4 @@
-import {captureKey,captureProfile,CAPTURE_SIZES,CAPTURE_PIXELS_PER_CELL} from './contract.js';
-import {createSender} from './contract.js';
+import {captureProfile,CAPTURE_SIZES,createSender} from './contract.js';
 import {captureFrame,validateCapture} from './capture.js';
 import {meanCaptureDistance,selectCaptureReplacement,createCaptureReference} from './diversity.js';
 import {renderNeuralQR} from '../neural-qr/layout.js';
@@ -28,7 +27,7 @@ self.onmessage=async event=>{
       result=await createSender({...captureProfile(size,colors,phases),sessionId});
     }else if(operation==='render'){
       const {frame,pixels}=options;
-      if(![1024,2048].includes(pixels)||!CAPTURE_SIZES.includes(frame?.size)||![4,16].includes(frame?.colors))throw Error('Unsupported capture display profile.');
+      if(![1024,2048].includes(pixels)||!CAPTURE_SIZES.includes(frame?.size)||frame?.colors!==16)throw Error('Unsupported capture display profile.');
       result=renderNeuralQR(frame,pixels);transfer=[result.data.buffer];
     }else if(operation==='compare'){
       result=meanCaptureDistance(options.signatures);
@@ -52,7 +51,7 @@ self.onmessage=async event=>{
       result=captureFrame(image,{timestamp,camera,signature:operation==='capture',profile,collectionCode,
         previousGeometry,probe:operation==='probe'});
       if(result.ok)previousGeometry=result.geometry;
-      else if(result.stage==='markers'||result.stage==='geometry')previousGeometry=null;
+      else if(['detect','orientation','size','profile'].includes(result.stage))previousGeometry=null;
       if(original){
         try{const snapshot=await originalPNG(image);if(snapshot.omitted)result.originalNote=snapshot.omitted;else result.original=snapshot;}
         catch(error){result.originalNote=`Original snapshot unavailable: ${error.message}`;}

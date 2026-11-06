@@ -1,5 +1,16 @@
 # Neural corrector — collect, train, evaluate, and export
 
+> **Collection update (6 November 2026):** `capture.html` now records Neural-QR
+> version 2 at G16/G32/G64/G128 with 4×4 pixels per cell and optically read size
+> cues. Follow [the collection guide](MULTIRES_COLLECTION.md) and use a separate
+> recording directory for this corpus. W-tube training, stronger paired
+> synthetics and conversion of previous recordings are the next milestones.
+> The `multires` commands below describe the existing **prepared 2×2-cell
+> datasets**, not the new recordings. Do not run the old full rebuild on the
+> new collection; its early guard prevents replacement until that pipeline is
+> updated. Retain existing recordings and prepared datasets for the planned
+> offline conversion.
+
 The current **multires** training path consumes header-free Neural-QR recordings
 at G8/G16/G32/G64/G128/G256 with **2×2 pixels per cell**, sixteen colors, and
 four palette phases. One checkpoint shares its convolution/attention trunk
@@ -22,8 +33,9 @@ Follow [Multires collection](MULTIRES_COLLECTION.md) for the device workflow.
 The server stages the sender automatically; the receiver loads the active
 public session configuration and uploads its own captures when finished.
 Sender truth is joined only offline and never enters receiver inference.
-Already recorded current Neural-QR files remain valid, including the smaller
-capture pools used before the increased collection budget.
+The workflow below documents the prepared 2×2-cell experiment. Its recordings
+remain useful source evidence, but the current collector/joiner accepts only
+the new 4×4-cell version; conversion is a separate forthcoming offline step.
 
 Uploaded files are organized as:
 

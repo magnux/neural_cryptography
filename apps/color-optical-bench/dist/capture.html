@@ -10,7 +10,7 @@
   <header class="site-header"><a class="brand" href="./capture.html"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M2 12V2h10M20 2h10v10M30 20v10H20M12 30H2V20"/><path d="M11 11h10v10H11z"/></svg><span>NEURAL KEY<span class="brand-divider">/</span><strong>CAPTURE DATASET</strong></span></a><span class="local-badge"><i></i> Browser-local</span></header>
   <nav class="app-nav" aria-label="Application"><a href="./index.html">Optical Bench</a><a href="./crypto.html">Crypto Lab</a><a href="./link.html">Live Demo</a><a href="./corrector.html">Corrector Lab</a><a href="./capture.html" aria-current="page">Capture Dataset</a><a href="./neural-zkboo.html">Neural-ZKBoo</a></nav>
   <main>
-    <section class="capture-intro"><div class="eyebrow">MULTIRES · TRAINING DATA</div><h1>Capture Neural-QR frames.</h1><p>Collect header-free Neural-QR at one matrix size at a time. The server pairs sender and receiver automatically; downloads remain available.</p></section>
+    <section class="capture-intro"><div class="eyebrow">4-PIXEL CELLS · TRAINING DATA</div><h1>Capture Neural-QR frames.</h1><p>Collect G16, G32, G64 or G128 Neural-QR at four pixels per cell. The camera reads the grid-size markers; the server pairs sender and receiver automatically.</p></section>
     <div id="captureError" class="notice" role="alert" hidden></div>
     <noscript><div class="notice">Enable JavaScript to collect local samples.</div></noscript>
     <div class="capture-role" role="group" aria-label="Device role"><button id="senderRole" class="role-button" aria-pressed="true">Display a matrix</button><button id="receiverRole" class="role-button" aria-pressed="false">Collect camera samples</button></div>
@@ -26,13 +26,13 @@
       <div class="capture-body">
         <p>Creating a matrix automatically stages its sender manifest on the recording server. Keep the matrix unchanged through all four phases. The receiver upload finalizes the pair; then create the next matrix.</p>
         <div class="capture-fields sender-fields">
-          <label>Grid<select id="senderSize"><option value="8">8 × 8</option><option value="16">16 × 16</option><option value="32">32 × 32</option><option value="64" selected>64 × 64</option><option value="128">128 × 128</option><option value="256">256 × 256</option></select></label>
-          <div class="capture-profile-note">16 colors · 4 palette phases<br>2 × 2 pixels per rectified cell</div>
+          <label>Grid<select id="senderSize"><option value="16">16 × 16</option><option value="32">32 × 32</option><option value="64" selected>64 × 64</option><option value="128">128 × 128</option></select></label>
+          <div class="capture-profile-note">16 colors · 4 palette phases<br>4 × 4 pixels per rectified cell</div>
         </div>
         <div class="capture-actions"><button class="button primary" id="createSender">Create random sequence</button><button class="button secondary" id="uploadSender" disabled>Retry sender setup ↑</button><button class="button secondary" id="downloadSender" disabled>Save sender manifest ↓</button><button class="small-button" id="nextPhase" disabled>Next phase →</button><button class="small-button" id="focusMatrix" aria-expanded="false" disabled>Focus matrix</button></div>
         <div class="capture-code"><span>Collection code · shared automatically</span><output id="senderCollectionCode">Create a matrix first</output></div>
         <p id="senderUploadStatus" class="muted" role="status"></p>
-        <p id="senderStatus" class="capture-status" role="status">Header-free markers and repeated phase cues. Grid-8 references; 2×2 pixels per cell. Create a matrix; the receiver discovers its code, grid and split automatically.</p>
+        <p id="senderStatus" class="capture-status" role="status">Optical grid-size markers, repeated phase cues and grid-8 references. Rectified crops use 4×4 pixels per cell. Create a matrix; the receiver discovers its collection code, expected grid and split automatically.</p>
         <div id="senderCanvasWrap" class="sender-canvas-wrap" hidden><button id="closeFocus" class="small-button" hidden>Close focus · Esc</button><canvas id="senderCanvas" width="1024" height="1024" aria-label="Current training matrix"></canvas></div>
         <div class="capture-session sender-session-actions"><span id="senderSession"></span><button class="small-button" id="newSenderSession">New physical session</button></div>
         <p class="muted">Each new sequence has fresh random bytes. Keep one session for the same device arrangement; start a new session after changing devices or returning later. All phases of a payload stay in the same training split.</p>
@@ -41,13 +41,13 @@
     <section id="receiverPanel" class="panel" hidden>
       <div class="panel-heading"><div><span class="section-number">02</span><h2>Receiver</h2></div><span class="mode-label">AUTOMATIC SESSION</span></div>
       <div class="capture-body">
-        <p>The receiver reads the active code, grid and split from the recording server. Keep that one matrix displayed through all four phases. Only public setup metadata is shared; no sender pixels, random seed or labels enter acquisition.</p>
+        <p>The receiver gets the collection code, expected grid and split from the recording server, then reads the grid-size markers from the camera image and checks they agree. Keep that one matrix displayed through all four phases. No sender pixels, random seed or labels enter acquisition.</p>
         <label class="capture-checkbox"><input id="autoSession" type="checkbox" checked>Use the active server collection automatically</label>
         <div class="capture-fields receiver-assignment">
           <label>Collection code<input id="receiverCode" maxlength="8" pattern="[a-fA-F0-9]{8}" inputmode="text" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="e.g. a12b34cd"></label>
-          <label>Grid on sender<select id="receiverSize"><option value="8">8 × 8</option><option value="16">16 × 16</option><option value="32">32 × 32</option><option value="64" selected>64 × 64</option><option value="128">128 × 128</option><option value="256">256 × 256</option></select></label>
+          <label>Expected grid<select id="receiverSize"><option value="16">16 × 16</option><option value="32">32 × 32</option><option value="64" selected>64 × 64</option><option value="128">128 × 128</option></select></label>
         </div>
-        <p class="muted">The assignment locks while a batch contains recordings. Upload and clear the batch before switching matrices. On a static server, enter the code and grid manually.</p>
+        <p class="muted">The assignment locks while a batch contains recordings. Upload and clear the batch before switching matrices. On a static server, enter the code and expected grid manually. The optical size must match; a wrong grid is never assigned to this batch.</p>
         <div class="capture-workbench">
           <div class="capture-toolbar">
             <div class="capture-fields capture-settings">
@@ -59,6 +59,7 @@
             </div>
             <div class="capture-actions capture-live-actions"><button class="small-button" id="startCamera">Start camera</button><button class="small-button" id="stopCamera" disabled>Stop camera</button><button class="button primary" id="collectBurst" disabled>Record</button><button class="small-button" id="cancelBurst" disabled>Pause</button></div>
             <dl class="capture-live-metrics"><div><dt>Retained</dt><dd id="phaseCount">0 / 32</dd></div><div><dt>Seen</dt><dd id="seenCount">0</dd></div><div><dt>Replaced</dt><dd id="replacementCount">0</dd></div><div><dt>Mean distance</dt><dd id="meanDistance">—</dd></div></dl>
+            <p id="opticalProfile" class="capture-optical-profile" data-state="waiting" role="status">Optical grid — · rectified crop — · camera — px/cell</p>
           </div>
           <div id="cameraPreview" class="capture-camera" data-mirrored="false"><video id="video" autoplay muted playsinline></video><canvas id="alignmentOverlay" aria-hidden="true"></canvas><span id="cameraPlaceholder">Camera is off</span><button id="mirrorPreview" class="small-button capture-mirror" type="button" aria-pressed="false" title="Mirror the preview only. Recorded images keep their original orientation.">Mirror preview</button></div>
           <p class="capture-status" id="receiverStatus" role="status" aria-live="polite">Start the camera for automatic alignment.</p>
@@ -66,7 +67,7 @@
         </div>
         <p class="muted" id="cameraStatus">Camera images stay on this device until you explicitly upload or download a capture file.</p>
         <label class="capture-checkbox"><input id="saveOriginal" type="checkbox">Include an original PNG when possible (maximum two snapshots per batch, 1 MiB each).</label>
-        <p class="muted">Green means orientation and repeated phase cues agree; orange means geometry was found but acquisition is uncertain. Record once; each phase fills its own pool after a settling check. At capacity, balanced sample selection favors the central cluster while retaining moderate variation. Pause before changing the displayed phase; save and clear the batch before changing the matrix.</p>
+        <p class="muted">Green means orientation, both grid-size markers, the assigned grid and repeated phase cues agree; orange means geometry was found but size, orientation or phase reading is uncertain. Record once; each phase fills its own pool after a settling check. At capacity, balanced sample selection favors the central cluster while retaining moderate variation. Pause before changing the displayed phase; save and clear the batch before changing the matrix.</p>
         <dl class="capture-metrics"><div><dt>All saved samples</dt><dd id="sampleCount">0 / 128</dd></div><div><dt>Diagnostics</dt><dd id="diagnosticCount">0</dd></div><div><dt>Export budget</dt><dd id="captureBytes">0 / 400 MiB</dd></div></dl>
         <p class="muted" id="distanceDetails">Needs at least two retained captures of this phase.</p>
         <p class="muted">Distance compares aligned, color-corrected captures of the same phase. We aim for a mostly similar pool with some variation, not the largest possible distance. Severe blur, wrong phase or wrong geometry should not count as useful diversity.</p>
@@ -75,7 +76,7 @@
         <label class="capture-notes">Session notes<textarea id="captureNotes" rows="3" maxlength="1000" placeholder="Phone / PC, direction, screen brightness, distance, motion or focus changes…"></textarea></label>
         <div class="capture-actions"><button class="button secondary" id="uploadCaptures" disabled>Upload receiver ↑</button><button class="button secondary" id="downloadCaptures" disabled>Save receiver captures ↓</button><span id="receiverSession" class="muted"></span></div>
         <p id="receiverUploadStatus" class="muted" role="status"></p>
-        <p class="muted">Uploads contain calibrated pixels, device/browser/camera metadata and optional original PNGs. Recording stays local until you press Upload. Downloads remain available. Each batch contains one grid size; upload or download it before clearing. The physical session and split remain fixed across batches. The selected 200 / 400 / 800 MiB budget covers all four phases, up to 128 samples. G128 fits 32 per phase at 200 MiB; G256 fits 16 at 400 MiB or 32 at 800 MiB. Choose the larger budget before recording. Browser memory use is higher than the encoded file size.</p>
+        <p class="muted">Uploads contain calibrated pixels, device/browser/camera metadata and optional original PNGs. Recording stays local until you press Upload. Downloads remain available. Each batch contains one grid size; upload or download it before clearing. The physical session and split remain fixed across batches. The selected 200 / 400 / 800 MiB budget covers all four phases, up to 128 samples. G16–G64 fit 32 per phase at 200 MiB. G128 fits 8 per phase at 200 MiB, 16 at 400 MiB or 32 at 800 MiB. Choose the larger budget before recording. Browser memory use is higher than the encoded file size.</p>
       </div>
     </section>
     <footer class="page-footer"><span>NEURAL KEY · CAPTURE DATASET</span><p>Upload or save both sides → join recordings → train → evaluate held-out sessions</p><a href="https://github.com/magnux/neural_cryptography/blob/main/docs/NEURAL_CORRECTOR.md">Corrector plan ↗</a></footer>
