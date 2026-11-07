@@ -115,8 +115,10 @@ or CRC recovery claims in the raw-symbol Neural-QR dataset.
 
 For W-tube, native real validation is the primary population whenever available;
 auxiliary origins have separate summaries. A corpus without native validation is
-explicitly reported as auxiliary-only. A separate native/auxiliary sampling quota
-within the real training half remains future work. Start W-tube from scratch;
+explicitly reported as auxiliary-only. W-tube defaults to 75% native captures
+within each grid/direction real quota that has both native and auxiliary data.
+Auxiliary origins share the remainder; unavailable origins redistribute their
+quota. This is separate from the unchanged 50/50 real/synthetic pairing. Start W-tube from scratch;
 continuation via `--initialize` requires a W-tube checkpoint and a new run folder.
 The [W-tube training guide](../../docs/NEURAL_CORRECTOR_TRAINING.md#train-w-tube)
 provides complete training, continuation and evaluation commands.
@@ -143,8 +145,11 @@ Training defaults to 32,000 updates, AdamW weight decay .01, LR `1e-4` fresh or
 training metrics; validation checkpoints print a separate consolidated summary.
 Per-grid rows separate real training, synthetic training and real validation.
 `CER (cell)` pools data cells; `CER(size)` averages per-grid rates equally.
-Default JSON reports retain aggregate, source-by-grid/group and per-K statistics without
-per-session or per-burst records. Detailed diagnostics are opt-in; see the
+Default version-2 JSON reports store canonical metric rows once, with grid,
+source, group, origin and K dimensions where applicable. Histories retain static
+metadata and column schemas once; aggregates are derived rather than copied into
+nested trees. Per-session/per-burst diagnostics remain opt-in. JSON floats are
+rounded only when written, after full-precision checkpoint selection; see the
 training guide for the current switches and report schema.
 
 The successful reported 32,000-update phase-grouped run achieved **529/560 =

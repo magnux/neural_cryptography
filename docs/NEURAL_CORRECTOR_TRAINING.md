@@ -54,7 +54,7 @@ python experiments/neural-corrector/train.py \
   --model W-tube --frames 8 \
   --train local-data/w-tube/real/train local-data/w-tube/synthetic/train \
   --validation local-data/w-tube/real/validation \
-  --paired-targets --real-fraction .5 \
+  --paired-targets --real-fraction .5 --native-real-fraction .75 \
   --batch-size 8 --accumulate 4 --lr .0001 --steps 32000 \
   --validation-samples 0 --device cuda \
   --out checkpoints/neural-corrector/w-tube-phase8
@@ -83,11 +83,49 @@ draws and the complete validation presets require at least two distinct captures
 of every phase per target. The importer can retain smaller pools, but this
 training recipe rejects them; do not duplicate captures to fill slots.
 
-The current sampler balances sizes, sources, available acquisition directions,
-physical sessions and targets using the existing sampling logic. It does not yet
-enforce a separate native-versus-auxiliary quota within the real half of a batch;
-that is the next sampling refinement. Session/split boundaries remain mandatory
-for all origins, including resampled copies.
+### W-tube sampling policy
+
+Quotas apply to the **whole optimizer update**, before splitting it into
+microbatches. Changing `8 × 4` to `4 × 8` therefore preserves the sampling policy.
+The hierarchy is:
+
+1. Choose one represented grid uniformly.
+2. In paired mode, allocate half the update to real examples and half to their
+   synthetic counterparts.
+3. Balance real examples across the acquisition directions available at that grid.
+4. Within each grid/direction quota, choose native versus auxiliary evidence.
+   W-tube defaults to `--native-real-fraction .75` when both kinds are available.
+5. Divide the auxiliary remainder equally across available `resampled` and
+   `header-g64` origins, then draw through physical sessions, targets, phases
+   and capture bursts.
+
+Each synthetic counterpart matches its real example's origin, logical target
+and observation count. The larger synthetic corpus supplies more corruption
+choices without changing these quotas. The fraction accepts values from 0 to 1;
+it applies to the real quota, not to the whole batch. Other model profiles keep
+their existing source/direction policy and do not use this option.
+
+With full coverage in both directions, an effective batch of 32 contains:
+
+| Source | Native | Resampled | Header G64 | Total |
+| --- | ---: | ---: | ---: | ---: |
+| Real | 12 | 2 | 2 | 16 |
+| Paired synthetic | 12 | 2 | 2 | 16 |
+
+The header-G64 origin exists only at G64. At other grids its auxiliary quota goes
+to the available resampled origin. If a grid/direction has only native data, all
+of its real draws are native; if it has no native data, all are auxiliary.
+Missing origins never borrow captures from another grid, direction or split.
+Consequently, 75% is **not a global guarantee** when native coverage is missing
+in some directions. Static coverage records show the effective fraction for
+each grid/direction in `settings.json` under `originSampling.coverage`, and
+training records the actual origin counts.
+
+Fractional native quotas use stochastic rounding. Direction and auxiliary
+remainders use randomized ties, avoiding a permanent preference caused by small
+batch sizes. Session/split boundaries remain mandatory for every origin,
+including resampled copies. The existing K4–K8 draw, phase permutations, aligned
+flips and real-only photometric augmentation remain unchanged.
 
 ### W-tube validation and continuation
 
@@ -101,12 +139,12 @@ continues to balance grid size, acquisition direction and observation count
 within the selected population. Exactness means all logical **data cells** are
 correct; it does not imply packet CRC/ECC recovery or authentication success.
 
-The JSON names the selected population in `evaluationPopulation`, lists its
-grids in `primarySizes`, and lists every evaluated grid in `evaluatedSizes`.
-`origins` contains flat per-origin summaries. If native captures cover only some
-grids, auxiliary captures do not silently fill the missing grids in the primary
-score; check coverage when comparing runs. The default report retains these
-summaries without adding per-session or per-burst rows.
+The saved report records the selected population and its grid coverage separately
+from all evaluated grids. Origin is a dimension in the canonical metric table,
+so auxiliary results remain available without repeating nested aggregate trees.
+If native captures cover only some grids, auxiliary captures do not silently
+fill the missing grids in the primary score; check coverage when comparing runs.
+See [metrics and report files](#metrics-and-report-files) for the current schema.
 
 Evaluate the selected checkpoint on the full validation corpus:
 
@@ -126,7 +164,7 @@ python experiments/neural-corrector/train.py \
   --model W-tube --frames 8 \
   --train local-data/w-tube/real/train local-data/w-tube/synthetic/train \
   --validation local-data/w-tube/real/validation \
-  --paired-targets --real-fraction .5 \
+  --paired-targets --real-fraction .5 --native-real-fraction .75 \
   --initialize checkpoints/neural-corrector/w-tube-phase8/best.pt \
   --batch-size 8 --accumulate 4 --lr .00005 --steps 32000 \
   --validation-samples 0 --device cuda \
@@ -203,10 +241,11 @@ real training and validation within the same grid; training numbers include
 augmentation and average an interval of updates, whereas validation uses the
 current checkpoint on unchanged held-out captures.
 
-Lean JSON reports retain `trainBySize[G].sources.real` and `.synthetic`,
-`trainSizeMacroCellErrorRate`, `validationSizeMacroCellErrorRate`, and grouped
-validation summaries. Per-session and per-burst records remain opt-in. Inspect
-per-size values so success at G8 does not conceal failure at G256.
+Saved metric tables retain grid, source, group and observation-count dimensions
+from which these summaries are derived. The same measurements are stored once,
+not repeatedly under `bySize`, `byFrameCount` and group/source trees. Per-session
+and per-burst records remain opt-in. Inspect per-size values so success at G8
+does not conceal failure at G256.
 
 To continue a checkpoint trained with this current low-frequency/six-block
 architecture in a **new output directory**, add:
@@ -469,15 +508,19 @@ still-failing direction stays at zero.
 `--validation-samples 0` evaluates all validation captures and is the default.
 Capped evaluation uses a fixed session/profile-balanced subset and must include
 every mapped real group. Standalone `evaluate.py --max-samples 0` also evaluates
-all examples. Default reports keep aggregate and per-source/per-group CE,
-cell error, exact/CRC recovery counts, confidence-calibration error and p50/p95
-inference timing. They omit per-session and per-burst/capture rows. Attention
-reports keep K=4/5/6/7/8 summaries without embedding a second full diagnostic
-report for every K. See [report contents](#metrics-and-report-files).
+all examples. Default reports store CE/CER counters and exact-recovery counts
+in canonical group/K rows, with a small aggregate headline. OBM reports also
+retain aggregate CRC-recovery counters in that headline. Available p50/p95
+inference timing is kept in standalone evaluation metadata. Confidence-
+calibration measurements and per-session or per-burst/capture diagnostics
+require the separate detailed output; they are not saved in the lean history.
+See [report contents](#metrics-and-report-files).
 
 Multiframe reports count complete input groups, not individual exposures.
-`inputCaptures` records consumed observations; `burstGrouping` records unused
-captures and incomplete groups. Fixed-frame models make disjoint T-frame groups
+The table's `inputCaptures` counts consumed observations. Unused captures and
+incomplete-group diagnostics remain available in the detailed report's
+`burstGrouping`; the default files retain only the capture method and seed.
+Fixed-frame models make disjoint T-frame groups
 within each phase pool. The phase-grouped model pairs observations within each
 phase, combines four phase pairs of one logical matrix, and evaluates nested
 K=4…8 subsets. Six complete logical groups with 32 captures per phase yield
@@ -492,8 +535,11 @@ phase and combines four pairs from the same logical matrix. It evaluates nested
 4/5/6/7/8 subsets, starting with one capture from every phase. It is independent of timestamps, directory paths
 and input-file order. Existing checkpoints can be reevaluated without retraining;
 use a new report filename because previous chronological reports used different
-input groups. `selection` and `burstGrouping` report the method and seed. Training
-settings/history also record the policy.
+input groups. Standalone version-2 reports record the method and seed under
+`metadata.capturePolicy`; training history records them once under
+`validationMetadata.capturePolicy`. Checkpoint-selection weighting is separately
+recorded in `selectionPolicy` within the same metadata objects. Detailed
+subset-selection and burst-grouping diagnostics remain opt-in.
 
 Whole-session and whole-payload split checks, including checkpoint ancestry,
 remain mandatory. Keep sender/receiver identities intact when generating paired
@@ -544,7 +590,8 @@ transmission directions in the browser before claiming live performance.
 
 The live tqdm bar contains only **training** statistics for the current interval:
 overall CE/CER, real then synthetic CE/CER, mapped groups in sorted order, and
-learning rate. It does not repeat the last validation result. At each validation
+learning rate. W-tube also shows actual real-origin proportions in the stable
+order native → resampled → header-G64. It does not repeat the last validation result. At each validation
 step, a stable multiline summary prints:
 
 - **Train:** consolidated interval metrics in the same order as the live bar.
@@ -560,21 +607,74 @@ with the objective.
 
 | File | Default contents |
 | --- | --- |
-| `settings.json` | Run configuration, model/input convention, sampling and augmentation settings |
-| `history.json` | One compact row per validation step: consolidated training metrics, aggregate/group/source validation summaries and per-K summaries |
-| `baseline-validation.json` | Compact step-zero evaluation |
-| `validation.json` | Compact evaluation of the selected checkpoint |
-| `final-validation.json` | Compact final-step evaluation |
-| Standalone evaluation `--out` | The same compact report structure |
+| `settings.json` | Run configuration, model/input convention, augmentation and static sampling policy/coverage |
+| `history.json` | Version-2 history: settings and column schemas once, then step metadata and canonical training/validation rows |
+| `baseline-validation.json` | Lean step-zero evaluation document |
+| `validation.json` | Lean evaluation of the selected checkpoint |
+| `final-validation.json` | Lean final-step evaluation document |
+| Standalone evaluation `--out` | The same lean evaluation document |
 | `best.pt` | Selected weights and required training/split provenance |
 
-Default evaluation JSON has `reportDetail: "summary"`. It excludes session identities,
-per-candidate recovery rows, capture/burst IDs, detailed confusion matrices,
-calibration-bin arrays and per-sample timings. Group/direction statistics,
-source statistics, exact/CRC counts, K summaries, selection score and grouping
-counts remain. Summary size scales with the number of groups/presets and
-validation steps, rather than repeating every recorded candidate in history.
-No metric is rounded before checkpoint selection.
+The default files use canonical metric tables. Training rows distinguish grid,
+source, acquisition group and recording origin. Evaluation rows additionally
+distinguish K, the observation count. Rows store counts and metric numerators;
+column names are declared once. Group, source, grid and K summaries can be
+derived by grouping the rows. The files no longer repeat those same measurements
+inside several nested aggregate trees.
+
+`history.json` keeps static settings, sampling coverage and table schemas once.
+Each validation-step entry contains the step, learning rate, elapsed time,
+selection status, interval training rows, the training K histogram and validation
+rows with a small headline/selection/coverage summary. The training origin counts
+are actual draws; the configured fraction is a policy target whose attainable
+value depends on coverage. There are no per-session, per-burst or per-capture
+rows in the default files.
+
+Standalone files have `format: "neural-corrector-evaluation"` and `version: 2`.
+Their static information is in `metadata`, column names in `tables.evaluation`,
+and measurements in `rows`. A row can be read without relying on column order:
+
+```python
+import json
+
+with open("local-results/neural-corrector/W-tube-validation.json") as stream:
+    report = json.load(stream)
+rows = [dict(zip(report["tables"]["evaluation"], row)) for row in report["rows"]]
+```
+
+Evaluation columns are `grid`, `source`, `group`, `origin`, `frames`, `samples`,
+`lossSum`, `wrongCells`, `dataCells`, `exactMatrices`, `inputCaptures` and
+`classicalExactMatrices`. Training uses the same dimensions except `frames`, and
+omits both exact-recovery columns. `history.json` has
+`format: "neural-corrector-training-run"`, `version: 2`, both column schemas in
+`tables`, and step entries in `history`. Each step's `training.rows` and
+`validation.rows` use those schemas; `training.frameCounts` is aligned with
+`settings.frameCounts`.
+
+For Neural-QR, `lossWeight: "samples"` means the table supports the following
+reconstruction:
+
+- Mean CE = sum of per-example CE numerators divided by the sample count.
+- Cell error rate = wrong data cells divided by total data cells.
+- Exact matrix rate = exact logical data matrices divided by the sample count.
+
+The OBM experiment uses `lossWeight: "dataCells"`, so its mean CE is
+`sum(lossSum) / sum(dataCells)`. Its exact counts describe recovered packets,
+including classical recovery where available. Neural-QR exact counts instead
+require every logical data cell to match; `classicalExactMatrices` is null.
+Unavailable table dimensions are null rather than inventing a grid or origin
+for older prepared OBM data.
+
+The selection score still balances grid, acquisition group and K within the
+selected real population; it must not be replaced with an unweighted sum of all
+rows. Likewise, K4…K8 cases reuse nested captures and do not represent independent
+recordings. Static grouping and coverage metadata retain those interpretations.
+
+Checkpoint selection and console metrics use the full-precision measurements.
+Only JSON serialization rounds finite floating-point values to eight significant
+digits; integer counts stay exact. This reduces textual noise without changing
+training or selecting a different checkpoint. Default JSON is compactly encoded;
+its table schema remains explicit and can be pretty-printed after loading.
 
 When diagnosing a specific failure, explicitly request a separate detailed
 report. The normal output stays compact:
@@ -728,16 +828,16 @@ Synthetic `--frames 12` means captures per phase burst; training `--frames 8`
 means capacity, with 4–8 actual captures per input. Four-frame inference requires
 **one from each phase**, not the first four camera exposures regardless of phase.
 
-The run writes the compact files described under
-[metrics and report files](#metrics-and-report-files). `byFrameCount` holds
-K4→K8 metric summaries, `uniqueCandidates` counts shared logical groups, and
-`observationCases` counts their repeated evaluations across K. Selection weights
+The run writes the lean files described under
+[metrics and report files](#metrics-and-report-files). The evaluation table
+contains a K dimension; unique-candidate counts describe shared logical groups,
+and observation-case counts describe their repeated evaluations across K. Selection weights
 K equally and, with the direction sidecar, real directions equally; CE breaks
 selection ties. It never selects whichever K happens to look best.
 
-History retains training CE/CER, source/group metrics, `trainFrameCounts` and
-compact `validationByFrameCount` values. The optional goal summary is small;
-per-session or per-candidate diagnostics require the standalone detailed-report
+History retains canonical training/evaluation rows and a training K histogram.
+The table dimensions support source, group and K summaries without nested copies.
+Per-session or per-candidate diagnostics require the standalone detailed-report
 option. Inspect K4 and K8 separately alongside the per-direction summaries.
 
 ### Evaluate all five observation counts

@@ -17,8 +17,9 @@ remaining model and packet-integration steps. Version-2 header-free acquisition 
 in `capture.html`, including optical size identification, G16/G32/G64/G128
 recordings at 4×4 pixels per cell and server uploads. The [W-tube data pipeline](docs/W_TUBE_DATA.md)
 imports eligible earlier captures and generates harder paired synthetics. **W-tube
-training and evaluation are implemented** for this four-pixel corpus; model export
-and browser integration remain next steps. The `multires` model retains its
+training and evaluation are implemented** for this four-pixel corpus, including
+native-prioritized sampling and lean metric tables. Model export and browser
+integration remain next steps. The `multires` model retains its
 separate 2×2-cell experiment contract. The existing `neural-zkboo.html` remains the working
 baseline while that format is developed. Functional success does not establish
 cryptographic security or a controlled throughput advantage over QR; those are

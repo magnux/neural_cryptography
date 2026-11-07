@@ -459,6 +459,18 @@ into disallowed attention scores before Softmax, preventing that wraparound.
 It does not mark missing captures or remove difficult cells from training. It is
 not a learned parameter and does not change the supervised target.
 
+## Training sampling
+
+W-tube uses one uniformly chosen grid per optimizer update, equal paired real
+and synthetic counts, and balanced acquisition directions. Within each
+represented grid/direction real quota, the default native fraction is 0.75 when
+both native and auxiliary evidence exist. Available auxiliary origins share
+the remainder; missing origins redistribute their share locally. Synthetic
+partners retain the real sample's origin and target. The policy is applied
+before gradient accumulation is divided into microbatches. See
+[the sampling policy](NEURAL_CORRECTOR_TRAINING.md#w-tube-sampling-policy) for
+coverage gaps, stochastic rounding and the effective-batch example.
+
 ## Evaluation and current evidence
 
 Evaluation reports cell cross-entropy and cell error rate. The OBM experiment
@@ -472,10 +484,14 @@ by five when describing the amount of independent held-out data.
 
 W-tube gives fresh native real captures priority in validation: if native
 candidates exist, headline metrics and checkpoint selection use that population.
-The report keeps separate summaries for native, resampled and header-G64 origins.
+The report retains native, resampled and header-G64 as separate table dimensions
+and derives origin summaries without pooling them into the native headline.
 Without native candidates, the population is explicitly `auxiliary-only`.
 These origin distinctions describe where the evidence came from, not whether a
 model successfully classified it. No validation origin enters the model input.
+Default history/evaluation files use lean canonical tables rather than repeated
+grid/group/source/K trees; full-precision metrics still drive checkpoint
+selection. See [report files](NEURAL_CORRECTOR_TRAINING.md#metrics-and-report-files).
 
 The reported 32,000-update phase-grouped run reached:
 

@@ -27,9 +27,17 @@ if HAS_TORCH:
     from data import Dataset, digest
     from evaluate import evaluate_model
     from model import DEFAULT_MODEL_PROFILE, NeuralCorrector, parameter_count
-    from reporting import compact_report
+    from reporting import compact_report, evaluation_document, lean_json
     from train import run_training, save_checkpoint
     torch.set_num_threads(1)
+
+
+def training_totals(history, field, value):
+    """Reconstruct aggregates from the single persisted canonical table."""
+    rows = [dict(zip(history["tables"]["training"], row))
+            for row in history["history"][-1]["training"]["rows"]]
+    return {name: sum(row[name] for row in rows if row[field] == value)
+            for name in ("samples", "lossSum", "wrongCells", "dataCells", "inputCaptures")}
 
 
 @unittest.skipUnless(HAS_TORCH, "PyTorch needed for training integration")
@@ -201,8 +209,10 @@ class TrainingWorkflowTests(unittest.TestCase):
         history = json.loads((self.root/"degrade/history.json").read_text())
         self.assertEqual(history["completedSteps"], 3)
         self.assertEqual(history["requestedSteps"], 3)
-        self.assertEqual(json.loads((self.root/"degrade/validation.json").read_text()), compact_report(records[0]))
-        self.assertEqual(json.loads((self.root/"degrade/final-validation.json").read_text()), compact_report(records[-1]))
+        self.assertEqual(json.loads((self.root/"degrade/validation.json").read_text()),
+                         json.loads(lean_json(evaluation_document(records[0]))))
+        self.assertEqual(json.loads((self.root/"degrade/final-validation.json").read_text()),
+                         json.loads(lean_json(evaluation_document(records[-1]))))
         self.assertEqual(digest(self.initial), self.initial_hash)
 
     def test_missing_groups_reject_before_updates_or_validation(self):
@@ -249,11 +259,14 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertEqual(settings["realAugmentation"]["exposureStops"], .03)
         self.assertNotIn("hardWeight", settings)
         update = history["history"][-1]
-        self.assertEqual(update["trainSources"]["real"]["samples"], 2)
-        self.assertEqual(update["trainSources"]["synthetic"]["samples"], 2)
-        self.assertEqual({name: row["samples"] for name, row in update["trainGroups"].items()},
+        self.assertEqual(training_totals(history, "source", "real")["samples"], 2)
+        self.assertEqual(training_totals(history, "source", "synthetic")["samples"], 2)
+        rows = [dict(zip(history["tables"]["training"], row)) for row in update["training"]["rows"]]
+        self.assertEqual({name: sum(row["samples"] for row in rows
+                                  if row["source"] == "real" and row["group"] == name)
+                          for name in ("pc_to_phone", "phone_to_pc")},
                          {"pc_to_phone": 1, "phone_to_pc": 1})
-        self.assertEqual(update["validationSelection"]["method"], "group-balanced-real")
+        self.assertEqual(history["validationMetadata"]["selectionPolicy"]["method"], "group-balanced-real")
         _, checkpoint = load_model_checkpoint(out/"best.pt")
         self.assertIs(checkpoint["training"]["pairedTargets"], True)
         self.assertEqual(digest(self.initial), self.initial_hash)
@@ -333,9 +346,9 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertEqual(history["settings"]["evaluationGrouping"], "fixed-seeded-shuffle-within-burst")
         self.assertEqual(history["settings"]["evaluationSeed"], 7)
         update = history["history"][-1]
-        self.assertEqual(update["trainSources"]["real"]["samples"], 2)
-        self.assertEqual(update["trainSources"]["real"]["inputCaptures"], 10)
-        self.assertEqual(update["trainSources"]["synthetic"]["inputCaptures"], 10)
+        self.assertEqual(training_totals(history, "source", "real")["samples"], 2)
+        self.assertEqual(training_totals(history, "source", "real")["inputCaptures"], 10)
+        self.assertEqual(training_totals(history, "source", "synthetic")["inputCaptures"], 10)
         model, checkpoint = load_model_checkpoint(out/"best.pt")
         self.assertEqual(model.frames, 5)
         self.assertEqual(checkpoint["training"]["framesPerInput"], 5)
@@ -359,7 +372,7 @@ class TrainingWorkflowTests(unittest.TestCase):
         history = json.loads((out/"history.json").read_text())
         self.assertEqual(history["completedSteps"], 1)
         self.assertEqual(history["settings"]["modelProfile"], "U-tube-2x")
-        self.assertGreater(history["history"][-1]["trainLoss"], 0.)
+        self.assertGreater(training_totals(history, "source", "real")["lossSum"], 0.)
         model, checkpoint = load_model_checkpoint(out/"best.pt")
         self.assertEqual((model.profile, model.frames), ("U-tube-2x", 5))
         self.assertLess(parameter_count(model), 500000)
@@ -439,11 +452,11 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertEqual(history["settings"]["modelProfile"], DEFAULT_MODEL_PROFILE)
         self.assertEqual(history["settings"]["initialLearningRate"], 5e-5)
         self.assertTrue(history["history"][0]["selected"])
-        self.assertGreater(history["history"][-1]["trainLoss"], 0.)
+        self.assertGreater(training_totals(history, "source", "real")["lossSum"], 0.)
         baseline = json.loads((continued/"baseline-validation.json").read_text())
-        self.assertEqual(baseline["loss"], prior_validation["loss"])
-        self.assertEqual(baseline["cellErrorRate"], prior_validation["cellErrorRate"])
-        self.assertEqual(baseline["recovery"]["summary"], prior_validation["recovery"]["summary"])
+        self.assertEqual(baseline["headline"]["loss"], prior_validation["headline"]["loss"])
+        self.assertEqual(baseline["headline"]["cellErrorRate"], prior_validation["headline"]["cellErrorRate"])
+        self.assertEqual(baseline["headline"]["recovery"], prior_validation["headline"]["recovery"])
         _, checkpoint = load_model_checkpoint(continued/"best.pt")
         self.assertEqual(checkpoint["training"]["initialCheckpointSha256"], prior_hash)
         self.assertEqual(digest(out/"best.pt"), prior_hash)

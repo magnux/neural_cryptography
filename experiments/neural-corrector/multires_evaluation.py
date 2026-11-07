@@ -14,6 +14,7 @@ from torch.nn import functional as F
 
 from bursts import BurstIndex, EVALUATION_SEED, VARIABLE_EVALUATION_POLICY
 from sampling import infer_session_groups, validate_session_groups
+from reporting import evaluation_table
 
 
 def counter():
@@ -228,6 +229,7 @@ def evaluate_matrices(model, dataset, *, device="cpu", max_samples=0, session_gr
               "manifestSha256": dataset.manifest_hash, "framesPerInput": 8,
               "frameCapacity": 8, "actualFrameCounts": [4, 5, 6, 7, 8],
               "pixelsPerCell": model.pixels_per_cell, "profiles": {str(size): sum(v["samples"] for k, v in leaves.items() if k[0] == size) for size in sizes},
+              "metricTable": evaluation_table(all_leaves),
               **_breakdown(leaves), "selectionScore": score,
               "bySize": _by_size(leaves), "byFrameCount": by_count, **extra,
               "observationCases": sum(counts.values()), "uniqueCandidates": counts["4"],

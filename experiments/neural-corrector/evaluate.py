@@ -23,7 +23,7 @@ from torch.nn import functional as F
 from data import Dataset, check_checkpoint_overlap
 from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED
 from contract import FRAME_COUNTS, MAX_FRAMES
-from reporting import compact_report
+from reporting import compact_report, evaluation_document, lean_json
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -477,6 +477,45 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
     return {**result, "reportDetail": "detailed"} if detailed else compact_report(result)
 
 
+def format_evaluation_summary(report):
+    """Human-readable aggregate lines, without expanding the leaf table on stdout."""
+    def metrics(row):
+        text = f"CE {row['loss']:.4f} | CER {100*row['cellErrorRate']:.2f}%"
+        if "matrixAccuracy" in row:
+            exact, count = row["matrixAccuracy"]["exactMatrices"], row["matrixAccuracy"]["matrices"]
+        elif "learnedExactFrames" in row:
+            exact, count = row["learnedExactFrames"], row["samples"]
+        else:
+            learned = (row.get("recovery") or {}).get("summary", {}).get("learned")
+            exact, count = (learned["exactFrames"], learned["frames"]) if learned else (None, None)
+        if exact is not None and count:
+            text += f" | exact {exact}/{count} ({100*exact/count:.2f}%)"
+        return text
+
+    lines = [f"Evaluation | {metrics(report)}"]
+    if "evaluationPopulation" in report:
+        grids = ", ".join(f"G{size}" for size in report["primarySizes"])
+        lines.append(f"  Population: {report['evaluationPopulation']} | primary grids: {grids}")
+    if "selectionScore" in report:
+        score = report["selectionScore"]
+        lines.append(f"  Selection: {100*score['exactRate']:.2f}% [{score['method']}]")
+    for grid, row in sorted(report.get("bySize", {}).items(), key=lambda item: int(item[0])):
+        lines.append(f"  G{grid} | {metrics(row)}")
+    for label, key in (("Direction", "groups"), ("Origin", "origins")):
+        for name, row in sorted(report.get(key, {}).items()):
+            lines.append(f"  {label} {name} | {metrics(row)}")
+    by_k = report.get("byFrameCount", {})
+    if by_k:
+        counts = []
+        for k, row in sorted(by_k.items(), key=lambda item: int(item[0])):
+            exact = row.get("matrixAccuracy", {}).get("exactRate")
+            if exact is None:
+                exact = (row.get("recovery") or {}).get("summary", {}).get("learned", {}).get("exactRate")
+            counts.append(f"K{k}: {100*exact:.1f}%" if exact is not None else f"K{k}: n/a")
+        lines.append("  Exact by frames | "+" | ".join(counts))
+    return lines
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, nargs="+", required=True)
@@ -521,31 +560,10 @@ def main():
             args.detailed_report.write_text(json.dumps(result, indent=2)+"\n")
         result = compact_report(result)
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(json.dumps(result, indent=2)+"\n")
+        args.out.write_text(lean_json(evaluation_document(result)))
     except (OSError, ValueError, RuntimeError) as error:
         parser.exit(1, f"Evaluation failed: {error}\n")
-    if "matrixAccuracy" in result:
-        summary = {name: result[name] for name in ("samples", "uniqueCandidates", "framesPerInput",
-                   "cellErrorRate", "loss", "matrixAccuracy", "selectionScore", "bySize")}
-        for name in ("evaluationPopulation", "nativeAvailable", "primarySizes", "evaluatedSizes", "origins"):
-            if name in result:
-                summary[name] = result[name]
-        summary["report"] = str(args.out.resolve())
-        print(json.dumps(summary, indent=2))
-        return
-    summary = {"samples": result["samples"], "framesPerInput": result["framesPerInput"],
-                      "inputCaptures": result["inputCaptures"], "cellErrorRate": result["cellErrorRate"],
-                      "loss": result["loss"], "recovery": result["recovery"]["summary"],
-                      "groups": result["groups"], "selectionScore": result["selectionScore"],
-                      "report": str(args.out.resolve())}
-    if "byFrameCount" in result:
-        summary.update({"uniqueCandidates": result["uniqueCandidates"],
-                        "observationCases": result["observationCases"],
-                        "phoneToPCGoal": result["phoneToPCGoal"],
-                        "byFrameCount": {key: {"samples": row["samples"], "loss": row["loss"],
-                            "cellErrorRate": row["cellErrorRate"], "recovery": row["recovery"]["summary"],
-                            "groups": row["groups"]} for key, row in result["byFrameCount"].items()}})
-    print(json.dumps(summary, indent=2))
+    print("\n".join([*format_evaluation_summary(result), f"Report: {args.out.resolve()}"]))
 
 
 if __name__ == "__main__":

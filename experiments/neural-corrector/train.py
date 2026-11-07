@@ -26,7 +26,8 @@ from contract import FRAME_COUNTS, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 from checkpoint import load_model_checkpoint, initialize_multires
 from data import DATASET_FORMAT, Dataset, assert_disjoint, check_checkpoint_overlap, digest
 from evaluate import evaluate_model, require_implemented_model_contract
-from reporting import compact_report
+from reporting import (compact_report, evaluation_document, evaluation_step, lean_json,
+                       training_rows, TRAIN_COLUMNS, EVALUATION_COLUMNS)
 from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, NeuralCorrector, initialize_frames
 from sampling import BalancedSampler, load_session_groups, validate_session_groups, infer_session_groups
 
@@ -34,6 +35,19 @@ from sampling import BalancedSampler, load_session_groups, validate_session_grou
 def training_defaults(initialize=None, steps=None, learning_rate=None):
     default_lr = 5e-5 if initialize is not None else 1e-4
     return steps if steps is not None else 32_000, learning_rate if learning_rate is not None else default_lr
+
+
+def native_sampling_fraction(profile, value):
+    """Origin quotas apply to the W-tube corpus, whose origins are explicit."""
+    if profile != "W-tube":
+        if value is not None:
+            raise ValueError("--native-real-fraction is supported only for W-tube")
+        return None
+    value = .75 if value is None else value
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not np.isfinite(value) or not 0 <= value <= 1):
+        raise ValueError("native-real-fraction must be finite and in [0, 1]")
+    return float(value)
 
 
 def training_loss(logits, labels, mask, colors):
@@ -125,6 +139,12 @@ def format_training_metrics(interval):
         if values:
             text += " | " + "; ".join(f"{name} CE {row['meanCE']:.4f} CER {row['cellErrorRate']:.2%} (cell)"
                                        for name, row in values.items())
+    origins = interval.get("origins", {})
+    total_real = sum(row["samples"] for row in origins.values())
+    if total_real:
+        text += " | real origins " + "/".join(
+            f"{name}:{origins.get(name, {}).get('samples', 0)/total_real:.0%}"
+            for name in ("native", "resampled", "header-g64"))
     return text
 
 
@@ -212,7 +232,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                  validation_samples=0, real_fraction=.5, initialize=None, node="node", model_profile=None,
                  session_groups=None, weight_decay=.01, paired_targets=False, frames=None, no_progress=False,
                  real_noise_std=.008, real_tint_stops=.06, real_exposure_stops=.08,
-                 phase_flip_probability=.25, no_phase_permutations=False, show_goal=False):
+                 phase_flip_probability=.25, no_phase_permutations=False, show_goal=False,
+                 native_real_fraction=None):
     # Validate the dataset representation before building a sampler; the exact
     # profile/raster pairing is checked again once the model is instantiated.
     require_implemented_model_contract(train)
@@ -248,8 +269,6 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     # Optional acquisition directions are explicit; never infer them from IDs.
     sampler_groups = session_groups if session_groups is not None else {
         s.metadata["sessionId"]: "all-real" for s in train.samples if s.metadata["source"] == "real"}
-    sampler = BalancedSampler(train.samples, sampler_groups, seed=seed, real_fraction=real_fraction,
-                              paired_targets=paired_targets, require_all_groups=not neural_qr_data)
     if paired_targets and batch_size*accumulate % 2:
         raise ValueError("Paired targets require an even effective batch size")
     out = Path(out).resolve()
@@ -271,6 +290,11 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             model = initialize_frames(model, frames)
     require_implemented_model_contract(train, model)
     require_implemented_model_contract(validation, model)
+    native_real_fraction = native_sampling_fraction(model.profile, native_real_fraction)
+    sampler = BalancedSampler(train.samples, sampler_groups, seed=seed, real_fraction=real_fraction,
+                              paired_targets=paired_targets, require_all_groups=not neural_qr_data,
+                              native_real_fraction=native_real_fraction)
+    origin_policy = sampler.origin_policy()
     variable_frames = getattr(model, "variable_frames", False)
     minimum_frames = getattr(model, "min_frames", model.frames)
     phase_augmentation = PhaseAugmentation(seed=seed, flip_probability=phase_flip_probability,
@@ -344,6 +368,11 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             "gridSources": "separate real and synthetic metrics within each grid"}
         if transfer is not None:
             options["warmStartTransfer"] = transfer
+    if origin_policy is not None:
+        options["nativeRealFraction"] = native_real_fraction
+        options["originSampling"] = origin_policy
+        options["sampling"] = "uniform-size/source-direction-origin-session-payload-phase"
+        provenance["nativeRealFraction"] = native_real_fraction
     if variable_frames:
         phase_metadata = {"outputLabelSpace": "logical", "phaseMasks": [0, 15, 7, 8]}
         options.update(phase_metadata)
@@ -358,18 +387,22 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         (out/"session-groups.json").write_text(json.dumps({"format": "optical-decoder-session-groups",
             "version": 1, "sessions": session_groups}, indent=2)+"\n")
     (out/"settings.json").write_text(json.dumps(options, indent=2)+"\n")
-    history, best = [], (-1., -float("inf"))
+    history, persisted_history, best = [], [], (-1., -float("inf"))
+    validation_metadata = None
     selected_step, completed, stop_reason = None, 0, "budget"
     started = time.perf_counter()
 
     def evaluate(step, interval):
-        nonlocal best, selected_step
+        nonlocal best, selected_step, validation_metadata
         report = compact_report(evaluate_model(model, validation, device=device, max_samples=validation_samples,
                                 node=node, work_dir=out, session_groups=session_groups))
+        document = evaluation_document(report)
+        if validation_metadata is None:
+            validation_metadata = document["metadata"]
         learned = exact_metrics(report)
         summary = report.get("recovery", {}).get("summary", {})
         if summary.get("learned", {}).get("wrongAcceptedFrames", 0):
-            (out/"validation-failed.json").write_text(json.dumps(report, indent=2)+"\n")
+            (out/"validation-failed.json").write_text(lean_json(document))
             raise RuntimeError("Validation accepted incorrect payload bytes; inspect validation-failed.json")
         selection = report["selectionScore"]
         score = selection["exactRate"], -selection["loss"]
@@ -387,7 +420,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             if neural_qr_data:
                 training["trainedSizes"] = sorted(learned_sizes)
             save_checkpoint(out/"best.pt", model, training)
-            (out/"validation.json").write_text(json.dumps(report, indent=2)+"\n")
+            (out/"validation.json").write_text(lean_json(document))
         source_metrics = training_source_summaries(interval)
         group_metrics = summarize_training_counters(interval["groups"])
         record = {"step": step, "trainLoss": interval["loss"]/interval["updates"] if interval["updates"] else None,
@@ -409,6 +442,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             record["validationSources"] = report["sources"]
             record["validationBySize"] = report["bySize"]
         if model.profile == "W-tube":
+            record["trainOrigins"] = summarize_training_counters(interval["origins"])
             record["validationPopulation"] = report["evaluationPopulation"]
             record["primarySizes"] = report["primarySizes"]
             record["validationOrigins"] = report["origins"]
@@ -418,6 +452,13 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             if "phoneToPCGoal" in report:
                 record["phoneToPCGoal"] = report["phoneToPCGoal"]
         history.append(record)
+        persisted_history.append({
+            "step": step, "learningRate": current_lr, "elapsedSeconds": record["elapsedSeconds"],
+            "selected": selected,
+            "training": {"updates": interval["updates"], "rows": training_rows(interval["table"]),
+                         "frameCounts": [interval["frameCounts"][str(count)] for count in frame_counts],
+                         "sampling": interval["sampling"]},
+            "validation": evaluation_step(report)})
         lines = [f"Step {step}/{steps} | lr {current_lr:.2g}{' | best' if selected else ''}",
                  f"  Train | {format_training_metrics(interval)}",
                  f"  Val   | {format_validation_metrics(report)}"]
@@ -432,22 +473,26 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                 for k, row in sorted(goal["byFrameCount"].items(), key=lambda item: int(item[0]))) + " / target 50%")
         tqdm.write("\n".join(lines), file=sys.stdout)
         target = "baseline-validation.json" if step == 0 else "final-validation.json"
-        (out/target).write_text(json.dumps(report, indent=2)+"\n")
+        (out/target).write_text(lean_json(document))
 
     def empty_interval():
         return {"loss": 0., "updates": 0, "wrongCells": 0, "dataCells": 0, "sources": {}, "groups": {}, "sizes": {},
+                "table": {}, "origins": {},
                 **({"sizeSources": {}} if neural_qr_data else {}),
                 "frameCounts": {str(count): 0 for count in frame_counts},
                 "sampling": {"repeatedBursts": 0, "repeatedSamples": 0, "pairedTargets": 0}}
 
     def write_history():
-        (out/"history.json").write_text(json.dumps({"format": "neural-corrector-training-run", "version": 1,
+        (out/"history.json").write_text(lean_json({"format": "neural-corrector-training-run", "version": 2,
             "requestedSteps": steps, "completedSteps": completed, "selectedStep": selected_step,
-            "stopReason": stop_reason, "device": str(device), "settings": options, "history": history,
+            "stopReason": stop_reason, "device": str(device), "settings": options,
+            "tables": {"training": TRAIN_COLUMNS, "evaluation": EVALUATION_COLUMNS},
+            "validationMetadata": validation_metadata,
+            "history": persisted_history,
             "note": "Training CE/CER include configured photometric and phase/spatial augmentation; validation inputs are unchanged. "
                     "CER(cell) pools data cells; CER(size) averages per-grid CER over represented grids. "
                     "Grid metrics separate real and synthetic training sources. "
-                    "Validation selects checkpoints; untouched real test sessions establish generalization."}, indent=2)+"\n")
+                    "Validation selects checkpoints; untouched real test sessions establish generalization."}))
 
     def update_progress(progress, interval, refresh=False):
         progress.set_postfix_str(
@@ -479,19 +524,24 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                     metrics = torch.stack((ce.detach(), wrong, cells), dim=1).cpu().tolist()
                     for sample, (value, wrong_count, cell_count) in zip(samples, metrics):
                         source = sample.metadata["source"]
+                        group = sampler_groups.get(sample.metadata["sessionId"], "source:synthetic")
+                        origin = sample.metadata.get("origin", "unspecified")
                         count = len(sample.members)
                         wrong_count, cell_count = int(wrong_count), int(cell_count)
                         interval["wrongCells"] += wrong_count
                         interval["dataCells"] += cell_count
                         interval["frameCounts"][str(count)] += 1
                         counters = [interval["sources"].setdefault(source, metric_counter()),
-                                    interval["sizes"].setdefault(str(sample.shape[0]), metric_counter())]
+                                    interval["sizes"].setdefault(str(sample.shape[0]), metric_counter()),
+                                    interval["table"].setdefault((sample.shape[0], source, group, origin), metric_counter())]
                         if neural_qr_data:
                             counters.append(interval["sizeSources"].setdefault(str(sample.shape[0]), {}).setdefault(
                                 source, metric_counter()))
                         if source == "real":
                             name = sampler_groups[sample.metadata["sessionId"]]
                             counters.append(interval["groups"].setdefault(name, metric_counter()))
+                            if origin_policy is not None:
+                                counters.append(interval["origins"].setdefault(origin, metric_counter()))
                         for counter in counters:
                             counter["lossSum"] += value
                             counter["samples"] += 1
@@ -548,6 +598,8 @@ def main():
     parser.add_argument("--eval-every", type=int, default=1000, help="validation interval (default: 1000 updates)")
     parser.add_argument("--validation-samples", type=int, default=0, help="0 evaluates all (default); positive values cap the diagnostic subset")
     parser.add_argument("--real-fraction", type=float, default=.5)
+    parser.add_argument("--native-real-fraction", type=float,
+                        help="W-tube: desired native fraction of each grid/direction's real quota (default: .75); unavailable origins redistribute")
     parser.add_argument("--real-noise-std", type=float, default=.008,
                         help="real training noise standard deviation in RGB [0,1] units (default: .008)")
     parser.add_argument("--real-tint-stops", type=float, default=.06,

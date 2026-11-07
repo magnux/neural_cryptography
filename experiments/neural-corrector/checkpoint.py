@@ -158,11 +158,12 @@ def training_provenance(training: dict) -> dict:
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value) or value < 0:
                 raise ValueError(f"Invalid checkpoint {key}")
             result[key] = float(value)
-    if "realFraction" in training:
-        value = training["realFraction"]
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value) or not 0 <= value <= 1:
-            raise ValueError("Invalid checkpoint real data fraction")
-        result["realFraction"] = float(value)
+    for key in ("realFraction", "nativeRealFraction"):
+        if key in training:
+            value = training[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f"Invalid checkpoint {key}")
+            result[key] = float(value)
     return result
 
 

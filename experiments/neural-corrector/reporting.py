@@ -6,6 +6,15 @@ projection keeps reports proportional to the number of groups and input presets.
 """
 
 from copy import deepcopy
+import json
+import math
+
+
+TRAIN_COLUMNS = ("grid", "source", "group", "origin", "samples", "lossSum",
+                 "wrongCells", "dataCells", "inputCaptures")
+EVALUATION_COLUMNS = ("grid", "source", "group", "origin", "frames", "samples",
+                      "lossSum", "wrongCells", "dataCells", "exactMatrices",
+                      "inputCaptures", "classicalExactMatrices")
 
 
 METRIC_FIELDS = (
@@ -106,6 +115,8 @@ def compact_report(report):
             result["syntheticValidation"] = _matrix_metrics(report["syntheticValidation"])
         if "inferenceMs" in report:
             result["inferenceMs"] = _fields(report["inferenceMs"], ("p50", "p95", "note"))
+        if "metricTable" in report:
+            result["metricTable"] = deepcopy(report["metricTable"])
         return result
     result = _fields(report, ("format", "version", "modelProfile", "split",
                               "checkpoint", "manifestSha256", "profiles"))
@@ -135,3 +146,115 @@ def compact_report(report):
             key: _metrics(row)
             for key, row in sorted(report["byFrameCount"].items(), key=lambda item: int(item[0]))}
     return result
+
+
+def evaluation_table(leaves):
+    """Canonical Neural-QR leaf counters, before any aggregate views are built.
+
+    One row represents one grid/source/direction/origin/K combination. Its CE
+    sum is over examples, while wrong/data cells retain the exact integer
+    counts needed for cell-weighted CER. Unknown classical recovery stays null:
+    Neural-QR collection matrices have no packet CRC/RS recovery measurement.
+    """
+    rows = []
+    for key, counter in sorted(leaves.items()):
+        grid, source, group, frames = key[:4]
+        origin = key[4] if len(key) == 5 else None
+        rows.append([grid, source, group, origin, frames, counter["samples"],
+                     counter["lossSum"], counter["wrongCells"], counter["dataCells"],
+                     counter["exactMatrices"], counter["inputCaptures"], None])
+    return {"columns": list(EVALUATION_COLUMNS), "rows": rows}
+
+
+def training_rows(counters):
+    """Serialize each training grid/source/direction/origin counter once."""
+    return [[*key, row["samples"], row["lossSum"], row["wrongCells"],
+             row["dataCells"], row["inputCaptures"]]
+            for key, row in sorted(counters.items(),
+                                   key=lambda item: (item[0][0], *(
+                                       "" if value is None else str(value) for value in item[0][1:])))]
+
+
+def _packet_rows(report):
+    """Flatten existing OBM group/K summaries without duplicating their totals.
+
+    Those summaries pool geometry within each acquisition group, so grid and
+    origin remain null. OBM CE sums are weighted by data cells; this explicit
+    distinction is stored beside the table. Their packet exact counts are not
+    reinterpreted as Neural-QR raw-cell exactness.
+    """
+    rows = []
+    presets = report.get("byFrameCount") or {str(report.get("framesPerInput", 1)): report}
+    for key, preset in sorted(presets.items(), key=lambda item: int(item[0])):
+        groups = preset.get("groups") or preset.get("sources") or {"all": preset}
+        for group, row in sorted(groups.items()):
+            source = group[7:] if group.startswith("source:") else (
+                group if group in ("real", "synthetic") else "real" if group != "all" else None)
+            cells, samples = row.get("dataCells"), row.get("samples")
+            loss = row.get("loss")
+            rows.append([None, source, group, None, int(key), samples,
+                         loss*cells if loss is not None and cells is not None else None,
+                         row.get("wrongCells"), cells, row.get("learnedExactFrames"),
+                         row.get("inputCaptures", samples*int(key) if samples is not None else None),
+                         row.get("classicalExactFrames")])
+    return rows
+
+
+def evaluation_step(report):
+    """Small per-validation value for history; schema and notes live once above it."""
+    matrix = "matrixAccuracy" in report
+    headline = _fields(report, ("samples", "loss", "cellErrorRate", "sizeMacroCellErrorRate",
+        "uniqueCandidates", "uniqueInputCaptures", "availableInputCaptures"))
+    if matrix:
+        headline["exactMatrices"] = report["matrixAccuracy"]["exactMatrices"]
+        headline["exactRate"] = report["matrixAccuracy"]["exactRate"]
+        table = report.get("metricTable")
+        if (not isinstance(table, dict) or table.get("columns") != list(EVALUATION_COLUMNS)
+                or not isinstance(table.get("rows"), list)):
+            raise ValueError("Neural-QR report requires canonical evaluation counters")
+        rows = deepcopy(table["rows"])
+    else:
+        recovery = report.get("recovery")
+        headline["recovery"] = deepcopy(recovery.get("summary")) if recovery else None
+        rows = _packet_rows(report)
+    selection = report.get("selectionScore")
+    return {"headline": headline, "selection": None if selection is None else
+            _fields(selection, ("exactRate", "loss", "cellErrorRate")),
+            "coverage": _fields(report, ("evaluationPopulation", "nativeAvailable", "primarySizes",
+                "evaluatedSizes", "evaluatedCases", "observationCases")),
+            "lossWeight": "samples" if matrix else "dataCells", "rows": rows}
+
+
+def evaluation_document(report):
+    """Persist one current table format, leaving full-precision live metrics intact."""
+    if report.get("format") == "neural-corrector-evaluation" and report.get("version") == 2:
+        return deepcopy(report)
+    metadata = _fields(report, ("modelProfile", "datasetFormat", "datasetVersion", "split",
+        "checkpoint", "manifestSha256", "pixelsPerCell", "metric", "outputLabelSpace",
+        "framesPerInput", "frameCapacity", "actualFrameCounts", "note"))
+    if "inferenceMs" in report:
+        metadata["inferenceMs"] = _fields(report["inferenceMs"], ("p50", "p95", "note"))
+    if "burstGrouping" in report:
+        metadata["capturePolicy"] = _fields(report["burstGrouping"], ("method", "seed"))
+    if report.get("selectionScore") is not None:
+        metadata["selectionPolicy"] = _fields(report["selectionScore"], (
+            "method", "sizes", "groups", "frameCounts", "originScope", "nativeAvailable", "origins"))
+    if "metric" not in metadata:
+        metadata["metric"] = "packet-recovery"
+    return {"format": "neural-corrector-evaluation", "version": 2, "metadata": metadata,
+            "tables": {"evaluation": list(EVALUATION_COLUMNS)}, **evaluation_step(report)}
+
+
+def lean_json(value):
+    """Round only serialized floats; keep exact counters and decision inputs intact."""
+    def rounded(item):
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ValueError("Report values must be finite")
+            return float(format(item, ".8g"))
+        if isinstance(item, dict):
+            return {key: rounded(child) for key, child in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [rounded(child) for child in item]
+        return item
+    return json.dumps(rounded(value), ensure_ascii=False, separators=(",", ":"), allow_nan=False)+"\n"

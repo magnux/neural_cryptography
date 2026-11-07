@@ -113,12 +113,14 @@ The separate standard-QR experiment remains useful for comparison.
   attention layers per bottleneck, independent low-frequency anchors, and a
   learned `4G → 2G → G` outlet. Retain presence/loss masks and phase/flip
   augmentation. [Start a new training run](NEURAL_CORRECTOR_TRAINING.md#train-w-tube).
-- [ ] Balance sizes, directions and real origins. Keep native data the majority
-  of the real quota once available and preserve an effective batch of 32.
-  Native-first checkpoint selection and separate auxiliary validation summaries
-  are already implemented; the real-origin sampling quota is still pending.
-- [ ] Trim histories to static metadata plus canonical training and validation
-  tables; derive aggregate views rather than nesting repeated copies.
+- [x] Balance sizes, directions and real origins. W-tube defaults to 75% native
+  within each grid/direction real quota that has both native and auxiliary data;
+  missing origins redistribute locally and coverage/actual counts are recorded.
+  Preserve an effective batch of 32 and 50/50 real/synthetic pairing. Native-first
+  checkpoint selection keeps auxiliary validation separate.
+- [x] Trim histories to static metadata plus canonical training and validation
+  tables; derive aggregate views rather than nesting repeated copies. Detailed
+  capture/session diagnostics remain an explicit separate output.
 - [ ] Export each supported geometry, check numerical parity and measure actual
   browser latency/memory. A small parameter count does not imply fast G128
   inference.

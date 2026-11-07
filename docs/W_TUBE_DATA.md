@@ -3,8 +3,9 @@
 This pipeline prepares the next **4×4-pixel-cell, G16/G32/G64/G128** corpus.
 Collection, data preparation and **W-tube training/evaluation are implemented**.
 Use [the training commands](NEURAL_CORRECTOR_TRAINING.md#train-w-tube) after rebuilding.
-A separate real-origin sampling quota and browser export remain next steps. Existing `multires`
-checkpoints use two pixels per cell and cannot consume this corpus.
+Origin-aware sampling and lean training/evaluation reports are implemented;
+browser export remains a separate step. Existing `multires` checkpoints use two
+pixels per cell and cannot consume this corpus.
 
 ## Three recording roots, one dataset contract
 
@@ -152,8 +153,14 @@ slots. K4–K8 model examples will draw from these captures during training.
 
 The intended training mix remains **50% real and 50% synthetic** with paired
 targets. A larger synthetic corpus provides more corruptions of each target;
-it does not make the training sampler use 80% synthetic inputs. Native-first validation is implemented. A separate quota controlling native
-versus auxiliary examples within the real half remains a sampling refinement.
+it does not make the training sampler use 80% synthetic inputs. W-tube defaults
+to `--native-real-fraction .75` within each grid/direction real quota when both
+native and auxiliary recordings are available. The auxiliary share is divided
+equally between available `resampled` and `header-g64` origins. Missing origins
+redistribute their share among those present; a direction without native data
+therefore lowers the overall native fraction. Native-first validation remains
+independent of this training policy. See [sampling details](NEURAL_CORRECTOR_TRAINING.md#w-tube-sampling-policy)
+for exact quotas, coverage and reported counts.
 
 ## Harder, coherent corruptions
 

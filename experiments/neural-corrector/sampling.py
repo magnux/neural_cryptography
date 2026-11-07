@@ -1,4 +1,4 @@
-"""Offline source/direction-balanced draws without changing capture formats.
+"""Offline source/direction/origin-balanced draws without changing capture formats.
 
 Groups describe acquisition domains (for example pc_to_phone), never classes or
 payload truth. Index once; draw a complete optimizer update so gradient
@@ -16,6 +16,7 @@ import re
 
 GROUP_FORMAT = "optical-decoder-session-groups"
 MAX_GROUP_BYTES = 1024 * 1024
+REAL_ORIGINS = ("native", "resampled", "header-g64")
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
 
 
@@ -223,15 +224,23 @@ class BalancedSampler:
     exact samples are reused only after that group's samples are exhausted.
     Paired mode draws one synthetic corruption of each chosen real target, with
     the same header/phase and verified target hashes, per optimizer update.
+    Optional origin quotas prefer native evidence within each grid/direction,
+    without allowing a large auxiliary recording pool to dominate that quota.
     """
 
-    def __init__(self, samples, session_groups, seed=7, real_fraction=.5, *, paired_targets=False, require_all_groups=True):
+    def __init__(self, samples, session_groups, seed=7, real_fraction=.5, *, paired_targets=False,
+                 require_all_groups=True, native_real_fraction=None):
         if (type(seed) is not int or not 0 <= seed <= 0xffffffff
                 or isinstance(real_fraction, bool) or not math.isfinite(real_fraction)
                 or not 0 <= real_fraction <= 1):
             raise ValueError("Sampler requires a uint32 seed and real fraction in [0, 1]")
         if type(paired_targets) is not bool or (paired_targets and real_fraction != .5):
             raise ValueError("Paired targets require real-fraction .5")
+        if native_real_fraction is not None and (
+                isinstance(native_real_fraction, bool)
+                or not isinstance(native_real_fraction, (int, float))
+                or not math.isfinite(native_real_fraction) or not 0 <= native_real_fraction <= 1):
+            raise ValueError("Native real fraction must be finite and in [0, 1]")
         samples = list(samples)
         if not samples:
             raise ValueError("Sampler needs at least one sample")
@@ -250,6 +259,8 @@ class BalancedSampler:
             source = row["source"]
             if source not in ("real", "synthetic"):
                 raise ValueError("Unsupported sampler source")
+            if native_real_fraction is not None and row.get("origin") not in REAL_ORIGINS:
+                raise ValueError("Origin-balanced sampling requires native/resampled/header-g64 origins")
             group = session_groups[row["sessionId"]] if source == "real" else "source:synthetic"
             buckets.setdefault(shape, {}).setdefault(source, {}).setdefault(group, []).append(sample)
         required_groups = {group for shape in buckets.values() for group in shape.get("real", {})}
@@ -263,14 +274,26 @@ class BalancedSampler:
         self.rng = random.Random(seed)
         self.real_fraction = float(real_fraction)
         self.paired_targets = paired_targets
+        self.native_real_fraction = None if native_real_fraction is None else float(native_real_fraction)
+        self.origin_pools = {}
+        if self.native_real_fraction is not None:
+            for shape, sources in buckets.items():
+                groups = self.origin_pools.setdefault(shape, {})
+                for group, rows in sorted(sources.get("real", {}).items()):
+                    by_origin = {}
+                    for sample in rows:
+                        by_origin.setdefault(sample.metadata["origin"], []).append(sample)
+                    groups[group] = {origin: _Pool(values) for origin, values in sorted(by_origin.items())}
         self.paired_pools = {}
         if paired_targets:
             targets, synthetic = {}, {}
             for sample in samples:
                 key, content = _target_key(sample), _target_content(sample)
+                if self.native_real_fraction is not None:
+                    content = content, sample.metadata["origin"]
                 previous = targets.setdefault(key, content)
                 if content != previous:
-                    raise ValueError("Paired target metadata or labels/mask/expected hashes disagree")
+                    raise ValueError("Paired target metadata, origin or labels/mask/expected hashes disagree")
                 if sample.metadata["source"] == "synthetic":
                     synthetic.setdefault(key, []).append(sample)
             real_keys = {_target_key(sample) for sample in samples if sample.metadata["source"] == "real"}
@@ -285,6 +308,49 @@ class BalancedSampler:
         # Parallel to the returned microbatches; duplicate anchors may appear
         # in one update, so sample IDs alone cannot identify a particular pair.
         self.last_pair_ids = []
+
+    def origin_policy(self):
+        """Static coverage belongs in run settings, not each history entry.
+
+        Direction quotas take priority. A direction with no native recordings
+        uses its auxiliary evidence, so global native share can be below the
+        requested fraction until that direction has native recordings.
+        """
+        if self.native_real_fraction is None:
+            return None
+        coverage = []
+        for shape, groups in sorted(self.origin_pools.items()):
+            for group, origins in sorted(groups.items()):
+                share = (0. if "native" not in origins else 1. if len(origins) == 1
+                         else self.native_real_fraction)
+                coverage.append({"size": shape[0], "colors": shape[1], "group": group,
+                                 "origins": sorted(origins), "expectedNativeRealFraction": share})
+        return {"nativeRealFraction": self.native_real_fraction,
+                "allocation": "within-grid-and-direction",
+                "auxiliaryAllocation": "uniform-available-origins",
+                "rounding": "stochastic-native/random-remainder-auxiliary",
+                "missingOrigins": "redistribute-within-direction",
+                "coverage": coverage}
+
+    def _origin_slots(self, shape, group, count):
+        """Apportion one direction's real draws without frame-count weighting."""
+        origins = self.origin_pools[shape][group]
+        auxiliary = sorted(origin for origin in origins if origin != "native")
+        if "native" not in origins:
+            native_count = 0
+        elif not auxiliary:
+            native_count = count
+        else:
+            desired = count*self.native_real_fraction
+            native_count = math.floor(desired) + int(self.rng.random() < desired-math.floor(desired))
+        slots = [("real", group, "native")]*native_count
+        remaining = count-native_count
+        if remaining:
+            self.rng.shuffle(auxiliary)
+            base, remainder = divmod(remaining, len(auxiliary))
+            for index, origin in enumerate(auxiliary):
+                slots.extend([("real", group, origin)]*(base+int(index < remainder)))
+        return slots
 
     def draw_update(self, batch_size, accumulate):
         if (type(batch_size) is not int or not 1 <= batch_size <= 128
@@ -310,22 +376,32 @@ class BalancedSampler:
             self.rng.shuffle(groups)
             base, remainder = divmod(real_count, len(groups))
             for index, group in enumerate(groups):
-                slots.extend([("real", group)]*(base+int(index < remainder)))
+                count = base+int(index < remainder)
+                if self.native_real_fraction is None:
+                    slots.extend([("real", group, None)]*count)
+                else:
+                    slots.extend(self._origin_slots(shape, group, count))
         if not self.paired_targets:
-            slots.extend([("synthetic", "source:synthetic")]*(total-real_count))
+            slots.extend([("synthetic", "source:synthetic", None)]*(total-real_count))
         self.rng.shuffle(slots)
         usage = {}
         counts = {"real": 0, "synthetic": 0, "groups": {}, "repeatedBursts": 0,
                   "repeatedSamples": 0, "pairedTargets": 0, "shape": list(shape)}
+        if self.native_real_fraction is not None:
+            counts.update(origins=dict.fromkeys(REAL_ORIGINS, 0), originsByGroup={})
         chosen = []
-        for source, group in slots:
-            sample, repeated_burst, repeated_sample = pools[source][group].draw(
-                self.rng, usage.setdefault((source, group), ({}, set())))
+        for source, group, origin in slots:
+            pool = self.origin_pools[shape][group][origin] if origin is not None else pools[source][group]
+            sample, repeated_burst, repeated_sample = pool.draw(
+                self.rng, usage.setdefault((source, group, origin), ({}, set())))
             pair_id = counts["pairedTargets"] if self.paired_targets else None
             chosen.append((sample, pair_id))
             counts[source] += 1
             if source == "real":
                 counts["groups"][group] = counts["groups"].get(group, 0)+1
+                if self.native_real_fraction is not None:
+                    counts["origins"][origin] += 1
+                    counts["originsByGroup"].setdefault(group, dict.fromkeys(REAL_ORIGINS, 0))[origin] += 1
             counts["repeatedBursts"] += int(repeated_burst)
             counts["repeatedSamples"] += int(repeated_sample)
             if self.paired_targets:

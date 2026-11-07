@@ -126,14 +126,17 @@ class WTubeModelTests(unittest.TestCase):
         self.assertEqual(profile_from_state(model.state_dict()), "W-tube")
         self.assertEqual(frames_from_state(model.state_dict()), 8)
         original = checkpoint(model)
+        original["training"]["nativeRealFraction"] = .75
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/"fixture.pt"
             torch.save(original, path)
             loaded, record = load_model_checkpoint(path)
             self.assertEqual(record["training"]["datasetVersion"], 2)
+            self.assertEqual(record["training"]["nativeRealFraction"], .75)
             with torch.no_grad():
                 torch.testing.assert_close(model(packed(16)), loaded.eval()(packed(16)), rtol=0, atol=0)
-            for key, value in (("datasetVersion", 1), ("pixelsPerCell", 2),
+            for key, value in (("nativeRealFraction", True), ("nativeRealFraction", 1.1),
+                               ("datasetVersion", 1), ("pixelsPerCell", 2),
                                ("supportedSizes", [16, 32, 64, 128, 256]),
                                ("trainedSizes", [8]), ("modelProfile", "multires"),
                                ("bottleneck", {"blocks": ["conv", "attention"]*3, "layersPerBlock": 2})):
