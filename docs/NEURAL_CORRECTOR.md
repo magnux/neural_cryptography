@@ -2,9 +2,9 @@
 
 > **Current collection:** Neural-QR v2 records G16/G32/G64/G128 at 4×4 pixels
 > per cell with optical size cues. The [collection guide](MULTIRES_COLLECTION.md)
-> describes this input contract. W-tube is the agreed next model; its training
-> and export are not implemented yet. The `multires` architecture below remains
-> the implemented 2×2-cell experiment, evaluated on already prepared datasets.
+> describes this input contract. **W-tube training and evaluation are implemented**
+> for it. W-tube export and browser integration are separate remaining steps.
+> The `multires` architecture below retains its prepared 2×2-cell experiment.
 
 The **neural corrector** estimates a corrected optical matrix from one or more
 camera observations. It learns to resolve color ambiguity, moiré, blur, lighting
@@ -35,7 +35,13 @@ header-based descriptions below document the currently implemented OBM5 path;
 they are not used by the new Neural-QR collector. Its current cue-based acquisition
 and public-code session association are documented in [the collection guide](MULTIRES_COLLECTION.md).
 
-The current multi-resolution training model is **`multires`**, with a shared convolution/attention trunk and
+The current four-pixel multi-resolution model is **`W-tube`**: two complete U
+stages, independent low-frequency anchors at G16/G32/G64/G128, and four-phase
+K4–K8 inputs. Its [architecture](#w-tube) and
+[training commands](NEURAL_CORRECTOR_TRAINING.md#train-w-tube) are implemented;
+real-device accuracy remains to be measured after training.
+
+The separate two-pixel training model is **`multires`**, with a shared convolution/attention trunk and
 an independent low-frequency positional anchor for every supported size, G8…G256.
 Its bottleneck has six alternating blocks: convolution → attention → convolution
 → attention → convolution → attention. Each block contains two layers of its kind.
@@ -49,7 +55,7 @@ experiments keep their established 4×4 contract.
 
 Let **G** be the matrix width in cells, **T** a fixed number of observations,
 **K** the number of available observations in a variable input, and **N** the
-batch size. A U-tube rectified crop has four pixels per cell along each axis: a G64
+batch size. A U-tube or W-tube rectified crop has four pixels per cell along each axis: a G64
 matrix produces a 256×256 RGB crop. Multires uses two pixels per cell, so G64
 produces a 128×128 crop. The crop includes the colored reference
 grid; it does not include the full camera image or monochrome transport header.
@@ -62,6 +68,7 @@ the network.
 | Fixed frame burst | U-tube, U-tube-2x | `[N,3T,4G,4G]` | T distinct observations of the same logical matrix and palette phase; T=1…64 |
 | Phase-grouped burst | U-tube-2x-attn | `[N,32,256,256]` | Eight phase-paired RGB slots plus eight presence planes; K=4…8 |
 | Multi-resolution phase burst | multires | `[N,32,2G,2G]` | Same phase slots and presence planes; G8…G256, K=4…8 |
+| Full-resolution multi-resolution phase burst | W-tube | `[N,32,4G,4G]` | Same phase slots and presence planes; G16/G32/G64/G128, K=4…8 |
 
 Every model produces **`logits: [N,16,G,G]`**. These are unnormalized class
 scores, not a rendered RGB image. Softmax over the active palette produces
@@ -72,7 +79,7 @@ models use two internal label conventions:
 
 - **U-tube and U-tube-2x** predict physical displayed palette classes. The
   receiver uses the validated phase header to reverse that palette mapping.
-- **U-tube-2x-attn and multires** predict canonical, phase-zero logical data classes directly.
+- **U-tube-2x-attn, multires and W-tube** predict canonical, phase-zero logical data classes directly.
   Their output must not undergo another phase reversal.
 
 Reference-grid cells occupy positions in the output tensor but are excluded from
@@ -141,10 +148,98 @@ operations.
 | `U-tube` | 2 / 2 | Channel normalization after each convolution | `140112 + 864T`; 144,432 at T=5 |
 | `U-tube-2x` | 4 / 8 | Residual pairs; one normalization per resolution block | `275472 + 864T`; 279,792 at T=5 |
 | `U-tube-2x-attn` | 4 / 8 | Learned positional anchor and two window-attention blocks | 432,848, fixed eight-slot capacity |
+| `W-tube` | 4 / 2 within each of two full U stages | Four attention layers overall; four independent low-frequency anchors | 454,992 processing + 32,768 anchors = **487,760** |
 
 The default profile is `U-tube`. The successful four-phase experiment uses
 `U-tube-2x-attn`. A checkpoint identifies its own profile and input contract;
 changing the command-line name does not convert weights into another architecture.
+
+### W-tube
+
+W-tube returns to four camera pixels per cell along each axis and repeats the
+complete U computation. Its supported targets are **G16, G32, G64 and G128**.
+Both bottlenecks have spatial size **G**, so neither stage reduces the random
+symbol grid below its target resolution. Every learned feature block outputs
+32 channels; skip concatenations temporarily have 64 channels.
+
+The model first gates unavailable RGB slots with their presence flags, clips
+available RGB to `[-1,1]`, and processes the packed tensor through the normalized
+inlet. It adds the selected grid's positional anchor there. Two independently
+parameterized U stages then refine these features. Residual fusion carries
+full-resolution features across each stage. Only the final outlet reduces the
+result to the target grid and produces sixteen logical-class logits.
+
+```mermaid
+flowchart TD
+    X["Eight RGB slots + presence: 32 × 4G × 4G"] --> I["Gating, clipping and 32-channel inlet"]
+    P["Independent low-frequency anchor for G"] --> A["Add anchor expanded 4×"]
+    I --> A
+    A --> U1["First U and residual fusion: 4G → 2G → G → 2G → 4G"]
+    U1 --> U2["Second U and residual fusion: 4G → 2G → G → 2G → 4G"]
+    U2 --> O["Learned outlet: 4G → 2G → G"]
+    O --> Y["1×1 head: 16 × G × G logical logits"]
+```
+
+Each U stage has its own weights and its own encoder-to-decoder feature skips.
+Its outer, intermediate and reconstruction blocks each contain four main
+convolutions (two residual pairs), followed by one channel normalization.
+The bottleneck contains one residual pair and its normalization:
+
+```mermaid
+flowchart TD
+    X["Stage input: 4G, 32 channels"] --> E0["Outer residual block: 4G"]
+    E0 --> E1["Stride-2 residual block: 2G"]
+    E1 --> B["Stride-2 bottleneck: G, two convolutions"]
+    B --> A["Two window-attention layers: shifts 0 and 4"]
+    A --> D1["Upsample, skip concat, residual block: 2G"]
+    E1 --> D1
+    D1 --> D0["Upsample, skip concat, residual block: 4G"]
+    E0 --> D0
+    D0 --> F["Residual fusion at 4G"]
+    X --> F
+```
+
+Each bottleneck attention pair uses four heads and 8×8-cell windows. The second
+layer shifts windows by four cells, with the existing boundary mask preventing
+wraparound attention across opposite image edges. There are **two bottleneck
+convolutions and two attention layers per U**, rather than six alternating
+bottleneck blocks. Computation is distributed over two complete resolution
+paths, which retain and revisit high-resolution camera evidence.
+
+At each U exit, fusion is
+`ReLU(ChannelLayerNorm(stage_input + reconstructed_features))`. Both terms are
+learned 32-channel features at 4G. The inlet has two convolutions with one final
+normalization; the outlet has two normalized stride-two convolutions. The exact
+parameter count is **487,760**, comprising **454,992 processing parameters** and
+**32,768 anchor coefficients**. This count does not bound activation memory:
+G128 processes 512×512 features through both U stages.
+
+For each G, the anchor owns `[1,32,16,16]` learned cosine coefficients. The same
+orthonormal synthesis and `G/16` scaling used by
+[multires anchors](#independent-low-frequency-positional-anchors) reconstruct a
+`[1,32,G,G]` field. W-tube enlarges it **4×**, adds it once after the inlet, and
+lets both stages process that anchored feature stream. All four coefficient
+tensors are independent even though their shapes match. The frequency limit
+applies only to the positional prior; the input and output can retain arbitrary
+cell-scale patterns.
+
+| Target | Input crop | First and second U | Final outlet |
+| --- | --- | --- | --- |
+| G16 | 64×64 | 64 → 32 → 16 → 32 → 64 | 64 → 32 → 16 |
+| G32 | 128×128 | 128 → 64 → 32 → 64 → 128 | 128 → 64 → 32 |
+| G64 | 256×256 | 256 → 128 → 64 → 128 → 256 | 256 → 128 → 64 |
+| G128 | 512×512 | 512 → 256 → 128 → 256 → 512 | 512 → 256 → 128 |
+
+The current release supports PyTorch training, evaluation and strict W-tube
+checkpoint loading. Start W-tube from scratch; the two-pixel multires and earlier
+U-tube checkpoints have different architectures. Continuing a W-tube run uses
+`--initialize` with a W-tube checkpoint and a new output directory. Exported
+ONNX graphs and browser latency/parity are a separate milestone, so this model
+is not yet selectable in the live demo.
+
+All four grids are structurally supported, but a run updates only the anchors
+for grids sampled during training. Checkpoint `trainedSizes` records those grids;
+an untouched anchor is not evidence of a trained corrector at that resolution.
 
 ### U-tube
 
@@ -256,7 +351,8 @@ training. Evaluation fixes a seeded shuffle before forming nonoverlapping groups
 it does not select consecutive frames by default. Sources, sessions, payloads
 and phases never get mixed in a fixed burst.
 
-The attention profile uses these fixed slot meanings:
+The phase-grouped profiles (`U-tube-2x-attn`, `multires`, and `W-tube`) use these
+fixed slot meanings:
 
 | Phase | RGB slots | Logical-to-physical data-symbol XOR |
 | --- | --- | --- |
@@ -279,9 +375,9 @@ network inference cost.
 
 The palette XOR affects **data cells only**; references retain their known
 physical colors. Supervision reverses the XOR on data labels to make one
-canonical target. It does not attempt to recolor noisy RGB inputs. The browser
-has the phase identities from validated public headers, so no sender truth is
-required at inference.
+canonical target. It does not attempt to recolor noisy RGB inputs. Acquisition
+obtains phase identity from the public header in the OBM experiment or the
+repeated phase cues in Neural-QR, so no sender truth is required at inference.
 
 Four exact phase permutations augment training. Choose d from `[0,15,7,8]`,
 reorder phase pairs so the old mask equals the new mask XOR d, move their
@@ -305,8 +401,9 @@ different axes and must not be interchanged.
 
 ### Input presence mask: which observations exist
 
-Only U-tube-2x-attn has an observation-presence mask. It has **eight binary
-flags per example**, broadcast into eight constant 256×256 planes. A present
+The three phase-grouped profiles have an observation-presence mask: **eight binary
+flags per example**, broadcast to the input crop's spatial size. That is 256×256
+for U-tube-2x-attn, 2G×2G for multires and 4G×4G for W-tube. A present
 slot has flag one; an absent slot has flag zero and normally contains zero RGB.
 The model multiplies each RGB triplet by its flag before the inlet, then supplies
 the same flags as input channels. This makes missingness explicit: a zero RGB
@@ -364,12 +461,21 @@ not a learned parameter and does not change the supervised target.
 
 ## Evaluation and current evidence
 
-Evaluation reports cell cross-entropy and cell error rate, plus exact payload
-recovery through the unchanged classical byte decoder. Both classical fusion and
+Evaluation reports cell cross-entropy and cell error rate. The OBM experiment
+also reports exact payload recovery through the classical byte decoder. Neural-QR
+multires and W-tube instead report exact logical data matrices, since their
+training symbols have no packet/CRC envelope. Both classical fusion and
 the neural corrector receive the same actual captures. Phase-grouped evaluation
 uses nested K4/K5/K6/K7/K8 subsets of fixed shuffled phase pairs, so all five
 presets have the same logical candidates. The candidate count is not multiplied
 by five when describing the amount of independent held-out data.
+
+W-tube gives fresh native real captures priority in validation: if native
+candidates exist, headline metrics and checkpoint selection use that population.
+The report keeps separate summaries for native, resampled and header-G64 origins.
+Without native candidates, the population is explicitly `auxiliary-only`.
+These origin distinctions describe where the evidence came from, not whether a
+model successfully classified it. No validation origin enters the model input.
 
 The reported 32,000-update phase-grouped run reached:
 
@@ -586,12 +692,15 @@ previous experiment do not load into this architecture. Keep those runs with
 their source revision; start the revised model in a new output directory. The
 recorded datasets and generated synthetics are unchanged and can be reused.
 
-Use one size per optimizer update and select active resolutions uniformly.
+For this separate two-pixel experiment, use one size per optimizer update and select active resolutions uniformly.
 Keep microbatches small enough for G256 instead of padding every example to
 512×512; gradient accumulation increases the effective batch. Keep per-example loss normalization so large matrices do
 not dominate merely by having more labeled cells. Generate synthetic observations
-at each actual cell density and evaluate real capture recovery by size. Use the newly recorded 2×2-cell Neural-QR datasets directly; the pipeline does
-not silently resample or relabel older 4×4-cell OBM datasets. The changed input
+at each actual cell density and evaluate real capture recovery by size. Use the
+existing prepared 2×2-cell datasets for this model. The current collector writes
+4×4-cell version-2 recordings for W-tube; it does not regenerate this experiment.
+The explicit offline importer converts eligible earlier recordings into the
+separate W-tube corpus, not into the two-pixel multires dataset. The changed input
 sampling means existing recovery rates do not transfer automatically.
 A shape change alone does not demonstrate accuracy at unseen resolutions.
 Training pairs real observations with synthetic versions of the same logical
@@ -615,8 +724,9 @@ update the shared trunk. Clear gradients with `set_to_none=True` so an inactive
 anchor is not accidentally decayed or updated through stale optimizer gradients.
 
 Neural-QR can then use small profiles for controls and large profiles for data.
-The receiver must know G before rectification/inference: start with agreed
-directional profiles, with a coarse visual profile cue available later. The
+The receiver must know G before rectification/inference. The current version-2
+collector reads the repeated coarse optical size code and cross-checks the public
+collection assignment; the packet receiver remains a future integration. The
 learned positional anchor is internal to the model, distinct from optical corner
 markers. Capacity must include reference cells, framing, ECC and integrity checks:
 G8 has only 32 raw bytes and cannot automatically carry today's full ACK envelope.

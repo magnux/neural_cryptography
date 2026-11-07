@@ -141,6 +141,10 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
                       "training": training_provenance(loaded["training"])}
     else:
         model = NeuralCorrector(profile or DEFAULT_MODEL_PROFILE, frames=frames).cpu().eval()
+    if model.profile == "W-tube":
+        raise ValueError("W-tube training/checkpoints are supported, but its browser bundle export "
+                         "and runtime parity are a separate pending milestone. "
+                         "No output bundle was created.")
     available_sizes = (tuple(loaded["training"]["trainedSizes"])
                        if checkpoint is not None and model.profile == "multires"
                        else model.supported_sizes)

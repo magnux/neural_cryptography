@@ -28,13 +28,31 @@ from reporting import compact_report
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def require_implemented_model_contract(dataset):
-    """Keep corpus preparation separate from the still-pending W-tube model."""
-    if (getattr(dataset, "dataset_format", None) == "neural-qr-dataset"
-            and dataset.pixels_per_cell == 4):
-        raise ValueError("Neural-QR v2 uses 4 pixels per cell and requires W-tube, "
-                         "whose training/evaluation implementation is pending. "
-                         "The corpus can be prepared now; multires still requires 2-pixel-cell data.")
+def require_implemented_model_contract(dataset, model=None):
+    """Check raster/target semantics before sampling or invoking the network.
+
+    The optional first call checks the dataset alone; training checks again
+    after constructing/loading its requested model. A shared raster size is
+    insufficient: OBM packet targets and Neural-QR logical matrices differ.
+    """
+    format_ = getattr(dataset, "dataset_format", "optical-decoder-dataset")
+    ppc = getattr(dataset, "pixels_per_cell", 4)
+    version = getattr(dataset, "dataset_version", 1)
+    contracts = {("optical-decoder-dataset", 1, 4),
+                 ("neural-qr-dataset", 1, 2), ("neural-qr-dataset", 2, 4)}
+    if (format_, version, ppc) not in contracts:
+        raise ValueError("Unsupported dataset format/version/pixels-per-cell contract")
+    if model is None:
+        return
+    profile = model if isinstance(model, str) else getattr(model, "profile", None)
+    expected = ("neural-qr-dataset", 2, 4) if profile == "W-tube" else (
+        ("neural-qr-dataset", 1, 2) if profile == "multires" else
+        ("optical-decoder-dataset", 1, 4))
+    if (format_, version, ppc) != expected:
+        raise ValueError("W-tube requires Neural-QR v2 at 4 pixels per cell; multires requires "
+                         "Neural-QR v1 at 2 pixels per cell; U-tube profiles require OBM datasets")
+    if hasattr(model, "pixels_per_cell") and model.pixels_per_cell != ppc:
+        raise ValueError("Model raster scale disagrees with its dataset contract")
 
 
 def masked_loss(logits, labels, mask, colors: int):
@@ -420,18 +438,18 @@ def _combine_frame_counts(reports, *, frame_capacity, session_groups, exact):
 
 def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node="node", exact=True,
                    work_dir=None, session_groups=None, detailed=False):
-    require_implemented_model_contract(dataset)
+    require_implemented_model_contract(dataset, model)
     if type(detailed) is not bool:
         raise ValueError("detailed must be a boolean")
     if type(max_samples) is not int or max_samples < 0:
         raise ValueError("max_samples must be a nonnegative integer")
-    if getattr(model, "profile", None) == "multires":
+    if getattr(model, "profile", None) in ("multires", "W-tube"):
         from multires_evaluation import evaluate_matrices
         result = evaluate_matrices(model, dataset, device=device, max_samples=max_samples,
                                    session_groups=session_groups, detailed=detailed)
         return {**result, "reportDetail": "detailed"} if detailed else compact_report(result)
     if getattr(dataset, "dataset_format", "optical-decoder-dataset") != "optical-decoder-dataset":
-        raise ValueError("Neural-QR datasets require the multires model")
+        raise ValueError("Neural-QR datasets require the matching multires or W-tube model")
     supported = getattr(model, "supported_sizes", (64, 128))
     if any(sample.shape[0] not in supported for sample in dataset.samples):
         raise ValueError(f"Model supports only matrix sizes {supported}")
@@ -488,7 +506,7 @@ def main():
             session_groups = load_session_groups(args.session_groups)
         model, checkpoint = load_model_checkpoint(args.checkpoint)
         check_checkpoint_overlap(checkpoint, dataset, args.split)
-        if model.profile == "multires":
+        if model.profile in ("multires", "W-tube"):
             unseen = {sample.shape[0] for sample in dataset.samples} - set(checkpoint["training"]["trainedSizes"])
             if unseen:
                 raise ValueError(f"Checkpoint anchors have not been trained for grids {sorted(unseen)}")
@@ -509,6 +527,9 @@ def main():
     if "matrixAccuracy" in result:
         summary = {name: result[name] for name in ("samples", "uniqueCandidates", "framesPerInput",
                    "cellErrorRate", "loss", "matrixAccuracy", "selectionScore", "bySize")}
+        for name in ("evaluationPopulation", "nativeAvailable", "primarySizes", "evaluatedSizes", "origins"):
+            if name in result:
+                summary[name] = result[name]
         summary["report"] = str(args.out.resolve())
         print(json.dumps(summary, indent=2))
         return

@@ -23,11 +23,13 @@ def training_metadata(model=None):
         result.update(framesPerInput=8, inputLayout=model.input_layout, minFramesPerInput=4,
                       frameCounts=[4, 5, 6, 7, 8], frameCountPolicy="uniform-4-8",
                       outputLabelSpace="logical", phaseMasks=[0, 15, 7, 8])
-    if model is not None and model.profile == "multires":
-        result.update(modelProfile="multires", datasetFormat="neural-qr-dataset",
-                      pixelsPerCell=2, supportedSizes=list(model.supported_sizes),
+    if model is not None and model.profile in ("multires", "W-tube"):
+        result.update(modelProfile=model.profile, datasetFormat="neural-qr-dataset",
+                      pixelsPerCell=model.pixels_per_cell, supportedSizes=list(model.supported_sizes),
                       trainedSizes=list(model.supported_sizes), anchor=model.anchor_metadata,
                       bottleneck=model.bottleneck_metadata)
+        if model.profile == "W-tube":
+            result["datasetVersion"] = 2
     return result
 
 
@@ -88,7 +90,7 @@ class ProfileTests(unittest.TestCase):
                     torch.testing.assert_close(pair(pixels), expected, rtol=0, atol=0)
 
     def test_only_current_full_resolution_profiles_are_constructible(self):
-        self.assertEqual(MODEL_PROFILES, ("U-tube", "U-tube-2x", "U-tube-2x-attn", "multires"))
+        self.assertEqual(MODEL_PROFILES, ("U-tube", "U-tube-2x", "U-tube-2x-attn", "multires", "W-tube"))
         for obsolete in ("compact", "wide", "normalized-compact", "unknown"):
             with self.subTest(profile=obsolete), self.assertRaises(ValueError):
                 NeuralCorrector(obsolete)
@@ -126,7 +128,7 @@ class ProfileTests(unittest.TestCase):
                 value["modelState"] = original.state_dict()
                 value["training"]["modelProfile"] = "U-tube-2x" if profile == "U-tube" else "U-tube"
                 torch.save(value, path)
-                with self.assertRaisesRegex(ValueError, "profile metadata disagrees"):
+                with self.assertRaisesRegex(ValueError, "profile metadata disagrees|declared model architecture"):
                     load_model_checkpoint(path)
                 value["training"]["modelProfile"] = profile
                 value["modelState"]["head.weight"] = torch.zeros(16, 17, 1, 1)

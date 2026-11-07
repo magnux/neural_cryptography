@@ -29,7 +29,7 @@ has a compatibility fallback to the other format.
 | Neural-corrector checkpoint | `optical-decoder-checkpoint`, version 1 | [`checkpoint.py`](../experiments/neural-corrector/checkpoint.py); local state dict and training/split provenance |
 | Neural-QR acquisition layout | `neural-qr`, version 2 | [`layout.js`](../apps/color-optical-bench/dist/js/neural-qr/layout.js), [`vision.js`](../apps/color-optical-bench/dist/js/neural-qr/vision.js); optical G16/G32/G64/G128 size codes, 16 colors, four phases, grid-8 references, 4×4 pixels/cell |
 | Capture sender / receiver exports | `neural-qr-sender` / `neural-qr-captures`, version 2 | [Multires collection](MULTIRES_COLLECTION.md); public collection code and profile, phase cues, independently saved/uploaded evidence and sender labels |
-| Joined Neural-QR evidence | `neural-qr-dataset`, version 2 | [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); 4×4-cell CHW inputs, offline labels and tagged origins; [imports/synthetics](W_TUBE_DATA.md) ready, W-tube training pending |
+| Joined Neural-QR evidence | `neural-qr-dataset`, version 2 | [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); 4×4-cell CHW inputs, offline labels and tagged origins; [imports/synthetics](W_TUBE_DATA.md) and W-tube training/evaluation implemented |
 | Established OBM5 training dataset | `optical-decoder-dataset`, version 1 | [`data.py`](../experiments/neural-corrector/data.py), [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); hashed NCHW inputs, physical labels, mask, baseline, expected bytes |
 
 ## Collector session coordination
@@ -68,8 +68,9 @@ cells have a separate loss mask. Current training matrices contain random
 logical symbols and fixed reference cells; no packet framing, ECC or payload CRC
 is implied. The future Neural-QR packet layer must add those checks before
 accepting bytes or advancing authentication. The present Python `multires`
-model uses the separate earlier 2×2-cell contract. W-tube training is pending;
-the offline data pipeline already combines native, resampled and original G64
+model uses the separate earlier 2×2-cell contract. **W-tube** consumes version-2
+four-pixel datasets and predicts logical matrix symbols. The offline data pipeline
+combines native, resampled and original G64
 payload crops with explicit origin tags, clean targets and paired synthetics.
 
 ## Content and transport

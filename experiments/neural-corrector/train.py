@@ -3,7 +3,7 @@
 
 Plain PyTorch, float32, AdamW. Optional target pairing places real captures and
 synthetic renders of the same matrix in each optimizer update. Validation uses
-held-out sessions: exact logical matrices for Neural-QR multires, canonical
+held-out sessions: exact logical matrices for Neural-QR models, canonical
 packet recovery for the OBM experiment; never the final test split.
 """
 
@@ -27,7 +27,7 @@ from checkpoint import load_model_checkpoint, initialize_multires
 from data import DATASET_FORMAT, Dataset, assert_disjoint, check_checkpoint_overlap, digest
 from evaluate import evaluate_model, require_implemented_model_contract
 from reporting import compact_report
-from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, MULTIRES_SIZES, NeuralCorrector, initialize_frames
+from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, NeuralCorrector, initialize_frames
 from sampling import BalancedSampler, load_session_groups, validate_session_groups, infer_session_groups
 
 
@@ -146,6 +146,9 @@ def format_validation_metrics(report):
     if "byFrameCount" in report:
         text += " | " + " ".join(f"K{k}:{exact_metrics(row)['exactRate']:.1%}"
                                     for k, row in sorted(report["byFrameCount"].items(), key=lambda item: int(item[0])))
+    if "evaluationPopulation" in report:
+        grids = "/".join(f"G{size}" for size in report["primarySizes"])
+        text += f" | {report['evaluationPopulation']} {grids}"
     return text
 
 
@@ -210,8 +213,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                  session_groups=None, weight_decay=.01, paired_targets=False, frames=None, no_progress=False,
                  real_noise_std=.008, real_tint_stops=.06, real_exposure_stops=.08,
                  phase_flip_probability=.25, no_phase_permutations=False, show_goal=False):
-    # New recording imports are usable for synthetic preparation, but must not
-    # silently reach the earlier 2-pixel multires network or its optimizer.
+    # Validate the dataset representation before building a sampler; the exact
+    # profile/raster pairing is checked again once the model is instantiated.
     require_implemented_model_contract(train)
     require_implemented_model_contract(validation)
     steps, learning_rate = training_defaults(initialize, steps, learning_rate)
@@ -233,10 +236,11 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     if any(s.metadata["split"] != "validation" for s in validation.samples):
         raise ValueError("Only validation samples may select checkpoints")
     assert_disjoint(train, validation)
-    multires_data = train.dataset_format == "neural-qr-dataset"
-    if validation.dataset_format != train.dataset_format:
-        raise ValueError("Training and validation must use the same experiment dataset format")
-    if multires_data and session_groups is None:
+    neural_qr_data = train.dataset_format == "neural-qr-dataset"
+    if ((validation.dataset_format, validation.dataset_version) !=
+            (train.dataset_format, train.dataset_version)):
+        raise ValueError("Training and validation must use the same experiment dataset format and raster version")
+    if neural_qr_data and session_groups is None:
         session_groups = infer_session_groups(train.samples+validation.samples)
     if session_groups is not None:
         validate_session_groups(train.samples, session_groups)
@@ -245,7 +249,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     sampler_groups = session_groups if session_groups is not None else {
         s.metadata["sessionId"]: "all-real" for s in train.samples if s.metadata["source"] == "real"}
     sampler = BalancedSampler(train.samples, sampler_groups, seed=seed, real_fraction=real_fraction,
-                              paired_targets=paired_targets, require_all_groups=not multires_data)
+                              paired_targets=paired_targets, require_all_groups=not neural_qr_data)
     if paired_targets and batch_size*accumulate % 2:
         raise ValueError("Paired targets require an even effective batch size")
     out = Path(out).resolve()
@@ -265,8 +269,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             raise ValueError("Requested --model differs from the initialized checkpoint profile; train that architecture from scratch")
         if frames is not None:
             model = initialize_frames(model, frames)
-    if (model.profile == "multires") != multires_data:
-        raise ValueError("multires requires Neural-QR 2-pixel-cell data; U-tube profiles require their 4-pixel-cell experiment data")
+    require_implemented_model_contract(train, model)
+    require_implemented_model_contract(validation, model)
     variable_frames = getattr(model, "variable_frames", False)
     minimum_frames = getattr(model, "min_frames", model.frames)
     phase_augmentation = PhaseAugmentation(seed=seed, flip_probability=phase_flip_probability,
@@ -290,7 +294,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         validation_sessions.update(ancestry["validationSessionIds"])
         validation_payloads.update(ancestry["validationPayloadIds"])
     training_sizes = sorted({sample.shape[0] for sample in train.samples})
-    if multires_data and {sample.shape[0] for sample in validation.samples} - set(training_sizes):
+    if neural_qr_data and {sample.shape[0] for sample in validation.samples} - set(training_sizes):
         raise ValueError("Validation grids must have training data for their independent anchors")
     # A new anchor is not labeled trained until an optimizer update sees its G.
     learned_sizes = set(previous["training"].get("trainedSizes", [])) if previous and transfer is None else set()
@@ -303,7 +307,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                "pairedTargets": paired_targets, "framesPerInput": model.frames,
                "inputLayout": model.input_layout, "minFramesPerInput": minimum_frames,
                "frameCounts": frame_counts, "frameCountPolicy": "uniform-4-8" if variable_frames else "fixed",
-               "modelProfile": model.profile, "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
+               "modelProfile": model.profile, "datasetVersion": train.dataset_version,
+               "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
                "realAugmentation": real_augmentation.settings(),
                "phaseAugmentation": phase_augmentation.settings() if phase_augmentation else None,
                "loss": "mean-masked-cross-entropy",
@@ -317,16 +322,18 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                   "pairedTargets": paired_targets, "framesPerInput": model.frames, "selection": "validation-exact", "datasetFormat": train.dataset_format,
                   "inputLayout": model.input_layout, "minFramesPerInput": minimum_frames,
                   "frameCounts": frame_counts, "frameCountPolicy": "uniform-4-8" if variable_frames else "fixed",
-                  "modelProfile": model.profile, "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
+                  "modelProfile": model.profile, "datasetVersion": train.dataset_version,
+                  "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
                   "trainManifestSha256": train.manifest_hash, "validationManifestSha256": validation.manifest_hash,
                   "trainSessionIds": sorted(train_sessions), "trainPayloadIds": sorted(train_payloads),
                   "validationSessionIds": sorted(validation_sessions), "validationPayloadIds": sorted(validation_payloads),
                   "settings": options}
-    if multires_data:
-        geometry = {"pixelsPerCell": 2, "supportedSizes": list(MULTIRES_SIZES)}
+    if neural_qr_data:
+        geometry = {"pixelsPerCell": model.pixels_per_cell, "supportedSizes": list(model.supported_sizes)}
         options.update({**geometry, "trainingSizes": training_sizes,
                         "sampling": "uniform-size/source-group-session-payload-phase",
-                        "selectionMetric": "size-group-frame-balanced-real/exact-logical-data-matrix"})
+                        "selectionMetric": ("native-first/" if model.profile == "W-tube" else "")
+                            + "size-group-frame-balanced-real/exact-logical-data-matrix"})
         provenance.update(geometry)
         architecture = {"anchor": model.anchor_metadata, "bottleneck": model.bottleneck_metadata}
         options.update(architecture)
@@ -368,7 +375,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         score = selection["exactRate"], -selection["loss"]
         # Step zero with fresh weights is diagnostic only, not a trained model.
         baseline_eligible = (previous is not None and transfer is None
-                             and (not multires_data or set(training_sizes) <= learned_sizes))
+                             and (not neural_qr_data or set(training_sizes) <= learned_sizes))
         selected = score > best and (step > 0 or baseline_eligible)
         current_lr = optimizer.param_groups[0]["lr"]
         if selected:
@@ -377,7 +384,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                         "baselineSelection": step == 0, "learningRate": current_lr,
                         "selectionAggregation": selection["method"],
                         "bestValidationExact": selection["exactRate"], "bestValidationLoss": selection["loss"]}
-            if multires_data:
+            if neural_qr_data:
                 training["trainedSizes"] = sorted(learned_sizes)
             save_checkpoint(out/"best.pt", model, training)
             (out/"validation.json").write_text(json.dumps(report, indent=2)+"\n")
@@ -395,12 +402,16 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                   "elapsedSeconds": time.perf_counter()-started}
         if "classical" in summary:
             record["classicalExact"] = summary["classical"]["exactRate"]
-        if multires_data:
+        if neural_qr_data:
             record["trainBySize"] = summarize_training_grids(interval["sizes"], interval["sizeSources"])
             record["trainSizeMacroCellErrorRate"] = size_macro_cer(record["trainBySize"])
             record["validationSizeMacroCellErrorRate"] = report["sizeMacroCellErrorRate"]
             record["validationSources"] = report["sources"]
             record["validationBySize"] = report["bySize"]
+        if model.profile == "W-tube":
+            record["validationPopulation"] = report["evaluationPopulation"]
+            record["primarySizes"] = report["primarySizes"]
+            record["validationOrigins"] = report["origins"]
         if variable_frames:
             record["trainFrameCounts"] = interval["frameCounts"]
             record["validationByFrameCount"] = report["byFrameCount"]
@@ -412,7 +423,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                  f"  Val   | {format_validation_metrics(report)}"]
         if report["groups"]:
             lines.append(f"  Val groups | {format_validation_groups(report)}")
-        if multires_data:
+        if neural_qr_data:
             lines.extend(format_multires_grids(record["trainBySize"], report["bySize"]))
         if variable_frames and show_goal and "phoneToPCGoal" in report:
             goal = report["phoneToPCGoal"]
@@ -425,7 +436,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
 
     def empty_interval():
         return {"loss": 0., "updates": 0, "wrongCells": 0, "dataCells": 0, "sources": {}, "groups": {}, "sizes": {},
-                **({"sizeSources": {}} if multires_data else {}),
+                **({"sizeSources": {}} if neural_qr_data else {}),
                 "frameCounts": {str(count): 0 for count in frame_counts},
                 "sampling": {"repeatedBursts": 0, "repeatedSamples": 0, "pairedTargets": 0}}
 
@@ -475,7 +486,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                         interval["frameCounts"][str(count)] += 1
                         counters = [interval["sources"].setdefault(source, metric_counter()),
                                     interval["sizes"].setdefault(str(sample.shape[0]), metric_counter())]
-                        if multires_data:
+                        if neural_qr_data:
                             counters.append(interval["sizeSources"].setdefault(str(sample.shape[0]), {}).setdefault(
                                 source, metric_counter()))
                         if source == "real":
@@ -489,7 +500,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                             counter["dataCells"] += cell_count
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
                 optimizer.step()
-                if multires_data:
+                if neural_qr_data:
                     learned_sizes.update(sample.shape[0] for samples in batches for sample in samples)
                 interval["loss"] += update_loss
                 interval["updates"] += 1
@@ -528,7 +539,7 @@ def main():
     parser.add_argument("--lr", type=float, help="default: 1e-4 fresh weights, 5e-5 initialized weights")
     parser.add_argument("--weight-decay", type=float, default=.01, help="AdamW decay (default: .01)")
     parser.add_argument("--frames", type=int, choices=FRAME_COUNTS,
-                        metavar="1..64", help="input capacity: U-tube-2x-attn/multires use 8 phase-paired slots with 4–8 observations; other fresh profiles default to 1")
+                        metavar="1..64", help="input capacity: U-tube-2x-attn/multires/W-tube use 8 phase-paired slots with 4–8 observations; other fresh profiles default to 1")
     parser.add_argument("--paired-targets", action="store_true",
                         help="pair real captures with synthetic examples of the same target; requires real-fraction .5")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")

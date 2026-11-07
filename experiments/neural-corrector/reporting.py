@@ -66,7 +66,7 @@ def _metrics(report):
 
 def _matrix_metrics(report):
     """Neural-QR raw-symbol summaries deliberately have no CRC/recovery fields."""
-    result = _fields(report, METRIC_FIELDS + ("wrongCells",))
+    result = _fields(report, METRIC_FIELDS + ("wrongCells", "sizes"))
     if "matrixAccuracy" in report:
         result["matrixAccuracy"] = _fields(report["matrixAccuracy"],
                                            ("matrices", "exactMatrices", "exactRate"))
@@ -91,13 +91,19 @@ def compact_report(report):
     if not isinstance(report, dict):
         raise ValueError("An evaluation report must be an object")
     if "matrixAccuracy" in report:
-        result = _fields(report, ("format", "version", "modelProfile", "datasetFormat", "split",
-                                  "checkpoint", "manifestSha256", "profiles", "pixelsPerCell", "metric", "note"))
+        result = _fields(report, ("format", "version", "modelProfile", "datasetFormat", "datasetVersion", "split",
+                                  "checkpoint", "manifestSha256", "profiles", "pixelsPerCell", "metric", "note",
+                                  "evaluationPopulation", "nativeAvailable", "primarySizes", "evaluatedSizes", "evaluatedCases"))
         result.update(_matrix_metrics(report))
         result["reportDetail"] = "summary"
         if "selectionScore" in report:
             result["selectionScore"] = _fields(report["selectionScore"],
-                ("method", "sizes", "groups", "frameCounts", "exactRate", "loss", "cellErrorRate"))
+                ("method", "sizes", "groups", "frameCounts", "exactRate", "loss", "cellErrorRate",
+                 "originScope", "nativeAvailable", "origins"))
+        if "origins" in report:
+            result["origins"] = {name: _matrix_metrics(row) for name, row in sorted(report["origins"].items())}
+        if "syntheticValidation" in report:
+            result["syntheticValidation"] = _matrix_metrics(report["syntheticValidation"])
         if "inferenceMs" in report:
             result["inferenceMs"] = _fields(report["inferenceMs"], ("p50", "p95", "note"))
         return result

@@ -10,6 +10,7 @@ import torch
 
 from contract import FRAME_COUNTS, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 from model import (MODEL_PROFILES, MULTIRES_SIZES, ANCHOR_METADATA, BOTTLENECK_METADATA,
+                   W_TUBE_BOTTLENECK_METADATA,
                    NeuralCorrector, profile_from_state, frames_from_state, project_anchor)
 
 
@@ -89,13 +90,19 @@ def training_provenance(training: dict) -> dict:
         if training["modelProfile"] not in MODEL_PROFILES:
             raise ValueError("Invalid checkpoint modelProfile")
         result["modelProfile"] = training["modelProfile"]
-    for key, expected in (("anchor", ANCHOR_METADATA), ("bottleneck", BOTTLENECK_METADATA)):
+    bottleneck = (W_TUBE_BOTTLENECK_METADATA if training.get("modelProfile") == "W-tube"
+                  else BOTTLENECK_METADATA)
+    for key, expected in (("anchor", ANCHOR_METADATA), ("bottleneck", bottleneck)):
         if key in training:
             value = training[key]
             integer_key = "maxModes" if key == "anchor" else "layersPerBlock"
             if (not isinstance(value, dict) or value != expected
                     or type(value.get(integer_key)) is not int):
-                raise ValueError(f"Invalid checkpoint {key}: use the current multires architecture")
+                raise ValueError(f"Invalid checkpoint {key}: use the declared model architecture")
+            if key == "bottleneck" and training.get("modelProfile") == "W-tube":
+                if (type(value.get("stages")) is not int
+                        or any(type(scale) is not int for scale in value.get("scales", []))):
+                    raise ValueError("Invalid W-tube bottleneck geometry metadata")
             result[key] = json.loads(json.dumps(value))
     for key in ("supportedSizes", "trainedSizes"):
         if key in training:
@@ -141,6 +148,10 @@ def training_provenance(training: dict) -> dict:
         if training["datasetFormat"] not in ("optical-decoder-dataset", "neural-qr-dataset"):
             raise ValueError("Unsupported checkpoint dataset format")
         result["datasetFormat"] = training["datasetFormat"]
+    if "datasetVersion" in training:
+        if type(training["datasetVersion"]) is not int or training["datasetVersion"] not in (1, 2):
+            raise ValueError("Unsupported checkpoint dataset version")
+        result["datasetVersion"] = training["datasetVersion"]
     for key in ("bestValidationExact", "bestValidationLoss"):
         if key in training:
             value = training[key]
@@ -217,15 +228,19 @@ def load_checkpoint(path: Path, model: NeuralCorrector | None = None) -> dict:
             raise ValueError(f"Checkpoint {name} disagrees with model parameters")
     if model.variable_frames and checkpoint["training"].get("framesPerInput") != 8:
         raise ValueError(f"{model.profile} checkpoint requires eight-slot frame metadata")
-    if model.profile == "multires":
-        geometry = {"modelProfile": "multires", "datasetFormat": "neural-qr-dataset",
-                    "pixelsPerCell": 2, "supportedSizes": list(MULTIRES_SIZES),
+    if model.profile in ("multires", "W-tube"):
+        geometry = {"modelProfile": model.profile, "datasetFormat": "neural-qr-dataset",
+                    "pixelsPerCell": model.pixels_per_cell, "supportedSizes": list(model.supported_sizes),
                     "anchor": model.anchor_metadata, "bottleneck": model.bottleneck_metadata}
+        if model.profile == "W-tube":
+            geometry["datasetVersion"] = 2
         for name, expected_value in geometry.items():
             if checkpoint["training"].get(name) != expected_value:
-                raise ValueError(f"multires checkpoint requires {name}={expected_value}")
+                raise ValueError(f"{model.profile} checkpoint requires {name}={expected_value}")
         if not checkpoint["training"].get("trainedSizes"):
-            raise ValueError("multires checkpoint requires trainedSizes to identify learned anchors")
+            raise ValueError(f"{model.profile} checkpoint requires trainedSizes to identify learned anchors")
+        if set(checkpoint["training"]["trainedSizes"])-set(model.supported_sizes):
+            raise ValueError("Checkpoint trainedSizes contains an unsupported model grid")
     elif checkpoint["training"].get("datasetFormat", "optical-decoder-dataset") != "optical-decoder-dataset":
         raise ValueError("U-tube checkpoints require the established optical-decoder-dataset geometry")
     validate_split_provenance(checkpoint["training"])

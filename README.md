@@ -16,9 +16,10 @@ The [Neural-QR design](docs/NEURAL_QR.md) and [roadmap](docs/ROADMAP.md) define 
 remaining model and packet-integration steps. Version-2 header-free acquisition is implemented
 in `capture.html`, including optical size identification, G16/G32/G64/G128
 recordings at 4×4 pixels per cell and server uploads. The [W-tube data pipeline](docs/W_TUBE_DATA.md)
-imports eligible earlier captures and generates harder paired synthetics. W-tube training is the next
-model milestone; the current `multires` model retains its separate 2×2-cell
-experiment contract. The existing `neural-zkboo.html` remains the working
+imports eligible earlier captures and generates harder paired synthetics. **W-tube
+training and evaluation are implemented** for this four-pixel corpus; model export
+and browser integration remain next steps. The `multires` model retains its
+separate 2×2-cell experiment contract. The existing `neural-zkboo.html` remains the working
 baseline while that format is developed. Functional success does not establish
 cryptographic security or a controlled throughput advantage over QR; those are
 separate acceptance criteria. Earlier experiments remain available as research
@@ -40,7 +41,7 @@ for the original dynamical-systems exploration.
 | Neural-QR transport research | [Design](docs/NEURAL_QR.md), [current Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Custom neural-readable matrices. Header-free rendering/acquisition runs in `capture.html`; OBM5 remains the working authentication baseline until multires model and packet integration. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
 | Neural-ZKBoo authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | A 32-repetition phone/PC exchange completed with trained four-phase data reception and static QR ACKs. Baseline for Neural-QR integration. |
-| Neural corrector | [Model and training](experiments/neural-corrector/README.md), [collection guide](docs/MULTIRES_COLLECTION.md), `corrector.html` and `capture.html` | Existing U-tube and 2×2-cell multires experiments; version-2 G16–G128 collection for the planned 4×4-cell W-tube. Earlier phase-grouped G64 training powers the separate working authentication baseline. |
+| Neural corrector | [Model and training](experiments/neural-corrector/README.md), [collection guide](docs/MULTIRES_COLLECTION.md), `corrector.html` and `capture.html` | W-tube training/evaluation on version-2 G16–G128 four-pixel data; separate U-tube and two-pixel multires experiments remain available. Earlier phase-grouped G64 training powers the separate working authentication baseline. |
 
 Read [use cases](docs/USE_CASES.md), [format boundaries](docs/FORMATS.md), and
 [development instructions](docs/DEVELOPMENT.md) before changing a protocol.

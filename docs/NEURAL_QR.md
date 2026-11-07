@@ -10,7 +10,7 @@ format, not a standards-compatible QR code.
 This milestone collects training evidence. It does not yet deliver Neural-QR
 packets or perform QR-free authentication. The working
 [Neural-ZKBoo demo](NEURAL_ZKBOO_DEMO.md) still uses its OBM5 color DATA and
-standard QR ACKs while W-tube and the in-band packet codec are built.
+standard QR ACKs while W-tube is trained and its browser/packet integration is built.
 The collector accepts only the new acquisition layout; it has no OBM5 fallback.
 
 The goal is fast, reliable optical authentication, with Neural-QR carrying both
@@ -64,9 +64,10 @@ The collector displays uniformly random logical symbols with fixed reference
 cells, not an encoded application packet. It is suitable for learning the optical
 correction task without requiring a trained model to label recordings.
 
-The next model is **W-tube**, with shared processing weights and independent
-low-frequency anchors for G16/G32/G64/G128. It is planned, not implemented in
-this collection milestone. The existing `multires` model and its 2×2-cell
+The model for these inputs is **W-tube**, with shared processing weights and
+independent low-frequency anchors for G16/G32/G64/G128. Its Python training and
+evaluation are implemented; trained device accuracy and browser integration
+remain to be measured. The existing `multires` model and its 2×2-cell
 training/export path remain a separate experiment and cannot load version-2
 recordings directly. The [roadmap](ROADMAP.md) separates these tasks.
 
@@ -98,9 +99,9 @@ a different or uncertain size is rejected rather than guessed from the expected
 profile. Error correction belongs to the future packet profile.
 
 Preserve palette masks `(0, 15, 7, 8)`, logical-label output and phase pairing:
-four to eight distinct exposures, at most two per phase. The planned W-tube
-accepts `4G×4G` RGB crops. Its training, export and live packet integration are
-next steps; no existing checkpoint is declared compatible with the new design.
+four to eight distinct exposures, at most two per phase. W-tube
+accepts `4G×4G` RGB crops. Training/evaluation is implemented; export and live
+packet integration are next steps; no existing checkpoint is declared compatible with the new design.
 
 Preserve the reference-grid convention and measured color normalization. Retain
 the G64/RS32 data profile as a comparison while adding smaller controls and larger
@@ -338,9 +339,10 @@ audited cryptographic security result.
    original G64 crops and bicubic-upsampled recordings with explicit origin tags,
    preserves their splits, and generates harder paired synthetics at a 4:1
    capture ratio. New native recordings remain the primary validation source.
-3. **Next:** implement W-tube and train/evaluate against fresh native captures.
-   Leaner history reports, origin-aware sampling and selected-size ONNX/browser
-   parity belong to this model milestone.
+3. **Implemented:** W-tube training/evaluation and strict checkpoint loading.
+   Train from scratch against the prepared four-pixel corpus; native validation
+   is primary and auxiliary origins are reported separately. A real-origin
+   sampling quota, further history slimming and ONNX/browser parity remain next.
 4. Add the in-band ECC/CRC packet codec and full identifier checks, bounded
    packet/phase association and small Neural-QR controls to authentication. This
    replaces the working OBM5/QR-ACK path when both endpoints are ready.

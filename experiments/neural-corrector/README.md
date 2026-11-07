@@ -2,7 +2,8 @@
 
 > The current collector records **Neural-QR v2, 4×4 pixels/cell,
 > G16/G32/G64/G128**. Collection, [offline imports and paired synthetic generation](../../docs/W_TUBE_DATA.md)
-> are available; **W-tube** training/export implementation is still pending. The implemented
+> and **W-tube training/evaluation** are available. W-tube export and browser
+> integration remain pending. The separate
 > `multires` profile described below consumes existing prepared **2×2-cell**
 > datasets and cannot train on the new recordings. Keep them in a separate
 > directory; see [collection instructions](../../docs/MULTIRES_COLLECTION.md).
@@ -28,7 +29,9 @@ static serving and browser tests.
 
 The next integrated transport is [Neural-QR](../../docs/NEURAL_QR.md), designed to supply
 geometry, phase identity and normalized crops without a separately decoded dense
-header. The `multires` architecture shares a trunk across six sizes, with independent
+header. **W-tube** processes its current four-pixel inputs through two complete
+U stages, with independent low-frequency anchors at G16/G32/G64/G128. The
+separate `multires` architecture shares a trunk across six sizes, with independent
 per-size low-frequency anchors and six alternating convolution/attention
 blocks, with two layers in each block. The
 [current collector](../../docs/MULTIRES_COLLECTION.md) records G16…G128 at 4×4
@@ -41,6 +44,7 @@ retain their independent four-pixels-per-axis input contract.
 
 | Profile | Input forms | Internal design | Parameters |
 | --- | --- | --- | --- |
+| `W-tube` | Four-phase burst, 4–8 observations in eight slots; G16/G32/G64/G128 | Two full-resolution U stages, 32 channels, two convolutions + two attention layers per bottleneck, independent cosine anchors | 454,992 processing + 32,768 anchors = **487,760** |
 | `multires` | Four-phase burst, 4–8 observations in eight slots; G8…G256 | One-level 2G→G→2G U; six alternating conv/attention blocks; independent cosine anchors | 231,120 shared + 43,008 anchor coefficients = 274,128 |
 | `U-tube` | Single RGB frame or fixed T-frame burst | Full-resolution U, 32 channels, two convs per block | 140,976 at T=1; 144,432 at T=5 |
 | `U-tube-2x` | Single RGB frame or fixed T-frame burst | Same U width; residual blocks with four outer/eight bottleneck convs | 276,336 at T=1; 279,792 at T=5 |
@@ -48,7 +52,8 @@ retain their independent four-pixels-per-axis input contract.
 
 `U-tube` is the default profile. The trained four-phase experiment uses
 `U-tube-2x-attn`. Select `--model multires --frames 8` only for prepared 2×2-cell Neural-QR datasets.
-All profiles produce `[N,16,G,G]` logits. The three U-tube profiles use four input
+Select **`--model W-tube --frames 8`** for the new version-2 four-pixel corpus.
+All profiles produce `[N,16,G,G]` logits. W-tube and the three U-tube profiles use four input
 pixels per axis per output cell; `multires` uses two. For G64, the U-tube path operates at **256→128→64→128→256**, followed by a
 **256→128→64** outlet. Block outputs remain 32 channels. Skip concatenations
 briefly have 64 channels; the head produces 16 logits. No raw RGB bypass reaches
@@ -60,6 +65,14 @@ labels, which the receiver maps back to logical symbols. The attention profile
 requires **G64, sixteen colors and four permuted phases**, and predicts canonical
 logical data symbols directly. Its spatial anchor and attention windows are
 currently tied to G64.
+
+W-tube has two independently parameterized **4G→2G→G→2G→4G** stages. Each
+bottleneck contains two convolutions and two 8×8-window attention layers, with
+shifts zero and four. Each U exit fuses its full-resolution input and reconstructed
+features through residual addition, channel normalization and ReLU. A single
+selected anchor is added after the inlet; its 16×16 cosine coefficients reconstruct
+a G×G field and are enlarged fourfold. The final outlet performs **4G→2G→G**
+reduction before the sixteen-class head. See [the W-tube diagrams](../../docs/NEURAL_CORRECTOR.md#w-tube).
 
 `multires` reconstructs a separate G×G positional field from at most 16×16
 learned cosine coefficients per channel, then enlarges that field 2× at the
@@ -88,17 +101,25 @@ assigned train/validation split. The [W-tube rebuild](../../docs/W_TUBE_DATA.md)
 combines native version-2 recordings, bicubic-resampled version-1 Neural-QR
 crops, and eligible original G64 payload crops. It regenerates clean targets and
 harder paired synthetics at a **4:1 synthetic/real capture ratio**, rounded up to
-complete four-phase bursts. The planned training mix remains **50/50**; disk
+complete four-phase bursts. The W-tube training mix remains **50/50**; disk
 counts do not set the sampling ratio. Existing model training can apply
 mild photometric augmentation. Synthetics include curved moiré, capture-resolution
 loss, rolling shutter, motion/RGB-offset blur, white balance/exposure changes,
 shadows, reflections, glare and sensor noise.
 
-Multires training uses one resolution per update, chooses resolutions uniformly,
-and balances sources, recorded device directions and physical sessions. Its
+W-tube and multires training use one resolution per update, choose resolutions uniformly,
+and balance sources, recorded device directions and physical sessions. Their
 validation measures exact **logical data matrices** and masked cell error, with
 equal weight across resolutions, directions and K4…K8. There are no packet bytes
 or CRC recovery claims in the raw-symbol Neural-QR dataset.
+
+For W-tube, native real validation is the primary population whenever available;
+auxiliary origins have separate summaries. A corpus without native validation is
+explicitly reported as auxiliary-only. A separate native/auxiliary sampling quota
+within the real training half remains future work. Start W-tube from scratch;
+continuation via `--initialize` requires a W-tube checkpoint and a new run folder.
+The [W-tube training guide](../../docs/NEURAL_CORRECTOR_TRAINING.md#train-w-tube)
+provides complete training, continuation and evaluation commands.
 
 Current collection files use `neural-qr-sender` / `neural-qr-captures`, and their
 joined datasets use `neural-qr-dataset`, version 2. Explicit offline conversion

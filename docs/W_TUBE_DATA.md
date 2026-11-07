@@ -1,8 +1,9 @@
 # W-tube data: reuse recordings and generate paired synthetics
 
 This pipeline prepares the next **4×4-pixel-cell, G16/G32/G64/G128** corpus.
-Collection and data preparation are implemented. The W-tube model, origin-aware
-training sampler and browser export are the next milestone. Existing `multires`
+Collection, data preparation and **W-tube training/evaluation are implemented**.
+Use [the training commands](NEURAL_CORRECTOR_TRAINING.md#train-w-tube) after rebuilding.
+A separate real-origin sampling quota and browser export remain next steps. Existing `multires`
 checkpoints use two pixels per cell and cannot consume this corpus.
 
 ## Three recording roots, one dataset contract
@@ -25,9 +26,9 @@ start with the available rounds; an empty collection root does not require a
 dummy session. Record new sessions only in `recordings/`.
 
 Bicubic enlargement makes tensor dimensions compatible; it does **not** restore
-camera detail. `resampled` and `header-g64` remain auxiliary origins. Future
-W-tube evaluation should use fresh native validation as its primary result and
-report auxiliary origins separately. Do not pool them into a single headline
+camera detail. `resampled` and `header-g64` remain auxiliary origins. W-tube evaluation uses fresh native real validation as its primary result when
+available and reports auxiliary origins separately. Without native candidates,
+it explicitly labels the result auxiliary-only. Do not pool them into a single headline
 score that could hide native failures.
 
 The importer preserves sender and receiver physical-session identities, split,
@@ -39,6 +40,13 @@ A rebuild needs at least one capture of every phase per target. The plan flags
 targets that lack two per phase with `someTargetsLackK8`; they remain usable at
 lower observation counts, but cannot supply a full K8 example. Captures are
 never duplicated to fill a missing observation.
+
+The current W-tube trainer samples all K4…K8 budgets and therefore requires
+**at least two captures of every phase per target**, in both training and
+validation. A one-per-phase target can be retained by the importer, but is not
+ready for this training command. Collect more captures or leave that incomplete
+target out of the training corpus. Ordinary completed 8-, 16- and 32-per-phase
+pools exceed this minimum.
 
 Original OBM message bytes are not treated as Neural-QR symbols. The offline
 import reconstructs the original frame from the sender manifest, resolves its
@@ -144,8 +152,8 @@ slots. K4–K8 model examples will draw from these captures during training.
 
 The intended training mix remains **50% real and 50% synthetic** with paired
 targets. A larger synthetic corpus provides more corruptions of each target;
-it does not make the training sampler use 80% synthetic inputs. Origin-aware
-sampling and native-first validation will be implemented with W-tube training.
+it does not make the training sampler use 80% synthetic inputs. Native-first validation is implemented. A separate quota controlling native
+versus auxiliary examples within the real half remains a sampling refinement.
 
 ## Harder, coherent corruptions
 
@@ -178,6 +186,7 @@ access to its clean target. Output metadata records the recipe, random seed,
 paired target and source origin so data generation is repeatable and auditable.
 
 See [the collection guide](MULTIRES_COLLECTION.md) for more native recordings,
-[the architecture plan](ROADMAP.md#current-iteration-checklist) for W-tube, and
-[the existing training guide](NEURAL_CORRECTOR_TRAINING.md) for the separate
-prepared U-tube and two-pixel multires experiments.
+[the W-tube architecture](NEURAL_CORRECTOR.md#w-tube), and
+[the training guide](NEURAL_CORRECTOR_TRAINING.md#train-w-tube) for training and
+evaluation commands. Separate prepared U-tube and two-pixel multires experiments
+remain documented there.

@@ -6,11 +6,11 @@ camera image directly to **4×4 pixels per cell**. The receiver reads the grid
 size and phase from optical cues; sender labels are used only during offline
 joining.
 
-This implements the collection milestone for the planned **W-tube**. The current
-Python `multires` model is still the earlier 2×2-cell experiment.
-[Offline imports and stronger paired synthetics](W_TUBE_DATA.md) are implemented;
-W-tube training and browser model integration are the next steps. Do not feed these recordings to the current
-`multires` training command.
+The **W-tube** model now trains and evaluates this four-pixel corpus; follow
+[dataset preparation](W_TUBE_DATA.md) and [training](NEURAL_CORRECTOR_TRAINING.md#train-w-tube).
+The Python `multires` model remains the earlier two-pixel experiment, so do not
+pass these recordings to its training command. W-tube browser integration is
+a separate next step.
 
 Reload both devices after updating. Current sender/capture/session files and
 joined Neural-QR datasets use version 2. Earlier recordings remain untouched,
@@ -199,4 +199,5 @@ To combine the three recording rounds and generate paired synthetics, use
 [the W-tube data pipeline](W_TUBE_DATA.md). It reads `recordings/`,
 `recordings-1/` and `recordings-0/` separately, preserving the files and their
 split assignments. Do not edit older recording metadata to resemble the new
-format. Only W-tube model training/export remains pending.
+format. W-tube training/evaluation is implemented; browser export and live
+integration remain pending.

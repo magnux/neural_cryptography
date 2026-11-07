@@ -93,17 +93,44 @@ def _breakdown(leaves):
     return summary
 
 
+def _primary_wtube_leaves(leaves):
+    """Select native real evidence when available, keeping auxiliary results separate."""
+    real = {key: row for key, row in leaves.items() if key[1] == "real"}
+    if not real:
+        raise ValueError("W-tube checkpoint selection requires held-out real captures")
+    native = {key: row for key, row in real.items() if key[4] == "native"}
+    return (native, "native") if native else (real, "auxiliary-only")
+
+
+def _by_size(leaves):
+    result = {}
+    for size in sorted({key[0] for key in leaves}):
+        subset = {key: row for key, row in leaves.items() if key[0] == size}
+        result[str(size)] = {**_breakdown(subset), "byFrameCount": {
+            str(k): _breakdown({key: row for key, row in subset.items() if key[3] == k})
+            for k in range(4, 9)}}
+    return result
+
+
 def evaluate_matrices(model, dataset, *, device="cpu", max_samples=0, session_groups=None,
                       detailed=False):
-    from evaluate import select_samples  # Shared unbiased diagnostic subset selection.
-    if dataset.dataset_format != "neural-qr-dataset" or model.profile != "multires":
-        raise ValueError("Neural-QR matrix evaluation requires the multires model and Neural-QR dataset")
+    from evaluate import select_samples, require_implemented_model_contract
+    require_implemented_model_contract(dataset, model)
+    if dataset.dataset_format != "neural-qr-dataset" or model.profile not in ("multires", "W-tube"):
+        raise ValueError("Neural-QR matrix evaluation requires its matching multires or W-tube model")
+    wtube = model.profile == "W-tube"
+    if wtube and any(sample.metadata.get("origin") not in ("native", "resampled", "header-g64")
+                     for sample in dataset.samples):
+        raise ValueError("W-tube evaluation requires explicit native/resampled/header-g64 origin metadata")
+    if any(sample.shape[0] not in model.supported_sizes for sample in dataset.samples):
+        raise ValueError(f"Model supports only matrix sizes {model.supported_sizes}")
     groups = infer_session_groups(dataset.samples) if session_groups is None else session_groups
     validate_session_groups(dataset.samples, groups)
     index = BurstIndex(dataset.samples, 8, min_frames=4, presence=True)
     leaves = defaultdict(counter)
     counts, by_count, timings, rows = {}, {}, [], []
     first_ids, used_ids, available_ids = None, set(), set()
+    used_by_origin, available_by_origin = defaultdict(set), defaultdict(set)
     previous_mode = model.training
     model.to(device).eval()
     try:
@@ -117,12 +144,14 @@ def evaluate_matrices(model, dataset, *, device="cpu", max_samples=0, session_gr
                 if first_ids is not None and identities != first_ids:
                     raise ValueError("Every K preset must use the same seeded capacity blocks")
                 first_ids = identities
-                available = {(s.shape[0], s.metadata["source"], groups[s.metadata["sessionId"]])
+                available = {(s.shape[0], s.metadata["source"], groups[s.metadata["sessionId"]],
+                              s.metadata.get("origin") if wtube else None)
                              for s in dataset.samples if s.metadata["source"] == "real"}
-                chosen = {(s.shape[0], s.metadata["source"], groups[s.metadata["sessionId"]])
+                chosen = {(s.shape[0], s.metadata["source"], groups[s.metadata["sessionId"]],
+                           s.metadata.get("origin") if wtube else None)
                           for s in selected if s.metadata["source"] == "real"}
                 if available-chosen:
-                    raise ValueError("Evaluation cap omits real resolution/group combinations; use --max-samples 0")
+                    raise ValueError("Evaluation cap omits real resolution/group/origin combinations; use --max-samples 0")
                 for sample in selected:
                     pixels, labels, mask = sample.tensors()
                     values = torch.from_numpy(pixels[None]).to(device)
@@ -142,43 +171,74 @@ def evaluate_matrices(model, dataset, *, device="cpu", max_samples=0, session_gr
                     cells = int(mask.sum())
                     source, size = sample.metadata["source"], sample.shape[0]
                     group = groups[sample.metadata["sessionId"]] if source == "real" else "source:synthetic"
-                    add(leaves[(size, source, group, count)], loss=loss, wrong=wrong, cells=cells, captures=count)
+                    origin = sample.metadata.get("origin")
+                    key = (size, source, group, count, origin) if wtube else (size, source, group, count)
+                    add(leaves[key], loss=loss, wrong=wrong, cells=cells, captures=count)
                     used_ids.update(member.id for member in sample.members)
+                    if source == "real":
+                        used_by_origin[origin].update(member.id for member in sample.members)
                     if detailed:
                         rows.append({"id": sample.id, "memberIds": [m.id for m in sample.members],
                                      "sessionId": sample.metadata["sessionId"], "source": source,
                                      "size": size, "group": group, "frames": count,
+                                     **({"origin": origin} if wtube else {}),
                                      "loss": loss, "wrongCells": wrong, "dataCells": cells,
                                      "exact": wrong == 0})
                 available_ids.update(member.id for sample in candidates for member in sample.members)
+                for sample in candidates:
+                    if sample.metadata["source"] == "real":
+                        available_by_origin[sample.metadata.get("origin")].update(m.id for m in sample.members)
                 current = {key: value for key, value in leaves.items() if key[3] == count}
                 by_count[str(count)] = {**_breakdown(current), "framesPerInput": count,
                                        "burstGrouping": stats}
                 counts[str(count)] = len(selected)
     finally:
         model.train(previous_mode)
+    all_leaves, extra = leaves, {}
+    if wtube:
+        leaves, population = _primary_wtube_leaves(all_leaves)
+        selected_origins = sorted({key[4] for key in leaves})
+        origins = {}
+        for origin in sorted({key[4] for key in all_leaves if key[1] == "real"}):
+            subset = {key: row for key, row in all_leaves.items() if key[4] == origin and key[1] == "real"}
+            origins[origin] = {**_summary_with_size_macro(subset),
+                               "sizes": sorted({key[0] for key in subset})}
+        extra = {"evaluationPopulation": population, "nativeAvailable": population == "native",
+                 "origins": origins, "evaluatedCases": sum(counts.values()),
+                 "evaluatedSizes": sorted({key[0] for key in all_leaves}),
+                 "primarySizes": sorted({key[0] for key in leaves})}
+        synthetic = {key: row for key, row in all_leaves.items() if key[1] == "synthetic"}
+        if synthetic:
+            extra["syntheticValidation"] = _summary_with_size_macro(synthetic)
+        by_count = {str(k): {**_breakdown({key: row for key, row in leaves.items() if key[3] == k}),
+                            "framesPerInput": k} for k in range(4, 9)}
+        counts = {str(k): by_count[str(k)]["samples"] for k in range(4, 9)}
+        used_ids = set().union(*(used_by_origin[origin] for origin in selected_origins))
+        available_ids = set().union(*(available_by_origin[origin] for origin in selected_origins))
     sizes = sorted({key[0] for key in leaves})
-    by_size = {}
-    for size in sizes:
-        subset = {key: row for key, row in leaves.items() if key[0] == size}
-        by_size[str(size)] = {**_breakdown(subset), "byFrameCount": {
-            str(k): _breakdown({key: row for key, row in subset.items() if key[3] == k})
-            for k in range(4, 9)}}
+    score = _selection(leaves)
+    if wtube:
+        score.update(originScope=extra["evaluationPopulation"],
+                     nativeAvailable=extra["nativeAvailable"], origins=selected_origins)
     result = {"format": "neural-corrector-evaluation", "version": 1,
-              "modelProfile": "multires", "datasetFormat": "neural-qr-dataset",
+              "modelProfile": model.profile, "datasetFormat": "neural-qr-dataset",
+              "datasetVersion": dataset.dataset_version,
               "outputLabelSpace": "logical", "metric": "exact-masked-logical-matrix",
               "note": "cellErrorRate pools data cells; sizeMacroCellErrorRate averages per-grid CER over represented grids. Exact means every data cell is correct, excluding fixed references. No CRC, error correction or packet recovery is measured. K presets reuse nested captures and are not independent trials.",
               "manifestSha256": dataset.manifest_hash, "framesPerInput": 8,
               "frameCapacity": 8, "actualFrameCounts": [4, 5, 6, 7, 8],
-              "pixelsPerCell": 2, "profiles": {str(size): sum(v["samples"] for k, v in leaves.items() if k[0] == size) for size in sizes},
-              **_breakdown(leaves), "selectionScore": _selection(leaves),
-              "bySize": by_size, "byFrameCount": by_count,
+              "pixelsPerCell": model.pixels_per_cell, "profiles": {str(size): sum(v["samples"] for k, v in leaves.items() if k[0] == size) for size in sizes},
+              **_breakdown(leaves), "selectionScore": score,
+              "bySize": _by_size(leaves), "byFrameCount": by_count, **extra,
               "observationCases": sum(counts.values()), "uniqueCandidates": counts["4"],
               "uniqueInputCaptures": len(used_ids), "availableInputCaptures": len(available_ids),
               "burstGrouping": {"method": VARIABLE_EVALUATION_POLICY, "seed": EVALUATION_SEED,
                                 "frameCapacity": 8, "actualFrameCounts": [4, 5, 6, 7, 8]},
               "inferenceMs": {"p50": float(np.percentile(timings, 50)), "p95": float(np.percentile(timings, 95)),
                               "note": "PyTorch forward latency; no browser or transport throughput claim."}}
+    if wtube:
+        result["note"] += (" Headline and grid/K tables use native real captures when available; otherwise they use explicitly labelled auxiliary real evidence. "
+                           "Origins are reported separately, and primarySizes lists the grids covered by the headline.")
     if detailed:
         result["cases"] = rows
     return result

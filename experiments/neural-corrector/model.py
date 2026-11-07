@@ -3,6 +3,7 @@
 Fixed-frame profiles accept stacked RGB, [N,3*T,4G,4G]. U-tube-2x-attn accepts
 eight RGB slots followed by eight presence planes, [N,32,256,256]. Multires
 uses the same channel packing at [N,32,2G,2G] with independent G8..G256 anchors.
+W-tube uses [N,32,4G,4G], G16..G128 anchors, and two full-resolution U passes.
 All produce
 palette logits [N,16,G,G]: physical classes for fixed-frame models, canonical
 logical data classes for the phase-grouped model. The public output adapter
@@ -19,14 +20,17 @@ from torch.nn import functional as F
 from contract import CHANNELS, FRAME_COUNTS, MAX_FRAMES, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 
 
-MODEL_PROFILES = ("U-tube", "U-tube-2x", "U-tube-2x-attn", "multires")
+MODEL_PROFILES = ("U-tube", "U-tube-2x", "U-tube-2x-attn", "multires", "W-tube")
 DEFAULT_MODEL_PROFILE = "U-tube"
 MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
+W_TUBE_SIZES = (16, 32, 64, 128)
 ANCHOR_MAX_MODES = 16
 ANCHOR_METADATA = {"representation": "dct-low-frequency", "maxModes": ANCHOR_MAX_MODES,
                    "normalization": "ortho", "spatialScale": "grid-over-modes"}
 BOTTLENECK_METADATA = {"blocks": ["conv", "attention", "conv", "attention", "conv", "attention"],
                        "layersPerBlock": 2}
+W_TUBE_BOTTLENECK_METADATA = {"stages": 2, "blocks": ["conv", "attention"],
+    "layersPerBlock": 2, "scales": [4, 2, 1, 2, 4], "fusion": "normalized-residual"}
 
 
 def dct_anchor_basis(size: int, *, device=None, dtype=torch.float32) -> torch.Tensor:
@@ -195,6 +199,34 @@ class WindowAttentionBlock(nn.Module):
         return values + feed_forward
 
 
+class UTubeStage(nn.Module):
+    """One 4G -> 2G -> G -> 2G -> 4G pass in the W-tube.
+
+    Each skip contains normalized learned features. The bottleneck has exactly
+    two convolutions and two attention layers; no operation goes below G.
+    Normalized residual fusion gives the next pass both the incoming features
+    and this pass's refinement, without exposing a raw RGB shortcut.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.e0 = ResidualBlock(32, pairs=2)
+        self.e1 = ResidualBlock(32, pairs=2, stride=2)
+        self.bottleneck = ResidualBlock(32, pairs=1, stride=2)
+        self.attention = nn.Sequential(WindowAttentionBlock(), WindowAttentionBlock(shift=4))
+        self.d1 = ResidualBlock(64, pairs=2)
+        self.d0 = ResidualBlock(64, pairs=2)
+        self.fusion = ChannelLayerNorm(32)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        e0 = self.e0(features)
+        e1 = self.e1(e0)
+        context = self.attention(self.bottleneck(e1))
+        d1 = self.d1(torch.cat((F.interpolate(context, scale_factor=2, mode="nearest"), e1), dim=1))
+        d0 = self.d0(torch.cat((F.interpolate(d1, scale_factor=2, mode="nearest"), e0), dim=1))
+        return F.relu(self.fusion(features + d0))
+
+
 class NeuralCorrector(nn.Module):
     """Full-resolution 32-channel tube, residual U-tube-2x and anchored attention.
 
@@ -210,6 +242,8 @@ class NeuralCorrector(nn.Module):
     six alternating blocks: three two-convolution segments and three pairs of
     window-attention layers. Each independent anchor is limited to 16x16 cosine
     modes per channel; no learned dense position map exists.
+    W-tube restores two contractions to the target grid and repeats the complete
+    U twice with independent weights. Each U has one conv/attention pair at G.
     """
 
     def __init__(self, profile: str = DEFAULT_MODEL_PROFILE, frames: int | None = None) -> None:
@@ -217,20 +251,22 @@ class NeuralCorrector(nn.Module):
         if profile not in MODEL_PROFILES:
             raise ValueError(f"Choose model profile from {MODEL_PROFILES}")
         if frames is None:
-            frames = 8 if profile in ("U-tube-2x-attn", "multires") else 1
+            frames = 8 if profile in ("U-tube-2x-attn", "multires", "W-tube") else 1
         if type(frames) is not int or frames not in FRAME_COUNTS:
             raise ValueError(f"Choose 1 to {MAX_FRAMES} input frames")
-        if profile in ("U-tube-2x-attn", "multires") and frames != 8:
+        if profile in ("U-tube-2x-attn", "multires", "W-tube") and frames != 8:
             raise ValueError(f"{profile} uses eight phase-paired slots, with four to eight present frames")
         self.profile = profile
         self.frames = frames
-        self.variable_frames = profile in ("U-tube-2x-attn", "multires")
+        self.variable_frames = profile in ("U-tube-2x-attn", "multires", "W-tube")
         self.min_frames = 4 if self.variable_frames else frames
         self.input_channels = 4 * frames if self.variable_frames else 3 * frames
         self.input_layout = "phase-paired-rgb-presence-planes" if self.variable_frames else "stacked-rgb"
         self.output_label_space = "logical" if self.variable_frames else "physical"
         self.phase_masks = (0, 15, 7, 8) if self.variable_frames else ()
-        self.supported_sizes = MULTIRES_SIZES if profile == "multires" else ((64,) if self.variable_frames else (64, 128))
+        self.supported_sizes = (W_TUBE_SIZES if profile == "W-tube" else
+                                MULTIRES_SIZES if profile == "multires" else
+                                ((64,) if self.variable_frames else (64, 128)))
         self.pixels_per_cell = 2 if profile == "multires" else 4
         self.inlet = nn.Sequential(conv(self.input_channels, 32, normalize=profile == "U-tube"),
                                    conv(32, 32, normalize=True))
@@ -251,6 +287,19 @@ class NeuralCorrector(nn.Module):
             self.d0 = ResidualBlock(64, pairs=2)
             self.anchor_metadata = dict(ANCHOR_METADATA)
             self.bottleneck_metadata = {**BOTTLENECK_METADATA, "blocks": list(BOTTLENECK_METADATA["blocks"])}
+            self.anchor_coefficients = nn.ParameterDict({
+                str(size): nn.Parameter(torch.empty(1, 32, min(size, ANCHOR_MAX_MODES),
+                                                      min(size, ANCHOR_MAX_MODES)))
+                for size in self.supported_sizes})
+            for size in self.supported_sizes:
+                self.register_buffer(f"anchor_basis_{size}", dct_anchor_basis(size), persistent=False)
+                nn.init.normal_(self.anchor_coefficients[str(size)], mean=0., std=.02)
+        elif profile == "W-tube":
+            self.stages = nn.ModuleList([UTubeStage(), UTubeStage()])
+            self.anchor_metadata = dict(ANCHOR_METADATA)
+            self.bottleneck_metadata = {**W_TUBE_BOTTLENECK_METADATA,
+                "blocks": list(W_TUBE_BOTTLENECK_METADATA["blocks"]),
+                "scales": list(W_TUBE_BOTTLENECK_METADATA["scales"])}
             self.anchor_coefficients = nn.ParameterDict({
                 str(size): nn.Parameter(torch.empty(1, 32, min(size, ANCHOR_MAX_MODES),
                                                       min(size, ANCHOR_MAX_MODES)))
@@ -280,11 +329,11 @@ class NeuralCorrector(nn.Module):
 
         The G/m scale makes spatial RMS equal coefficient RMS (up to float32
         rounding), keeping initialization and coefficient step units consistent
-        across resolutions. The model's ordinary 2x interpolation follows this
-        reconstruction; only the positional prior is bandwidth-limited.
+        across resolutions. Interpolation to the profile's camera-raster size
+        follows this reconstruction; only the positional prior is bandwidth-limited.
         """
-        if self.profile != "multires" or type(size) is not int or size not in self.supported_sizes:
-            raise ValueError("Spatial anchor requires a supported multires grid")
+        if self.profile not in ("multires", "W-tube") or type(size) is not int or size not in self.supported_sizes:
+            raise ValueError("Spatial anchor requires a supported anchored-model grid")
         coefficients = self.anchor_coefficients[str(size)]
         basis = getattr(self, f"anchor_basis_{size}")
         return (basis @ coefficients @ basis.transpose(0, 1)) * (size/coefficients.shape[-1])
@@ -318,9 +367,13 @@ class NeuralCorrector(nn.Module):
             pixels = torch.clamp(pixels, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX)
         features = self.inlet(pixels)
         if self.variable_frames:
-            anchor = self.spatial_anchor(size) if self.profile == "multires" else self.position_anchor
+            anchor = self.spatial_anchor(size) if self.profile in ("multires", "W-tube") else self.position_anchor
             features = features + F.interpolate(anchor, scale_factor=self.pixels_per_cell,
                                                  mode="bilinear", align_corners=False)
+        if self.profile == "W-tube":
+            for stage in self.stages:
+                features = stage(features)
+            return self.head(self.outlet(features))
         e0 = self.e0(features)
         if self.profile == "multires":
             context = self.attention(self.bottleneck(e0))
@@ -348,6 +401,9 @@ def profile_from_state(state: dict) -> str:
     inlet = state.get("inlet.0.0.weight")
     if not isinstance(inlet, torch.Tensor) or inlet.ndim != 4:
         raise ValueError("Checkpoint has no valid corrector inlet")
+    if ("anchor_coefficients.16" in state and "stages.0.attention.0.qkv.weight" in state
+            and "stages.1.attention.1.qkv.weight" in state and inlet.shape[1] == 32):
+        return "W-tube"
     if ("anchor_coefficients.64" in state and "attention_third.0.qkv.weight" in state
             and "bottleneck_third.pairs.0.conv1.weight" in state and inlet.shape[1] == 32):
         return "multires"
@@ -370,7 +426,7 @@ def profile_from_state(state: dict) -> str:
 def frames_from_state(state: dict) -> int:
     """Read the input width; remaining tensor shapes are checked by the loader."""
     weight = state.get("inlet.0.0.weight") if isinstance(state, dict) else None
-    if profile_from_state(state) in ("U-tube-2x-attn", "multires"):
+    if profile_from_state(state) in ("U-tube-2x-attn", "multires", "W-tube"):
         return 8
     if (not isinstance(weight, torch.Tensor) or weight.ndim != 4
             or weight.shape[1] % CHANNELS != 0 or weight.shape[1] // CHANNELS not in FRAME_COUNTS):

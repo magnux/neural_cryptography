@@ -16,12 +16,13 @@ packet integration. Header-free `capture.html` now collects its training data;
 the working [device demo](NEURAL_ZKBOO_DEMO.md) still uses
 OBM5 color DATA and static standard QR ACKs.
 
-The next model is **W-tube**, using native **4×4 pixels per cell** at
+The current model for the new corpus is **W-tube**, using **4×4 pixels per cell** at
 G16/G32/G64/G128. Two complete U stages preserve full-resolution features and
 reach the target G at each bottleneck. Each bottleneck has one two-convolution
 block and one two-attention-layer block. Independent low-frequency anchors and
-four-phase K4–K8 inputs remain part of the design. This model is not yet
-implemented.
+four-phase K4–K8 inputs are implemented. Python training, evaluation and strict
+checkpoint loading are ready; new device accuracy and browser deployment still
+require a trained model and measurement.
 
 The current `multires` model remains the preceding 2×2-cell experiment. Its
 completed run learned G16 and G32, but real G64+ recovery was insufficient;
@@ -107,14 +108,15 @@ The separate standard-QR experiment remains useful for comparison.
   dataset volume**, retaining **50/50 training sampling**. Preserve coherent
   phase trajectories and vary camera resolution, blur, curved moiré, rolling
   shutter, glare, exposure and color effects across readable and hard examples.
-- [ ] Implement **W-tube**: two `4G → 2G → G → 2G → 4G` stages, 32-channel
+- [x] Implement **W-tube**: two `4G → 2G → G → 2G → 4G` stages, 32-channel
   normalized feature paths, residual fusion, two convolution layers and two
   attention layers per bottleneck, independent low-frequency anchors, and a
   learned `4G → 2G → G` outlet. Retain presence/loss masks and phase/flip
-  augmentation. Start a new training run.
+  augmentation. [Start a new training run](NEURAL_CORRECTOR_TRAINING.md#train-w-tube).
 - [ ] Balance sizes, directions and real origins. Keep native data the majority
-  of the real quota once available. Preserve an effective batch of 32 and
-  separately report native versus auxiliary validation.
+  of the real quota once available and preserve an effective batch of 32.
+  Native-first checkpoint selection and separate auxiliary validation summaries
+  are already implemented; the real-origin sampling quota is still pending.
 - [ ] Trim histories to static metadata plus canonical training and validation
   tables; derive aggregate views rather than nesting repeated copies.
 - [ ] Export each supported geometry, check numerical parity and measure actual
