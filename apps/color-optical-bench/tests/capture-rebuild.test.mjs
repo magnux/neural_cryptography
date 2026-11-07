@@ -4,6 +4,7 @@ import {mkdir,mkdtemp,writeFile,readFile,rm,readdir,access,symlink} from 'node:f
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 import {createSender,bytesToBase64,floatBytes,floatsFromBytes} from '../dist/js/dataset/contract.js';
 import {CaptureBuffer} from '../dist/js/dataset/capture.js';
 import {PALETTE} from '../dist/js/format.js';
@@ -59,35 +60,73 @@ test('multires clean targets retain ownership and crop-only baselines never use 
   }
 }));
 
+function rebuildOptions(root, overrides={}) {return {recordingsRoot:join(root,'recordings'),resampledRoot:join(root,'absent-v1'),headerRoot:join(root,'absent-header'),out:join(root,'w-tube'),...overrides};}
+
 test('rebuild plan is read-only and failures preserve managed outputs and raw recordings',async()=>temp(async root=>{
-  const recordings=join(root,'recordings'),out=join(root,'multires');await upload(recordings);
+  const recordings=join(root,'recordings'),out=join(root,'w-tube');await upload(recordings);
   const before=await readFile(join(recordings,'train/g16/receiver/captures.json'));
-  const plan=await planRebuild({recordingsRoot:recordings,out});
-  assert.equal(plan.syntheticCapturesPerTarget,256);assert.equal(plan.groups[0].syntheticCaptures,256);assert.equal(plan.groups[0].realCaptures,8);
+  const plan=await planRebuild(rebuildOptions(root));
+  assert.equal(plan.syntheticCaptureQuantum,32);assert.equal(plan.groups[0].syntheticCaptures,32);assert.equal(plan.groups[0].realCaptures,8);
   await assert.rejects(access(out));
   await mkdir(join(out,'real'),{recursive:true});await writeFile(join(out,'real','keep'),'previous dataset');
-  await writeFile(join(out,'build.json'),JSON.stringify({format:BUILD_FORMAT,version:2}));
-  await assert.rejects(rebuild({recordingsRoot:recordings,out,python:join(root,'missing-python')}),/awaits.*W-tube/);
+  await writeFile(join(out,'build.json'),JSON.stringify({format:BUILD_FORMAT,version:1}));
+  await assert.rejects(rebuild(rebuildOptions(root,{python:join(root,'missing-python')})),/ENOENT/);
   assert.equal(await readFile(join(out,'real','keep'),'utf8'),'previous dataset');assert.deepEqual(await readFile(join(recordings,'train/g16/receiver/captures.json')),before);
-  assert.deepEqual((await readdir(root)).sort(),['multires','recordings']);
+  assert.deepEqual((await readdir(root)).sort(),['recordings','w-tube']);
   await writeFile(join(out,'private-notes.txt'),'keep');
-  await assert.rejects(planRebuild({recordingsRoot:recordings,out}),/outside the managed/);
-  await assert.rejects(planRebuild({recordingsRoot:recordings,out:join(recordings,'derived')}),/separate/);
-  await assert.rejects(planRebuild({recordingsRoot:recordings,out:join(root,'new'),maxOutputMib:1}),/exceeds/);
+  await assert.rejects(planRebuild(rebuildOptions(root)),/outside the managed/);
+  await assert.rejects(planRebuild(rebuildOptions(root,{out:join(recordings,'derived')})),/separate/);
+  await assert.rejects(planRebuild(rebuildOptions(root,{out:join(root,'new'),maxOutputMib:1})),/exceeds/);
 }));
 
-test('rebuild rejects incomplete variable-frame pools before creating outputs',async()=>temp(async root=>{
-  const recordings=join(root,'recordings'),out=join(root,'multires');await upload(recordings);
+test('rebuild accepts small complete pools but rejects a missing phase before creating outputs',async()=>temp(async root=>{
+  const recordings=join(root,'recordings'),out=join(root,'w-tube');await upload(recordings);
   const file=join(recordings,'train/g16/receiver/captures.json'),bundle=JSON.parse(await readFile(file,'utf8'));
   bundle.records.splice(bundle.records.findIndex(record=>record.info.phase===0),1);
   await writeFile(file,JSON.stringify(bundle));
-  await assert.rejects(planRebuild({recordingsRoot:recordings,out}),/two captures per phase/);
+  const plan=await planRebuild(rebuildOptions(root));assert.equal(plan.groups[0].someTargetsLackK8,true);
+  bundle.records=bundle.records.filter(record=>record.info.phase!==0);await writeFile(file,JSON.stringify(bundle));
+  await assert.rejects(planRebuild(rebuildOptions(root)),/missing a phase|every phase|all four phases/);
   await assert.rejects(access(out));
 }));
 
-test('full rebuild is explicitly deferred before creating or modifying any files',async()=>temp(async root=>{
-  const recordings=join(root,'recordings'),out=join(root,'multires');await upload(recordings);
-  await assert.rejects(rebuild({recordingsRoot:recordings,out}),/W-tube.*No output was changed/);
-  await assert.rejects(access(out));
-  assert.deepEqual(await readdir(root),['recordings']);
+const python=process.env.PYTHON??'python3';
+const hasPython=spawnSync(python,['-c','import numpy, torch'],{stdio:'ignore'}).status===0;
+test('full rebuild produces paired corpora and replaces only its managed output',{skip:!hasPython},async()=>temp(async root=>{
+  const recordings=join(root,'recordings'),out=join(root,'w-tube');await upload(recordings);
+  const source=join(recordings,'train/g16/receiver/captures.json'),before=await readFile(source);
+  const options=rebuildOptions(root,{python,frames:2,syntheticRatio:1,severity:0,severityMin:0});
+  const result=await rebuild(options);
+  assert.equal(result.datasets.length,1);assert.equal(result.datasets[0].syntheticCaptures,8);
+  for(const [kind,count]of [['real',8],['clean',4],['synthetic',8]]) {
+    const data=JSON.parse(await readFile(join(out,kind,'train/manifest.json'),'utf8'));
+    assert.equal(data.format,'neural-qr-dataset');assert.equal(data.version,2);assert.equal(data.samples.length,count);
+    assert.ok(data.samples.every(sample=>sample.pixelsPerCell===4));
+  }
+  await writeFile(join(out,'real','old-managed-file'),'old');
+  await rebuild(options);
+  await assert.rejects(access(join(out,'real','old-managed-file')));
+  assert.deepEqual(await readFile(source),before);
+  assert.deepEqual((await readdir(root)).sort(),['recordings','w-tube']);
+}));
+
+test('a failed build removes staging and preserves the previous managed corpus',async()=>temp(async root=>{
+  const recordings=join(root,'recordings'),out=join(root,'w-tube');await upload(recordings);
+  await mkdir(join(out,'real'),{recursive:true});await writeFile(join(out,'real/keep'),'previous');
+  await writeFile(join(out,'build.json'),JSON.stringify({format:BUILD_FORMAT,version:1}));
+  const fake=join(root,'fake-python');
+  // The dependency probe succeeds, but synthetic generation exits nonzero.
+  await writeFile(fake,'#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\nexit 23\n',{mode:0o700});
+  await assert.rejects(rebuild(rebuildOptions(root,{python:fake,frames:2,syntheticRatio:1})),/failed \(23\)/);
+  assert.equal(await readFile(join(out,'real/keep'),'utf8'),'previous');
+  assert.deepEqual((await readdir(root)).sort(),['fake-python','recordings','w-tube']);
+}));
+
+test('symlink output and unsupported output markers are never replaced',async()=>temp(async root=>{
+  await upload(join(root,'recordings'));await mkdir(join(root,'other'));
+  await symlink(join(root,'other'),join(root,'w-tube'));
+  await assert.rejects(planRebuild(rebuildOptions(root)),/real directory/);
+  await rm(join(root,'w-tube'));await mkdir(join(root,'w-tube'));
+  await writeFile(join(root,'w-tube/build.json'),JSON.stringify({format:'other-experiment',version:1}));
+  await assert.rejects(planRebuild(rebuildOptions(root)),/Unsupported build marker/);
 }));

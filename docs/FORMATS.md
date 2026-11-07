@@ -1,8 +1,9 @@
 # Formats and layer boundaries
 
-Each layer has one current POC format. There are no compatibility readers for
-previous experiment formats. Update both devices and regenerate affected
-fixtures when changing one.
+Each live layer has one current POC format. Update both devices and regenerate
+affected fixtures when changing one. The explicit [offline recording importer](W_TUBE_DATA.md)
+converts the two earlier collection rounds into the current dataset contract; it
+does not add old-format parsing to the browser or demo server.
 
 **Neural-QR acquisition is now implemented in `capture.html`.** Its
 [layout](NEURAL_QR.md) uses asymmetric geometric markers, repeated phase-color
@@ -28,7 +29,7 @@ has a compatibility fallback to the other format.
 | Neural-corrector checkpoint | `optical-decoder-checkpoint`, version 1 | [`checkpoint.py`](../experiments/neural-corrector/checkpoint.py); local state dict and training/split provenance |
 | Neural-QR acquisition layout | `neural-qr`, version 2 | [`layout.js`](../apps/color-optical-bench/dist/js/neural-qr/layout.js), [`vision.js`](../apps/color-optical-bench/dist/js/neural-qr/vision.js); optical G16/G32/G64/G128 size codes, 16 colors, four phases, grid-8 references, 4×4 pixels/cell |
 | Capture sender / receiver exports | `neural-qr-sender` / `neural-qr-captures`, version 2 | [Multires collection](MULTIRES_COLLECTION.md); public collection code and profile, phase cues, independently saved/uploaded evidence and sender labels |
-| Joined Neural-QR evidence | `neural-qr-dataset`, version 2 | [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); 4×4-cell CHW inputs and offline labels; W-tube training integration pending |
+| Joined Neural-QR evidence | `neural-qr-dataset`, version 2 | [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); 4×4-cell CHW inputs, offline labels and tagged origins; [imports/synthetics](W_TUBE_DATA.md) ready, W-tube training pending |
 | Established OBM5 training dataset | `optical-decoder-dataset`, version 1 | [`data.py`](../experiments/neural-corrector/data.py), [`corrector-dataset.mjs`](../scripts/corrector-dataset.mjs); hashed NCHW inputs, physical labels, mask, baseline, expected bytes |
 
 ## Collector session coordination
@@ -42,8 +43,8 @@ No sender symbols, payload bytes or labels are returned to the receiver.
 Managed receiver exports include the optional `collectionSessionId`; manually
 assigned current-format files may omit it. Successful managed upload saves receiver evidence,
 finalizes the matching `.json.tmp` sender, then removes the active descriptor.
-All current Neural-QR endpoints use version 2. Earlier recordings are retained
-for a planned offline import, not accepted through a compatibility parser. Use
+All current Neural-QR endpoints use version 2. Earlier recordings can be read by
+the explicit offline importer, not by these live endpoints. Use
 a new recording directory when updating both devices. Recordings may be up to
 800 MiB, within 128 retained captures; current-format pools may contain fewer
 samples. JSON serialization and capture-file reading avoid
@@ -67,8 +68,9 @@ cells have a separate loss mask. Current training matrices contain random
 logical symbols and fixed reference cells; no packet framing, ECC or payload CRC
 is implied. The future Neural-QR packet layer must add those checks before
 accepting bytes or advancing authentication. The present Python `multires`
-model uses the separate earlier 2×2-cell contract; W-tube and conversion of older
-recordings are not part of this collection release.
+model uses the separate earlier 2×2-cell contract. W-tube training is pending;
+the offline data pipeline already combines native, resampled and original G64
+payload crops with explicit origin tags, clean targets and paired synthetics.
 
 ## Content and transport
 

@@ -25,7 +25,7 @@ from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED, VARIABLE_EVAL
 from contract import FRAME_COUNTS, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 from checkpoint import load_model_checkpoint, initialize_multires
 from data import DATASET_FORMAT, Dataset, assert_disjoint, check_checkpoint_overlap, digest
-from evaluate import evaluate_model
+from evaluate import evaluate_model, require_implemented_model_contract
 from reporting import compact_report
 from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, MULTIRES_SIZES, NeuralCorrector, initialize_frames
 from sampling import BalancedSampler, load_session_groups, validate_session_groups, infer_session_groups
@@ -210,6 +210,10 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                  session_groups=None, weight_decay=.01, paired_targets=False, frames=None, no_progress=False,
                  real_noise_std=.008, real_tint_stops=.06, real_exposure_stops=.08,
                  phase_flip_probability=.25, no_phase_permutations=False, show_goal=False):
+    # New recording imports are usable for synthetic preparation, but must not
+    # silently reach the earlier 2-pixel multires network or its optimizer.
+    require_implemented_model_contract(train)
+    require_implemented_model_contract(validation)
     steps, learning_rate = training_defaults(initialize, steps, learning_rate)
     if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
         raise ValueError("Input frame count must be an integer from 1 through 64")

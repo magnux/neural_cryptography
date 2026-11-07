@@ -21,6 +21,28 @@ It does not remove packet framing, error correction, or cryptographic verificati
 
 ## Visual layout and implemented acquisition
 
+![Implemented Neural-QR v2 layout, showing repeated size and phase cues, asymmetric orientation, fixed palettes and grid references](images/neural-qr-layout.svg)
+
+The figure uses the actual renderer for a **G32, phase-2** training matrix.
+Its dashed outlines and letter labels explain the parts; they are not transmitted
+marks. Regenerate it after changing the layout with
+`node scripts/render-neural-qr-diagram.mjs`.
+
+Read the figure from outside to inside:
+
+- **A–B: geometry and orientation.** Four finder cores locate the plane; the
+  bottom-right satellites resolve rotation and reflection.
+- **C–D: size and phase.** Two copies of the binary size code select the grid;
+  two copies of the color cue pair select the phase in the current exposure.
+- **E: color references.** The two fixed palettes measure the camera's observed
+  colors without relying on the random payload.
+- **F: matrix.** The grid includes fixed reference rows/columns and random data
+  cells. Only data cells change according to the phase permutation.
+
+The bottom row shows all four cue pairs. These are four observations of one
+logical matrix, not four independent messages. The collector labels their
+contents offline from the sender manifest; no labels enter camera acquisition.
+
 The executable version-2 layout is defined in
 [`neural-qr/layout.js`](../apps/color-optical-bench/dist/js/neural-qr/layout.js).
 The implemented bottom-right fiducial preserves the square localization core and
@@ -85,6 +107,35 @@ the G64/RS32 data profile as a comparison while adding smaller controls and larg
 payloads; overhead and error-correction settings must fit each profile.
 Reclaiming header space may enlarge displayed cells, but a fixed G64 symbol grid
 does not automatically carry more bytes. The final renderer determines the gain.
+
+## Capacity: symbols, camera pixels and bytes
+
+**G16 has 128 gross bytes, not 512, with a 16-color palette.** Each cell holds
+one of 16 symbols, so it represents `log2(16) = 4` bits. Therefore:
+
+`16 × 16 cells × 4 bits ÷ 8 = 128 bytes`.
+
+G32 has the 512-byte gross capacity. The grid size includes reference cells, so
+actual space available for encoded data is smaller:
+
+| Grid | Rectified RGB crop | Gross bytes without references | Grid-8 data cells | Whole data bytes before packet/ECC overhead |
+| --- | --- | ---: | ---: | ---: |
+| G16 | 64×64 | 128 | 169 | 84, plus 4 bits |
+| G32 | 128×128 | 512 | 729 | 364, plus 4 bits |
+| G64 | 256×256 | 2,048 | 3,136 | 1,568 |
+| G128 | 512×512 | 8,192 | 12,544 | 6,272 |
+
+These counts come from the implemented `gridLayout(G, 16, 8)`. Framing, error
+correction and integrity fields must fit inside the remaining data capacity;
+the application-payload capacity is not defined until that packet profile is
+implemented. The collection matrices contain random symbols, not packets.
+
+**Four palette phases repeat the same logical information.** Their different
+colors help recover the original symbols; they do not multiply payload bytes
+by four. Likewise, **4×4 camera pixels per cell** means sixteen RGB measurements
+of one color symbol, not sixteen independent symbols. Stored training labels
+use one byte per symbol for convenience, but that is a file representation,
+not the optical bit capacity.
 
 ## Geometry and orientation
 
@@ -283,14 +334,17 @@ audited cryptographic security result.
    repeated size/phase cues, direct 4×4-pixel crops for G16/G32/G64/G128, public
    collection assignment, bounded recording pools, uploads and offline joining.
    Validate this layout on both devices before a large recording session.
-2. **Next:** implement W-tube, import eligible older G64 and upsampled recordings
-   into an explicitly tagged auxiliary corpus, generate harder paired synthetics,
-   and train/evaluate against fresh native captures. Leaner history reports and
-   selected-size ONNX/browser parity belong to this model milestone.
-3. Add the in-band ECC/CRC packet codec and full identifier checks, bounded
+2. **Implemented:** [offline dataset preparation](W_TUBE_DATA.md) imports eligible
+   original G64 crops and bicubic-upsampled recordings with explicit origin tags,
+   preserves their splits, and generates harder paired synthetics at a 4:1
+   capture ratio. New native recordings remain the primary validation source.
+3. **Next:** implement W-tube and train/evaluate against fresh native captures.
+   Leaner history reports, origin-aware sampling and selected-size ONNX/browser
+   parity belong to this model milestone.
+4. Add the in-band ECC/CRC packet codec and full identifier checks, bounded
    packet/phase association and small Neural-QR controls to authentication. This
    replaces the working OBM5/QR-ACK path when both endpoints are ready.
-4. Complete QR-free authentication in both role arrangements and improve
+5. Complete QR-free authentication in both role arrangements and improve
    capture/inference scheduling and acknowledgment windows from measured costs.
 
 The standalone standard-QR experiment remains a comparison tool. The runnable

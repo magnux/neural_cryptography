@@ -16,6 +16,7 @@ import numpy as np
 DATASET_FORMAT = "optical-decoder-dataset"
 NEURAL_QR_DATASET_FORMAT = "neural-qr-dataset"
 MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
+W_TUBE_SIZES = (16, 32, 64, 128)
 SPLITS = ("train", "validation", "test")
 MAX_MANIFEST_BYTES = 256 * 1024 * 1024
 SHA256 = re.compile(r"^[a-f0-9]{64}$")
@@ -54,10 +55,11 @@ class Sample:
     manifest: Path
     metadata: dict
     dataset_format: str = DATASET_FORMAT
+    dataset_version: int = 1
 
     @property
     def pixels_per_cell(self):
-        return 2 if self.dataset_format == NEURAL_QR_DATASET_FORMAT else 4
+        return 2 if self.dataset_format == NEURAL_QR_DATASET_FORMAT and self.dataset_version == 1 else 4
 
     @property
     def id(self):
@@ -122,6 +124,7 @@ class Dataset:
         self.samples = []
         self.manifests = []
         self.dataset_format = None
+        self.dataset_version = None
         owners = {"sessionId": {}, "payloadId": {}}
         ids = set()
         manifests = []
@@ -139,12 +142,14 @@ class Dataset:
                 raise ValueError("Dataset manifest exceeds 256 MiB")
             value = json.loads(manifest.read_text(encoding="utf8"))
             dataset_format = value.get("format")
+            version = value.get("version")
             if (dataset_format not in (DATASET_FORMAT, NEURAL_QR_DATASET_FORMAT)
-                    or type(value.get("version")) is not int or value["version"] != 1):
+                    or type(version) is not int
+                    or version not in ((1, 2) if dataset_format == NEURAL_QR_DATASET_FORMAT else (1,))):
                 raise ValueError("Unsupported optical dataset format/version")
-            if self.dataset_format is not None and self.dataset_format != dataset_format:
-                raise ValueError("Cannot mix Neural-QR and OBM datasets in one training/evaluation set")
-            self.dataset_format = dataset_format
+            if self.dataset_format is not None and (self.dataset_format, self.dataset_version) != (dataset_format, version):
+                raise ValueError("Cannot mix dataset formats or raster versions in one training/evaluation set")
+            self.dataset_format, self.dataset_version = dataset_format, version
             entries = value.get("samples")
             if not isinstance(entries, list) or not entries:
                 raise ValueError("Dataset samples must be a nonempty list")
@@ -164,10 +169,11 @@ class Dataset:
                     raise ValueError("Explicit split and source are required")
                 if dataset_format == NEURAL_QR_DATASET_FORMAT:
                     g = item.get("size")
-                    if (type(g) is not int or g not in MULTIRES_SIZES or item.get("colors") != 16
-                            or type(item.get("pixelsPerCell")) is not int or item["pixelsPerCell"] != 2
-                            or item.get("inputShape") != [3, 2*g, 2*g]):
-                        raise ValueError("Neural-QR requires G8–256, 16 colors and 2x2 pixels per cell")
+                    ppc, sizes = (2, MULTIRES_SIZES) if version == 1 else (4, W_TUBE_SIZES)
+                    if (type(g) is not int or g not in sizes or item.get("colors") != 16
+                            or type(item.get("pixelsPerCell")) is not int or item["pixelsPerCell"] != ppc
+                            or item.get("inputShape") != [3, ppc*g, ppc*g]):
+                        raise ValueError(f"Neural-QR v{version} requires grids {sizes}, 16 colors and {ppc}x{ppc} pixels per cell")
                 elif item.get("size") not in (64, 128) or item.get("colors") not in (4, 16):
                     raise ValueError("Unsupported neural-corrector dataset profile")
                 for name in ("sessionId", "payloadId"):
@@ -193,20 +199,20 @@ class Dataset:
                     from phases import phase_neutral_info
                     info = item["info"]
                     phase_neutral_info(info)
-                    if (info.get("pixelsPerCell") != 2 or info.get("gridBlock") != 8
+                    if (info.get("pixelsPerCell") != ppc or info.get("gridBlock") != 8
                             or info.get("parity") != 0):
                         raise ValueError("Unsupported current Neural-QR phase/reference geometry")
                     if item["hashes"]["expected"] != item["payloadId"]:
                         raise ValueError("Neural-QR target identity must hash the logical matrix")
                 if split is None or item["split"] == split:
-                    self.samples.append(Sample(manifest.parent, manifest, item, dataset_format))
+                    self.samples.append(Sample(manifest.parent, manifest, item, dataset_format, version))
         if not self.samples:
             raise ValueError(f"No samples for split {split!r}")
         self.samples.sort(key=lambda item: item.id)
 
     @property
     def pixels_per_cell(self):
-        return 2 if self.dataset_format == NEURAL_QR_DATASET_FORMAT else 4
+        return 2 if self.dataset_format == NEURAL_QR_DATASET_FORMAT and self.dataset_version == 1 else 4
 
     @property
     def session_ids(self):

@@ -28,6 +28,15 @@ from reporting import compact_report
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def require_implemented_model_contract(dataset):
+    """Keep corpus preparation separate from the still-pending W-tube model."""
+    if (getattr(dataset, "dataset_format", None) == "neural-qr-dataset"
+            and dataset.pixels_per_cell == 4):
+        raise ValueError("Neural-QR v2 uses 4 pixels per cell and requires W-tube, "
+                         "whose training/evaluation implementation is pending. "
+                         "The corpus can be prepared now; multires still requires 2-pixel-cell data.")
+
+
 def masked_loss(logits, labels, mask, colors: int):
     if colors not in (4, 16) or not torch.any(mask):
         raise ValueError("A supported palette and nonempty data-cell mask are required")
@@ -411,6 +420,7 @@ def _combine_frame_counts(reports, *, frame_capacity, session_groups, exact):
 
 def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node="node", exact=True,
                    work_dir=None, session_groups=None, detailed=False):
+    require_implemented_model_contract(dataset)
     if type(detailed) is not bool:
         raise ValueError("detailed must be a boolean")
     if type(max_samples) is not int or max_samples < 0:

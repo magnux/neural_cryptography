@@ -95,7 +95,7 @@ class MultiresSyntheticTests(unittest.TestCase):
         self.assertEqual(large.shape, (3, 512, 512))
         self.assertTrue(np.isfinite(large).all())
 
-    def test_current_four_pixel_collection_is_rejected_by_two_pixel_training_pipeline(self):
+    def test_four_pixel_pipeline_keeps_phase_targets_and_counts_actual_real_captures(self):
         base = ROOT/'validation/tmp'
         base.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=base) as temporary:
@@ -119,15 +119,70 @@ class MultiresSyntheticTests(unittest.TestCase):
                 mask = np.fromfile(root/'clean'/row['mask'], dtype='u1').reshape(16, 16)
                 target = np.fromfile(root/'clean'/row['expected'], dtype='u1').reshape(16, 16)
                 np.testing.assert_array_equal(canonical_labels(labels, mask, row['info']['phase']), target)
-            # Collection/clean-target creation is ready. Python training still
-            # implements the earlier 2-pixel contract until W-tube is added.
-            # Reject the new contract explicitly, before writing any outputs.
             for folder in ('joined', 'clean'):
-                with self.assertRaisesRegex(ValueError, 'Unsupported optical dataset format/version'):
-                    Dataset([root/folder])
-            with self.assertRaisesRegex(ValueError, 'Unsupported optical dataset format/version'):
-                generate([root/'clean'], root/'generated', severity=0)
+                dataset = Dataset([root/folder])
+                self.assertEqual(dataset.dataset_version, 2)
+                self.assertEqual(dataset.pixels_per_cell, 4)
+                for sample in dataset.samples:
+                    self.assertEqual(sample.tensors()[0].shape, (3, 64, 64))
+            plan = generate([root/'clean'], root/'generated', paired_real=[root/'joined'],
+                            frames=2, recipe_name='w-tube', plan_only=True)
             self.assertFalse((root/'generated').exists())
+            self.assertEqual((plan['targets'], plan['captures']), (1, 8))
+            self.assertEqual(plan['recipe']['pairedCounts']['realCaptures'], 1)
+            self.assertEqual(plan['recipe']['pairedCounts']['achievedRatio'], 8)
+            self.assertEqual(plan['recipe']['severityMin'], .5)
+            self.assertEqual(plan['recipe']['severity'], 1)
+            self.assertEqual(plan['recipe']['captureResolution']['probability'], .85)
+            cli = subprocess.run([sys.executable, str(EXPERIMENT/'synthetic.py'),
+                '--clean', str(root/'clean'), '--paired-real', str(root/'joined'),
+                '--out', str(root/'planned-only'), '--recipe', 'w-tube', '--frames', '2',
+                '--white-balance-stops', '.1', '--plan'], check=True, capture_output=True, text=True)
+            cli_plan = json.loads(cli.stdout)
+            self.assertEqual(cli_plan['captures'], plan['captures'])
+            self.assertEqual(cli_plan['recipe']['photometric']['white_balance_stops'], .1)
+            self.assertEqual(cli_plan['recipe']['photometric']['glare_strength'], .7)
+            self.assertFalse((root/'planned-only').exists())
+            with self.assertRaisesRegex(ValueError, 'Choose paired-real'):
+                generate([root/'clean'], root/'bad', paired_real=[root/'joined'],
+                         bursts_per_target=2, plan_only=True)
+            self.assertFalse((root/'bad').exists())
+            generated = generate([root/'clean'], root/'generated', paired_real=[root/'joined'],
+                                 frames=2, severity=0, seed=17)
+            self.assertEqual(generated['version'], 2)
+            self.assertEqual(len(generated['samples']), 8)
+            self.assertEqual({s['info']['phase'] for s in generated['samples']}, {0, 1, 2, 3})
+            self.assertEqual(len({s['synthetic']['phaseGroupId'] for s in generated['samples']}), 1)
+            self.assertEqual(len({s['synthetic']['seed'] for s in generated['samples']}), 1)
+            clean_by_phase = {s.metadata['info']['phase']: s for s in Dataset([root/'clean']).samples}
+            for sample in Dataset([root/'generated']).samples:
+                parent = clean_by_phase[sample.metadata['info']['phase']]
+                for observed, expected in zip(sample.tensors(), parent.tensors()):
+                    np.testing.assert_array_equal(observed, expected)
+                self.assertEqual(sample.metadata['sessionId'], 'synthetic-receiver')
+                self.assertEqual(sample.metadata['senderSessionId'], 'synthetic-sender')
+            # Equal datasets with a different split may never supply counts.
+            joined['samples'][0]['split'] = 'validation'
+            (root/'joined/manifest.json').write_text(json.dumps(joined))
+            with self.assertRaisesRegex(ValueError, 'must match exactly one'):
+                generate([root/'clean'], root/'wrong-split', paired_real=[root/'joined'], plan_only=True)
+            self.assertFalse((root/'wrong-split').exists())
+
+    def test_four_pixel_supported_sizes_and_physics_recipe(self):
+        for g in (16, 32, 64, 128):
+            clean = np.zeros((4, 3, 4*g, 4*g), dtype=np.float32)
+            iterator = synthetic._iter_corrupt_sequence(clean, np.arange(4), seed=1,
+                                                        severity=0, pixels_per_cell=4)
+            np.testing.assert_array_equal(next(iterator), clean[0])
+            iterator.close()
+        defaults = synthetic.recipe_photometric('standard')
+        harder = synthetic.recipe_photometric('w-tube')
+        self.assertGreater(harder.motion_probability, defaults.motion_probability)
+        self.assertGreater(harder.rolling_shutter_stops, defaults.rolling_shutter_stops)
+        self.assertGreater(harder.glare_strength, defaults.glare_strength)
+        with self.assertRaisesRegex(ValueError, 'recipe must'):
+            synthetic.recipe_photometric('unknown')
+
 
 
 if __name__ == '__main__':

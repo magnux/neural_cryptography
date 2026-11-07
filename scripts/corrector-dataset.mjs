@@ -66,7 +66,7 @@ async function safeReadPath(root,name) {
 }
 async function jsonFile(path,limit=MAX_MANIFEST_BYTES){if((await stat(path)).size>limit)throw Error(`JSON file exceeds bound: ${path}`);return JSON.parse(await readFile(path,'utf8'));}
 async function freshDirectory(path){await mkdir(path,{recursive:true});if((await readdir(path)).length)throw Error('Output dataset directory must be empty; use a new output directory.');}
-async function putSample(out,index,metadata,{input,labels,mask,baseline,expected,samples,original}) {
+export async function putSample(out,index,metadata,{input,labels,mask,baseline,expected,samples,original}) {
   const prefix=`sample-${String(index).padStart(6,'0')}`;
   const identity={sessionId:metadata.sessionId,payloadId:metadata.payloadId,info:metadata.info,timestamp:metadata.timestamp};
   const result={id:`sample-${hash(Buffer.from(JSON.stringify(identity))).slice(0,24)}`,...metadata,hashes:{}};
@@ -394,7 +394,7 @@ async function neuralQRTargets(options) {
       const input=neuralQRCleanCrop(frame),info=frame.info;
       dataset.samples.push(await putSample(out,dataset.samples.length,{
         id:`target-${hash(Buffer.from(key+'/'+info.phase)).slice(0,24)}`,sessionId:sample.sessionId,senderSessionId:sample.senderSessionId,
-        payloadId:sample.payloadId,split:sample.split,source:'synthetic',size:sample.size,colors:16,pixelsPerCell:CAPTURE_PIXELS_PER_CELL,inputShape:[3,CAPTURE_PIXELS_PER_CELL*sample.size,CAPTURE_PIXELS_PER_CELL*sample.size],info,
+        payloadId:sample.payloadId,split:sample.split,source:'synthetic',origin:sample.origin,size:sample.size,colors:16,pixelsPerCell:CAPTURE_PIXELS_PER_CELL,inputShape:[3,CAPTURE_PIXELS_PER_CELL*sample.size,CAPTURE_PIXELS_PER_CELL*sample.size],info,
         burstId:`${sample.sessionId}/${captureKey(info)}`,timestamp:info.phase*500,devicePair:sample.devicePair,
         provenance:{...sample.provenance,generator:'Neural-QR palette + validated joined sender truth',corruption:'none',
           baseline:'calibrated-crop approximation',targetKey:key}},

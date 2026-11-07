@@ -1,6 +1,6 @@
 # Roadmap: fast optical authentication with Neural-QR
 
-Planning baseline: **6 November 2026**. The long-term goal is feasible, fast and
+Planning baseline: **7 November 2026**. The long-term goal is feasible, fast and
 safe optical authentication between devices. The immediate engineering goal is
 a repeatable **Neural-ZKBoo** POC carried entirely by **Neural-QR**, our custom
 optical format designed around the **neural-corrector**. The existing experiments
@@ -98,11 +98,12 @@ The separate standard-QR experiment remains useful for comparison.
 - [x] Update direct camera rectification, collection UI, byte budgets, version-2
   sender/receiver/session files, uploads and offline joining. Validate on devices
   before a long recording session; see [collection checks](MULTIRES_COLLECTION.md).
-- [ ] Import eligible older G64 payload crops without resizing and enlarge
+- [x] Import eligible older G64 payload crops without resizing and enlarge
   selected 2-pixel Neural-QR crops to four pixels/cell. Preserve original session
   splits and source provenance; keep fresh native validation primary. These are
   explicit offline dataset conversions, not live compatibility readers.
-- [ ] Generate harder paired synthetic bursts at a target **4:1 synthetic/real
+  See [the W-tube data pipeline](W_TUBE_DATA.md) for the three recording roots.
+- [x] Generate harder paired synthetic bursts at a target **4:1 synthetic/real
   dataset volume**, retaining **50/50 training sampling**. Preserve coherent
   phase trajectories and vary camera resolution, blur, curved moiré, rolling
   shutter, glare, exposure and color effects across readable and hard examples.

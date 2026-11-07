@@ -10,6 +10,7 @@ import argparse
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 import shutil
 import subprocess
@@ -24,6 +25,7 @@ from phases import canonical_labels, phase_neutral_info
 
 CORRUPTION_KIND = "correlated-calibrated-crop-v8"
 MULTIRES_CORRUPTION_KIND = "correlated-calibrated-crop-multires-v1"
+W_TUBE_CORRUPTION_KIND = "correlated-calibrated-crop-w-tube-v1"
 NEURAL_QR_DATASET_FORMAT = "neural-qr-dataset"
 MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
 
@@ -84,10 +86,29 @@ class CaptureResolutionConfig:
             raise ValueError("capture min_scale must not exceed max_scale")
 
 
+def recipe_photometric(recipe):
+    """Explicit recipes keep existing experiment defaults reproducible.
+
+    The harder recipe still draws every effect probabilistically, and each
+    complete phase group shares its motion/lighting trajectory. Increasing
+    difficulty does not mean independently destroying every observation.
+    """
+    if recipe not in ("standard", "w-tube"):
+        raise ValueError("recipe must be standard or w-tube")
+    if recipe == "standard":
+        return PhotometricConfig()
+    return PhotometricConfig(white_balance_stops=.8, exposure_stops=1.75,
+        shade_opacity=.55, shade_probability=.8, rolling_shutter_stops=.8,
+        rolling_shutter_probability=.8, rolling_shutter_skew=.65,
+        motion_probability=.8, linear_blur_pixels=3., rotation_blur_degrees=.45,
+        zoom_blur_fraction=.008, glare_probability=.75, glare_strength=.7,
+        rgb_offset_probability=.7, rgb_offset_pixels=.65)
+
+
 def resolution_config(config, pixels_per_cell):
     """Never simulate a lower capture resolution than one pixel per matrix cell."""
     if type(pixels_per_cell) is not int or pixels_per_cell not in (2, 4):
-        raise ValueError("pixels-per-cell must be 2 (Neural-QR) or 4 (OBM)")
+        raise ValueError("pixels-per-cell must be 2 or 4")
     config = config or CaptureResolutionConfig(min_scale=1/pixels_per_cell)
     if config.min_scale < 1/pixels_per_cell:
         raise ValueError(f"capture-min-scale must be at least {1/pixels_per_cell:g} "
@@ -96,7 +117,7 @@ def resolution_config(config, pixels_per_cell):
 
 
 def _validate_crop_shape(clean, pixels_per_cell, grouped=False):
-    sizes = MULTIRES_SIZES if pixels_per_cell == 2 else (64, 128)
+    sizes = MULTIRES_SIZES if pixels_per_cell == 2 else (16, 32, 64, 128)
     expected_prefix = (4, 3) if grouped else (3,)
     if (type(pixels_per_cell) is not int or pixels_per_cell not in (2, 4)
             or clean.ndim != len(expected_prefix)+2
@@ -613,10 +634,49 @@ def clean_phase_groups(samples):
     return ordered
 
 
-def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=.65,
+def paired_burst_counts(groups, paired_real, ratio, frames, dataset):
+    """Count actual real captures, not nominal collection capacities.
+
+    One synthetic trajectory contains ``frames`` observations of all four
+    phases. Round upward to whole trajectories and report that rounding. IDs
+    and splits must match exactly: a train target cannot borrow validation's
+    capture count, even when the logical matrix happens to be equal.
+    """
+    if (isinstance(ratio, bool) or not isinstance(ratio, (int, float))
+            or not np.isfinite(ratio) or not 0 < ratio <= 1024):
+        raise ValueError("synthetic-ratio must be finite and in (0, 1024]")
+    real = Dataset(paired_real)
+    if ((real.dataset_format, real.dataset_version) != (NEURAL_QR_DATASET_FORMAT, 2)
+            or (dataset.dataset_format, dataset.dataset_version) != (real.dataset_format, real.dataset_version)
+            or any(s.metadata["source"] != "real" for s in real.samples)):
+        raise ValueError("paired-real requires joined real Neural-QR v2 data and matching clean targets")
+    counts = {}
+    for sample in real.samples:
+        row = sample.metadata
+        key = row["sessionId"], row["payloadId"], row["split"]
+        counts[key] = counts.get(key, 0)+1
+    result, used = [], set()
+    for _, members in groups:
+        row = members[0].metadata
+        key = row["sessionId"], row["payloadId"], row["split"]
+        if key not in counts or key in used:
+            raise ValueError("Every clean target must match exactly one paired real session/target/split")
+        used.add(key)
+        result.append(math.ceil(ratio*counts[key]/(4*frames)))
+    if used != set(counts):
+        raise ValueError("paired-real contains targets missing from the clean dataset")
+    return result, {"requestedRatio": ratio, "realCaptures": sum(counts.values()),
+        "syntheticCaptures": sum(result)*4*frames,
+        "achievedRatio": sum(result)*4*frames/sum(counts.values()),
+        "rounding": f"up to complete four-phase trajectories ({4*frames} captures)",
+        "realManifestSha256": real.manifest_hash}
+
+
+def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=None,
              max_output_mib=2**20, node="node", photometric: PhotometricConfig | None = None,
              bursts_per_target=None, severity_min=None,
-             resolution: CaptureResolutionConfig | None = None, phase_grouped=None):
+             resolution: CaptureResolutionConfig | None = None, phase_grouped=None,
+             paired_real=None, synthetic_ratio=4, recipe_name="standard", plan_only=False):
     """Materialize deterministic corruptions, streaming one capture to disk.
 
     Neural-QR uses eight independent trajectories with eight captures per phase
@@ -626,8 +686,13 @@ def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=.65,
     """
     dataset = Dataset(clean_directories)
     neural_qr = dataset.dataset_format == NEURAL_QR_DATASET_FORMAT
-    pixels_per_cell = 2 if neural_qr else 4
+    pixels_per_cell = dataset.pixels_per_cell
+    default_photometric = recipe_photometric(recipe_name)
+    severity = (1. if recipe_name == "w-tube" else .65) if severity is None else severity
+    severity_min = (.5 if recipe_name == "w-tube" else None) if severity_min is None else severity_min
     frames = (8 if neural_qr else 7) if frames is None else frames
+    if paired_real is not None and bursts_per_target is not None:
+        raise ValueError("Choose paired-real ratio or bursts-per-target, not both")
     bursts_per_target = (8 if neural_qr else 1) if bursts_per_target is None else bursts_per_target
     phase_grouped = neural_qr if phase_grouped is None else phase_grouped
     if type(phase_grouped) is not bool or neural_qr and not phase_grouped:
@@ -645,24 +710,43 @@ def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=.65,
     if severity_min is not None and (isinstance(severity_min, bool) or
             not np.isfinite(severity_min) or not 0 <= severity_min <= severity):
         raise ValueError("severity-min must be finite and in [0, severity]")
-    photometric = photometric or PhotometricConfig()
+    photometric = photometric or default_photometric
+    if resolution is None and recipe_name == "w-tube":
+        resolution = CaptureResolutionConfig(probability=.85, min_scale=1/pixels_per_cell, blur_sigma=.45)
     resolution = resolution_config(resolution, pixels_per_cell)
-    corruption_kind = MULTIRES_CORRUPTION_KIND if neural_qr else CORRUPTION_KIND
-    recipe = {"kind": corruption_kind, "seed": seed, "severity": severity,
+    corruption_kind = (W_TUBE_CORRUPTION_KIND if neural_qr and dataset.dataset_version == 2
+                       else MULTIRES_CORRUPTION_KIND if neural_qr else CORRUPTION_KIND)
+    recipe = {"kind": corruption_kind, "recipe": recipe_name, "seed": seed, "severity": severity,
               "severityMin": severity_min,
               "captureResolution": asdict(resolution),
               "frames": frames, "phaseGrouped": phase_grouped,
               "phaseSchedule": "round-robin-continuous" if phase_grouped else None,
-              "burstsPerTarget": bursts_per_target, "photometric": asdict(photometric)}
+              "burstsPerTarget": None if paired_real is not None else bursts_per_target,
+              "photometric": asdict(photometric)}
     if neural_qr:
-        recipe.update(pixelsPerCell=2, densePixelScale=.5)
-    recipe_hash = hashlib.sha256(json.dumps(recipe, sort_keys=True, allow_nan=False).encode()).hexdigest()
+        recipe.update(pixelsPerCell=pixels_per_cell, densePixelScale=pixels_per_cell/4)
     if any(sample.metadata["source"] != "synthetic" or "synthetic" in sample.metadata for sample in dataset.samples):
         raise ValueError("Generate corruptions from canonical synthetic clean datasets only; real captures remain unchanged")
     groups = clean_phase_groups(dataset.samples) if phase_grouped else [(s.id, (s,)) for s in dataset.samples]
+    if paired_real is not None:
+        if not phase_grouped:
+            raise ValueError("paired-real generation requires four phase groups")
+        burst_counts, ratio_report = paired_burst_counts(groups, paired_real, synthetic_ratio, frames, dataset)
+        recipe["pairedCounts"] = ratio_report
+    else:
+        burst_counts = [bursts_per_target]*len(groups)
+    recipe_hash = hashlib.sha256(json.dumps(recipe, sort_keys=True, allow_nan=False).encode()).hexdigest()
     estimated = sum(sum(local_path(s.root, s.metadata[field]).stat().st_size
                         for field in ("input", "labels", "mask", "baseline", "expected"))
-                    for s in dataset.samples)*frames*bursts_per_target
+                    *frames*count for (_, members), count in zip(groups, burst_counts) for s in members)
+    plan = {"format": "neural-corrector-synthetic-plan", "version": 1,
+            "datasetVersion": dataset.dataset_version, "pixelsPerCell": pixels_per_cell,
+            "targets": len(groups), "captures": sum(len(members)*frames*count
+                for (_, members), count in zip(groups, burst_counts)),
+            "estimatedBinaryBytes": estimated, "recipe": recipe,
+            "recipeSha256": recipe_hash, "sourceManifestSha256": dataset.manifest_hash}
+    if plan_only:
+        return plan
     if max_output_mib and estimated > max_output_mib*1024**2:
         raise ValueError("Requested synthetic dataset exceeds --max-output-mib; increase the budget or use 0 to disable this estimate limit")
     out = Path(out).resolve()
@@ -675,14 +759,14 @@ def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=.65,
         raise ValueError(f"Insufficient free space for approximately {estimated/1024**3:.2f} GiB of synthetic binaries")
     out.mkdir(parents=True, exist_ok=True)
     records = []
-    for group_key, members in groups:
+    for (group_key, members), target_bursts in zip(groups, burst_counts):
         pixels = np.stack([sample.tensors()[0] for sample in members])
         for sample in members:
             sample.read("baseline", "<f4")
             sample.read("expected", "u1")
         _validate_crop_shape(pixels if phase_grouped else pixels[0], pixels_per_cell, grouped=phase_grouped)
         views = np.tile(np.arange(len(members), dtype=np.int64), frames)
-        for burst_index in range(bursts_per_target):
+        for burst_index in range(target_bursts):
             derived = int.from_bytes(hashlib.sha256(
                 f"{seed}/{group_key}/{burst_index}".encode()).digest()[:4], "little")
             # Every phase of a group shares one severity, capture scale and
@@ -725,7 +809,7 @@ def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=.65,
                 record.pop("samples", None)
                 record.pop("original", None)
                 records.append(record)
-    manifest = {"format": dataset.dataset_format, "version": 1, "samples": records,
+    manifest = {"format": dataset.dataset_format, "version": dataset.dataset_version, "samples": records,
                 "generator": {**recipe, "recipeSha256": recipe_hash,
                               "estimatedBinaryBytes": estimated,
                               "sourceManifestSha256": dataset.manifest_hash,
@@ -742,57 +826,68 @@ def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=.65,
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, epilog=(
+        "Individual effect defaults shown above describe the standard recipe. "
+        "The w-tube recipe raises these defaults; explicit effect arguments override it. "
+        "Use --plan to inspect the fully resolved recipe before generation."))
     parser.add_argument("--clean", nargs="+", required=True, type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--recipe", choices=("standard", "w-tube"), default="standard",
+                        help="w-tube draws severity .5–1 and stronger motion, color, glare and shutter effects")
+    parser.add_argument("--paired-real", nargs="+", type=Path,
+                        help="joined v2 real datasets whose capture counts determine synthetic volume")
+    parser.add_argument("--synthetic-ratio", type=float, default=4,
+                        help="synthetic captures per actual paired real capture (default 4), rounded to complete trajectories")
+    parser.add_argument("--plan", action="store_true", help="validate inputs and print counts/estimated binary bytes without writing")
     parser.add_argument("--frames", type=int, default=None, help="captures per phase burst (Neural-QR default 8; OBM 7), 1–16 (grouped: 2–16)")
     parser.add_argument("--phase-grouped", action="store_true", default=None,
                         help="joint four-phase trajectories; automatically enabled for Neural-QR")
     parser.add_argument("--bursts-per-target", type=int, default=None,
                         help="independent trajectories per target (Neural-QR default 8; OBM 1)")
-    parser.add_argument("--severity", type=float, default=.65)
+    parser.add_argument("--severity", type=float, default=None,
+                        help="upper severity: standard .65, w-tube 1")
     parser.add_argument("--severity-min", type=float, default=None,
                         help="sample severity uniformly per burst from this minimum to --severity; omitted uses fixed severity")
-    parser.add_argument("--capture-probability", type=float, default=.75,
+    parser.add_argument("--capture-probability", type=float, default=None,
                         help="fraction of bursts with reduced capture resolution/blur (default: .75); 0 disables")
     parser.add_argument("--capture-min-scale", type=float, default=None,
-                        help="minimum capture side / crop side; defaults to one pixel/cell (.5 Neural-QR, .25 OBM)")
+                        help="minimum capture side / crop side; defaults to one pixel/cell (.5 at 2ppc, .25 at 4ppc)")
     parser.add_argument("--capture-max-scale", type=float, default=1.,
                         help="maximum capture side / crop side, min-scale–1 (default: 1)")
-    parser.add_argument("--capture-blur-sigma", type=float, default=.35,
+    parser.add_argument("--capture-blur-sigma", type=float, default=None,
                         help="max Gaussian sigma in reduced-image pixels, 0–1 (default: .35); each burst draws half to full strength")
-    parser.add_argument("--white-balance-stops", type=float, default=.6,
+    parser.add_argument("--white-balance-stops", type=float, default=None,
                         help="max residual per-channel log2 gain at severity 1 (default: .6); 0 disables")
-    parser.add_argument("--exposure-stops", type=float, default=1.5,
+    parser.add_argument("--exposure-stops", type=float, default=None,
                         help="max absolute exposure log2 gain at severity 1 (default: 1.5); 0 disables")
-    parser.add_argument("--shade-opacity", type=float, default=.45,
+    parser.add_argument("--shade-opacity", type=float, default=None,
                         help="max soft shadow/reflection strength at severity 1 (default: .45); 0 disables")
-    parser.add_argument("--shade-probability", type=float, default=.7,
+    parser.add_argument("--shade-probability", type=float, default=None,
                         help="fraction of bursts with rotated rectangles/ellipses (default: .7)")
-    parser.add_argument("--glare-probability", type=float, default=.65,
+    parser.add_argument("--glare-probability", type=float, default=None,
                         help="fraction of bursts with drifting highlight/veiling glare, 0–1 (default: .65)")
-    parser.add_argument("--glare-strength", type=float, default=.6,
+    parser.add_argument("--glare-strength", type=float, default=None,
                         help="max localized glare strength at severity 1, 0–1 (default: .6); 0 disables")
-    parser.add_argument("--rolling-shutter-stops", type=float, default=.65,
+    parser.add_argument("--rolling-shutter-stops", type=float, default=None,
                         help="max scanline exposure log2 gain at severity 1 (default: .65); 0 disables banding")
-    parser.add_argument("--rolling-shutter-probability", type=float, default=.7,
+    parser.add_argument("--rolling-shutter-probability", type=float, default=None,
                         help="fraction of bursts with drifting scanline bands/skew (default: .7); 0 disables both")
-    parser.add_argument("--rolling-shutter-skew", type=float, default=.5,
+    parser.add_argument("--rolling-shutter-skew", type=float, default=None,
                         help="max residual scanline horizontal motion in dense pixels, 0–.75 (default: .5); 0 disables skew")
-    parser.add_argument("--motion-probability", type=float, default=.7,
+    parser.add_argument("--motion-probability", type=float, default=None,
                         help="fraction of bursts with integrated exposure motion blur (default: .7); 0 disables")
-    parser.add_argument("--linear-blur-pixels", type=float, default=2.5,
+    parser.add_argument("--linear-blur-pixels", type=float, default=None,
                         help="max full linear exposure travel in dense-crop pixels at severity 1 (default: 2.5)")
-    parser.add_argument("--rotation-blur-degrees", type=float, default=.35,
+    parser.add_argument("--rotation-blur-degrees", type=float, default=None,
                         help="max full rotational exposure sweep at severity 1 (default: .35 degrees)")
-    parser.add_argument("--zoom-blur-fraction", type=float, default=.006,
+    parser.add_argument("--zoom-blur-fraction", type=float, default=None,
                         help="max full radial zoom scale sweep at severity 1 (default: .006)")
-    parser.add_argument("--motion-samples", type=int, default=7,
+    parser.add_argument("--motion-samples", type=int, default=None,
                         help="odd exposure integration samples, 3–15 (default: 7)")
-    parser.add_argument("--rgb-offset-probability", type=float, default=.6,
+    parser.add_argument("--rgb-offset-probability", type=float, default=None,
                         help="fraction of motion-blurred bursts with relative RGB exposure offsets (default: .6); 0 disables")
-    parser.add_argument("--rgb-offset-pixels", type=float, default=.5,
+    parser.add_argument("--rgb-offset-pixels", type=float, default=None,
                         help="max per-channel offset from common motion path in dense-crop pixels at severity 1, 0–1 (default: .5)")
     parser.add_argument("--max-output-mib", type=int, default=2**20, help="estimated binary output budget in MiB (default: 1 TiB); 0 disables the limit")
     parser.add_argument("--threads", type=int, default=1)
@@ -802,28 +897,31 @@ def main():
         parser.error("threads must be 1–64 and max-output-mib nonnegative")
     torch.set_num_threads(args.threads)
     try:
-        photometric = PhotometricConfig(args.white_balance_stops, args.exposure_stops,
-                                         args.shade_opacity, args.shade_probability,
-                                         args.rolling_shutter_stops, args.rolling_shutter_probability,
-                                         args.rolling_shutter_skew, args.motion_probability,
-                                         args.linear_blur_pixels, args.rotation_blur_degrees,
-                                         args.zoom_blur_fraction, args.motion_samples,
-                                         args.glare_probability, args.glare_strength,
-                                         args.rgb_offset_probability, args.rgb_offset_pixels)
+        photometric_values = asdict(recipe_photometric(args.recipe))
+        photometric_values.update({key: getattr(args, key) for key in photometric_values
+                                   if getattr(args, key) is not None})
+        photometric = PhotometricConfig(**photometric_values)
         dataset = Dataset(args.clean)
         min_scale = args.capture_min_scale
         if min_scale is None:
-            min_scale = .5 if dataset.dataset_format == NEURAL_QR_DATASET_FORMAT else .25
+            min_scale = 1/dataset.pixels_per_cell
         result = generate(args.clean, args.out, seed=args.seed, frames=args.frames,
                           severity=args.severity, max_output_mib=args.max_output_mib, node=args.node,
                           photometric=photometric, bursts_per_target=args.bursts_per_target,
                           severity_min=args.severity_min, phase_grouped=args.phase_grouped,
-                          resolution=CaptureResolutionConfig(probability=args.capture_probability,
+                          paired_real=args.paired_real, synthetic_ratio=args.synthetic_ratio,
+                          recipe_name=args.recipe, plan_only=args.plan,
+                          resolution=CaptureResolutionConfig(probability=(args.capture_probability
+                              if args.capture_probability is not None else .85 if args.recipe == "w-tube" else .75),
                               min_scale=min_scale, max_scale=args.capture_max_scale,
-                              blur_sigma=args.capture_blur_sigma))
+                              blur_sigma=(args.capture_blur_sigma if args.capture_blur_sigma is not None
+                                          else .45 if args.recipe == "w-tube" else .35)))
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f"Synthetic generation failed: {error}\n")
-    print(f"Wrote {len(result['samples'])} correlated synthetic crops to {args.out.resolve()}")
+    if args.plan:
+        print(json.dumps(result, indent=2, allow_nan=False))
+    else:
+        print(f"Wrote {len(result['samples'])} correlated synthetic crops to {args.out.resolve()}")
 
 
 if __name__ == "__main__":

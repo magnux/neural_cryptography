@@ -1,8 +1,8 @@
 # Neural corrector
 
 > The current collector records **Neural-QR v2, 4×4 pixels/cell,
-> G16/G32/G64/G128**. Collection and offline joining are available; the proposed
-> **W-tube** training/export implementation is still pending. The implemented
+> G16/G32/G64/G128**. Collection, [offline imports and paired synthetic generation](../../docs/W_TUBE_DATA.md)
+> are available; **W-tube** training/export implementation is still pending. The implemented
 > `multires` profile described below consumes existing prepared **2×2-cell**
 > datasets and cannot train on the new recordings. Keep them in a separate
 > directory; see [collection instructions](../../docs/MULTIRES_COLLECTION.md).
@@ -31,11 +31,11 @@ geometry, phase identity and normalized crops without a separately decoded dense
 header. The `multires` architecture shares a trunk across six sizes, with independent
 per-size low-frequency anchors and six alternating convolution/attention
 blocks, with two layers in each block. The
-[multires collector](../../docs/MULTIRES_COLLECTION.md) already records G8…G256
-at 2×2 pixels per cell using the new header-free markers and phase cues, and
-supports server uploads with a public collection code for offline association. The production training and synthetic-generation pipeline accepts these recordings
-directly. Browser integration for the new model is a separate next step; the
-U-tube experiments retain their four-pixels-per-axis inputs.
+[current collector](../../docs/MULTIRES_COLLECTION.md) records G16…G128 at 4×4
+pixels per cell for W-tube, with a public collection code for offline association.
+The earlier prepared 2×2-cell datasets remain usable for the existing `multires`
+experiment. Browser integration of W-tube is a later step; the U-tube experiments
+retain their independent four-pixels-per-axis input contract.
 
 ## Model family
 
@@ -84,11 +84,12 @@ for the distinction between these masks and the shifted-attention boundary mask.
 
 The recordings contain calibrated dense crops. Offline joins recover exact
 sender-derived targets, keeping receiver/sender sessions and payloads in their
-assigned train/validation split. New Neural-QR recordings use `join-uploads`;
-`rebuild-corrector-data.mjs` joins completed uploads and regenerates clean targets
-and paired synthetics. Its defaults generate eight bursts of eight captures per
-phase: **256 synthetic captures per target**, with **50/50 real/synthetic training**
-independent of their disk counts. Real inputs can receive
+assigned train/validation split. The [W-tube rebuild](../../docs/W_TUBE_DATA.md)
+combines native version-2 recordings, bicubic-resampled version-1 Neural-QR
+crops, and eligible original G64 payload crops. It regenerates clean targets and
+harder paired synthetics at a **4:1 synthetic/real capture ratio**, rounded up to
+complete four-phase bursts. The planned training mix remains **50/50**; disk
+counts do not set the sampling ratio. Existing model training can apply
 mild photometric augmentation. Synthetics include curved moiré, capture-resolution
 loss, rolling shutter, motion/RGB-offset blur, white balance/exposure changes,
 shadows, reflections, glare and sensor noise.
@@ -100,8 +101,10 @@ equal weight across resolutions, directions and K4…K8. There are no packet byt
 or CRC recovery claims in the raw-symbol Neural-QR dataset.
 
 Current collection files use `neural-qr-sender` / `neural-qr-captures`, and their
-joined datasets use `neural-qr-dataset`. They are separate from existing prepared
-4×4-cell training datasets; there is no implicit format conversion. Checkpoint
+joined datasets use `neural-qr-dataset`, version 2. Explicit offline conversion
+produces that same contract with origin tags; the live collector accepts only the
+current recording format. Existing prepared OBM and 2×2-cell datasets retain
+their separate experiment contracts. Checkpoint
 formats for the implemented U-tube models remain unchanged. Profile
 names in checkpoint metadata are separate from filenames; the serving guide
 explains the explicit naming update for already trained weights.

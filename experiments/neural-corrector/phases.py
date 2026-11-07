@@ -12,7 +12,8 @@ PHASE_MASKS = (0, 15, 7, 8)
 
 def phase_neutral_info(info):
     """Validate the model's optical profile and remove only the phase index."""
-    sizes = (8, 16, 32, 64, 128, 256) if isinstance(info, dict) and info.get("pixelsPerCell") == 2 else (64,)
+    ppc = info.get("pixelsPerCell") if isinstance(info, dict) else None
+    sizes = (8, 16, 32, 64, 128, 256) if ppc == 2 else ((16, 32, 64, 128) if ppc == 4 else (64,))
     if (not isinstance(info, dict) or type(info.get("size")) is not int or info["size"] not in sizes or info.get("colors") != 16
             or info.get("phases") != 4 or info.get("permute") is not True
             or type(info.get("phase")) is not int or info["phase"] not in range(4)):

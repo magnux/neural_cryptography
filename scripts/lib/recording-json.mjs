@@ -4,13 +4,15 @@
  */
 import {createReadStream} from 'node:fs';
 import {stat} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 
 const whitespace=c=>c===' '||c==='\t'||c==='\r'||c==='\n';
 const delimiter=c=>whitespace(c)||c===','||c==='}'||c===']';
 
 class RecordingParser {
-  constructor({maxTokenBytes,maxDepth,maxArrayItems}){
+  constructor({maxTokenBytes,maxDepth,maxArrayItems,streamArrays=false}){
     this.maxTokenBytes=maxTokenBytes;this.maxDepth=maxDepth;this.maxArrayItems=maxArrayItems;
+    this.streamArrays=streamArrays;this.events=[];this.counts={records:0,diagnostics:0};
     this.state='root';this.value={};this.keys=new Set();this.key=null;this.token=null;this.array=null;
   }
   fail(message='Malformed recording JSON.'){throw Error(message);}
@@ -35,8 +37,10 @@ class RecordingParser {
       if(this.keys.has(value))this.fail('Duplicate recording JSON field.');
       this.keys.add(value);this.key=value;this.state='colon';
     }else if(token.role==='array'){
-      if(this.array.length>=this.maxArrayItems)this.fail('Recording JSON array exceeds its item limit.');
-      this.array.push(value);this.state='array-separator';
+      if(this.counts[this.key]>=this.maxArrayItems)this.fail('Recording JSON array exceeds its item limit.');
+      this.counts[this.key]++;
+      if(this.streamArrays)this.events.push({key:this.key,value});else this.array.push(value);
+      this.state='array-separator';
     }else this.field(value);
   }
   feed(text){
@@ -119,21 +123,34 @@ class RecordingParser {
  * the much lower engine limit on a single string containing the complete file.
  * The per-value limit bounds one capture, including its optional original PNG.
  */
-export async function readRecordingJSON(path,{maxBytes=804*1024*1024,highWaterMark=64*1024,
-  maxTokenBytes=16*1024*1024,maxDepth=64,maxArrayItems=1024}={}){
+async function readRecording(path,{maxBytes=804*1024*1024,highWaterMark=64*1024,
+  maxTokenBytes=16*1024*1024,maxDepth=64,maxArrayItems=1024,onRecord,onDiagnostic,streamArrays=false}={}){
   for(const [name,value] of Object.entries({maxBytes,highWaterMark,maxTokenBytes,maxDepth,maxArrayItems}))
     if(!Number.isSafeInteger(value)||value<1)throw Error(`Invalid ${name} limit.`);
   if(highWaterMark>1024*1024)throw Error('Recording JSON stream chunks must be at most 1 MiB.');
   if((await stat(path)).size>maxBytes)throw Error('Recording JSON file exceeds its byte limit.');
-  const parser=new RecordingParser({maxTokenBytes,maxDepth,maxArrayItems});
+  const parser=new RecordingParser({maxTokenBytes,maxDepth,maxArrayItems,streamArrays}),digest=createHash('sha256');
+  const drain=async()=>{for(const {key,value} of parser.events)await (key==='records'?onRecord:onDiagnostic)?.(value);parser.events=[];};
   // ignoreBOM:true preserves a leading BOM, which is not part of JSON grammar.
   const decoder=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
   let bytes=0;
   for await(const chunk of createReadStream(path,{highWaterMark})){
-    bytes+=chunk.length;
+    bytes+=chunk.length;digest.update(chunk);
     if(bytes>maxBytes)throw Error('Recording JSON file exceeds its byte limit.');
     parser.feed(decoder.decode(chunk,{stream:true}));
+    await drain();
   }
   parser.feed(decoder.decode());
-  return parser.finish();
+  const metadata=parser.finish();await drain();
+  return {metadata,sha256:digest.digest('hex'),counts:parser.counts};
+}
+
+export async function readRecordingJSON(path,options={}){
+  return (await readRecording(path,options)).metadata;
+}
+/** Await one record at a time and discard its large base64 arrays afterwards.
+ * Metadata is returned after the complete JSON is validated, regardless of key order.
+ */
+export async function visitRecordingJSON(path,options={}){
+  return readRecording(path,{...options,streamArrays:true});
 }

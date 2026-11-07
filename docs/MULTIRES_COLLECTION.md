@@ -7,15 +7,15 @@ size and phase from optical cues; sender labels are used only during offline
 joining.
 
 This implements the collection milestone for the planned **W-tube**. The current
-Python `multires` model is still the earlier 2×2-cell experiment. W-tube training,
-conversion of earlier recordings, stronger paired synthetics and browser model
-integration are separate next steps. Do not feed these recordings to the current
+Python `multires` model is still the earlier 2×2-cell experiment.
+[Offline imports and stronger paired synthetics](W_TUBE_DATA.md) are implemented;
+W-tube training and browser model integration are the next steps. Do not feed these recordings to the current
 `multires` training command.
 
 Reload both devices after updating. Current sender/capture/session files and
 joined Neural-QR datasets use version 2. Earlier recordings remain untouched,
-but the current reader does not accept them. Keep them for the planned offline
-import and use a separate directory for new recordings.
+but the live collector does not accept them. The offline importer reads them
+from their separate roots; use a fresh directory for new recordings.
 
 ## Start the upload-enabled collector
 
@@ -24,7 +24,7 @@ From the repository root:
 ```sh
 npm run prepare:apps
 python apps/color-optical-bench/serve.py --port 8000 \
-  --recordings-dir local-data/recordings-wtube
+  --recordings-dir recordings
 ```
 
 Open `http://localhost:8000/capture.html` on that computer. For a phone, use the
@@ -33,7 +33,7 @@ same server over trusted HTTPS, with your existing trusted certificate:
 ```sh
 python apps/color-optical-bench/serve.py --host 0.0.0.0 --port 8443 \
   --https --cert certs/dev.pem --key certs/dev-key.pem \
-  --recordings-dir local-data/recordings-wtube
+  --recordings-dir recordings
 ```
 
 Both devices open `https://YOUR-CERTIFICATE-HOST:8443/capture.html`. Uploads are
@@ -161,11 +161,11 @@ frames. Keep an untouched test split when possible.
 The server derives file names from recording identities. For example:
 
 ```text
-local-data/recordings-wtube/collection_session.json
-local-data/recordings-wtube/train/g64/sender/<code>_neural-qr-sender-<session>.json.tmp
-local-data/recordings-wtube/train/g64/sender/<code>_neural-qr-sender-<session>.json
-local-data/recordings-wtube/train/g64/receiver/<code>_neural-qr-captures-<session>-<time>.json
-local-data/recordings-wtube/validation/g128/receiver/...
+recordings/collection_session.json
+recordings/train/g64/sender/<code>_neural-qr-sender-<session>.json.tmp
+recordings/train/g64/sender/<code>_neural-qr-sender-<session>.json
+recordings/train/g64/receiver/<code>_neural-qr-captures-<session>-<time>.json
+recordings/validation/g128/receiver/...
 ```
 
 Diagnostic-only exports use `<split>/unknown/receiver/`. The directory stays
@@ -185,7 +185,7 @@ After completed uploads:
 
 ```sh
 node scripts/corrector-dataset.mjs join-uploads \
-  --recordings-root local-data/recordings-wtube \
+  --recordings-root recordings \
   --out local-data/wtube-joined
 ```
 
@@ -195,8 +195,8 @@ ownership, then writes `<train|validation|test>/g<size>/` datasets. Each joined
 `neural-qr-dataset`, version 2, sample retains `[3,4G,4G]` inputs, device metadata
 and physical-session grouping. Source recordings are never overwritten.
 
-The full rebuild/training pipeline is not yet ready for these new inputs. Its
-managed rebuild is blocked before replacing datasets until the W-tube and
-synthetic-pipeline milestone. The upcoming offline importer will handle eligible
-older G64 crops and upsampled 2-pixel Neural-QR captures; do not edit their metadata
-or mix them into this recording directory manually.
+To combine the three recording rounds and generate paired synthetics, use
+[the W-tube data pipeline](W_TUBE_DATA.md). It reads `recordings/`,
+`recordings-1/` and `recordings-0/` separately, preserving the files and their
+split assignments. Do not edit older recording metadata to resemble the new
+format. Only W-tube model training/export remains pending.

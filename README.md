@@ -15,7 +15,8 @@ current dense monochrome header. Neural-QR is not a standard QR code.
 The [Neural-QR design](docs/NEURAL_QR.md) and [roadmap](docs/ROADMAP.md) define the
 remaining model and packet-integration steps. Version-2 header-free acquisition is implemented
 in `capture.html`, including optical size identification, G16/G32/G64/G128
-recordings at 4×4 pixels per cell and server uploads. W-tube training is the next
+recordings at 4×4 pixels per cell and server uploads. The [W-tube data pipeline](docs/W_TUBE_DATA.md)
+imports eligible earlier captures and generates harder paired synthetics. W-tube training is the next
 model milestone; the current `multires` model retains its separate 2×2-cell
 experiment contract. The existing `neural-zkboo.html` remains the working
 baseline while that format is developed. Functional success does not establish
@@ -57,6 +58,8 @@ parameters: transport carries the serialized proof bytes.
   contract, dataset collection, RTX 4090 training, and browser inference.
 - [W-tube collection](docs/MULTIRES_COLLECTION.md): G16/G32/G64/G128, 4×4 pixels
   per cell, repeated optical size codes, server uploads and device/camera metadata.
+- [W-tube datasets](docs/W_TUBE_DATA.md): native and auxiliary recording imports,
+  split preservation, 4:1 paired synthetic generation and repeatable rebuilds.
 - [Connections to previous research](docs/RESEARCH_CONNECTIONS.md): neural
   synchronization, adversarial learning, neural cryptanalysis, SIMON, LowMC,
   and Picnic, with primary references and future experiments.

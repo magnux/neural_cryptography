@@ -22,31 +22,32 @@ from sampling import BalancedSampler, infer_session_groups
 
 
 def write_dataset(path, size=8, *, frames=2, source="real", split="train", session="receiver",
-                  sender="sender", logical_seed=7, direction=("mobile", "desktop")):
+                  sender="sender", logical_seed=7, direction=("mobile", "desktop"), version=1):
     path.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(logical_seed)
     logical = rng.integers(0, 16, (size, size), dtype=np.uint8)
     y, x = np.mgrid[:size, :size]
     mask = ((y % 9 != 0) & (x % 9 != 0) & (y != size-1) & (x != size-1)).astype(np.uint8)
     rows = []
+    ppc = 2 if version == 1 else 4
     for phase in range(4):
         labels = logical.copy()
         labels[mask.astype(bool)] ^= PHASE_MASKS[phase]
         for frame in range(frames):
             identifier = f"{source}-{session}-{split}-g{size}-p{phase}-f{frame}"
-            info = {"size": size, "colors": 16, "phases": 4, "phase": phase, "pixelsPerCell": 2,
+            info = {"size": size, "colors": 16, "phases": 4, "phase": phase, "pixelsPerCell": ppc,
                     "permute": True, "gridBlock": 8, "parity": 0, "holdMs": 4000, "id": "deadbeef"}
             row = {"id": identifier, "sessionId": session, "senderSessionId": sender,
                    "payloadId": hashlib.sha256(logical.tobytes()).hexdigest(), "source": source,
-                   "split": split, "size": size, "colors": 16, "pixelsPerCell": 2,
-                   "inputShape": [3, 2*size, 2*size], "info": info,
+                   "split": split, "size": size, "colors": 16, "pixelsPerCell": ppc,
+                   "inputShape": [3, ppc*size, ppc*size], "info": info,
                    "burstId": f"{session}/{size}/{phase}", "timestamp": frame*100,
                    "provenance": {"senderEnvironment": {"deviceClass": direction[0]},
                                   "receiverEnvironment": {"deviceClass": direction[1]}}, "hashes": {}}
             if source == "synthetic":
                 row["synthetic"] = {"phaseGroupId": f"{session}/{size}/trajectory", "frame": frame}
             for name, value in {
-                "input": np.full((3, 2*size, 2*size), .1*frame, dtype="<f4"),
+                "input": np.full((3, ppc*size, ppc*size), .1*frame, dtype="<f4"),
                 "labels": labels, "mask": mask, "expected": logical,
                 "baseline": np.zeros((16, size, size), dtype="<f4"),
             }.items():
@@ -55,12 +56,27 @@ def write_dataset(path, size=8, *, frames=2, source="real", split="train", sessi
                 row[name] = file.name
                 row["hashes"][name] = hashlib.sha256(value.tobytes()).hexdigest()
             rows.append(row)
-    manifest = {"format": NEURAL_QR_DATASET_FORMAT, "version": 1, "samples": rows}
+    manifest = {"format": NEURAL_QR_DATASET_FORMAT, "version": version, "samples": rows}
     (path/"manifest.json").write_text(json.dumps(manifest))
     return manifest
 
 
 class MultiresDataTests(unittest.TestCase):
+    def test_v2_raster_contract_rejects_retired_sizes_and_mixed_rasters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_dataset(root/'v2', 16, version=2, frames=1)
+            dataset = Dataset([root/'v2'])
+            self.assertEqual((dataset.dataset_version, dataset.pixels_per_cell), (2, 4))
+            self.assertEqual(dataset.samples[0].tensors()[0].shape, (3, 64, 64))
+            write_dataset(root/'v1', 16, version=1, frames=1)
+            with self.assertRaisesRegex(ValueError, 'Cannot mix dataset formats or raster versions'):
+                Dataset([root/'v1', root/'v2'])
+            for size in (8, 256):
+                write_dataset(root/f'bad-{size}', size, version=2, frames=1)
+                with self.assertRaisesRegex(ValueError, 'Neural-QR v2 requires'):
+                    Dataset([root/f'bad-{size}'])
+
     def test_all_grids_use_two_pixels_and_preserve_raw_overshoot(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
