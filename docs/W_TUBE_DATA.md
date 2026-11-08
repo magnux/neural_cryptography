@@ -164,7 +164,7 @@ slots. K4–K8 model examples will draw from these captures during training.
 The intended training mix remains **50% real and 50% synthetic** with paired
 targets. A larger synthetic corpus provides more corruptions of each target;
 it does not make the training sampler use 80% synthetic inputs. W-tube defaults
-to `--native-real-fraction .75` within each grid/direction real quota when both
+to `--native-real-fraction .5` within each grid/direction real quota when both
 native and auxiliary recordings are available. The auxiliary share is divided
 equally between available `resampled` and `header-g64` origins. Missing origins
 redistribute their share among those present; a direction without native data
@@ -172,16 +172,78 @@ therefore lowers the overall native fraction. Native-first validation remains
 independent of this training policy. See [sampling details](NEURAL_CORRECTOR_TRAINING.md#w-tube-sampling-policy)
 for exact quotas, coverage and reported counts.
 
-## Harder, coherent corruptions
+## Camera-scaled, coherent corruptions
 
-The `w-tube` recipe combines camera-resolution loss, curved moiré, noise,
-white-balance and exposure changes, shadows/reflections/glare, rolling shutter,
-linear and rotational/radial motion blur, and small RGB-channel blur offsets.
-All four phase renders follow a shared camera/environment trajectory, with
-frame variation. This preserves the relationship a phase-grouped model needs.
-The default severity is sampled uniformly from **0.5 to 1.0** per trajectory.
-This keeps a range of examples rather than forcing every corruption to its
-maximum. Recipe settings can be overridden explicitly; the rebuild defaults are:
+All Neural-QR version-2 synthetic generation separates the **camera footprint**
+from the **stored crop**. The `w-tube` recipe selects stronger photometric
+settings and trajectory severities; choosing `standard` does not disable the
+version-2 camera model.
+
+For a G×G matrix, the model still receives a 4G×4G raster, but that raster may have
+been reconstructed from many fewer independent camera pixels. Giving every grid
+an identical 1–4 camera pixels per cell would remove much of the real G128
+sampling difficulty.
+
+The generator obtains sampling estimates from the paired real captures'
+`provenance.stats.pixelsPerCell`, grouped by the exact physical session, logical
+target and split. This is distinct from `sample.pixelsPerCell = 4`, which specifies
+the stored raster. Only geometry metadata is used: clean symbols still come
+from the sender, and captured RGB does not become synthetic ground truth.
+Where valid camera estimates are missing, generation uses a declared absolute
+footprint distribution independent of G. The selected camera footprint and
+source of that estimate are recorded with each synthetic trajectory. Measurements
+are sampled from all valid captures of that target, with multiplicity preserved
+and a 0.85–1.15 footprint multiplier. A missing optional measurement is not a
+reason to drop the real sample; the fallback is used only if that target has no
+valid estimates. No target borrows statistics from another split.
+
+The camera-geometry defaults are:
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `--camera-footprint-min` / `--camera-footprint-max` | `96` / `640` camera pixels across | Missing-measurement log-uniform range, independent of G |
+| `--camera-easy-fraction` | `.15` | Increase the footprint by 1.25–1.75 and halve corruption strength for this fraction of trajectories |
+| Optical blur sigma | 0.25–0.85 camera pixels | Multiplied by trajectory severity and easier-case strength |
+| Residual registration | Up to 0.35 camera pixels per axis | Correlated with smaller temporal drift |
+| Residual affine coefficients | Up to 0.45 camera pixels | Small displacement field over normalized crop coordinates |
+| Physical footprint guard | 32–2048 camera pixels across | Any clipping is explicitly recorded; this is not a one-pixel-per-cell floor |
+
+The manifest recipe records measured-scale coverage and fallback-target counts
+in `cameraGeometry.coverage`. Each capture's `synthetic.cameraGeometry` records
+`cameraSide`, `cameraPixelsPerCell`, `cameraToCrop`, `source`, the sampled
+offsets and whether the footprint guard was applied. Sampling resolution can be
+smaller than G; when the physical footprint exceeds the stored crop size, reconstruction keeps the fixed 4G
+output instead of allocating a larger training tensor. Severity zero remains
+an exact clean-identity case. The `--camera-*` options belong to direct
+`synthetic.py` calls; the managed rebuild uses their defaults. Fractional
+`--capture-*` options apply only to the separate OBM/version-1 experiments and
+are rejected for version-2 generation rather than silently ignored.
+
+If the payload occupies P camera pixels across, a disturbance b camera pixels
+wide spans `b × G/P` logical cells and `b × 4G/P` stored pixels. Thus comparable
+framing naturally makes dense matrices more difficult. Each four-phase burst
+shares its camera footprint and correlated motion/environment trajectory;
+individual exposures retain temporal variation and fresh sensor noise.
+
+| Effect | W-tube coordinate convention |
+| --- | --- |
+| Sampling density | Estimated camera footprint, then reconstruction to 4G×4G; no one-camera-pixel-per-cell floor |
+| Optical blur, linear travel, RGB offsets, residual alignment and scanline skew | Camera pixels, transformed to the stored crop |
+| Moiré and RGB stripe texture | Camera-scale periods with spatial variation; periods are actual wavelengths rather than half-wavelengths |
+| Shadows, reflections and glare | Relative image coordinates; their extent already grows in cell units with G |
+| Rotation, zoom and illumination/exposure fields | Angles, image fractions or cycles across the image |
+| Sensor noise | Added at the simulated camera sampling stage, before reconstruction |
+
+Arbitrary sampling phase avoids systematically aligning the sensor grid with
+cell boundaries. Residual geometric errors perturb observed evidence while the
+supervision remains the intended logical matrix. Blur kernels and motion
+integration account for the transformed path length rather than silently using
+a fixed small kernel on every grid.
+
+The `w-tube` recipe samples severity uniformly from **0.5 to 1.0** per trajectory.
+An easier subset preserves examples with better sampling and milder corruption;
+generation is not intended to destroy every observation. The standard rebuild
+controls remain:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
@@ -191,10 +253,11 @@ maximum. Recipe settings can be overridden explicitly; the rebuild defaults are:
 | `--seed` | `41` | Reproducible generation seed. |
 | `--max-output-mib` | `1048576` | Aggregate estimated output budget; `0` disables this budget check. |
 
-The capture-resolution stage can reach one camera pixel per logical cell before
-returning to four pixels per cell. Upsampling that degraded image reproduces
-information loss, not recovered detail. The aim is broader camera variation,
-not making every synthetic unreadable.
+The source geometry can produce less than one camera pixel per logical cell.
+Upsampling reproduces the resulting information loss; it does not restore detail
+or guarantee that a target remains recoverable. This is still an approximate
+screen/camera corruption model, not a calibrated sensor/CFA or display-readout
+simulation. Native held-out recovery must establish whether it closes the gap.
 
 Clean inputs come from the actual sender targets, including targets recovered
 from auxiliary recordings. Synthetic corruption never starts from a denoised

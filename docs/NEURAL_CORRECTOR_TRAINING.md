@@ -57,7 +57,7 @@ python experiments/neural-corrector/train.py \
   --model W-tube --frames 8 \
   --train local-data/w-tube/real/train local-data/w-tube/synthetic/train \
   --validation local-data/w-tube/real/validation \
-  --paired-targets --real-fraction .5 --native-real-fraction .75 \
+  --paired-targets --real-fraction .5 --native-real-fraction .5 \
   --batch-size 8 --accumulate 4 --lr .0001 --steps 32000 \
   --validation-samples 0 --device cuda \
   --out checkpoints/neural-corrector/w-tube-phase8
@@ -97,7 +97,7 @@ The hierarchy is:
    synthetic counterparts.
 3. Balance real examples across the acquisition directions available at that grid.
 4. Within each grid/direction quota, choose native versus auxiliary evidence.
-   W-tube defaults to `--native-real-fraction .75` when both kinds are available.
+   W-tube defaults to `--native-real-fraction .5` when both kinds are available.
 5. Divide the auxiliary remainder equally across available `resampled` and
    `header-g64` origins, then draw through physical sessions, targets, phases
    and capture bursts.
@@ -108,18 +108,28 @@ choices without changing these quotas. The fraction accepts values from 0 to 1;
 it applies to the real quota, not to the whole batch. Other model profiles keep
 their existing source/direction policy and do not use this option.
 
-With full coverage in both directions, an effective batch of 32 contains:
+At G64, with all three origins represented in both directions, an effective
+batch of 32 contains:
 
 | Source | Native | Resampled | Header G64 | Total |
 | --- | ---: | ---: | ---: | ---: |
-| Real | 12 | 2 | 2 | 16 |
-| Paired synthetic | 12 | 2 | 2 | 16 |
+| Real | 8 | 4 | 4 | 16 |
+| Paired synthetic | 8 | 4 | 4 | 16 |
 
 The header-G64 origin exists only at G64. At other grids its auxiliary quota goes
-to the available resampled origin. If a grid/direction has only native data, all
-of its real draws are native; if it has no native data, all are auxiliary.
+to the available resampled origin: an update then has eight native and eight
+resampled examples in each source half. With all four grids sampled uniformly
+and complete direction/origin coverage, the expected overall **real** proportions
+are **50% native, 43.75% resampled and 6.25% header-G64**. The small global
+header share reflects its single supported grid; within G64 it receives 25%.
+These are expected proportions across updates, not guaranteed counts in every
+reporting interval. Explicit `--native-real-fraction .75` still overrides the
+new default, so update an earlier saved command or omit that option.
+
+If a grid/direction has only native data, all of its real draws are native; if it
+has no native data, all are auxiliary.
 Missing origins never borrow captures from another grid, direction or split.
-Consequently, 75% is **not a global guarantee** when native coverage is missing
+Consequently, 50% is **not a global guarantee** when native coverage is missing
 in some directions. Static coverage records show the effective fraction for
 each grid/direction in `settings.json` under `originSampling.coverage`, and
 training records the actual origin counts.
@@ -159,19 +169,33 @@ python experiments/neural-corrector/evaluate.py \
   --out local-results/neural-corrector/w-tube-phase8-validation.json
 ```
 
-Continue from W-tube weights into a **new, empty run directory** if further
-training is useful:
+Neural-QR version-2 synthetics automatically use the camera model described in
+[the data guide](W_TUBE_DATA.md#camera-scaled-coherent-corruptions), including
+when `synthetic.py` is called with the `standard` recipe. The recipe changes
+corruption strengths; it does not select the sampling geometry.
+
+After regenerating the camera-scaled synthetics, continue from the selected
+W-tube weights into a **new, empty run directory**. Stop the current training
+process before rebuilding `local-data/w-tube`, because the rebuild replaces its
+managed dataset directories. Keep the selected checkpoint and its reports as a
+baseline; this update does not change the architecture or require fresh weights.
+
+```sh
+node scripts/rebuild-corrector-data.mjs --python python
+```
+
+Then initialize the new run with the revised origin mix:
 
 ```sh
 python experiments/neural-corrector/train.py \
   --model W-tube --frames 8 \
   --train local-data/w-tube/real/train local-data/w-tube/synthetic/train \
   --validation local-data/w-tube/real/validation \
-  --paired-targets --real-fraction .5 --native-real-fraction .75 \
+  --paired-targets --real-fraction .5 --native-real-fraction .5 \
   --initialize checkpoints/neural-corrector/w-tube-phase8/best.pt \
   --batch-size 8 --accumulate 4 --lr .00005 --steps 32000 \
   --validation-samples 0 --device cuda \
-  --out checkpoints/neural-corrector/w-tube-phase8-refine
+  --out checkpoints/neural-corrector/w-tube-camera-phase8
 ```
 
 `--initialize` loads weights and split provenance, then starts a fresh optimizer
@@ -347,7 +371,12 @@ ranges for clean corpora; changing a folder name is not a split. Add separate
 4-color corpora with fresh seeds to both training and validation; the training
 CLI accepts multiple directories. Use the same pattern for G128 when ready.
 
-The generator applies an RGB stripe carrier before blur/resampling, curved and
+The following controls describe the separate **standard OBM/U-tube recipe**.
+W-tube uses the camera-scale geometry described in
+[the W-tube data guide](W_TUBE_DATA.md#camera-scaled-coherent-corruptions), while
+retaining the same broad types of photometric effects.
+
+The standard generator applies an RGB stripe carrier before blur/resampling, curved and
 chirped channel-dependent moiré, bounded subcell jitter, short motion blur,
 color/gamma changes, clipping, and shot/read noise. The following effects are
 enabled by default:

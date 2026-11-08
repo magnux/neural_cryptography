@@ -43,7 +43,7 @@ def native_sampling_fraction(profile, value):
         if value is not None:
             raise ValueError("--native-real-fraction is supported only for W-tube")
         return None
-    value = .75 if value is None else value
+    value = .5 if value is None else value
     if (isinstance(value, bool) or not isinstance(value, (int, float))
             or not np.isfinite(value) or not 0 <= value <= 1):
         raise ValueError("native-real-fraction must be finite and in [0, 1]")
@@ -599,7 +599,7 @@ def main():
     parser.add_argument("--validation-samples", type=int, default=0, help="0 evaluates all (default); positive values cap the diagnostic subset")
     parser.add_argument("--real-fraction", type=float, default=.5)
     parser.add_argument("--native-real-fraction", type=float,
-                        help="W-tube: desired native fraction of each grid/direction's real quota (default: .75); unavailable origins redistribute")
+                        help="W-tube: desired native fraction of each grid/direction's real quota (default: .5); unavailable origins redistribute")
     parser.add_argument("--real-noise-std", type=float, default=.008,
                         help="real training noise standard deviation in RGB [0,1] units (default: .008)")
     parser.add_argument("--real-tint-stops", type=float, default=.06,
@@ -645,3 +645,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

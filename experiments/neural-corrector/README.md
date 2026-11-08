@@ -103,9 +103,14 @@ crops, and eligible original G64 payload crops. It regenerates clean targets and
 harder paired synthetics at a **4:1 synthetic/real capture ratio**, rounded up to
 complete four-phase bursts. The W-tube training mix remains **50/50**; disk
 counts do not set the sampling ratio. Existing model training can apply
-mild photometric augmentation. Synthetics include curved moiré, capture-resolution
-loss, rolling shutter, motion/RGB-offset blur, white balance/exposure changes,
-shadows, reflections, glare and sensor noise.
+mild photometric augmentation. All Neural-QR version-2 synthetics draw a camera footprint from
+paired capture geometry, or an absolute fallback distribution independent of G.
+Blur, sampling, moiré and displacement use camera units before reconstruction to
+the model's four-pixel-per-cell raster. Image-relative shades and glare retain
+their existing spatial convention. This prevents large grids from automatically
+receiving proportionally more camera resolution. See
+[the physical scaling and provenance](../../docs/W_TUBE_DATA.md#camera-scaled-coherent-corruptions)
+for the approximation, defaults and limits.
 
 W-tube and multires training use one resolution per update, choose resolutions uniformly,
 and balance sources, recorded device directions and physical sessions. Their
@@ -115,10 +120,13 @@ or CRC recovery claims in the raw-symbol Neural-QR dataset.
 
 For W-tube, native real validation is the primary population whenever available;
 auxiliary origins have separate summaries. A corpus without native validation is
-explicitly reported as auxiliary-only. W-tube defaults to 75% native captures
+explicitly reported as auxiliary-only. W-tube defaults to 50% native captures
 within each grid/direction real quota that has both native and auxiliary data.
 Auxiliary origins share the remainder; unavailable origins redistribute their
-quota. This is separate from the unchanged 50/50 real/synthetic pairing. Start W-tube from scratch;
+quota. With complete coverage and uniformly selected grids, the expected real
+mix is 50% native, 43.75% resampled and 6.25% header-G64; the header contribution
+is 25% within G64 itself. This is separate from the unchanged 50/50 real/synthetic
+pairing. Existing W-tube weights can initialize training on regenerated synthetics;
 continuation via `--initialize` requires a W-tube checkpoint and a new run folder.
 The [W-tube training guide](../../docs/NEURAL_CORRECTOR_TRAINING.md#train-w-tube)
 provides complete training, continuation and evaluation commands.
@@ -165,7 +173,7 @@ browser performance remains the next measurement.
 | --- | --- |
 | `model.py`, `contract.py` | Network profiles, tensor shapes, normalization and numerical fixtures |
 | `data.py`, `bursts.py`, `phases.py` | Dataset validation, distinct-capture grouping and canonical phase targets |
-| `synthetic.py`, `augmentation.py` | Coherent corruptions and training-only transformations |
+| `synthetic.py`, `camera_geometry.py`, `augmentation.py` | Camera-scaled coherent corruptions and training-only transformations |
 | `sampling.py`, `session_groups.py` | Source/direction balance and session assignments |
 | `train.py` | Optimization, progress summaries, compact history and checkpoint selection |
 | `evaluate.py` | Held-out cell metrics; exact Neural-QR matrices or independent OBM payload recovery |
@@ -264,3 +272,4 @@ The Neural-ZKBoo demo now feeds learned G64 scores into packet recovery and has
 completed a physical-device exchange with QR ACKs. The next integration uses
 Neural-QR and `multires`; model verification, byte acceptance and cryptographic
 authentication remain distinct checks.
+

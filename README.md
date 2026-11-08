@@ -18,7 +18,7 @@ in `capture.html`, including optical size identification, G16/G32/G64/G128
 recordings at 4×4 pixels per cell and server uploads. The [W-tube data pipeline](docs/W_TUBE_DATA.md)
 imports eligible earlier captures and generates harder paired synthetics. **W-tube
 training and evaluation are implemented** for this four-pixel corpus, including
-native-prioritized sampling and lean metric tables. Model export and browser
+origin-balanced sampling, camera-scaled synthetic generation and lean metric tables. Model export and browser
 integration remain next steps. The `multires` model retains its
 separate 2×2-cell experiment contract. The existing `neural-zkboo.html` remains the working
 baseline while that format is developed. Functional success does not establish
@@ -146,3 +146,4 @@ Keep the project's [NOTICE](NOTICE), and use [CITATION.cff](CITATION.cff) when
 citing the research. See [licensing scope](docs/LICENSING.md) for model releases
 and method descriptions. Dependencies retain their own terms in
 [THIRD_PARTY.md](THIRD_PARTY.md).
+

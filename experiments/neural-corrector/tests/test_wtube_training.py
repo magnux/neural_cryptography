@@ -46,7 +46,7 @@ def fixture_v2(root, split, size, *, paired=False, seed=1):
 
 class WTubeTrainingTests(unittest.TestCase):
     def test_native_origin_policy_defaults_and_rejects_inapplicable_overrides(self):
-        self.assertEqual(native_sampling_fraction("W-tube", None), .75)
+        self.assertEqual(native_sampling_fraction("W-tube", None), .5)
         for value in (0, .6, 1):
             self.assertEqual(native_sampling_fraction("W-tube", value), value)
         for value in (-.1, 1.1, True, float("nan"), float("inf"), "0.75"):
@@ -105,8 +105,8 @@ class WTubeTrainingTests(unittest.TestCase):
             settings = json.loads((root/"run/settings.json").read_text())
             self.assertEqual(settings["frameCounts"], [4, 5, 6, 7, 8])
             self.assertEqual(settings["realFraction"], .5)
-            self.assertEqual(settings["nativeRealFraction"], .75)
-            self.assertEqual(meta["nativeRealFraction"], .75)
+            self.assertEqual(settings["nativeRealFraction"], .5)
+            self.assertEqual(meta["nativeRealFraction"], .5)
             self.assertEqual(settings["originSampling"]["allocation"], "within-grid-and-direction")
             self.assertEqual(len(settings["originSampling"]["coverage"]), 2)
             self.assertTrue(all(row["expectedNativeRealFraction"] == 1
@@ -165,7 +165,7 @@ class WTubeTrainingTests(unittest.TestCase):
             continued_model, continued_checkpoint = load_model_checkpoint(continued["checkpoint"])
             self.assertEqual(continued_model.profile, "W-tube")
             self.assertEqual(continued_checkpoint["training"]["datasetVersion"], 2)
-            self.assertEqual(continued_checkpoint["training"]["nativeRealFraction"], .75)
+            self.assertEqual(continued_checkpoint["training"]["nativeRealFraction"], .5)
             self.assertEqual(json.loads((root/"continued/settings.json").read_text())["initialLearningRate"], 5e-5)
             self.assertEqual(Path(result["checkpoint"]).read_bytes(), before)
             with self.assertRaisesRegex(ValueError, "differs from the initialized checkpoint"):
@@ -225,3 +225,4 @@ class WTubeTrainingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

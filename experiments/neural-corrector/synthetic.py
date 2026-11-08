@@ -23,11 +23,13 @@ from torch.nn import functional as F
 
 from data import DATASET_FORMAT, Dataset, digest, local_path, load_manifest
 from phases import canonical_labels, phase_neutral_info
+from camera_geometry import (CameraGeometryConfig, build_camera_pools,
+                             camera_target_key, sample_camera_geometry)
 
 
-CORRUPTION_KIND = "correlated-calibrated-crop-v8"
-MULTIRES_CORRUPTION_KIND = "correlated-calibrated-crop-multires-v1"
-W_TUBE_CORRUPTION_KIND = "correlated-calibrated-crop-w-tube-v1"
+CORRUPTION_KIND = "correlated-calibrated-crop-v9"
+MULTIRES_CORRUPTION_KIND = "correlated-calibrated-crop-multires-v2"
+W_TUBE_CORRUPTION_KIND = "correlated-camera-scale-w-tube-v2"
 NEURAL_QR_DATASET_FORMAT = "neural-qr-dataset"
 MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
 
@@ -457,7 +459,9 @@ def apply_motion_blur(image, motion, frame=0, *, rgb_offset=None):
 def gaussian_blur(image: torch.Tensor, sigma: float) -> torch.Tensor:
     if sigma < .08:
         return image
-    radius = min(5, max(1, int(np.ceil(3*sigma))))
+    # Camera-space blur can span many rectified pixels at low sampling density.
+    # A fixed five-pixel radius would silently truncate precisely those cases.
+    radius = max(1, int(np.ceil(3*sigma)))
     axis = torch.arange(-radius, radius+1, dtype=image.dtype, device=image.device)
     kernel = torch.exp(-axis.square() / (2*sigma*sigma))
     kernel /= kernel.sum()
@@ -485,6 +489,55 @@ def apply_capture_resolution(image, capture):
     low = gaussian_blur(low, capture["blurSigma"])
     if capture_side != side:
         low = F.interpolate(low, size=(side, side), mode="bilinear", align_corners=False)
+    return low[0]
+
+
+def moire_phase_field(side, camera_side, period_camera, angle, curve=0., chirp=0.):
+    """Moiré wavelength in camera pixels; curvature in cycles across the crop."""
+    axis = (torch.arange(side, dtype=torch.float32)+.5)*2/side-1
+    y, x = torch.meshgrid(axis, axis, indexing="ij")
+    return 2*np.pi*(camera_side/(2*period_camera)*(x*np.cos(angle)+y*np.sin(angle))
+                   + curve*x*y + chirp*y*y)
+
+
+def camera_motion_samples(side, motion, camera_to_crop=1.):
+    """Increase exposure integration density when physical motion covers more pixels."""
+    radius = np.sqrt(2)*side
+    travel = (abs(motion['linearPixels'])+radius*(abs(np.deg2rad(motion['rotationDegrees']))
+                                               + abs(motion['zoomFraction'])))
+    # Optical blur also grows with cameraToCrop. Integrating at half-camera-
+    # pixel intervals avoids oversampling a broad PSF on a large rectified crop.
+    travel /= max(1., camera_to_crop)
+    return min(63, max(motion['samples'], 2*int(np.ceil(travel))+1))
+
+
+def apply_camera_sampling(image, camera, rng, severity, *, add_noise=True):
+    """Arbitrary sensor phase, finite footprints, sensor noise, then rectification.
+
+    The sampling phase is undone during reconstruction. Residual alignment error
+    is applied separately, so changing the sensor lattice does not shift labels.
+    If the real camera has more pixels than the output raster, compute only the
+    output raster and scale noise to represent its larger averaging footprint.
+    """
+    side, count = image.shape[-1], camera['samplingSide']
+    shift = torch.as_tensor(camera['samplingOffsetCamera'], dtype=image.dtype,
+                            device=image.device)*2/camera['cameraSide']
+    axis = (torch.arange(side, dtype=image.dtype, device=image.device)+.5)*2/side-1
+    y, x = torch.meshgrid(axis, axis, indexing='ij')
+    canonical = torch.stack((x, y), dim=-1)[None]
+    low = image[None]
+    if count < side:
+        shifted = F.grid_sample(low, canonical+shift, mode='bilinear',
+                                padding_mode='border', align_corners=False)
+        low = F.interpolate(shifted, size=(count, count), mode='area')
+    if add_noise:
+        noise = torch.as_tensor(rng.normal(size=tuple(low.shape)), dtype=low.dtype, device=low.device)
+        std = severity*(.008+.025*low.clamp_min(0).sqrt())
+        # Noise is added AFTER sensor integration, not averaged away by it.
+        low = (low+noise*std*min(1., count/camera['cameraSide'])).clamp(0, 1)
+    if count < side:
+        low = F.grid_sample(low, canonical-shift, mode='bilinear',
+                            padding_mode='border', align_corners=False)
     return low[0]
 
 
@@ -541,38 +594,44 @@ def _corrupt_sequence(clean, views, seed, severity, **kwargs):
 
 
 def _iter_corrupt_sequence(clean, views, seed, severity, *, photometric=None,
-                           resolution=None, pixels_per_cell=4):
+                           resolution=None, pixels_per_cell=4, camera=None):
     """Yield one crop at a time along a shared, scheduled optical trajectory.
 
-    Memory is bounded by the clean phase set and one simulated capture, not by
-    captures/burst or targets/dataset. Dense-pixel distortion lengths use the
-    four-pixel profile as their reference, so changing to two pixels/cell halves
-    registration offsets, blur travel and moire spacing in stored-pixel units.
-    Angles and relative image fractions retain their physical meaning.
+    Memory is bounded by the clean phase set and one simulated capture. W-tube
+    receives physical camera geometry; its lengths are mapped from camera pixels
+    into the stored crop. The independent OBM/v1 experiments retain explicit
+    cell-relative lengths. Angles and image fractions keep their own units.
     """
     frames = len(views)
     photometric = photometric or PhotometricConfig()
-    resolution = resolution_config(resolution, pixels_per_cell)
+    if camera is None:
+        resolution = resolution_config(resolution, pixels_per_cell)
     if severity == 0:
         for view in views:
             yield clean[int(view)].copy()
         return
     rng = np.random.default_rng(seed)
     side = clean.shape[-1]
-    capture = sample_capture_resolution(side, seed, severity, resolution,
-                                        pixels_per_cell=pixels_per_cell)
-    pixel_scale = pixels_per_cell/4
+    capture = (sample_capture_resolution(side, seed, severity, resolution,
+                                        pixels_per_cell=pixels_per_cell) if camera is None else None)
+    pixel_scale = pixels_per_cell/4 if camera is None else camera['cameraToCrop']
+    if camera is not None:
+        severity *= camera['effectStrength']
     rgb = torch.from_numpy(np.clip((clean+1)/2, 0, 1))
     high = F.interpolate(rgb, scale_factor=2, mode="nearest")
     hy, hx = torch.meshgrid(torch.arange(2*side, dtype=torch.float32),
                            torch.arange(2*side, dtype=torch.float32), indexing="ij")
     # A high-resolution RGB stripe carrier is optically blurred before sampling.
-    screen_period = rng.uniform(1.6, 3.4)*pixel_scale
-    carrier = torch.stack([torch.cos(2*np.pi*hx/screen_period+c*2*np.pi/3) for c in range(3)])
-    high = (high * (1 + severity*rng.uniform(.04, .16)*carrier[None])).clamp(0, 1)
+    screen_period = rng.uniform(1.6, 3.4)*pixel_scale*(2 if camera is not None else 1)
+    # Do not numerically alias a camera carrier the working raster cannot resolve.
+    # Broad residual moire below remains present at every camera scale.
+    carrier_weight = min(1., max(0., (screen_period-2)/2)) if camera is not None else 1.
+    carrier_period = max(2., screen_period) if camera is not None else screen_period
+    carrier = torch.stack([torch.cos(2*np.pi*hx/carrier_period+c*2*np.pi/3) for c in range(3)])
+    high = (high * (1 + severity*rng.uniform(.04, .16)*carrier_weight*carrier[None])).clamp(0, 1)
     y, x = torch.meshgrid(torch.linspace(-1, 1, side), torch.linspace(-1, 1, side), indexing="ij")
     angle, angle2 = rng.uniform(0, np.pi, 2)
-    period, period2 = rng.uniform(7, 35)*pixel_scale, rng.uniform(4, 18)*pixel_scale
+    period, period2 = rng.uniform(7, 35), rng.uniform(4, 18)
     curve, chirp = rng.uniform(-7, 7), rng.uniform(-5, 5)
     phase0 = rng.uniform(0, 2*np.pi)
     velocity = rng.uniform(.10, .5)
@@ -583,6 +642,17 @@ def _iter_corrupt_sequence(clean, views, seed, severity, *, photometric=None,
     base_sigma = rng.uniform(.15, 1.3) * severity*pixel_scale
     base_shift = rng.uniform(-.6, .6, 2) * severity*pixel_scale
     drift = rng.uniform(-.18, .18, 2) * severity*pixel_scale
+    affine_x = affine_y = 0.
+    if camera is not None:
+        # Geometry fields already include severity; only convert their units.
+        base_sigma = camera['blurSigmaCamera']*2*pixel_scale
+        base_shift = np.array(camera['registrationOffsetCamera'])*pixel_scale
+        drift = np.array(camera['registrationDriftCamera'])*pixel_scale
+        a, b, c, d = camera['affineCamera']
+        affine_x, affine_y = pixel_scale*(a*x+b*y), pixel_scale*(c*x+d*y)
+    camera_span = side/pixel_scale
+    curved = moire_phase_field(side, camera_span, period, angle, curve, chirp)
+    secondary = moire_phase_field(side, camera_span, period2, angle2)
     # Separate stream: toggling photometric controls does not redraw moiré,
     # motion or sensor noise, making controlled ablations easier to interpret.
     lighting_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x50484f54]))
@@ -595,6 +665,8 @@ def _iter_corrupt_sequence(clean, views, seed, severity, *, photometric=None,
     motion = sample_motion_blur(motion_rng, severity, photometric)
     if motion is not None:
         motion["linearPixels"] *= pixel_scale
+        if camera is not None:
+            motion['samples'] = camera_motion_samples(side, motion, pixel_scale)
     rgb_rng = np.random.default_rng(np.random.SeedSequence([seed, 0x5247424f]))
     rgb_offset = sample_rgb_offset(rgb_rng, severity, photometric, motion)
     if rgb_offset is not None:
@@ -607,12 +679,11 @@ def _iter_corrupt_sequence(clean, views, seed, severity, *, photometric=None,
         shift = np.clip(base_shift + np.sin(t*.55)*drift + rng.normal(0, .04, 2)*severity*pixel_scale,
                         -.9*pixel_scale, .9*pixel_scale)
         shutter_gains, row_offsets = rolling_shutter_maps(side, shutter, t)
-        grid = torch.stack((x+2*(float(shift[0])+row_offsets)/side,
-                            y+2*float(shift[1])/side), dim=-1)[None]
+        modulation = 1+.12*np.sin(t*.17+phase0)
+        grid = torch.stack((x+2*(float(shift[0])+row_offsets+affine_x*modulation)/side,
+                            y+2*(float(shift[1])+affine_y*modulation)/side), dim=-1)[None]
         observed = F.grid_sample(blurred, grid, mode="bilinear", padding_mode="border", align_corners=True)[0]
         phase = phase0 + t*velocity
-        curved = 2*np.pi*(side/period*(x*np.cos(angle)+y*np.sin(angle)) + curve*x*y + chirp*y*y)
-        secondary = 2*np.pi*side/period2*(x*np.cos(angle2)+y*np.sin(angle2))
         bands = torch.stack([torch.sin(curved+phase+c*.63) + .35*torch.sin(secondary-phase*.7+c)
                              for c in range(3)])
         observed = observed + amplitudes*bands
@@ -623,11 +694,14 @@ def _iter_corrupt_sequence(clean, views, seed, severity, *, photometric=None,
                                          lighting["exposureStops"][t]).pow(gamma)
         observed = apply_overlays(observed, lighting["overlays"], t)
         observed = apply_glare(observed, glare, t)
-        # Shot variance follows intensity; read noise is independent per capture.
-        std = severity*(.008 + .025*observed.sqrt())
-        noise = torch.from_numpy(rng.normal(size=clean.shape[1:]).astype(np.float32))
-        observed = (observed + noise*std).clamp(0, 1)
-        observed = apply_capture_resolution(observed, capture).clamp(0, 1)
+        if camera is not None:
+            observed = apply_camera_sampling(observed, camera, rng, severity).clamp(0, 1)
+        else:
+            # Independent OBM/2-pixel experiment uses its explicit fractional sampler.
+            std = severity*(.008 + .025*observed.sqrt())
+            noise = torch.from_numpy(rng.normal(size=clean.shape[1:]).astype(np.float32))
+            observed = (observed + noise*std).clamp(0, 1)
+            observed = apply_capture_resolution(observed, capture).clamp(0, 1)
         yield (observed*2-1).numpy().astype(np.float32, copy=False)
 
 
@@ -698,11 +772,12 @@ def paired_burst_counts(groups, paired_real, ratio, frames, dataset):
         result.append(math.ceil(ratio*counts[key]/(4*frames)))
     if used != set(counts):
         raise ValueError("paired-real contains targets missing from the clean dataset")
+    camera_pools, camera_coverage = build_camera_pools(real.samples)
     return result, {"requestedRatio": ratio, "realCaptures": sum(counts.values()),
         "syntheticCaptures": sum(result)*4*frames,
         "achievedRatio": sum(result)*4*frames/sum(counts.values()),
         "rounding": f"up to complete four-phase trajectories ({4*frames} captures)",
-        "realManifestSha256": real.manifest_hash}
+        "realManifestSha256": real.manifest_hash}, camera_pools, camera_coverage
 
 
 def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=None,
@@ -710,7 +785,7 @@ def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=None
              bursts_per_target=None, severity_min=None,
              resolution: CaptureResolutionConfig | None = None, phase_grouped=None,
              paired_real=None, synthetic_ratio=4, recipe_name="standard", plan_only=False,
-             summary_only=False):
+             summary_only=False, camera_config: CameraGeometryConfig | None = None):
     """Materialize deterministic corruptions, streaming one capture to disk.
 
     Neural-QR uses eight independent trajectories with eight captures per phase
@@ -745,28 +820,44 @@ def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=None
             not np.isfinite(severity_min) or not 0 <= severity_min <= severity):
         raise ValueError("severity-min must be finite and in [0, severity]")
     photometric = photometric or default_photometric
-    if resolution is None and recipe_name == "w-tube":
-        resolution = CaptureResolutionConfig(probability=.85, min_scale=1/pixels_per_cell, blur_sigma=.45)
-    resolution = resolution_config(resolution, pixels_per_cell)
+    physical_camera = neural_qr and dataset.dataset_version == 2
+    if physical_camera:
+        if resolution is not None:
+            raise ValueError("Neural-QR v2 uses camera footprint controls, not fractional capture-resolution controls")
+        camera_config = camera_config or CameraGeometryConfig()
+        if not isinstance(camera_config, CameraGeometryConfig):
+            raise ValueError("Expected CameraGeometryConfig")
+    else:
+        if camera_config is not None:
+            raise ValueError("Camera geometry controls require Neural-QR v2")
+        resolution = resolution_config(resolution, pixels_per_cell)
     corruption_kind = (W_TUBE_CORRUPTION_KIND if neural_qr and dataset.dataset_version == 2
                        else MULTIRES_CORRUPTION_KIND if neural_qr else CORRUPTION_KIND)
     recipe = {"kind": corruption_kind, "recipe": recipe_name, "seed": seed, "severity": severity,
               "severityMin": severity_min,
-              "captureResolution": asdict(resolution),
               "frames": frames, "phaseGrouped": phase_grouped,
               "phaseSchedule": "round-robin-continuous" if phase_grouped else None,
               "burstsPerTarget": None if paired_real is not None else bursts_per_target,
               "photometric": asdict(photometric)}
+    if physical_camera:
+        recipe['cameraGeometry'] = {**asdict(camera_config), 'units': 'camera-pixels',
+            'sampling': 'phase-compensated-area-footprints', 'noise': 'after-camera-integration',
+            'carrier': 'attenuated-below-working-raster-Nyquist'}
+    else:
+        recipe['captureResolution'] = asdict(resolution)
     if neural_qr:
-        recipe.update(pixelsPerCell=pixels_per_cell, densePixelScale=pixels_per_cell/4)
+        recipe.update(pixelsPerCell=pixels_per_cell)
+    camera_pools = {}
     if any(sample.metadata["source"] != "synthetic" or "synthetic" in sample.metadata for sample in dataset.samples):
         raise ValueError("Generate corruptions from canonical synthetic clean datasets only; real captures remain unchanged")
     groups = clean_phase_groups(dataset.samples) if phase_grouped else [(s.id, (s,)) for s in dataset.samples]
     if paired_real is not None:
         if not phase_grouped:
             raise ValueError("paired-real generation requires four phase groups")
-        burst_counts, ratio_report = paired_burst_counts(groups, paired_real, synthetic_ratio, frames, dataset)
+        burst_counts, ratio_report, camera_pools, camera_coverage = paired_burst_counts(
+            groups, paired_real, synthetic_ratio, frames, dataset)
         recipe["pairedCounts"] = ratio_report
+        recipe['cameraGeometry']['coverage'] = camera_coverage
     else:
         burst_counts = [bursts_per_target]*len(groups)
     recipe_hash = hashlib.sha256(json.dumps(recipe, sort_keys=True, allow_nan=False).encode()).hexdigest()
@@ -818,11 +909,14 @@ def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=None
                 severity_rng = np.random.default_rng(np.random.SeedSequence([derived, 0x53455652]))
                 burst_severity = (severity if severity_min is None else
                                   float(severity_rng.uniform(severity_min, severity)))
-                capture = sample_capture_resolution(pixels.shape[-1], derived, burst_severity, resolution,
-                                                     pixels_per_cell=pixels_per_cell)
+                camera = (sample_camera_geometry(members[0].shape[0], derived, burst_severity, camera_config,
+                    observed_pixels_per_cell=camera_pools.get(camera_target_key(members[0].metadata), ()))
+                    if physical_camera else None)
+                capture = (sample_capture_resolution(pixels.shape[-1], derived, burst_severity, resolution,
+                                                     pixels_per_cell=pixels_per_cell) if camera is None else None)
                 phase_group_id = hashlib.sha256(f"{group_key}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
                 observations = _iter_corrupt_sequence(pixels, views, derived, burst_severity,
-                    photometric=photometric, resolution=resolution, pixels_per_cell=pixels_per_cell)
+                    photometric=photometric, resolution=resolution, pixels_per_cell=pixels_per_cell, camera=camera)
                 for timeline_index, value in enumerate(observations):
                     sample = members[int(views[timeline_index])]
                     index = timeline_index//len(members)
@@ -834,9 +928,9 @@ def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=None
                               "source": "synthetic", "burstId": f"synthetic-{burst_id}",
                               "synthetic": {"seed": derived, "frame": index, "burst": burst_index,
                               "frames": frames, "severity": burst_severity, "parentId": sample.id,
-                              "captureResolution": capture,
-                              "kind": corruption_kind, "recipeSha256": recipe_hash},
+                                  "kind": corruption_kind, "recipeSha256": recipe_hash},
                               "baselineMode": "canonical-from-corrupted-input"}
+                    record['synthetic']['cameraGeometry' if physical_camera else 'captureResolution'] = camera if physical_camera else capture
                     if phase_grouped:
                         record["synthetic"].update(phaseGroupId=f"phase-group-{phase_group_id}",
                             timelineFrame=timeline_index)
@@ -900,10 +994,16 @@ def main():
                         help="fraction of bursts with reduced capture resolution/blur (default: .75); 0 disables")
     parser.add_argument("--capture-min-scale", type=float, default=None,
                         help="minimum capture side / crop side; defaults to one pixel/cell (.5 at 2ppc, .25 at 4ppc)")
-    parser.add_argument("--capture-max-scale", type=float, default=1.,
+    parser.add_argument("--capture-max-scale", type=float, default=None,
                         help="maximum capture side / crop side, min-scale–1 (default: 1)")
     parser.add_argument("--capture-blur-sigma", type=float, default=None,
                         help="max Gaussian sigma in reduced-image pixels, 0–1 (default: .35); each burst draws half to full strength")
+    parser.add_argument("--camera-footprint-min", type=float, default=None,
+                        help="Neural-QR v2 fallback camera payload width, pixels (default96)")
+    parser.add_argument("--camera-footprint-max", type=float, default=None,
+                        help="Neural-QR v2 fallback camera payload width, pixels (default640)")
+    parser.add_argument("--camera-easy-fraction", type=float, default=None,
+                        help="Neural-QR v2 fraction with a larger footprint and gentler effects (default.15)")
     parser.add_argument("--white-balance-stops", type=float, default=None,
                         help="max residual per-channel log2 gain at severity 1 (default: .6); 0 disables")
     parser.add_argument("--exposure-stops", type=float, default=None,
@@ -949,20 +1049,28 @@ def main():
                                    if getattr(args, key) is not None})
         photometric = PhotometricConfig(**photometric_values)
         dataset = Dataset(args.clean)
-        min_scale = args.capture_min_scale
-        if min_scale is None:
-            min_scale = 1/dataset.pixels_per_cell
+        physical_camera = dataset.dataset_format == NEURAL_QR_DATASET_FORMAT and dataset.dataset_version == 2
+        fractional = (args.capture_probability, args.capture_min_scale, args.capture_max_scale, args.capture_blur_sigma)
+        geometry_options = {name: getattr(args, 'camera_'+name) for name in
+                            ('footprint_min', 'footprint_max', 'easy_fraction')
+                            if getattr(args, 'camera_'+name) is not None}
+        if physical_camera and any(value is not None for value in fractional):
+            raise ValueError("Neural-QR v2 uses --camera-footprint-min/max and --camera-easy-fraction, not --capture-* controls")
+        if not physical_camera and geometry_options:
+            raise ValueError("--camera-* controls require Neural-QR v2")
+        resolution = None if physical_camera else CaptureResolutionConfig(
+            probability=args.capture_probability if args.capture_probability is not None else .75,
+            min_scale=args.capture_min_scale if args.capture_min_scale is not None else 1/dataset.pixels_per_cell,
+            max_scale=args.capture_max_scale if args.capture_max_scale is not None else 1.,
+            blur_sigma=args.capture_blur_sigma if args.capture_blur_sigma is not None else .35)
         result = generate(args.clean, args.out, seed=args.seed, frames=args.frames,
                           severity=args.severity, max_output_mib=args.max_output_mib, node=args.node,
                           photometric=photometric, bursts_per_target=args.bursts_per_target,
                           severity_min=args.severity_min, phase_grouped=args.phase_grouped,
                           paired_real=args.paired_real, synthetic_ratio=args.synthetic_ratio,
                           recipe_name=args.recipe, plan_only=args.plan, summary_only=True,
-                          resolution=CaptureResolutionConfig(probability=(args.capture_probability
-                              if args.capture_probability is not None else .85 if args.recipe == "w-tube" else .75),
-                              min_scale=min_scale, max_scale=args.capture_max_scale,
-                              blur_sigma=(args.capture_blur_sigma if args.capture_blur_sigma is not None
-                                          else .45 if args.recipe == "w-tube" else .35)))
+                          resolution=resolution,
+                          camera_config=CameraGeometryConfig(**geometry_options) if physical_camera else None)
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, f"Synthetic generation failed: {error}\n")
     if args.plan:

@@ -28,8 +28,8 @@ def corpus(sizes=(16,), availability=None, *, frames=3):
     return rows, mapping
 
 
-def sampler(rows, groups, **options):
-    return BalancedSampler(rows, groups, native_real_fraction=.75, paired_targets=True,
+def sampler(rows, groups, *, native_real_fraction=.75, **options):
+    return BalancedSampler(rows, groups, native_real_fraction=native_real_fraction, paired_targets=True,
                            require_all_groups=False, **options)
 
 
@@ -56,6 +56,37 @@ class OriginSamplingTests(unittest.TestCase):
             for count in draw.last_counts["originsByGroup"].values():
                 self.assertEqual(count, {"native": 6, "resampled": 1, "header-g64": 1})
         self.assertEqual(before, [row.metadata for row in rows])
+
+    def test_half_native_g64_quota_gives_auxiliary_origins_equal_weight(self):
+        rows, groups = corpus((64,))
+        draw = sampler(rows, groups, native_real_fraction=.5, seed=45)
+        for _ in range(10):
+            chosen = flat(draw.draw_update(8, 4))
+            self.assertEqual(draw.last_counts["real"], 16)
+            self.assertEqual(draw.last_counts["synthetic"], 16)
+            self.assertEqual(draw.last_counts["origins"],
+                             {"native": 8, "resampled": 4, "header-g64": 4})
+            self.assertEqual(draw.last_counts["groups"], {"pc-to-phone": 8, "phone-to-pc": 8})
+            for counts in draw.last_counts["originsByGroup"].values():
+                self.assertEqual(counts, {"native": 4, "resampled": 2, "header-g64": 2})
+            self.assertEqual(target_counts(chosen, "real"), target_counts(chosen, "synthetic"))
+            for origin in REAL_ORIGINS:
+                self.assertEqual(sum(row.metadata["source"] == "real" and row.metadata["origin"] == origin
+                                     for row in chosen),
+                                 sum(row.metadata["source"] == "synthetic" and row.metadata["origin"] == origin
+                                     for row in chosen))
+
+    def test_half_native_quota_redistributes_only_among_present_origins(self):
+        for availability, expected in (
+            ({"camera": ("native", "resampled")}, {"native": 8, "resampled": 8, "header-g64": 0}),
+            ({"camera": ("native",)}, {"native": 16, "resampled": 0, "header-g64": 0}),
+            ({"camera": ("resampled", "header-g64")}, {"native": 0, "resampled": 8, "header-g64": 8}),
+        ):
+            rows, groups = corpus((64,), availability=availability)
+            draw = sampler(rows, groups, native_real_fraction=.5, seed=61)
+            chosen = flat(draw.draw_update(8, 4))
+            self.assertEqual(draw.last_counts["origins"], expected)
+            self.assertEqual(target_counts(chosen, "real"), target_counts(chosen, "synthetic"))
 
     def test_accumulation_input_order_and_seed_do_not_change_an_update(self):
         rows, groups = corpus((16, 32, 64, 128))
@@ -131,3 +162,4 @@ class OriginSamplingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

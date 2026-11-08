@@ -59,6 +59,11 @@ batch size. A U-tube or W-tube rectified crop has four pixels per cell along eac
 matrix produces a 256×256 RGB crop. Multires uses two pixels per cell, so G64
 produces a 128×128 crop. The crop includes the colored reference
 grid; it does not include the full camera image or monochrome transport header.
+The four pixels per cell describe this **stored raster**, not the number of
+independent camera pixels that observed each cell. Capture provenance records a
+separate projected camera-pixels-per-cell estimate. W-tube synthetic generation
+uses that estimate to match physical sampling scale before returning to the
+fixed stored raster; see [camera-scaled corruptions](W_TUBE_DATA.md#camera-scaled-coherent-corruptions).
 Detection, header validation, rectification and color calibration remain outside
 the network.
 
@@ -156,7 +161,7 @@ changing the command-line name does not convert weights into another architectur
 
 ### W-tube
 
-W-tube returns to four camera pixels per cell along each axis and repeats the
+W-tube uses four rectified pixels per cell along each axis and repeats the
 complete U computation. Its supported targets are **G16, G32, G64 and G128**.
 Both bottlenecks have spatial size **G**, so neither stage reduces the random
 symbol grid below its target resolution. Every learned feature block outputs
@@ -463,7 +468,7 @@ not a learned parameter and does not change the supervised target.
 
 W-tube uses one uniformly chosen grid per optimizer update, equal paired real
 and synthetic counts, and balanced acquisition directions. Within each
-represented grid/direction real quota, the default native fraction is 0.75 when
+represented grid/direction real quota, the default native fraction is 0.5 when
 both native and auxiliary evidence exist. Available auxiliary origins share
 the remainder; missing origins redistribute their share locally. Synthetic
 partners retain the real sample's origin and target. The policy is applied
@@ -774,3 +779,4 @@ new sampling and sizes. Acceptance still requires packet integrity and context
 checks; Neural-ZKBoo proof verification remains independent of transport recovery.
 Measure exact recovery, acquisition, inference, ACK time and complete authentication
 in both directions. A larger matrix or new architecture is not a prerequisite.
+

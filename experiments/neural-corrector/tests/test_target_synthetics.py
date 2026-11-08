@@ -116,7 +116,7 @@ class TargetSyntheticTests(unittest.TestCase):
             self.assertEqual(first["generator"]["burstsPerTarget"], 2)
             self.assertEqual(first["generator"]["severityMin"], .25)
             self.assertEqual(first["generator"]["severity"], .4)
-            self.assertEqual(first["generator"]["kind"], "correlated-calibrated-crop-v8")
+            self.assertEqual(first["generator"]["kind"], "correlated-calibrated-crop-v9")
             self.assertEqual(first["generator"]["photometric"]["glare_probability"], .65)
             self.assertEqual(first["generator"]["photometric"]["rgb_offset_probability"], 1)
             self.assertEqual(first["generator"]["photometric"]["rgb_offset_pixels"], .5)

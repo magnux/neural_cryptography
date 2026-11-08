@@ -133,7 +133,9 @@ class MultiresSyntheticTests(unittest.TestCase):
             self.assertEqual(plan['recipe']['pairedCounts']['achievedRatio'], 8)
             self.assertEqual(plan['recipe']['severityMin'], .5)
             self.assertEqual(plan['recipe']['severity'], 1)
-            self.assertEqual(plan['recipe']['captureResolution']['probability'], .85)
+            self.assertEqual(plan['recipe']['cameraGeometry']['footprint_min'], 96.)
+            self.assertEqual(plan['recipe']['cameraGeometry']['coverage']['targets'], 1)
+            self.assertNotIn('captureResolution', plan['recipe'])
             cli = subprocess.run([sys.executable, str(EXPERIMENT/'synthetic.py'),
                 '--clean', str(root/'clean'), '--paired-real', str(root/'joined'),
                 '--out', str(root/'planned-only'), '--recipe', 'w-tube', '--frames', '2',
@@ -187,3 +189,4 @@ class MultiresSyntheticTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
