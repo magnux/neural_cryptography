@@ -11,7 +11,7 @@ import {targets} from './corrector-dataset.mjs';
 export const BUILD_FORMAT='neural-corrector-w-tube-build';
 export const MANAGED_OUTPUTS=Object.freeze(['real','clean','synthetic','build.json']);
 const ROOT=resolve(dirname(fileURLToPath(import.meta.url)),'..');
-const DEFAULTS={recordingsRoot:'recordings',resampledRoot:'recordings-1',headerRoot:'recordings-0',
+const DEFAULTS={recordingsRoot:'local-data/recordings',resampledRoot:'local-data/recordings-1',headerRoot:'local-data/recordings-0',
   out:'local-data/w-tube',python:'python3',frames:8,syntheticRatio:4,severity:1,severityMin:.5,seed:41,maxOutputMib:2**20};
 function settings(options={}) {
   for(const key of Object.keys(options))if(!(key in DEFAULTS))throw Error(`Unknown rebuild option: ${key}`);
@@ -63,20 +63,32 @@ async function prepare(options) {
   if(config.maxOutputMib&&estimatedBytes>config.maxOutputMib*1024**2)throw Error(`Estimated output ${(estimatedBytes/1024**3).toFixed(2)} GiB exceeds --max-output-mib ${config.maxOutputMib}.`);
   const summary={format:BUILD_FORMAT,version:1,config,replacesExisting:destinationStamp!==null,groups,estimatedBytes,
     pixelsPerCell:4,syntheticCaptureQuantum:quantum,requestedSyntheticRatio:config.syntheticRatio,
-    skipped:imports.skipped??[],trainingPipelineReady:false,
-    note:'New corpus only: 4x4-cell G16/G32/G64/G128. Existing 2x2 multires training cannot consume this corpus; W-tube training is the next milestone. Space estimate is for the new corpus; keep room for both it and any output being replaced.'};
+    skipped:imports.skipped??[],trainingPipelineReady:true,
+    note:'New corpus only: 4x4-cell G16/G32/G64/G128. Use W-tube training for this 4x4 corpus; existing 2x2 multires checkpoints cannot consume it. Space estimate is for the new corpus; keep room for both it and any output being replaced.'};
   return {config,imports,destinationStamp,summary};
 }
 export async function planRebuild(options={}) {return (await prepare(options)).summary;}
-function run(executable,args,{quiet=false}={}) {
+function run(executable,args,{quiet=false,captureSummary=false}={}) {
   return new Promise((accept,reject)=>{
-    const child=spawn(executable,args,{cwd:ROOT,stdio:quiet?['ignore','ignore','pipe']:['ignore','inherit','inherit']});let stderr='';
+    const child=spawn(executable,args,{cwd:ROOT,stdio:['ignore',captureSummary?'pipe':quiet?'ignore':'inherit',quiet?'pipe':'inherit']});
+    let stderr='',stdout='',summaryBytes=0,overflow=false;
+    child.stdout?.setEncoding('utf8');
     child.stderr?.on('data',chunk=>{stderr=(stderr+chunk).slice(-8192);});
-    child.on('error',reject);child.on('close',code=>code===0?accept():reject(Error(`${basename(executable)} failed (${code})${stderr?`: ${stderr.trim()}`:''}`)));
+    child.stdout?.on('data',chunk=>{
+      if(overflow)return;
+      summaryBytes+=Buffer.byteLength(chunk);
+      if(summaryBytes>64*1024){overflow=true;child.kill();reject(Error('Synthetic summary exceeded 64 KiB.'));return;}
+      stdout+=chunk;
+    });
+    child.on('error',reject);child.on('close',code=>code===0?accept(stdout):reject(Error(`${basename(executable)} failed (${code})${stderr?`: ${stderr.trim()}`:''}`)));
   });
 }
 export async function rebuild(options={}) {
+  const started=Date.now();
+  console.error('Planning W-tube corpus and checking source sessions...');
   const {config,imports,destinationStamp,summary}=await prepare(options);
+  console.error(`Plan ready: ${summary.groups.reduce((sum,group)=>sum+group.realCaptures,0)} real captures, ${summary.groups.reduce((sum,group)=>sum+group.syntheticCaptures,0)} synthetic captures; estimated ${(summary.estimatedBytes/1024**3).toFixed(2)} GiB.`);
+  console.error('Checking Python dependencies and available disk space...');
   // Dependencies are checked before creating staging directories or touching output.
   await run(config.python,['-c','import numpy, torch'],{quiet:true});
   let existingParent=dirname(config.out);while(!await exists(existingParent))existingParent=dirname(existingParent);
@@ -90,23 +102,30 @@ export async function rebuild(options={}) {
     const splits=[...new Set(summary.groups.map(group=>group.split))].sort((a,b)=>['train','validation','test'].indexOf(a)-['train','validation','test'].indexOf(b));
     for(const [index,split] of splits.entries()) {
       const real=join(stage,'real',split),clean=join(stage,'clean',split),synthetic=join(stage,'synthetic',split);
-      console.error(`Building ${split}: importing captures, rendering clean targets, then generating paired synthetic bursts.`);
+      console.error(`[${index+1}/${splits.length}] Building ${split}: importing captured evidence.`);
       const imported=await importRecordings({plan:imports,out:real,split,python:config.python});
+      console.error(`Building ${split}: rendering clean phase targets.`);
       const rendered=await targets({dataset:real,out:clean});
-      await run(config.python,[join(ROOT,'experiments/neural-corrector/synthetic.py'),
+      const expectedCaptures=summary.groups.filter(group=>group.split===split).reduce((sum,group)=>sum+group.syntheticCaptures,0);
+      console.error(`Building ${split}: generating ${expectedCaptures} paired synthetic captures and their baselines.`);
+      const summaryJSON=await run(config.python,[join(ROOT,'experiments/neural-corrector/synthetic.py'),
         '--clean',clean,'--out',synthetic,'--paired-real',real,'--synthetic-ratio',String(config.syntheticRatio),
         '--recipe','w-tube','--frames',String(config.frames),'--severity',String(config.severity),
         '--severity-min',String(config.severityMin),'--seed',String((config.seed+index)>>>0),
-        '--max-output-mib',String(config.maxOutputMib),'--node',process.execPath]);
-      const manifest=JSON.parse(await readFile(join(synthetic,'manifest.json'),'utf8'));
+        '--max-output-mib',String(config.maxOutputMib),'--node',process.execPath],{captureSummary:true});
+      const generated=JSON.parse(summaryJSON);
+      if(!Number.isSafeInteger(generated.samples)||generated.samples!==expectedCaptures)throw Error(`Synthetic capture count differs from plan for ${split}: expected ${expectedCaptures}, received ${generated.samples}.`);
+      console.error(`Completed ${split}: ${imported.samples} real, ${rendered.samples} clean and ${generated.samples} synthetic captures.`);
       datasets.push({split,real:`real/${split}`,clean:`clean/${split}`,synthetic:`synthetic/${split}`,
         importedCaptures:imported.samples??summary.groups.filter(group=>group.split===split).reduce((sum,group)=>sum+group.realCaptures,0),
-        cleanCaptures:rendered.samples,syntheticCaptures:manifest.samples.length});
+        cleanCaptures:rendered.samples,syntheticCaptures:generated.samples});
     }
     const result={...summary,created:new Date().toISOString(),datasets};
     await writeFile(join(stage,'build.json'),JSON.stringify(result,null,2)+'\n');
+    console.error(`All splits complete. Installing staged corpus at ${config.out}...`);
     // Do not replace an output whose identity/ownership changed during this build.
-    if(await validateDestination(config.out)!==destinationStamp)throw Error('Dataset output changed during rebuilding; refusing replacement.');
+    const finalStamp=await validateDestination(config.out);
+    if(finalStamp!==destinationStamp)throw Error('Dataset output changed during rebuilding; refusing replacement.');
     if(destinationStamp!==null) {
       backup=await mkdtemp(join(dirname(config.out),`.${basename(config.out)}-previous-`));
       await rm(backup,{recursive:true});await rename(config.out,backup);
@@ -114,6 +133,7 @@ export async function rebuild(options={}) {
     try {await rename(stage,config.out);committed=true;}
     catch(error) {if(backup){await rename(backup,config.out);backup=null;}throw error;}
     if(backup)await rm(backup,{recursive:true,force:true});
+    console.error(`W-tube rebuild complete in ${((Date.now()-started)/1000).toFixed(1)}s.`);
     return {...result,out:config.out};
   } finally {
     if(!committed)await rm(stage,{recursive:true,force:true});
@@ -122,8 +142,8 @@ export async function rebuild(options={}) {
 
 const HELP=`Build 4-pixel W-tube datasets from current and explicitly selected earlier recordings.
   node scripts/rebuild-corrector-data.mjs [--plan]
-    [--recordings-root recordings] [--resampled-root recordings-1]
-    [--header-root recordings-0] [--out local-data/w-tube] [--python python3]
+    [--recordings-root local-data/recordings] [--resampled-root local-data/recordings-1]
+    [--header-root local-data/recordings-0] [--out local-data/w-tube] [--python python3]
     [--synthetic-ratio 4] [--frames 8] [--severity 1] [--severity-min .5]
     [--seed 41] [--max-output-mib 1048576]
 
@@ -134,7 +154,8 @@ Synthetics target 4 captures per real capture, rounded up per target to full coh
 bursts (4 phases x --frames captures). This does not change 50/50 training sampling.
 --plan validates source identity/splits and prints counts/disk estimates without writes.
 Builds stage a complete replacement; only this script's managed output is replaced.
-Raw recordings and checkpoints are never modified. W-tube training follows separately.`;
+Progress is printed to stderr; the final build summary is JSON on stdout.
+Raw recordings and checkpoints are never modified.`;
 function args(argv) {
   const names={'recordings-root':'recordingsRoot','resampled-root':'resampledRoot','header-root':'headerRoot',out:'out',python:'python','synthetic-ratio':'syntheticRatio',frames:'frames',severity:'severity','severity-min':'severityMin',seed:'seed','max-output-mib':'maxOutputMib'},options={};let plan=false;
   for(let i=0;i<argv.length;i++) {
@@ -148,3 +169,4 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   if(process.argv.slice(2).includes('--help'))console.log(HELP);
   else {const main=async()=>{const parsed=args(process.argv.slice(2));const result=await(parsed.plan?planRebuild:rebuild)(parsed.options);console.log(JSON.stringify(result,null,2));};main().catch(error=>{console.error(`Corrector rebuild failed: ${error.message}`);process.exitCode=1;});}
 }
+

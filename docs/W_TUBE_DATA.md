@@ -14,9 +14,9 @@ its explicit source contract and writes `neural-qr-dataset`, version 2:
 
 | Default root | Origin tag | Eligible recordings | Input conversion |
 | --- | --- | --- | --- |
-| `recordings/` | `native` | Current Neural-QR v2, G16/G32/G64/G128 | Preserve native `[3,4G,4G]` camera crops. |
-| `recordings-1/` | `resampled` | Neural-QR v1, G16/G32/G64/G128 | Bicubic enlargement from `[3,2G,2G]` to `[3,4G,4G]`. G8/G256 are skipped. |
-| `recordings-0/` | `header-g64` | Original OBM G64, 16 colors, four phases and grid-8 references | Preserve the existing `[3,256,256]` payload crop; the old monochrome header is outside it. |
+| `local-data/recordings/` | `native` | Current Neural-QR v2, G16/G32/G64/G128 | Preserve native `[3,4G,4G]` camera crops. |
+| `local-data/recordings-1/` | `resampled` | Neural-QR v1, G16/G32/G64/G128 | Bicubic enlargement from `[3,2G,2G]` to `[3,4G,4G]`. G8/G256 are skipped. |
+| `local-data/recordings-0/` | `header-g64` | Original OBM G64, 16 colors, four phases and grid-8 references | Preserve the existing `[3,256,256]` payload crop; the old monochrome header is outside it. |
 
 The first round retains its `pc/train`, `pc/val`, `phone/train` and `phone/val`
 folders. The importer maps `val` to `validation`; it does not move recordings.
@@ -24,7 +24,7 @@ The later rounds use `<train|validation>/g<size>/<sender|receiver>/`.
 Completed JSON files are considered; unfinished `.json.tmp` senders and active
 collection descriptors are excluded. Missing roots are allowed, so a build can
 start with the available rounds; an empty collection root does not require a
-dummy session. Record new sessions only in `recordings/`.
+dummy session. Record new sessions only in `local-data/recordings/`.
 
 Bicubic enlargement makes tensor dimensions compatible; it does **not** restore
 camera detail. `resampled` and `header-g64` remain auxiliary origins. W-tube evaluation uses fresh native real validation as its primary result when
@@ -71,21 +71,27 @@ node scripts/rebuild-corrector-data.mjs --plan
 node scripts/rebuild-corrector-data.mjs --python python
 ```
 
-The default roots match the three directories above; output goes to
-`local-data/w-tube`. If the recordings are under `local-data/`, use explicit roots
-for both commands:
+The default roots are `local-data/recordings`, `local-data/recordings-1` and
+`local-data/recordings-0`; output goes to `local-data/w-tube`. No path flags are
+needed for that layout. To override locations, use explicit roots, for example:
 
 ```sh
 node scripts/rebuild-corrector-data.mjs \
-  --recordings-root local-data/recordings \
-  --resampled-root local-data/recordings-1 \
-  --header-root local-data/recordings-0 \
+  --recordings-root /data/recordings \
+  --resampled-root /data/recordings-1 \
+  --header-root /data/recordings-0 \
   --out local-data/w-tube --python python --plan
 ```
 
 Remove `--plan` to build. The plan reports eligible source counts, skipped
 recordings, synthetic counts and estimated disk requirements. Retain the same
 roots and output name for later rebuilds after collecting more sessions.
+
+Progress goes to stderr: source scanning/checking, capture import, clean-target
+rendering, synthetic generation, baseline preparation, and final installation.
+Long sample loops print counts periodically, roughly every five seconds, and at
+completion. The final build summary stays JSON on stdout, so it can be redirected
+without swallowing progress messages.
 
 Each component has `<train|validation>/manifest.json`, containing the supported
 grids present in that split. The result has these components:
@@ -97,10 +103,14 @@ grids present in that split. The result has these components:
 | `synthetic/` | Corrupted renders of those same targets, preserving paired target/session/split identities. |
 | `build.json` | Build settings, source summary, generation counts and the managed-output marker. |
 
-Binary tensors are stored separately from manifests. Recordings are read in
-pieces and crops are generated incrementally; the build does not assemble the
-whole image corpus in RAM. The data remains an offline disk workload and can be
-large, especially G128.
+Binary tensors are stored separately from manifests. Recordings and dataset
+manifests are read/written incrementally; the JSON format is unchanged. Large
+manifest files no longer hit the former 256 MiB limit during baseline preparation
+or training. Metadata indexes still consume memory, but the build does not
+assemble the whole image corpus or a giant serialized JSON string in RAM. The
+rebuild reads the generator's small completion summary instead of reopening the
+synthetic manifest merely to count samples. This remains an offline disk workload
+and can be large, especially G128.
 
 A rebuild stages a new dataset and replaces the previous managed output only
 after the build succeeds. It refuses to replace an unrelated or unmarked output
@@ -197,3 +207,4 @@ See [the collection guide](MULTIRES_COLLECTION.md) for more native recordings,
 [the training guide](NEURAL_CORRECTOR_TRAINING.md#train-w-tube) for training and
 evaluation commands. Separate prepared U-tube and two-pixel multires experiments
 remain documented there.
+

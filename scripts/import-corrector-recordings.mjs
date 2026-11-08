@@ -2,11 +2,13 @@
 /** Explicit offline recovery of the three collected corpora into one 4ppc contract.
  * No reader in this file is used by the live receiver. Original recordings are read-only.
  */
-import {readFile,writeFile,readdir,lstat,mkdir,stat,realpath} from 'node:fs/promises';
+import {readFile,readdir,lstat,mkdir,stat,realpath} from 'node:fs/promises';
 import {resolve,join,relative,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {visitRecordingJSON} from './lib/recording-json.mjs';
+import {progress} from './lib/progress.mjs';
+import {writeDatasetJSON} from './lib/dataset-json.mjs';
 import {putSample,denseClassicalScores} from './corrector-dataset.mjs';
 import {captureProfile,captureKey,senderFrames,validateSessionId,base64ToBytes,bytesToBase64,floatsFromBytes,canonicalJSON} from '../apps/color-optical-bench/dist/js/dataset/contract.js';
 import {validateCapture} from '../apps/color-optical-bench/dist/js/dataset/capture.js';
@@ -99,11 +101,16 @@ async function scanRoot(root,origin,skipped){
   await walk(root);return entries;
 }
 /** Plan reads files once, retains only small metadata, and never modifies recordings. */
-export async function planRecordingImports({nativeRoot='recordings',resampledRoot='recordings-1',headerRoot='recordings-0'}={}){
+export async function planRecordingImports({nativeRoot='local-data/recordings',resampledRoot='local-data/recordings-1',headerRoot='local-data/recordings-0'}={}){
   const roots={native:resolve(nativeRoot),resampled:resolve(resampledRoot),'header-g64':resolve(headerRoot)},skipped=[],entries=[];
-  for(const [origin,root] of Object.entries(roots))entries.push(...await scanRoot(root,origin,skipped));
+  for(const [origin,root] of Object.entries(roots)){
+    console.error(`Scanning ${origin} recordings: ${root}`);
+    entries.push(...await scanRoot(root,origin,skipped));
+  }
+  const senders=entries.filter(x=>x.kind==='sender'),receivers=entries.filter(x=>x.kind==='receiver');
+  const planned=progress('Checking recording files',senders.length+receivers.length);let files=0,captures=0;planned(0);
   const sessionOwners=new Map(),payloadOwners=new Map(),associations=new Map(),captureIds=new Set(),groups=new Map();
-  for(const entry of entries.filter(x=>x.kind==='sender')){
+  for(const entry of senders){
     if((await stat(entry.path)).size>1024*1024)throw Error(`Sender manifest too large: ${entry.path}`);
     const bytes=await readFile(entry.path),manifest=JSON.parse(bytes);entry.sha256=hash(bytes);entry.manifest=manifest;entry.sessionId=manifest.sessionId;
     bundleSplit(manifest,entry);own(sessionOwners,manifest.sessionId,entry.split,'Physical session');own(payloadOwners,manifest.payloadId,entry.split,'Source payload');
@@ -114,8 +121,9 @@ export async function planRecordingImports({nativeRoot='recordings',resampledRoo
       if(associations.has(key))throw Error(`Duplicate/conflicting sender identity: ${entry.path}`);
       associations.set(key,{...value,entry});
     }
+    planned(++files,`${captures} captures checked`);
   }
-  for(const entry of entries.filter(x=>x.kind==='receiver')){
+  for(const entry of receivers){
     entry.records=[];
     const result=await visitRecordingJSON(entry.path,{onRecord:async raw=>{
       const record=captureEvidence(raw,entry),sender=associations.get(`${entry.origin}/${record.key}`);
@@ -123,7 +131,9 @@ export async function planRecordingImports({nativeRoot='recordings',resampledRoo
       if(sender.entry.split!==entry.split)throw Error(`Sender and receiver cross dataset splits: ${entry.path}`);
       if(!equal(sender.sourceInfo,record.info))throw Error(`Capture metadata disagrees with sender: ${entry.path}`);
       entry.records.push({key:record.key,info:record.info,timestamp:record.timestamp,payloadId:sender.frame.payloadId,senderPath:sender.entry.path});
+      captures++;planned(files,`${captures} captures checked`);
     }});
+    planned(++files,`${captures} captures checked`);
     const bundle=result.metadata;entry.sha256=result.sha256;entry.metadata=bundle;entry.sessionId=bundle.sessionId;
     validateSessionId(bundle.sessionId);bundleSplit(bundle,entry);own(sessionOwners,bundle.sessionId,entry.split,'Physical session');
     const expectedFormat=entry.origin==='header-g64'?'optical-decoder-captures':'neural-qr-captures',expectedVersion=entry.origin==='native'?2:1;
@@ -163,7 +173,9 @@ export async function importRecordings({plan,out,split='train'}={}){
     const bytes=await readFile(entry.path);if(hash(bytes)!==entry.sha256)throw Error(`Sender changed after planning: ${entry.path}`);
     for(const value of await sourceFrames(JSON.parse(bytes),entry.origin))senders.set(`${entry.origin}/${value.key}`,{...value,entry});
   }
-  for(const entry of plan.entries.filter(x=>x.kind==='receiver'&&x.split===split&&x.records.length)){
+  const receivers=plan.entries.filter(x=>x.kind==='receiver'&&x.split===split&&x.records.length);
+  const imported=progress(`Importing ${split} captures`,receivers.reduce((sum,entry)=>sum+entry.records.length,0));imported(0);
+  for(const entry of receivers){
     let index=0;const bundle=entry.metadata;
     const result=await visitRecordingJSON(entry.path,{onRecord:async raw=>{
       const record=captureEvidence(raw,entry),planned=entry.records[index++],sender=senders.get(`${entry.origin}/${record.key}`);
@@ -180,11 +192,12 @@ export async function importRecordings({plan,out,split='train'}={}){
           interpolation:sourcePpc===2?'Catmull-Rom bicubic half-pixel 2x; clamp [-1.5,1.5]':'none',senderEnvironment,receiverEnvironment,directoryDirection,
           senderRecording:sender.entry.relativePath,senderRecordingSha256:sender.entry.sha256,collectionSessionId:bundle.collectionSessionId,stability:record.stability,transform:record.transform,colorTransform:record.colorTransform,camera:record.camera??bundle.camera,stats:record.stats}};
       dataset.samples.push(await putSample(out,dataset.samples.length,metadata,{input,labels:frame.symbols,mask,baseline:denseClassicalScores(input,info,4),expected:frame.logical}));
+      imported(dataset.samples.length,`${entry.origin} G${g}`);
     }});
     if(result.sha256!==entry.sha256||index!==entry.records.length)throw Error(`Capture recording changed after planning: ${entry.path}`);
   }
   if(!dataset.samples.length)throw Error(`No eligible ${split} samples.`);
-  await writeFile(join(out,'manifest.json'),JSON.stringify(dataset,null,2)+'\n');
+  await writeDatasetJSON(join(out,'manifest.json'),dataset);
   return {dataset:out,split,samples:dataset.samples.length,origins:Object.fromEntries(['native','resampled','header-g64'].map(origin=>[origin,dataset.samples.filter(x=>x.origin===origin).length]))};
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
@@ -195,3 +208,4 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
     else {if(!options['--out'])throw Error('Use --out DIRECTORY or --plan true.');console.log(JSON.stringify(await importRecordings({plan,out:options['--out'],split:options['--split']}),null,2));}
   }catch(error){console.error(`Import failed: ${error.message}`);process.exitCode=1;}
 }
+

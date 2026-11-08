@@ -10,9 +10,10 @@ const whitespace=c=>c===' '||c==='\t'||c==='\r'||c==='\n';
 const delimiter=c=>whitespace(c)||c===','||c==='}'||c===']';
 
 class RecordingParser {
-  constructor({maxTokenBytes,maxDepth,maxArrayItems,streamArrays=false}){
+  constructor({maxTokenBytes,maxDepth,maxArrayItems,streamArrays=false,arrayKeys=['records','diagnostics']}){
     this.maxTokenBytes=maxTokenBytes;this.maxDepth=maxDepth;this.maxArrayItems=maxArrayItems;
-    this.streamArrays=streamArrays;this.events=[];this.counts={records:0,diagnostics:0};
+    this.streamArrays=streamArrays;this.events=[];this.arrayKeys=new Set(arrayKeys);
+    this.counts=Object.fromEntries(arrayKeys.map(key=>[key,0]));
     this.state='root';this.value={};this.keys=new Set();this.key=null;this.token=null;this.array=null;
   }
   fail(message='Malformed recording JSON.'){throw Error(message);}
@@ -91,7 +92,7 @@ class RecordingParser {
         case 'key':if(c!=='"')this.fail();this.begin('key');break;
         case 'colon':if(c!==':')this.fail();this.state='value';i++;break;
         case 'value':
-          if((this.key==='records'||this.key==='diagnostics')&&c==='['){this.array=[];this.state='array-first';i++;}
+          if(this.arrayKeys.has(this.key)&&c==='['){this.array=[];this.state='array-first';i++;}
           else this.begin('field');
           break;
         case 'array-first':
@@ -124,13 +125,15 @@ class RecordingParser {
  * The per-value limit bounds one capture, including its optional original PNG.
  */
 async function readRecording(path,{maxBytes=804*1024*1024,highWaterMark=64*1024,
-  maxTokenBytes=16*1024*1024,maxDepth=64,maxArrayItems=1024,onRecord,onDiagnostic,streamArrays=false}={}){
+  maxTokenBytes=16*1024*1024,maxDepth=64,maxArrayItems=1024,onRecord,onDiagnostic,onItem,
+  streamArrays=false,arrayKeys=['records','diagnostics']}={}){
   for(const [name,value] of Object.entries({maxBytes,highWaterMark,maxTokenBytes,maxDepth,maxArrayItems}))
     if(!Number.isSafeInteger(value)||value<1)throw Error(`Invalid ${name} limit.`);
   if(highWaterMark>1024*1024)throw Error('Recording JSON stream chunks must be at most 1 MiB.');
+  if(!Array.isArray(arrayKeys)||arrayKeys.some(key=>typeof key!=='string'||!key)||new Set(arrayKeys).size!==arrayKeys.length)throw Error('Invalid streamed array keys.');
   if((await stat(path)).size>maxBytes)throw Error('Recording JSON file exceeds its byte limit.');
-  const parser=new RecordingParser({maxTokenBytes,maxDepth,maxArrayItems,streamArrays}),digest=createHash('sha256');
-  const drain=async()=>{for(const {key,value} of parser.events)await (key==='records'?onRecord:onDiagnostic)?.(value);parser.events=[];};
+  const parser=new RecordingParser({maxTokenBytes,maxDepth,maxArrayItems,streamArrays,arrayKeys}),digest=createHash('sha256');
+  const drain=async()=>{for(const {key,value} of parser.events){if(onItem)await onItem(key,value);else await (key==='records'?onRecord:onDiagnostic)?.(value);}parser.events=[];};
   // ignoreBOM:true preserves a leading BOM, which is not part of JSON grammar.
   const decoder=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
   let bytes=0;
@@ -154,3 +157,10 @@ export async function readRecordingJSON(path,options={}){
 export async function visitRecordingJSON(path,options={}){
   return readRecording(path,{...options,streamArrays:true});
 }
+/** Same JSON parser for offline object manifests, with independent resource limits.
+ * Recording callers retain their existing browser-capture limits above.
+ */
+export async function readObjectJSON(path,options={}){
+  return readRecording(path,options);
+}
+

@@ -18,14 +18,131 @@ NEURAL_QR_DATASET_FORMAT = "neural-qr-dataset"
 MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
 W_TUBE_SIZES = (16, 32, 64, 128)
 SPLITS = ("train", "validation", "test")
-MAX_MANIFEST_BYTES = 256 * 1024 * 1024
+# Offline corpora can exceed 256 MiB of metadata. Bound a single metadata value,
+# not the entire corpus, and parse samples individually instead of making an
+# additional full-size JSON string alongside the resident sampling metadata.
+MAX_MANIFEST_VALUE_CHARS = 16 * 1024 * 1024
 SHA256 = re.compile(r"^[a-f0-9]{64}$")
+_JSON_SPACE = re.compile(r"[ \t\r\n]*")
 # Metadata only: do not keep decoded RGB crops resident as the corpus grows.
 # Include file identity/timestamps and expected digest, so rewrites and changed
 # manifests invalidate verification. Each newly encountered file is hashed from
 # the same bytes returned to the caller, rather than read twice from disk.
 _MAX_VERIFIED_FILES = 32_768
 _VERIFIED_READS = OrderedDict()
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate manifest JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _finite_json(value):
+    raise ValueError(f"Non-finite manifest JSON value: {value}")
+
+
+class _ManifestJSON:
+    """Incremental JSON tokens for an object with a potentially huge samples array."""
+
+    def __init__(self, stream, chunk_size):
+        self.stream, self.chunk_size = stream, chunk_size
+        self.buffer, self.position, self.eof = "", 0, False
+        self.decoder = json.JSONDecoder(object_pairs_hook=_unique_object,
+                                        parse_constant=_finite_json)
+
+    def fill(self):
+        self.buffer = self.buffer[self.position:]
+        self.position = 0
+        block = self.stream.read(self.chunk_size)
+        self.eof = not block
+        self.buffer += block
+        # One chunk of read-ahead can belong to the next sample; bound the
+        # decoded token separately below before returning it.
+        if len(self.buffer) > MAX_MANIFEST_VALUE_CHARS+self.chunk_size:
+            raise ValueError("Individual manifest JSON value exceeds 16 million characters")
+
+    def peek(self):
+        while True:
+            self.position = _JSON_SPACE.match(self.buffer, self.position).end()
+            if self.position < len(self.buffer):
+                return self.buffer[self.position]
+            if self.eof:
+                return ""
+            self.fill()
+
+    def expect(self, character):
+        if self.peek() != character:
+            raise ValueError(f"Malformed manifest JSON: expected {character!r}")
+        self.position += 1
+
+    def value(self):
+        if not self.peek():
+            raise ValueError("Truncated manifest JSON value")
+        while True:
+            try:
+                value, end = self.decoder.raw_decode(self.buffer, self.position)
+            except json.JSONDecodeError as error:
+                if self.eof:
+                    raise ValueError(f"Malformed manifest JSON: {error.msg}") from error
+            else:
+                if end-self.position > MAX_MANIFEST_VALUE_CHARS:
+                    raise ValueError("Individual manifest JSON value exceeds 16 million characters")
+                # A number may continue in the next chunk (including an exponent).
+                # Only accept a complete token followed by a delimiter or EOF.
+                if end < len(self.buffer) and self.buffer[end] in " \t\r\n,:]}":
+                    self.position = end
+                    return value
+                if self.eof:
+                    if end != len(self.buffer):
+                        raise ValueError("Malformed manifest JSON value delimiter")
+                    self.position = end
+                    return value
+            self.fill()
+
+
+def load_manifest(path, *, chunk_size=64*1024):
+    """Read the unchanged manifest format without an overall byte-count ceiling.
+
+    Samples remain resident for indexing, but their serialized text is consumed
+    one entry at a time. Top-level key order is unrestricted; both pretty-printed
+    and compact JSON are accepted. Binary crops continue to be loaded lazily.
+    """
+    if type(chunk_size) is not int or chunk_size < 1:
+        raise ValueError("Manifest chunk size must be positive")
+    with Path(path).open("r", encoding="utf8") as stream:
+        reader = _ManifestJSON(stream, chunk_size)
+        reader.expect("{")
+        result = {}
+        if reader.peek() != "}":
+            while True:
+                key = reader.value()
+                if not isinstance(key, str) or key in result:
+                    raise ValueError("Manifest JSON keys must be unique strings")
+                reader.expect(":")
+                if key == "samples" and reader.peek() == "[":
+                    reader.expect("[")
+                    values = []
+                    if reader.peek() != "]":
+                        while True:
+                            values.append(reader.value())
+                            if reader.peek() == "]":
+                                break
+                            reader.expect(",")
+                    reader.expect("]")
+                    result[key] = values
+                else:
+                    result[key] = reader.value()
+                if reader.peek() == "}":
+                    break
+                reader.expect(",")
+        reader.expect("}")
+        if reader.peek():
+            raise ValueError("Trailing content after manifest JSON")
+        return result
 
 
 def _file_identity(stat):
@@ -138,9 +255,7 @@ class Dataset:
         if len(set(manifests)) != len(manifests):
             raise ValueError("Duplicate dataset manifest paths")
         for manifest in manifests:
-            if manifest.stat().st_size > MAX_MANIFEST_BYTES:
-                raise ValueError("Dataset manifest exceeds 256 MiB")
-            value = json.loads(manifest.read_text(encoding="utf8"))
+            value = load_manifest(manifest)
             dataset_format = value.get("format")
             version = value.get("version")
             if (dataset_format not in (DATASET_FORMAT, NEURAL_QR_DATASET_FORMAT)
@@ -253,3 +368,4 @@ def check_checkpoint_overlap(checkpoint: dict, dataset: Dataset, split: str) -> 
             raise ValueError(f"Evaluation sessions overlap checkpoint {prefix} data")
         if dataset.payload_ids & set(provenance.get(prefix+"PayloadIds", [])):
             raise ValueError(f"Evaluation payloads overlap checkpoint {prefix} data")
+

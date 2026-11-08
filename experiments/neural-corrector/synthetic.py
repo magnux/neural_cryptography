@@ -14,12 +14,14 @@ import math
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+import time
 
 import numpy as np
 import torch
 from torch.nn import functional as F
 
-from data import DATASET_FORMAT, Dataset, digest, local_path
+from data import DATASET_FORMAT, Dataset, digest, local_path, load_manifest
 from phases import canonical_labels, phase_neutral_info
 
 
@@ -28,6 +30,37 @@ MULTIRES_CORRUPTION_KIND = "correlated-calibrated-crop-multires-v1"
 W_TUBE_CORRUPTION_KIND = "correlated-calibrated-crop-w-tube-v1"
 NEURAL_QR_DATASET_FORMAT = "neural-qr-dataset"
 MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
+
+
+class _Progress:
+    """Periodic stderr lines keep CLI stdout available for the result summary."""
+
+    def __init__(self, total):
+        self.total = total
+        self.started = self.last = time.monotonic()
+        print(f"Synthetic captures: 0/{total}", file=sys.stderr, flush=True)
+
+    def update(self, completed):
+        now = time.monotonic()
+        if completed == self.total or now-self.last >= 5:
+            print(f"Synthetic captures: {completed}/{self.total} "
+                  f"({completed/self.total:.1%}), {now-self.started:.1f}s elapsed",
+                  file=sys.stderr, flush=True)
+            self.last = now
+
+
+def _prepare_baselines(node, bridge, out):
+    """Relay live progress while retaining only a bounded tail for errors."""
+    command = [node, str(bridge), "baselines", "--dataset", str(out)]
+    with subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                          text=True, bufsize=1) as process:
+        tail = ""
+        for line in process.stderr:
+            print(line, end="", file=sys.stderr, flush=True)
+            tail = (tail+line)[-2000:]
+        code = process.wait()
+    if code:
+        raise RuntimeError(f"Canonical synthetic baseline preparation failed: {tail.strip() or f'exit {code}'}")
 
 
 @dataclass(frozen=True)
@@ -676,7 +709,8 @@ def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=None
              max_output_mib=2**20, node="node", photometric: PhotometricConfig | None = None,
              bursts_per_target=None, severity_min=None,
              resolution: CaptureResolutionConfig | None = None, phase_grouped=None,
-             paired_real=None, synthetic_ratio=4, recipe_name="standard", plan_only=False):
+             paired_real=None, synthetic_ratio=4, recipe_name="standard", plan_only=False,
+             summary_only=False):
     """Materialize deterministic corruptions, streaming one capture to disk.
 
     Neural-QR uses eight independent trajectories with eight captures per phase
@@ -758,71 +792,84 @@ def generate(clean_directories, out: Path, *, seed=7, frames=None, severity=None
     if estimated > shutil.disk_usage(disk_parent).free:
         raise ValueError(f"Insufficient free space for approximately {estimated/1024**3:.2f} GiB of synthetic binaries")
     out.mkdir(parents=True, exist_ok=True)
-    records = []
-    for (group_key, members), target_bursts in zip(groups, burst_counts):
-        pixels = np.stack([sample.tensors()[0] for sample in members])
-        for sample in members:
-            sample.read("baseline", "<f4")
-            sample.read("expected", "u1")
-        _validate_crop_shape(pixels if phase_grouped else pixels[0], pixels_per_cell, grouped=phase_grouped)
-        views = np.tile(np.arange(len(members), dtype=np.int64), frames)
-        for burst_index in range(target_bursts):
-            derived = int.from_bytes(hashlib.sha256(
-                f"{seed}/{group_key}/{burst_index}".encode()).digest()[:4], "little")
-            # Every phase of a group shares one severity, capture scale and
-            # physical trajectory. Sensors still produce fresh noise per frame.
-            severity_rng = np.random.default_rng(np.random.SeedSequence([derived, 0x53455652]))
-            burst_severity = (severity if severity_min is None else
-                              float(severity_rng.uniform(severity_min, severity)))
-            capture = sample_capture_resolution(pixels.shape[-1], derived, burst_severity, resolution,
-                                                 pixels_per_cell=pixels_per_cell)
-            phase_group_id = hashlib.sha256(f"{group_key}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
-            observations = _iter_corrupt_sequence(pixels, views, derived, burst_severity,
-                photometric=photometric, resolution=resolution, pixels_per_cell=pixels_per_cell)
-            for timeline_index, value in enumerate(observations):
-                sample = members[int(views[timeline_index])]
-                index = timeline_index//len(members)
-                burst_id = hashlib.sha256(f"{sample.id}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
-                identifier = hashlib.sha256(f"{burst_id}/{index}".encode()).hexdigest()[:24]
-                directory = out / identifier
-                directory.mkdir()
-                record = {**sample.metadata, "id": identifier, "hashes": {},
-                          "source": "synthetic", "burstId": f"synthetic-{burst_id}",
-                          "synthetic": {"seed": derived, "frame": index, "burst": burst_index,
-                          "frames": frames, "severity": burst_severity, "parentId": sample.id,
-                          "captureResolution": capture,
-                          "kind": corruption_kind, "recipeSha256": recipe_hash},
-                          "baselineMode": "canonical-from-corrupted-input"}
-                if phase_grouped:
-                    record["synthetic"].update(phaseGroupId=f"phase-group-{phase_group_id}",
-                        timelineFrame=timeline_index)
-                for field in ("input", "labels", "mask", "baseline", "expected"):
-                    suffix = {"input": "f32", "baseline": "f32", "expected": "bin"}.get(field, "u8")
-                    path = directory / f"{field}.{suffix}"
-                    if field == "input":
-                        path.write_bytes(np.ascontiguousarray(value, dtype="<f4").tobytes())
-                    else:
-                        shutil.copyfile(local_path(sample.root, sample.metadata[field]), path)
-                    record[field] = path.relative_to(out).as_posix()
-                    record["hashes"][field] = digest(path)
-                # Other source-only file paths would point outside this bundle.
-                record.pop("samples", None)
-                record.pop("original", None)
-                records.append(record)
-    manifest = {"format": dataset.dataset_format, "version": dataset.dataset_version, "samples": records,
-                "generator": {**recipe, "recipeSha256": recipe_hash,
-                              "estimatedBinaryBytes": estimated,
-                              "sourceManifestSha256": dataset.manifest_hash,
-                              "note": "Correlated calibrated-crop approximation; real-device evaluation is required."}}
-    (out/"manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
+    generator = {**recipe, "recipeSha256": recipe_hash,
+                 "estimatedBinaryBytes": estimated,
+                 "sourceManifestSha256": dataset.manifest_hash,
+                 "note": "Correlated calibrated-crop approximation; real-device evaluation is required."}
+    manifest_path = out/"manifest.json"
+    completed = 0
+    progress = _Progress(plan["captures"])
+    with manifest_path.open("w", encoding="utf8") as manifest_stream:
+        manifest_stream.write('{"format":')
+        json.dump(dataset.dataset_format, manifest_stream)
+        manifest_stream.write(',"version":'+str(dataset.dataset_version)+',"samples":[')
+        for (group_key, members), target_bursts in zip(groups, burst_counts):
+            pixels = np.stack([sample.tensors()[0] for sample in members])
+            for sample in members:
+                sample.read("baseline", "<f4")
+                sample.read("expected", "u1")
+            _validate_crop_shape(pixels if phase_grouped else pixels[0], pixels_per_cell, grouped=phase_grouped)
+            views = np.tile(np.arange(len(members), dtype=np.int64), frames)
+            for burst_index in range(target_bursts):
+                derived = int.from_bytes(hashlib.sha256(
+                    f"{seed}/{group_key}/{burst_index}".encode()).digest()[:4], "little")
+                # Every phase of a group shares one severity, capture scale and
+                # physical trajectory. Sensors still produce fresh noise per frame.
+                severity_rng = np.random.default_rng(np.random.SeedSequence([derived, 0x53455652]))
+                burst_severity = (severity if severity_min is None else
+                                  float(severity_rng.uniform(severity_min, severity)))
+                capture = sample_capture_resolution(pixels.shape[-1], derived, burst_severity, resolution,
+                                                     pixels_per_cell=pixels_per_cell)
+                phase_group_id = hashlib.sha256(f"{group_key}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
+                observations = _iter_corrupt_sequence(pixels, views, derived, burst_severity,
+                    photometric=photometric, resolution=resolution, pixels_per_cell=pixels_per_cell)
+                for timeline_index, value in enumerate(observations):
+                    sample = members[int(views[timeline_index])]
+                    index = timeline_index//len(members)
+                    burst_id = hashlib.sha256(f"{sample.id}/{recipe_hash}/{burst_index}".encode()).hexdigest()[:24]
+                    identifier = hashlib.sha256(f"{burst_id}/{index}".encode()).hexdigest()[:24]
+                    directory = out / identifier
+                    directory.mkdir()
+                    record = {**sample.metadata, "id": identifier, "hashes": {},
+                              "source": "synthetic", "burstId": f"synthetic-{burst_id}",
+                              "synthetic": {"seed": derived, "frame": index, "burst": burst_index,
+                              "frames": frames, "severity": burst_severity, "parentId": sample.id,
+                              "captureResolution": capture,
+                              "kind": corruption_kind, "recipeSha256": recipe_hash},
+                              "baselineMode": "canonical-from-corrupted-input"}
+                    if phase_grouped:
+                        record["synthetic"].update(phaseGroupId=f"phase-group-{phase_group_id}",
+                            timelineFrame=timeline_index)
+                    for field in ("input", "labels", "mask", "baseline", "expected"):
+                        suffix = {"input": "f32", "baseline": "f32", "expected": "bin"}.get(field, "u8")
+                        path = directory / f"{field}.{suffix}"
+                        if field == "input":
+                            path.write_bytes(np.ascontiguousarray(value, dtype="<f4").tobytes())
+                        else:
+                            shutil.copyfile(local_path(sample.root, sample.metadata[field]), path)
+                        record[field] = path.relative_to(out).as_posix()
+                        record["hashes"][field] = digest(path)
+                    # Other source-only file paths would point outside this bundle.
+                    record.pop("samples", None)
+                    record.pop("original", None)
+                    if completed:
+                        manifest_stream.write(",")
+                    json.dump(record, manifest_stream, separators=(",", ":"), allow_nan=False)
+                    completed += 1
+                    progress.update(completed)
+        manifest_stream.write('],"generator":')
+        json.dump(generator, manifest_stream, separators=(",", ":"), allow_nan=False)
+        manifest_stream.write("}\n")
     # Keep the stored baseline truthful too. Both transports use the canonical
     # JavaScript crop scorer; the copied clean scores are never used as results.
     bridge = Path(__file__).resolve().parents[2]/"scripts/corrector-dataset.mjs"
-    process = subprocess.run([node, str(bridge), "baselines", "--dataset", str(out)],
-                             capture_output=True, text=True, timeout=max(60, len(records)*3))
-    if process.returncode:
-        raise RuntimeError(f"Canonical synthetic baseline preparation failed: {process.stderr[-2000:]}")
-    return json.loads((out/"manifest.json").read_text())
+    print(f"Preparing canonical baselines for {completed} synthetic captures…",
+          file=sys.stderr, flush=True)
+    _prepare_baselines(node, bridge, out)
+    if summary_only:
+        return {"samples": completed, "out": str(out), "generator": generator}
+    # API callers requesting the manifest receive the refreshed baseline hashes.
+    return load_manifest(manifest_path)
 
 
 def main():
@@ -910,7 +957,7 @@ def main():
                           photometric=photometric, bursts_per_target=args.bursts_per_target,
                           severity_min=args.severity_min, phase_grouped=args.phase_grouped,
                           paired_real=args.paired_real, synthetic_ratio=args.synthetic_ratio,
-                          recipe_name=args.recipe, plan_only=args.plan,
+                          recipe_name=args.recipe, plan_only=args.plan, summary_only=True,
                           resolution=CaptureResolutionConfig(probability=(args.capture_probability
                               if args.capture_probability is not None else .85 if args.recipe == "w-tube" else .75),
                               min_scale=min_scale, max_scale=args.capture_max_scale,
@@ -921,8 +968,9 @@ def main():
     if args.plan:
         print(json.dumps(result, indent=2, allow_nan=False))
     else:
-        print(f"Wrote {len(result['samples'])} correlated synthetic crops to {args.out.resolve()}")
+        print(json.dumps(result, separators=(",", ":"), allow_nan=False))
 
 
 if __name__ == "__main__":
     main()
+

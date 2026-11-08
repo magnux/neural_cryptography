@@ -130,3 +130,32 @@ test('symlink output and unsupported output markers are never replaced',async()=
   await writeFile(join(root,'w-tube/build.json'),JSON.stringify({format:'other-experiment',version:1}));
   await assert.rejects(planRebuild(rebuildOptions(root)),/Unsupported build marker/);
 }));
+
+
+
+test('default recording roots live under local-data and plan progress stays on stderr',async()=>temp(async root=>{
+  await upload(join(root,'local-data/recordings'));
+  const script=fileURLToPath(new URL('../../../scripts/rebuild-corrector-data.mjs',import.meta.url));
+  const result=spawnSync(process.execPath,[script,'--plan'],{cwd:root,encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);
+  const plan=JSON.parse(result.stdout);
+  for(const [key,folder]of [['recordingsRoot','recordings'],['resampledRoot','recordings-1'],['headerRoot','recordings-0']])
+    assert.equal(plan.config[key],join(root,'local-data',folder));
+  assert.equal(plan.config.out,join(root,'local-data/w-tube'));
+  assert.match(result.stderr,/Scanning native recordings:/);
+  assert.match(result.stderr,/Checking recording files: 2\/2/);
+  assert.equal(plan.groups[0].realCaptures,8);
+  assert.equal(plan.trainingPipelineReady,true);
+  await assert.rejects(access(join(root,'local-data/w-tube')));
+}));
+
+test('a mismatched synthetic summary preserves the old corpus',async()=>temp(async root=>{
+  const out=join(root,'w-tube');await upload(join(root,'recordings'));
+  await mkdir(join(out,'real'),{recursive:true});await writeFile(join(out,'real/keep'),'previous');
+  await writeFile(join(out,'build.json'),JSON.stringify({format:BUILD_FORMAT,version:1}));
+  const fake=join(root,'fake-python');
+  await writeFile(fake,`#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\nprintf '{"samples":999}\\n'\n`,{mode:0o700});
+  await assert.rejects(rebuild(rebuildOptions(root,{python:fake,frames:2,syntheticRatio:1})),/Synthetic capture count differs from plan/);
+  assert.equal(await readFile(join(out,'real/keep'),'utf8'),'previous');
+  assert.deepEqual((await readdir(root)).sort(),['fake-python','recordings','w-tube']);
+}));
