@@ -1,11 +1,12 @@
-"""Held-out Neural-QR logical matrix accuracy, independent of packet recovery.
+"""Held-out raw matrix accuracy and separate recorded-error RS/CRC replay.
 
-No CRC/RS decoder is applicable to these raw-symbol collection targets. Target
-labels are read only after inference inputs have been constructed and are used
-only for scoring; they never alter a prediction or select its capture members.
+Collection symbols have no packet envelope. Target labels score inference and
+define diagnostic error patterns; they never repair a prediction, select its
+captures or enter the packet decoder. Replay is not measured packet reception.
 """
 
 from collections import defaultdict
+from contextlib import ExitStack
 import time
 
 import numpy as np
@@ -15,11 +16,14 @@ from torch.nn import functional as F
 from bursts import BurstIndex, EVALUATION_SEED, VARIABLE_EVALUATION_POLICY
 from sampling import infer_session_groups, validate_session_groups
 from reporting import evaluation_table
+from packet_replay import (REPLAY_COUNTERS, ReplayBatch, add_replay,
+                           replay_policy, replay_summary, validate_rs_parity)
 
 
 def counter():
     return {"samples": 0, "lossSum": 0., "wrongCells": 0, "dataCells": 0,
-            "exactMatrices": 0, "inputCaptures": 0}
+            "exactMatrices": 0, "inputCaptures": 0,
+            **dict.fromkeys(REPLAY_COUNTERS, 0)}
 
 
 def add(counter, *, loss, wrong, cells, captures):
@@ -41,11 +45,15 @@ def combine(rows):
 
 def summarize(row):
     n, cells = row["samples"], row["dataCells"]
-    return {"samples": n, "inputCaptures": row["inputCaptures"],
+    result = {"samples": n, "inputCaptures": row["inputCaptures"],
             "loss": row["lossSum"]/n, "wrongCells": row["wrongCells"], "dataCells": cells,
             "cellErrorRate": row["wrongCells"]/cells,
             "matrixAccuracy": {"matrices": n, "exactMatrices": row["exactMatrices"],
                                "exactRate": row["exactMatrices"]/n}}
+    replay = replay_summary(row)
+    if replay is not None:
+        result["rsReplay"] = replay
+    return result
 
 
 def _selection(leaves):
@@ -114,8 +122,9 @@ def _by_size(leaves):
 
 
 def evaluate_matrices(model, dataset, *, device="cpu", max_samples=0, session_groups=None,
-                      detailed=False):
+                      detailed=False, rs_parity=32, node="node", work_dir=None):
     from evaluate import select_samples, require_implemented_model_contract
+    validate_rs_parity(rs_parity)
     require_implemented_model_contract(dataset, model)
     if dataset.dataset_format != "neural-qr-dataset" or model.profile not in ("multires", "W-tube"):
         raise ValueError("Neural-QR matrix evaluation requires its matching multires or W-tube model")
@@ -132,69 +141,84 @@ def evaluate_matrices(model, dataset, *, device="cpu", max_samples=0, session_gr
     counts, by_count, timings, rows = {}, {}, [], []
     first_ids, used_ids, available_ids = None, set(), set()
     used_by_origin, available_by_origin = defaultdict(set), defaultdict(set)
-    previous_mode = model.training
-    model.to(device).eval()
-    try:
-        with torch.inference_mode():
-            for count in range(4, 9):
-                candidates, stats = index.eval_samples(actual_frames=count)
-                if not candidates:
-                    raise ValueError("Multires validation needs at least two distinct captures of each of four phases")
-                selected = select_samples(candidates, max_samples)
-                identities = tuple(sample.id for sample in selected)
-                if first_ids is not None and identities != first_ids:
-                    raise ValueError("Every K preset must use the same seeded capacity blocks")
-                first_ids = identities
-                available = {(s.shape[0], s.metadata["source"], groups[s.metadata["sessionId"]],
-                              s.metadata.get("origin") if wtube else None)
-                             for s in dataset.samples if s.metadata["source"] == "real"}
-                chosen = {(s.shape[0], s.metadata["source"], groups[s.metadata["sessionId"]],
-                           s.metadata.get("origin") if wtube else None)
-                          for s in selected if s.metadata["source"] == "real"}
-                if available-chosen:
-                    raise ValueError("Evaluation cap omits real resolution/group/origin combinations; use --max-samples 0")
-                for sample in selected:
-                    pixels, labels, mask = sample.tensors()
-                    values = torch.from_numpy(pixels[None]).to(device)
-                    if str(device).startswith("cuda"):
-                        torch.cuda.synchronize(device)
-                    start = time.perf_counter()
-                    output = model(values)
-                    if str(device).startswith("cuda"):
-                        torch.cuda.synchronize(device)
-                    timings.append((time.perf_counter()-start)*1000)
-                    if tuple(output.shape) != (1, 16, *labels.shape) or not torch.isfinite(output).all():
-                        raise ValueError("Corrector produced invalid matrix logits")
-                    target = torch.from_numpy(labels[None]).to(device)
-                    valid = torch.from_numpy(mask[None]).to(device)
-                    loss = float(F.cross_entropy(output, target, reduction="none")[valid].mean().cpu())
-                    wrong = int(((output.argmax(1) != target) & valid).sum().cpu())
-                    cells = int(mask.sum())
-                    source, size = sample.metadata["source"], sample.shape[0]
-                    group = groups[sample.metadata["sessionId"]] if source == "real" else "source:synthetic"
-                    origin = sample.metadata.get("origin")
-                    key = (size, source, group, count, origin) if wtube else (size, source, group, count)
-                    add(leaves[key], loss=loss, wrong=wrong, cells=cells, captures=count)
-                    used_ids.update(member.id for member in sample.members)
-                    if source == "real":
-                        used_by_origin[origin].update(member.id for member in sample.members)
-                    if detailed:
-                        rows.append({"id": sample.id, "memberIds": [m.id for m in sample.members],
-                                     "sessionId": sample.metadata["sessionId"], "source": source,
-                                     "size": size, "group": group, "frames": count,
-                                     **({"origin": origin} if wtube else {}),
-                                     "loss": loss, "wrongCells": wrong, "dataCells": cells,
-                                     "exact": wrong == 0})
-                available_ids.update(member.id for sample in candidates for member in sample.members)
-                for sample in candidates:
-                    if sample.metadata["source"] == "real":
-                        available_by_origin[sample.metadata.get("origin")].update(m.id for m in sample.members)
-                current = {key: value for key, value in leaves.items() if key[3] == count}
-                by_count[str(count)] = {**_breakdown(current), "framesPerInput": count,
-                                       "burstGrouping": stats}
-                counts[str(count)] = len(selected)
-    finally:
-        model.train(previous_mode)
+    replay_keys = []
+    with ExitStack() as stack:
+        replay = (stack.enter_context(ReplayBatch(rs_parity, node=node, work_dir=work_dir))
+                  if rs_parity else None)
+        previous_mode = model.training
+        model.to(device).eval()
+        try:
+            with torch.inference_mode():
+                for count in range(4, 9):
+                    candidates, stats = index.eval_samples(actual_frames=count)
+                    if not candidates:
+                        raise ValueError("Multires validation needs at least two distinct captures of each of four phases")
+                    selected = select_samples(candidates, max_samples)
+                    identities = tuple(sample.id for sample in selected)
+                    if first_ids is not None and identities != first_ids:
+                        raise ValueError("Every K preset must use the same seeded capacity blocks")
+                    first_ids = identities
+                    available = {(s.shape[0], s.metadata["source"], groups[s.metadata["sessionId"]],
+                                  s.metadata.get("origin") if wtube else None)
+                                 for s in dataset.samples if s.metadata["source"] == "real"}
+                    chosen = {(s.shape[0], s.metadata["source"], groups[s.metadata["sessionId"]],
+                               s.metadata.get("origin") if wtube else None)
+                              for s in selected if s.metadata["source"] == "real"}
+                    if available-chosen:
+                        raise ValueError("Evaluation cap omits real resolution/group/origin combinations; use --max-samples 0")
+                    for sample in selected:
+                        pixels, labels, mask = sample.tensors()
+                        values = torch.from_numpy(pixels[None]).to(device)
+                        if str(device).startswith("cuda"):
+                            torch.cuda.synchronize(device)
+                        start = time.perf_counter()
+                        output = model(values)
+                        if str(device).startswith("cuda"):
+                            torch.cuda.synchronize(device)
+                        timings.append((time.perf_counter()-start)*1000)
+                        if tuple(output.shape) != (1, 16, *labels.shape) or not torch.isfinite(output).all():
+                            raise ValueError("Corrector produced invalid matrix logits")
+                        target = torch.from_numpy(labels[None]).to(device)
+                        valid = torch.from_numpy(mask[None]).to(device)
+                        loss = float(F.cross_entropy(output, target, reduction="none")[valid].mean().cpu())
+                        predicted = output.argmax(1)
+                        wrong = int(((predicted != target) & valid).sum().cpu())
+                        cells = int(mask.sum())
+                        source, size = sample.metadata["source"], sample.shape[0]
+                        group = groups[sample.metadata["sessionId"]] if source == "real" else "source:synthetic"
+                        origin = sample.metadata.get("origin")
+                        key = (size, source, group, count, origin) if wtube else (size, source, group, count)
+                        add(leaves[key], loss=loss, wrong=wrong, cells=cells, captures=count)
+                        if replay is not None:
+                            replay.append(labels, predicted[0].cpu().numpy(), mask)
+                            replay_keys.append(key)
+                        used_ids.update(member.id for member in sample.members)
+                        if source == "real":
+                            used_by_origin[origin].update(member.id for member in sample.members)
+                        if detailed:
+                            rows.append({"id": sample.id, "memberIds": [m.id for m in sample.members],
+                                         "sessionId": sample.metadata["sessionId"], "source": source,
+                                         "size": size, "group": group, "frames": count,
+                                         **({"origin": origin} if wtube else {}),
+                                         "loss": loss, "wrongCells": wrong, "dataCells": cells,
+                                         "exact": wrong == 0})
+                    available_ids.update(member.id for sample in candidates for member in sample.members)
+                    for sample in candidates:
+                        if sample.metadata["source"] == "real":
+                            available_by_origin[sample.metadata.get("origin")].update(m.id for m in sample.members)
+                    current = {key: value for key, value in leaves.items() if key[3] == count}
+                    by_count[str(count)] = {**_breakdown(current), "framesPerInput": count,
+                                           "burstGrouping": stats}
+                    counts[str(count)] = len(selected)
+        finally:
+            model.train(previous_mode)
+        if replay is not None:
+            for position, result in enumerate(replay.results()):
+                add_replay(leaves[replay_keys[position]], result)
+                if detailed:
+                    rows[position]["rsReplay"] = {k: v for k, v in result.items() if k != "id"}
+            for k in range(4, 9):
+                by_count[str(k)].update(_breakdown({key: row for key, row in leaves.items() if key[3] == k}))
     all_leaves, extra = leaves, {}
     if wtube:
         leaves, population = _primary_wtube_leaves(all_leaves)
@@ -225,11 +249,11 @@ def evaluate_matrices(model, dataset, *, device="cpu", max_samples=0, session_gr
               "modelProfile": model.profile, "datasetFormat": "neural-qr-dataset",
               "datasetVersion": dataset.dataset_version,
               "outputLabelSpace": "logical", "metric": "exact-masked-logical-matrix",
-              "note": "cellErrorRate pools data cells; sizeMacroCellErrorRate averages per-grid CER over represented grids. Exact means every data cell is correct, excluding fixed references. No CRC, error correction or packet recovery is measured. K presets reuse nested captures and are not independent trials.",
+              "note": "cellErrorRate pools data cells; sizeMacroCellErrorRate averages per-grid CER over represented grids. Exact means every data cell is correct, excluding fixed references, without error correction. RS/CRC replay is a separate recorded-error diagnostic, not measured packet reception. K presets reuse nested captures and are not independent trials.",
               "manifestSha256": dataset.manifest_hash, "framesPerInput": 8,
               "frameCapacity": 8, "actualFrameCounts": [4, 5, 6, 7, 8],
               "pixelsPerCell": model.pixels_per_cell, "profiles": {str(size): sum(v["samples"] for k, v in leaves.items() if k[0] == size) for size in sizes},
-              "metricTable": evaluation_table(all_leaves),
+              "metricTable": evaluation_table(all_leaves), "rsReplayPolicy": replay_policy(rs_parity),
               **_breakdown(leaves), "selectionScore": score,
               "bySize": _by_size(leaves), "byFrameCount": by_count, **extra,
               "observationCases": sum(counts.values()), "uniqueCandidates": counts["4"],

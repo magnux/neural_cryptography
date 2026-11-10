@@ -44,8 +44,8 @@ test('capture worker rejects oversized frames before extraction',async()=>{
   globalThis.self={postMessage:message=>messages.push(message)};
   try{
     await import('../dist/js/dataset/worker.js');
-    await self.onmessage({data:{id:1,operation:'capture',options:{image:{width:2048,height:2048,data:new Uint8ClampedArray(1)}}}});
-    assert.equal(messages[0].type,'error');assert.match(messages[0].error,/1080p pixel limit/);
+    await self.onmessage({data:{id:1,operation:'capture',options:{image:{width:6000,height:4000,data:new Uint8ClampedArray(1)}}}});
+    assert.equal(messages[0].type,'error');assert.match(messages[0].error,/20-megapixel processing limit/);
     await self.onmessage({data:{id:2,operation:'unrecognized'}});
     assert.equal(messages[1].type,'error');assert.match(messages[1].error,/Unknown dataset/);
     const sender=await createSender({seed:4,sessionId:'worker'}),image=renderNeuralQR(sender.frames[0],1024),assignment={collectionCode:sender.manifest.collectionCode,profile:sender.manifest.profile};
@@ -64,6 +64,11 @@ test('capture worker rejects oversized frames before extraction',async()=>{
     assert.equal(messages[6].type,'result');assert.equal(messages[6].result.ok,false);
     assert.equal(messages[6].result.stage,'profile');assert.equal(messages[6].result.stats.detectedSize,64);
     assert.equal(messages[6].result.inputBase64,undefined,'a mismatched optical grid never becomes a saved tensor');
+    const highResolution={width:3840,height:2160,data:new Uint8ClampedArray(3840*2160*4)};
+    await self.onmessage({data:{id:8,operation:'probe',options:{image:highResolution,timestamp:1800,...assignment}}});
+    assert.equal(messages[7].type,'result','a complete4K image reaches acquisition instead of the old1080p rejection');
+    assert.equal(messages[7].result.ok,false);assert.equal(messages[7].result.stage,'detect');
   }finally{if(previous===undefined)delete globalThis.self;else globalThis.self=previous;}
 });
+
 

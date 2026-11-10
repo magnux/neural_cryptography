@@ -1,3 +1,4 @@
+import {MAX_CAPTURE_PIXELS} from './camera.js';
 import {captureProfile,CAPTURE_SIZES,createSender} from './contract.js';
 import {captureFrame,validateCapture} from './capture.js';
 import {meanCaptureDistance,selectCaptureReplacement,createCaptureReference} from './diversity.js';
@@ -42,8 +43,8 @@ self.onmessage=async event=>{
     }else if(operation==='capture'||operation==='probe'){
       const {image,timestamp,camera,original=false}=options;
       if(!image||!Number.isSafeInteger(image.width)||!Number.isSafeInteger(image.height)||
-         image.width<32||image.height<32||image.width*image.height>2073600||
-         !(image.data instanceof Uint8ClampedArray)||image.data.length!==image.width*image.height*4)throw Error('Capture exceeds the 1080p pixel limit or has invalid pixels.');
+         image.width<32||image.height<32||image.width*image.height>MAX_CAPTURE_PIXELS||
+         !(image.data instanceof Uint8ClampedArray)||image.data.length!==image.width*image.height*4)throw Error('Capture exceeds the 20-megapixel processing limit or has invalid pixels.');
       // Public assignment only: no sender manifest, labels, expected bytes, or seed.
       const {collectionCode,profile}=options;
       const assignment=`${collectionCode}/${profile?.size}`;
@@ -62,3 +63,4 @@ self.onmessage=async event=>{
   }catch(error){self.postMessage({id,type:'error',error:error.message||String(error)});}
   finally{busy=false;}
 };
+

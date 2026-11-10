@@ -57,7 +57,8 @@ python experiments/neural-corrector/train.py \
   --model W-tube --frames 8 \
   --train local-data/w-tube/real/train local-data/w-tube/synthetic/train \
   --validation local-data/w-tube/real/validation \
-  --paired-targets --real-fraction .5 --native-real-fraction .5 \
+  --paired-targets --real-fraction .5 \
+  --origin-ratios native=.5,resampled=.35,header-g64=.15 \
   --batch-size 8 --accumulate 4 --lr .0001 --steps 32000 \
   --validation-samples 0 --device cuda \
   --out checkpoints/neural-corrector/w-tube-phase8
@@ -65,7 +66,7 @@ python experiments/neural-corrector/train.py \
 
 `--batch-size 8 --accumulate 4` means **32 sample bursts per optimizer update**,
 all at one selected grid: 16 real and 16 paired synthetic examples. Grid sizes
-are selected uniformly among those present in training; 32,000 is the total
+are selected uniformly within the chosen recording origin; 32,000 is the total
 number of optimizer updates, not the count per grid. Each real/synthetic pair
 uses the same logical target and observation count. The 4:1 synthetic corpus
 ratio supplies more corruption choices, while the training ratio stays 50/50.
@@ -90,55 +91,52 @@ training recipe rejects them; do not duplicate captures to fill slots.
 
 Quotas apply to the **whole optimizer update**, before splitting it into
 microbatches. Changing `8 × 4` to `4 × 8` therefore preserves the sampling policy.
-The hierarchy is:
+The default W-tube hierarchy is:
 
-1. Choose one represented grid uniformly.
-2. In paired mode, allocate half the update to real examples and half to their
-   synthetic counterparts.
-3. Balance real examples across the acquisition directions available at that grid.
-4. Within each grid/direction quota, choose native versus auxiliary evidence.
-   W-tube defaults to `--native-real-fraction .5` when both kinds are available.
-5. Divide the auxiliary remainder equally across available `resampled` and
-   `header-g64` origins, then draw through physical sessions, targets, phases
-   and capture bursts.
+1. Draw one recording origin for the optimizer update using
+   `--origin-ratios native=.5,resampled=.35,header-g64=.15`.
+2. Choose a represented grid uniformly within that origin.
+3. In paired mode, allocate half the update to real examples and half to their
+   synthetic counterparts. Every example in the update has the same origin and
+   geometry, even when it is split into microbatches.
+4. Balance real examples across the available acquisition directions, then draw
+   physical sessions, targets, phases and capture bursts within that population.
 
 Each synthetic counterpart matches its real example's origin, logical target
 and observation count. The larger synthetic corpus supplies more corruption
-choices without changing these quotas. The fraction accepts values from 0 to 1;
-it applies to the real quota, not to the whole batch. Other model profiles keep
-their existing source/direction policy and do not use this option.
+choices without changing the overall 50/50 real/synthetic mixture. Origin ratios
+are expected **global proportions across updates**, not three proportions applied
+separately inside every grid. They must be finite, nonnegative and sum to one;
+requesting a positive share for an unavailable origin fails with an actionable
+error. Set an absent origin to zero rather than silently changing the requested mix.
 
-At G64, with all three origins represented in both directions, an effective
-batch of 32 contains:
+With all four grids available for native and resampled evidence, and header data
+only at G64, the default gives:
 
-| Source | Native | Resampled | Header G64 | Total |
-| --- | ---: | ---: | ---: | ---: |
-| Real | 8 | 4 | 4 | 16 |
-| Paired synthetic | 8 | 4 | 4 | 16 |
+| Population | Expected share |
+| --- | ---: |
+| Native real examples | 50% of real examples |
+| Resampled real examples | 35% of real examples |
+| Header-G64 real examples | 15% of real examples |
+| G16 / G32 / G128 optimizer updates | 21.25% each |
+| G64 optimizer updates | 36.25% |
 
-The header-G64 origin exists only at G64. At other grids its auxiliary quota goes
-to the available resampled origin: an update then has eight native and eight
-resampled examples in each source half. With all four grids sampled uniformly
-and complete direction/origin coverage, the expected overall **real** proportions
-are **50% native, 43.75% resampled and 6.25% header-G64**. The small global
-header share reflects its single supported grid; within G64 it receives 25%.
-These are expected proportions across updates, not guaranteed counts in every
-reporting interval. Explicit `--native-real-fraction .75` still overrides the
-new default, so update an earlier saved command or omit that option.
+An effective batch of 32 has 16 real and 16 paired synthetic inputs from the
+selected origin. Origins vary across optimizer updates. To emphasize newly
+collected native sessions, use
+`--origin-ratios native=.55,resampled=.30,header-g64=.15`; this preserves the
+same expected grid distribution when coverage is complete. Direction coverage
+is reported explicitly: an origin cannot supply a direction it does not contain.
+Expected origin/grid coverage is recorded in `settings.json` and actual origin
+counts appear in training reports.
 
-If a grid/direction has only native data, all of its real draws are native; if it
-has no native data, all are auxiliary.
-Missing origins never borrow captures from another grid, direction or split.
-Consequently, 50% is **not a global guarantee** when native coverage is missing
-in some directions. Static coverage records show the effective fraction for
-each grid/direction in `settings.json` under `originSampling.coverage`, and
-training records the actual origin counts.
-
-Fractional native quotas use stochastic rounding. Direction and auxiliary
-remainders use randomized ties, avoiding a permanent preference caused by small
-batch sizes. Session/split boundaries remain mandatory for every origin,
-including resampled copies. The existing K4–K8 draw, phase permutations, aligned
-flips and real-only photometric augmentation remain unchanged.
+The existing explicit `--native-real-fraction` remains an alternative policy:
+uniform grids, then a native quota within each grid/direction, then equal shares
+among its available auxiliary origins. It is mutually exclusive with
+`--origin-ratios` and does **not** set global origin percentages. Other model
+profiles keep their existing source/direction policy. Session/split boundaries,
+K4–K8 draws, phase permutations, aligned flips and real-only photometric
+augmentation are unchanged.
 
 ### W-tube validation and continuation
 
@@ -169,6 +167,51 @@ python experiments/neural-corrector/evaluate.py \
   --out local-results/neural-corrector/w-tube-phase8-validation.json
 ```
 
+#### Reed–Solomon and CRC validation benchmark
+
+Raw exact-matrix accuracy remains the checkpoint-selection metric. The recording
+files contain random logical symbols, not encoded RS packets, so an actual RS
+decoder cannot repair their raw predictions directly. Validation now adds a
+separate **recorded-error replay** benchmark, enabled by default with
+`--rs-parity 32` in both training and evaluation. Use `--rs-parity 0` to disable
+it, or an even parity count from 2 to 64 to measure another redundancy budget.
+Node.js runs the repository's existing RS implementation; there is no second
+Python RS implementation or additional package dependency.
+
+For each inference result:
+
+1. Select data cells only, in row-major order; pack two 16-color symbols per
+   byte, high nibble first. An odd trailing cell is excluded from the byte
+   benchmark but remains included in raw matrix accuracy.
+2. Compare predicted and expected bytes to obtain the observed XOR error
+   pattern. This happens **after classification** and never changes its output.
+3. Build a diagnostic payload, append a four-byte CRC-32, and encode balanced
+   shortened RS blocks of at most 255 bytes. Interleave the blocks round-robin
+   within exactly the available byte capacity. Parity and CRC consume capacity;
+   they are not appended as free, perfectly received evidence.
+4. Apply the measured XOR pattern to the entire encoded packet, including its
+   parity and CRC positions. Run a blind RS decoder and then CRC verification.
+   Neither decoder receives expected symbols, error locations or clean payload.
+5. Only after acceptance, compare the recovered payload with the diagnostic
+   payload and count exact recovery or wrong acceptance.
+
+The console separates RS decoding, CRC acceptance and verified replay recovery.
+Per-grid summaries and the compact grid/direction/origin/K table retain those
+counters and the payload/wire-byte budget; per-session and per-capture logs are
+not added. Too-small matrices are explicitly ineligible for the chosen parity
+budget. Replay never replaces raw exactness, changes model weights, or selects
+a checkpoint. CRC detects accidental corruption; it is not authentication.
+
+The benchmark assumes the recorded error pattern would transfer to a different
+symbol arrangement carrying the encoded packet. Content-dependent optical
+errors can violate that assumption. Consequently, **RS+CRC replay is not measured
+live packet recovery**. It is useful for choosing redundancy and comparing
+models on the same recorded evidence before recording encoded-packet tests.
+
+For example, a G64 matrix with 3,136 data cells offers 1,568 wire bytes. With
+32 parity bytes in each of seven blocks and four CRC bytes, the diagnostic
+payload is **1,340 bytes**. Reports record the actual capacity for every grid.
+
 Neural-QR version-2 synthetics automatically use the camera model described in
 [the data guide](W_TUBE_DATA.md#camera-scaled-coherent-corruptions), including
 when `synthetic.py` is called with the `standard` recipe. The recipe changes
@@ -191,7 +234,8 @@ python experiments/neural-corrector/train.py \
   --model W-tube --frames 8 \
   --train local-data/w-tube/real/train local-data/w-tube/synthetic/train \
   --validation local-data/w-tube/real/validation \
-  --paired-targets --real-fraction .5 --native-real-fraction .5 \
+  --paired-targets --real-fraction .5 \
+  --origin-ratios native=.5,resampled=.35,header-g64=.15 \
   --initialize checkpoints/neural-corrector/w-tube-phase8/best.pt \
   --batch-size 8 --accumulate 4 --lr .00005 --steps 32000 \
   --validation-samples 0 --device cuda \

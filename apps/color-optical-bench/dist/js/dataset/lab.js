@@ -1,5 +1,6 @@
 import {CaptureClient} from './client.js';
 import {CaptureBuffer} from './capture.js';
+import {openCaptureCamera,cameraRequest,captureDimensions,cameraStatus} from './camera.js';
 import {ScanLoop} from './scan-loop.js';
 import {recordingFilename} from './filenames.js';
 import {captureProfile,recommendedPhaseMaximum,canonicalJSON,CAPTURE_PIXELS_PER_CELL} from './contract.js';
@@ -12,7 +13,7 @@ const $=id=>document.getElementById(id),client=new CaptureClient(),buffer=new Ca
 const supported=isSecureContext&&typeof Worker==='function'&&Boolean(globalThis.crypto?.subtle);
 const session=prefix=>`${prefix}-${globalThis.crypto?.randomUUID?.()??'unavailable'}`;
 let senderSession=session('sender'),receiverSession=session('receiver'),sender=null,phase=0,role='sender';
-let busy=false,epoch=0,stream=null,cameraStarting=false,cameraEpoch=0;
+let busy=false,epoch=0,stream=null,cameraStarting=false,cameraEpoch=0,activeCameraRequest=null;
 let previewMirrored=false;
 const identity=collectionIdentity();
 let uploadConfig={enabled:false},uploading=false,uploadController=null,uploadEpoch=0;
@@ -124,7 +125,7 @@ function showError(message=''){$('captureError').textContent=message;$('captureE
 function status(message){$('receiverStatus').textContent=message;}
 function cameraInfo(){
   const track=stream?.getVideoTracks()[0];
-  const info=cameraMetadata(track,{requestedHeight:Number($('resolution').value),previous:lastCamera});
+  const info=cameraMetadata(track,{...(activeCameraRequest??cameraRequest($('resolution').value)),previous:lastCamera});
   if(track)lastCamera=info;
   return info;
 }
@@ -306,10 +307,10 @@ function currentImage(){
   const mediaTime=video.currentTime;
   if(!Number.isFinite(mediaTime)||mediaTime<=lastMediaTime)throw Error('No new camera frame yet. The camera may be paused.');
   lastMediaTime=mediaTime;
-  const scale=Math.min(1,Math.sqrt(2073600/(video.videoWidth*video.videoHeight)));
-  const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.floor(video.videoWidth*scale));canvas.height=Math.max(1,Math.floor(video.videoHeight*scale));
+  const dimensions=captureDimensions(video.videoWidth,video.videoHeight);
+  const canvas=document.createElement('canvas');canvas.width=dimensions.width;canvas.height=dimensions.height;
   const context=canvas.getContext('2d',{willReadFrequently:true});context.drawImage(video,0,0,canvas.width,canvas.height);
-  const pixels=context.getImageData(0,0,canvas.width,canvas.height),camera={...cameraInfo(),captureWidth:canvas.width,captureHeight:canvas.height,mediaTime};
+  const pixels=context.getImageData(0,0,canvas.width,canvas.height),camera={...cameraInfo(),captureWidth:canvas.width,captureHeight:canvas.height,processingScale:dimensions.scale,mediaTime};
   return {image:{width:pixels.width,height:pixels.height,data:pixels.data},timestamp:Date.now(),camera};
 }
 function clearOverlay(){const canvas=$('alignmentOverlay');canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);}
@@ -444,18 +445,15 @@ function stopCamera(){
 async function startCamera(){
   if(cameraStarting||stream||busy||uploading||(automaticSession()&&sessionBlocked))return;if(!assignment()){showError('Enter the sender’s collection code and grid first.');return;}showError();cameraStarting=true;const token=++cameraEpoch;refresh();
   try{
-    if(!navigator.mediaDevices?.getUserMedia)throw Error('Camera access requires trusted HTTPS or localhost.');
-    const height=Number($('resolution').value),width=height===480?640:Math.round(height*16/9);
-    const acquired=await navigator.mediaDevices.getUserMedia({audio:false,video:{width:{ideal:width},height:{ideal:height},
-      ...($('camera').value?{deviceId:{exact:$('camera').value}}:{facingMode:{ideal:'environment'}})}});
+    const {stream:acquired,request}=await openCaptureCamera(navigator.mediaDevices,{resolution:$('resolution').value,deviceId:$('camera').value});
     if(token!==cameraEpoch){acquired.getTracks().forEach(track=>track.stop());return;}
-    const newCamera=cameraMetadata(acquired.getVideoTracks()[0],{requestedHeight:height}),newId=newCamera.deviceId??newCamera.label??null;
+    const newCamera=cameraMetadata(acquired.getVideoTracks()[0],request),newId=newCamera.deviceId??newCamera.label??null;
     if(sessionCameraId&&newId&&sessionCameraId!==newId){
       acquired.getTracks().forEach(track=>track.stop());throw Error('A different camera needs a new physical session. Save the current batch, then select New physical session before starting this camera.');
     }
-    stream=acquired;$('video').srcObject=stream;await $('video').play();if(token!==cameraEpoch)return;
+    activeCameraRequest=request;stream=acquired;$('video').srcObject=stream;await $('video').play();if(token!==cameraEpoch)return;
     lastMediaTime=-1;$('cameraPlaceholder').hidden=true;const actual=cameraInfo();
-    $('cameraStatus').textContent=`Actual capture ${actual.width}×${actual.height}, ${actual.frameRate?.toFixed(0)??'unknown'} fps. Fit all four markers, size codes, phase cues and palette strips in view.`;
+    $('cameraStatus').textContent=`${cameraStatus(actual,captureDimensions($('video').videoWidth,$('video').videoHeight))} Fit all four markers, size codes, phase cues and palette strips in view.`;
     await enumerateCameras();
     if(token===cameraEpoch)scanner.start();
   }catch(error){if(token===cameraEpoch){stopCamera();showError(error.message);}}
@@ -513,3 +511,4 @@ window.addEventListener('beforeunload',event=>{if(receiverDirty()||sender&&!send
 window.addEventListener('pagehide',shutdown);window.addEventListener('pageshow',()=>{pageActive=true;if(uploadConfig.enabled)pollSession();});document.addEventListener('visibilitychange',()=>{if(document.hidden)shutdown();else{pageActive=true;if(uploadConfig.enabled)pollSession();}});
 if(!supported)showError('Use a current browser with Web Workers and Web Crypto on trusted HTTPS or localhost.');
 refresh();enumerateCameras();checkUploads();
+

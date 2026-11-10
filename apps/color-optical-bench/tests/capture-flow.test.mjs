@@ -37,6 +37,8 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     assert.deepEqual([...options.matchAll(/value="(\d+)"/g)].map(match=>Number(match[1])),[16,32,64,128]);
   }
   assert.match(html,/4 × 4 pixels per rectified cell/);
+  const cameraOptions=html.match(/<select id="resolution">(.*?)<\/select>/s)[1];
+  for(const option of ['1440','2160','max'])assert.ok(cameraOptions.includes(`value="${option}"`));
   assert.ok(html.indexOf('id="opticalProfile"')<html.indexOf('id="video"'));
   for(const [id,value] of Object.entries({phaseMaximum:'32',scanInterval:'100',resolution:'720',datasetSplit:'train',receiverCode:sender.manifest.collectionCode,receiverSize:'64',captureBudget:'400',senderSize:'64'}))get(id).value=value;
   assert.equal(elements.has('keepCount'),false);assert.equal(elements.has('thinCaptures'),false);
@@ -217,4 +219,5 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     for(const [k,descriptor] of saved)if(descriptor)Object.defineProperty(globalThis,k,descriptor);else delete globalThis[k];
   }
 });
+
 

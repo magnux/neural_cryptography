@@ -32,12 +32,14 @@ export function environmentMetadata(identity,{navigator:nav=globalThis.navigator
       availableWidth:finite(screen?.availWidth),availableHeight:finite(screen?.availHeight),
       viewportWidth:finite(innerWidth),viewportHeight:finite(innerHeight),devicePixelRatio:finite(devicePixelRatio)}};
 }
-export function cameraMetadata(track,{requestedHeight,previous={}}={}){
+export function cameraMetadata(track,{requestedHeight,requestedWidth,requestedResolution,resolutionFallback,previous={}}={}){
   if(!track)return {...previous,active:false};
   const settings=track.getSettings?.()??{};
   return {active:true,label:short(track.label,300),width:finite(settings.width),height:finite(settings.height),
     frameRate:finite(settings.frameRate),facingMode:short(settings.facingMode,40),
     deviceId:short(settings.deviceId,300),groupId:short(settings.groupId,300),
     cameraIdScope:'browser-origin permission-scoped identifiers; not a global hardware identity',
-    resizeMode:short(settings.resizeMode,40),requestedHeight:finite(requestedHeight)};
+    resizeMode:short(settings.resizeMode,40),requestedHeight:finite(requestedHeight),
+    requestedWidth:finite(requestedWidth),requestedResolution:short(requestedResolution,20),
+    resolutionFallback:short(resolutionFallback,300)};
 }

@@ -164,13 +164,37 @@ slots. K4–K8 model examples will draw from these captures during training.
 The intended training mix remains **50% real and 50% synthetic** with paired
 targets. A larger synthetic corpus provides more corruptions of each target;
 it does not make the training sampler use 80% synthetic inputs. W-tube defaults
-to `--native-real-fraction .5` within each grid/direction real quota when both
-native and auxiliary recordings are available. The auxiliary share is divided
-equally between available `resampled` and `header-g64` origins. Missing origins
-redistribute their share among those present; a direction without native data
-therefore lowers the overall native fraction. Native-first validation remains
-independent of this training policy. See [sampling details](NEURAL_CORRECTOR_TRAINING.md#w-tube-sampling-policy)
-for exact quotas, coverage and reported counts.
+to explicit **global shares of real training examples**:
+
+```sh
+--origin-ratios native=.5,resampled=.35,header-g64=.15
+```
+
+The sampler first draws one origin for an optimizer update, then chooses uniformly
+among that origin's available grids. All microbatches in that update use the same
+origin and geometry; directions are balanced among those recorded for that
+origin/grid, followed by session, target and phase sampling. In paired mode,
+each real example's synthetic counterpart has the same target and origin.
+These are long-run proportions, not three fractions forced into every update.
+
+With native and resampled evidence at all four grids and header evidence only at
+G64, the default mix yields **36.25% G64 updates** and **21.25% each at G16/G32/G128**.
+The header contribution is actually 15% of real examples overall; applying 15%
+only inside G64's quota would not achieve this. For more native evidence, use
+`--origin-ratios native=.6,resampled=.25,header-g64=.15`. To train only on native
+recordings, use `native=1,resampled=0,header-g64=0`. All three named shares must
+be finite, nonnegative and sum to one. A positive share with no training data is
+rejected rather than silently reassigned. Missing directions are listed in the
+coverage report and the available directions are balanced within that draw.
+
+`settings.json` records the requested shares, origin/grid/direction coverage and
+expected grid and direction shares. Training metrics retain realized real-origin
+counts and grid counts; synthetic counterparts do not inflate those real quotas.
+`--native-real-fraction` remains an explicitly selected alternative: it chooses
+grids uniformly and divides each grid/direction quota between native evidence
+and the available auxiliary origins. It cannot be combined with `--origin-ratios`.
+Native-first validation is independent of either training policy. See
+[sampling details](NEURAL_CORRECTOR_TRAINING.md#w-tube-sampling-policy).
 
 ## Camera-scaled, coherent corruptions
 

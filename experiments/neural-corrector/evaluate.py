@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Evaluate held-out optical matrices and, where defined, packet recovery.
 
-Neural-QR multires datasets measure exact logical data cells directly. The OBM
-experiment additionally uses canonical JS CRC/RS recovery. Predicted logits never receive expected bytes. Those bytes are compared only
-after the canonical decoder accepts/rejects a candidate. Both methods observe
-the same number of distinct captures; this report does not measure throughput.
+Neural-QR datasets measure exact logical data cells and a separate recorded-error
+RS/CRC replay benchmark. The OBM experiment uses actual canonical JS packet
+recovery. Replay applies measured errors to encoded test packets; it does not
+claim that raw collection symbols contain parity or checksums. Predicted logits
+never receive expected bytes. This report does not measure throughput.
 """
 
 import argparse
@@ -24,6 +25,7 @@ from data import Dataset, check_checkpoint_overlap
 from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED
 from contract import FRAME_COUNTS, MAX_FRAMES
 from reporting import compact_report, evaluation_document, lean_json
+from packet_replay import validate_rs_parity
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -437,8 +439,9 @@ def _combine_frame_counts(reports, *, frame_capacity, session_groups, exact):
 
 
 def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node="node", exact=True,
-                   work_dir=None, session_groups=None, detailed=False):
+                   work_dir=None, session_groups=None, detailed=False, rs_parity=32):
     require_implemented_model_contract(dataset, model)
+    validate_rs_parity(rs_parity)
     if type(detailed) is not bool:
         raise ValueError("detailed must be a boolean")
     if type(max_samples) is not int or max_samples < 0:
@@ -446,7 +449,8 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
     if getattr(model, "profile", None) in ("multires", "W-tube"):
         from multires_evaluation import evaluate_matrices
         result = evaluate_matrices(model, dataset, device=device, max_samples=max_samples,
-                                   session_groups=session_groups, detailed=detailed)
+                                   session_groups=session_groups, detailed=detailed,
+                                   rs_parity=rs_parity, node=node, work_dir=work_dir)
         return {**result, "reportDetail": "detailed"} if detailed else compact_report(result)
     if getattr(dataset, "dataset_format", "optical-decoder-dataset") != "optical-decoder-dataset":
         raise ValueError("Neural-QR datasets require the matching multires or W-tube model")
@@ -490,9 +494,18 @@ def format_evaluation_summary(report):
             exact, count = (learned["exactFrames"], learned["frames"]) if learned else (None, None)
         if exact is not None and count:
             text += f" | exact {exact}/{count} ({100*exact/count:.2f}%)"
+        replay = row.get("rsReplay")
+        if replay is not None:
+            text += f" | RS+CRC replay {replay['exactCases']}/{replay['eligibleCases']}"
         return text
 
     lines = [f"Evaluation | {metrics(report)}"]
+    if "rsReplay" in report:
+        replay = report["rsReplay"]
+        lines.append(f"  Recorded-error replay: RS decoded {replay['rsDecodedCases']}/{replay['eligibleCases']} | "
+                     f"CRC accepted {replay['crcAcceptedCases']}/{replay['eligibleCases']} | "
+                     f"wrong accepted {replay['wrongAcceptedCases']} | "
+                     f"ineligible {replay['ineligibleCases']} (not measured packet reception)")
     if "evaluationPopulation" in report:
         grids = ", ".join(f"G{size}" for size in report["primarySizes"])
         lines.append(f"  Population: {report['evaluationPopulation']} | primary grids: {grids}")
@@ -526,6 +539,8 @@ def main():
     parser.add_argument("--max-samples", type=int, default=0, help="maximum complete input groups; 0 evaluates all")
     parser.add_argument("--session-groups", type=Path, help="explicit receiver-session groups for balanced real-direction metrics")
     parser.add_argument("--node", default="node")
+    parser.add_argument("--rs-parity", type=int, default=32,
+                        help="Neural-QR recorded-error replay: even RS parity bytes/block (2..64), 0 disables; default 32")
     parser.add_argument("--out", type=Path, default=Path("local-results/neural-corrector/evaluation.json"))
     parser.add_argument("--detailed-report", type=Path,
                         help="optional separate report with session/capture rows, confusion and calibration arrays")
@@ -551,7 +566,7 @@ def main():
                 raise ValueError(f"Checkpoint anchors have not been trained for grids {sorted(unseen)}")
         result = evaluate_model(model, dataset, device=device, max_samples=args.max_samples,
                                 node=args.node, work_dir=args.out.resolve().parent, session_groups=session_groups,
-                                detailed=args.detailed_report is not None)
+                                detailed=args.detailed_report is not None, rs_parity=args.rs_parity)
         result["modelProfile"] = model.profile
         result["split"] = args.split
         result["checkpoint"] = str(args.checkpoint.resolve())

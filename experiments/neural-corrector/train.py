@@ -26,10 +26,12 @@ from contract import FRAME_COUNTS, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 from checkpoint import load_model_checkpoint, initialize_multires
 from data import DATASET_FORMAT, Dataset, assert_disjoint, check_checkpoint_overlap, digest
 from evaluate import evaluate_model, require_implemented_model_contract
+from packet_replay import validate_rs_parity, replay_policy
 from reporting import (compact_report, evaluation_document, evaluation_step, lean_json,
                        training_rows, TRAIN_COLUMNS, EVALUATION_COLUMNS)
 from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, NeuralCorrector, initialize_frames
-from sampling import BalancedSampler, load_session_groups, validate_session_groups, infer_session_groups
+from sampling import (BalancedSampler, load_session_groups, validate_session_groups, infer_session_groups,
+                      DEFAULT_ORIGIN_RATIOS, parse_origin_ratios)
 
 
 def training_defaults(initialize=None, steps=None, learning_rate=None):
@@ -48,6 +50,19 @@ def native_sampling_fraction(profile, value):
             or not np.isfinite(value) or not 0 <= value <= 1):
         raise ValueError("native-real-fraction must be finite and in [0, 1]")
     return float(value)
+
+
+def origin_sampling_options(profile, native_real_fraction=None, origin_ratios=None):
+    """W-tube defaults to explicit global shares; a native quota is an alternative."""
+    if native_real_fraction is not None and origin_ratios is not None:
+        raise ValueError("Choose --origin-ratios or --native-real-fraction, not both")
+    if profile != "W-tube":
+        if origin_ratios is not None:
+            raise ValueError("--origin-ratios is supported only for W-tube")
+        return native_sampling_fraction(profile, native_real_fraction), None
+    if native_real_fraction is not None:
+        return native_sampling_fraction(profile, native_real_fraction), None
+    return None, parse_origin_ratios(DEFAULT_ORIGIN_RATIOS if origin_ratios is None else origin_ratios)
 
 
 def training_loss(logits, labels, mask, colors):
@@ -113,6 +128,10 @@ def format_multires_grids(training, validation):
         text = f"CE {row['meanCE' if train else 'loss']:.4f} CER {row['cellErrorRate']:.2%}"
         if exact:
             text += f" exact {row['matrixAccuracy']['exactRate']:.1%}"
+            replay = row.get("rsReplay")
+            if replay is not None:
+                text += (f" RS+CRC replay {replay['exactCases']}/{replay['eligibleCases']}"
+                         if replay["eligibleCases"] else " RS+CRC replay n/a")
         return text
     lines = []
     for size in sorted(set(training) | set(validation), key=int):
@@ -233,12 +252,13 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                  session_groups=None, weight_decay=.01, paired_targets=False, frames=None, no_progress=False,
                  real_noise_std=.008, real_tint_stops=.06, real_exposure_stops=.08,
                  phase_flip_probability=.25, no_phase_permutations=False, show_goal=False,
-                 native_real_fraction=None):
+                 native_real_fraction=None, origin_ratios=None, rs_parity=32):
     # Validate the dataset representation before building a sampler; the exact
     # profile/raster pairing is checked again once the model is instantiated.
     require_implemented_model_contract(train)
     require_implemented_model_contract(validation)
     steps, learning_rate = training_defaults(initialize, steps, learning_rate)
+    validate_rs_parity(rs_parity)
     if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
         raise ValueError("Input frame count must be an integer from 1 through 64")
     integers = ((steps, 1, 1_000_000), (batch_size, 1, 128), (accumulate, 1, 128),
@@ -290,10 +310,11 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             model = initialize_frames(model, frames)
     require_implemented_model_contract(train, model)
     require_implemented_model_contract(validation, model)
-    native_real_fraction = native_sampling_fraction(model.profile, native_real_fraction)
+    native_real_fraction, origin_ratios = origin_sampling_options(
+        model.profile, native_real_fraction, origin_ratios)
     sampler = BalancedSampler(train.samples, sampler_groups, seed=seed, real_fraction=real_fraction,
                               paired_targets=paired_targets, require_all_groups=not neural_qr_data,
-                              native_real_fraction=native_real_fraction)
+                              native_real_fraction=native_real_fraction, origin_ratios=origin_ratios)
     origin_policy = sampler.origin_policy()
     variable_frames = getattr(model, "variable_frames", False)
     minimum_frames = getattr(model, "min_frames", model.frames)
@@ -318,8 +339,12 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         validation_sessions.update(ancestry["validationSessionIds"])
         validation_payloads.update(ancestry["validationPayloadIds"])
     training_sizes = sorted({sample.shape[0] for sample in train.samples})
+    if origin_ratios is not None:
+        training_sizes = sorted({row["size"] for row in origin_policy["expectedGridShares"]
+                                 if row["share"] > 0})
     if neural_qr_data and {sample.shape[0] for sample in validation.samples} - set(training_sizes):
-        raise ValueError("Validation grids must have training data for their independent anchors")
+        raise ValueError("Validation grids must have active training data for their independent anchors; "
+                         "check recording-origin ratios and grid coverage")
     # A new anchor is not labeled trained until an optimizer update sees its G.
     learned_sizes = set(previous["training"].get("trainedSizes", [])) if previous and transfer is None else set()
     out.mkdir(parents=True, exist_ok=True)
@@ -354,6 +379,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                   "settings": options}
     if neural_qr_data:
         geometry = {"pixelsPerCell": model.pixels_per_cell, "supportedSizes": list(model.supported_sizes)}
+        options["rsReplayPolicy"] = replay_policy(rs_parity)
         options.update({**geometry, "trainingSizes": training_sizes,
                         "sampling": "uniform-size/source-group-session-payload-phase",
                         "selectionMetric": ("native-first/" if model.profile == "W-tube" else "")
@@ -369,10 +395,15 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         if transfer is not None:
             options["warmStartTransfer"] = transfer
     if origin_policy is not None:
-        options["nativeRealFraction"] = native_real_fraction
         options["originSampling"] = origin_policy
-        options["sampling"] = "uniform-size/source-direction-origin-session-payload-phase"
-        provenance["nativeRealFraction"] = native_real_fraction
+        if origin_ratios is not None:
+            options["originRatios"] = dict(origin_ratios)
+            provenance["originRatios"] = dict(origin_ratios)
+            options["sampling"] = "origin-eligible-size/source-direction-session-payload-phase"
+        else:
+            options["nativeRealFraction"] = native_real_fraction
+            provenance["nativeRealFraction"] = native_real_fraction
+            options["sampling"] = "uniform-size/source-direction-origin-session-payload-phase"
     if variable_frames:
         phase_metadata = {"outputLabelSpace": "logical", "phaseMasks": [0, 15, 7, 8]}
         options.update(phase_metadata)
@@ -395,7 +426,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     def evaluate(step, interval):
         nonlocal best, selected_step, validation_metadata
         report = compact_report(evaluate_model(model, validation, device=device, max_samples=validation_samples,
-                                node=node, work_dir=out, session_groups=session_groups))
+                                node=node, work_dir=out, session_groups=session_groups, rs_parity=rs_parity))
         document = evaluation_document(report)
         if validation_metadata is None:
             validation_metadata = document["metadata"]
@@ -464,6 +495,13 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                  f"  Val   | {format_validation_metrics(report)}"]
         if report["groups"]:
             lines.append(f"  Val groups | {format_validation_groups(report)}")
+        if report.get("rsReplay") is not None:
+            replay = report["rsReplay"]
+            total = replay["eligibleCases"]
+            lines.append(f"  RS replay | decoded {replay['rsDecodedCases']}/{total}"
+                         f" | CRC accepted {replay['crcAcceptedCases']}/{total}"
+                         f" | verified {replay['exactCases']}/{total}"
+                         f" | wrong accepted {replay['wrongAcceptedCases']}")
         if neural_qr_data:
             lines.extend(format_multires_grids(record["trainBySize"], report["bySize"]))
         if variable_frames and show_goal and "phoneToPCGoal" in report:
@@ -598,8 +636,11 @@ def main():
     parser.add_argument("--eval-every", type=int, default=1000, help="validation interval (default: 1000 updates)")
     parser.add_argument("--validation-samples", type=int, default=0, help="0 evaluates all (default); positive values cap the diagnostic subset")
     parser.add_argument("--real-fraction", type=float, default=.5)
-    parser.add_argument("--native-real-fraction", type=float,
-                        help="W-tube: desired native fraction of each grid/direction's real quota (default: .5); unavailable origins redistribute")
+    origins = parser.add_mutually_exclusive_group()
+    origins.add_argument("--origin-ratios",
+                         help="W-tube global real-origin shares: native=.5,resampled=.35,header-g64=.15 (default); positive unavailable origins are rejected")
+    origins.add_argument("--native-real-fraction", type=float,
+                         help="W-tube alternative: uniform grids, then this native share inside each grid/direction; auxiliaries split the remainder")
     parser.add_argument("--real-noise-std", type=float, default=.008,
                         help="real training noise standard deviation in RGB [0,1] units (default: .008)")
     parser.add_argument("--real-tint-stops", type=float, default=.06,
@@ -614,6 +655,8 @@ def main():
                         help=f"default: {DEFAULT_MODEL_PROFILE} fresh, otherwise checkpoint profile")
     parser.add_argument("--initialize", type=Path, help="initialize validated weights; --model multires also allows an explicit U-tube-2x-attn warm start; optimizer starts fresh")
     parser.add_argument("--node", default="node")
+    parser.add_argument("--rs-parity", type=int, default=32,
+                        help="Neural-QR recorded-error RS+CRC replay: even parity bytes per block, 2–64; 0 disables (default: 32)")
     parser.add_argument("--no-progress", action="store_true", help="hide the live bar; keep concise validation summaries")
     parser.add_argument("--show-goal", action="store_true", help="include the phone-to-PC 50%% recovery goal at validation events")
     args = parser.parse_args()

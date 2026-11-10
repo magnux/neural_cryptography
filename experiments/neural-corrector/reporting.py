@@ -9,12 +9,14 @@ from copy import deepcopy
 import json
 import math
 
+from packet_replay import REPLAY_COUNTERS
+
 
 TRAIN_COLUMNS = ("grid", "source", "group", "origin", "samples", "lossSum",
                  "wrongCells", "dataCells", "inputCaptures")
 EVALUATION_COLUMNS = ("grid", "source", "group", "origin", "frames", "samples",
                       "lossSum", "wrongCells", "dataCells", "exactMatrices",
-                      "inputCaptures", "classicalExactMatrices")
+                      "inputCaptures", "classicalExactMatrices", *REPLAY_COUNTERS)
 
 
 METRIC_FIELDS = (
@@ -74,8 +76,8 @@ def _metrics(report):
 
 
 def _matrix_metrics(report):
-    """Neural-QR raw-symbol summaries deliberately have no CRC/recovery fields."""
-    result = _fields(report, METRIC_FIELDS + ("wrongCells", "sizes"))
+    """Raw-symbol and separately labelled replay summaries, without case rows."""
+    result = _fields(report, METRIC_FIELDS + ("wrongCells", "sizes", "rsReplay"))
     if "matrixAccuracy" in report:
         result["matrixAccuracy"] = _fields(report["matrixAccuracy"],
                                            ("matrices", "exactMatrices", "exactRate"))
@@ -102,7 +104,7 @@ def compact_report(report):
     if "matrixAccuracy" in report:
         result = _fields(report, ("format", "version", "modelProfile", "datasetFormat", "datasetVersion", "split",
                                   "checkpoint", "manifestSha256", "profiles", "pixelsPerCell", "metric", "note",
-                                  "evaluationPopulation", "nativeAvailable", "primarySizes", "evaluatedSizes", "evaluatedCases"))
+                                  "evaluationPopulation", "nativeAvailable", "primarySizes", "evaluatedSizes", "evaluatedCases", "rsReplayPolicy"))
         result.update(_matrix_metrics(report))
         result["reportDetail"] = "summary"
         if "selectionScore" in report:
@@ -153,8 +155,9 @@ def evaluation_table(leaves):
 
     One row represents one grid/source/direction/origin/K combination. Its CE
     sum is over examples, while wrong/data cells retain the exact integer
-    counts needed for cell-weighted CER. Unknown classical recovery stays null:
-    Neural-QR collection matrices have no packet CRC/RS recovery measurement.
+    counts needed for cell-weighted CER. Classical recovery stays null because
+    collection matrices contain no encoded packets. Separate replay counters
+    describe diagnostic recovery after applying observed errors to test packets.
     """
     rows = []
     for key, counter in sorted(leaves.items()):
@@ -162,7 +165,8 @@ def evaluation_table(leaves):
         origin = key[4] if len(key) == 5 else None
         rows.append([grid, source, group, origin, frames, counter["samples"],
                      counter["lossSum"], counter["wrongCells"], counter["dataCells"],
-                     counter["exactMatrices"], counter["inputCaptures"], None])
+                     counter["exactMatrices"], counter["inputCaptures"], None,
+                     *(counter.get(field, 0) for field in REPLAY_COUNTERS)])
     return {"columns": list(EVALUATION_COLUMNS), "rows": rows}
 
 
@@ -196,7 +200,7 @@ def _packet_rows(report):
                          loss*cells if loss is not None and cells is not None else None,
                          row.get("wrongCells"), cells, row.get("learnedExactFrames"),
                          row.get("inputCaptures", samples*int(key) if samples is not None else None),
-                         row.get("classicalExactFrames")])
+                         row.get("classicalExactFrames"), *(None for _ in REPLAY_COUNTERS)])
     return rows
 
 
@@ -208,6 +212,8 @@ def evaluation_step(report):
     if matrix:
         headline["exactMatrices"] = report["matrixAccuracy"]["exactMatrices"]
         headline["exactRate"] = report["matrixAccuracy"]["exactRate"]
+        if "rsReplay" in report:
+            headline["rsReplay"] = deepcopy(report["rsReplay"])
         table = report.get("metricTable")
         if (not isinstance(table, dict) or table.get("columns") != list(EVALUATION_COLUMNS)
                 or not isinstance(table.get("rows"), list)):
@@ -231,7 +237,7 @@ def evaluation_document(report):
         return deepcopy(report)
     metadata = _fields(report, ("modelProfile", "datasetFormat", "datasetVersion", "split",
         "checkpoint", "manifestSha256", "pixelsPerCell", "metric", "outputLabelSpace",
-        "framesPerInput", "frameCapacity", "actualFrameCounts", "note"))
+        "framesPerInput", "frameCapacity", "actualFrameCounts", "note", "rsReplayPolicy"))
     if "inferenceMs" in report:
         metadata["inferenceMs"] = _fields(report["inferenceMs"], ("p50", "p95", "note"))
     if "burstGrouping" in report:

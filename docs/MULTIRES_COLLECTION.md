@@ -82,6 +82,36 @@ It is distinct from the fixed four rectified pixels per cell. Enlarging a crop
 cannot recover detail that the camera never captured; note this estimate when
 comparing recordings.
 
+## Camera resolution and real sampling density
+
+The receiver offers **480p, 720p, 1080p, 1440p, 4K (2160p), and Maximum
+available**. Start with 4K for new G128 recordings if the camera supports it.
+Maximum available requests the camera's reported capability range after access
+is granted. Requested dimensions are preferences: the browser, camera and
+current frame-rate constraints determine the actual stream. The camera status
+reports both the request and the actual width, height and frame rate. Resolution
+constraint fallback remains on the selected camera and is explicitly reported.
+
+The previous 1080p acquisition downscale is removed. Full 4K pixels reach the
+worker, color calibration and raster sampling. Marker search uses a smaller
+localization image, then refines coordinates and samples the original image;
+it does not limit the pixels available to the neural-corrector crop. A separate
+**20-megapixel processing bound** limits unusually large streams. If that bound
+reduces a frame, the status displays the processing dimensions. The requested
+resolution, actual camera settings, acquisition dimensions and processing scale
+are attached to capture metadata. Existing recording versions and tensor shapes
+are unchanged: G128 still stores a 512×512 calibrated crop, now potentially
+reconstructed from more camera evidence.
+
+Compare the displayed **camera pixels/cell** before and after changing resolution.
+A higher requested setting is useful only if the actual stream and matrix
+coverage improve; it may reduce frame rate or increase processing time. A 100 ms
+scan interval schedules attempts and does not guarantee ten completed high-
+resolution acquisitions per second. The worker still allows only one acquisition
+at a time. Larger source frames increase temporary browser memory but do not
+increase the saved crop size or the per-phase recording budget. Optional original
+PNG snapshots retain their existing two-image/1 MiB limits.
+
 ## Device workflow
 
 1. Reload `capture.html` on both devices. On the sender choose the split and grid,
@@ -201,3 +231,4 @@ To combine the three recording rounds and generate paired synthetics, use
 split assignments. Do not edit older recording metadata to resemble the new
 format. W-tube training/evaluation is implemented; browser export and live
 integration remain pending.
+

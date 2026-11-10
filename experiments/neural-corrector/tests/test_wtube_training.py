@@ -20,7 +20,7 @@ from checkpoint import load_model_checkpoint
 from data import Dataset
 from evaluate import evaluate_model
 from model import NeuralCorrector
-from train import native_sampling_fraction, run_training
+from train import native_sampling_fraction, origin_sampling_options, run_training
 from test_multires_training import fixture
 
 torch.set_num_threads(1)
@@ -45,6 +45,16 @@ def fixture_v2(root, split, size, *, paired=False, seed=1):
 
 
 class WTubeTrainingTests(unittest.TestCase):
+    def test_global_origin_defaults_and_explicit_alternative(self):
+        self.assertEqual(origin_sampling_options("W-tube"),
+                         (None, {"native": .5, "resampled": .35, "header-g64": .15}))
+        self.assertEqual(origin_sampling_options("W-tube", .6), (.6, None))
+        self.assertEqual(origin_sampling_options("multires"), (None, None))
+        with self.assertRaisesRegex(ValueError, "only for W-tube"):
+            origin_sampling_options("multires", origin_ratios="native=1,resampled=0,header-g64=0")
+        with self.assertRaisesRegex(ValueError, "not both"):
+            origin_sampling_options("W-tube", .5, "native=1,resampled=0,header-g64=0")
+
     def test_native_origin_policy_defaults_and_rejects_inapplicable_overrides(self):
         self.assertEqual(native_sampling_fraction("W-tube", None), .5)
         for value in (0, .6, 1):
@@ -56,6 +66,23 @@ class WTubeTrainingTests(unittest.TestCase):
             self.assertIsNone(native_sampling_fraction(profile, None))
             with self.assertRaisesRegex(ValueError, "only for W-tube"):
                 native_sampling_fraction(profile, .75)
+
+    def test_zero_origin_cannot_leave_a_validation_grid_without_training(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture_v2(root/"train"/"g16", "train", 16, paired=True, seed=801)
+            path = fixture_v2(root/"train"/"g32", "train", 32, paired=True, seed=802)/"manifest.json"
+            manifest = json.loads(path.read_text())
+            for row in manifest["samples"]:
+                row["origin"] = row["provenance"]["origin"] = "resampled"
+            path.write_text(json.dumps(manifest))
+            fixture_v2(root/"validation", "validation", 32, seed=803)
+            train, validation = Dataset([root/"train"], "train"), Dataset([root/"validation"], "validation")
+            with self.assertRaisesRegex(ValueError, "Validation grids must have active training data"):
+                run_training(train, validation, root/"run", model_profile="W-tube", frames=8,
+                             paired_targets=True, steps=1,
+                             origin_ratios="native=1,resampled=0,header-g64=0")
+            self.assertFalse((root/"run").exists())
 
     def test_v2_paired_mixed_grid_optimizer_checkpoint_evaluation_and_continuation(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -79,7 +106,8 @@ class WTubeTrainingTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 result = run_training(train, validation, root/"run", model_profile="W-tube", frames=8,
                                       paired_targets=True, real_fraction=.5, steps=2, batch_size=2,
-                                      accumulate=2, eval_every=2, no_progress=True, seed=7)
+                                      accumulate=2, eval_every=2, no_progress=True, seed=7,
+                                      origin_ratios="native=1,resampled=0,header-g64=0")
             self.assertEqual(result["steps"], 2)
             self.assertEqual(len(training_shapes), 4)
             self.assertTrue(all(shape[:2] == (2, 32) and shape[2] in (64, 128)
@@ -105,11 +133,12 @@ class WTubeTrainingTests(unittest.TestCase):
             settings = json.loads((root/"run/settings.json").read_text())
             self.assertEqual(settings["frameCounts"], [4, 5, 6, 7, 8])
             self.assertEqual(settings["realFraction"], .5)
-            self.assertEqual(settings["nativeRealFraction"], .5)
-            self.assertEqual(meta["nativeRealFraction"], .5)
-            self.assertEqual(settings["originSampling"]["allocation"], "within-grid-and-direction")
+            self.assertEqual(settings["originRatios"], {"native": 1, "resampled": 0, "header-g64": 0})
+            self.assertEqual(meta["originRatios"], settings["originRatios"])
+            self.assertEqual(settings["originSampling"]["allocation"],
+                             "global-real-origin/eligible-grid/available-direction")
             self.assertEqual(len(settings["originSampling"]["coverage"]), 2)
-            self.assertTrue(all(row["expectedNativeRealFraction"] == 1
+            self.assertTrue(all(row["origin"] == "native"
                                 for row in settings["originSampling"]["coverage"]))
             self.assertTrue(settings["selectionMetric"].startswith("native-first/"))
             self.assertEqual(settings["gradientAccumulation"], 2)
@@ -160,12 +189,13 @@ class WTubeTrainingTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 continued = run_training(train, validation, root/"continued", initialize=result["checkpoint"],
                                          paired_targets=True, steps=1, batch_size=2, accumulate=1,
-                                         eval_every=1, no_progress=True)
+                                         eval_every=1, no_progress=True,
+                                         origin_ratios="native=1,resampled=0,header-g64=0")
             self.assertEqual(continued["steps"], 1)
             continued_model, continued_checkpoint = load_model_checkpoint(continued["checkpoint"])
             self.assertEqual(continued_model.profile, "W-tube")
             self.assertEqual(continued_checkpoint["training"]["datasetVersion"], 2)
-            self.assertEqual(continued_checkpoint["training"]["nativeRealFraction"], .5)
+            self.assertEqual(continued_checkpoint["training"]["originRatios"], settings["originRatios"])
             self.assertEqual(json.loads((root/"continued/settings.json").read_text())["initialLearningRate"], 5e-5)
             self.assertEqual(Path(result["checkpoint"]).read_bytes(), before)
             with self.assertRaisesRegex(ValueError, "differs from the initialized checkpoint"):

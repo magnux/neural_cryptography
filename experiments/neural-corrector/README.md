@@ -112,21 +112,29 @@ receiving proportionally more camera resolution. See
 [the physical scaling and provenance](../../docs/W_TUBE_DATA.md#camera-scaled-coherent-corruptions)
 for the approximation, defaults and limits.
 
-W-tube and multires training use one resolution per update, choose resolutions uniformly,
-and balance sources, recorded device directions and physical sessions. Their
+W-tube and multires training use one resolution per update and balance sources,
+recorded device directions and physical sessions. Multires chooses grids uniformly;
+W-tube first draws a recording origin, then a grid available for that origin. Their
 validation measures exact **logical data matrices** and masked cell error, with
 equal weight across resolutions, directions and K4…K8. There are no packet bytes
-or CRC recovery claims in the raw-symbol Neural-QR dataset.
+or CRC recovery claims in the raw-symbol Neural-QR dataset. Validation additionally
+runs a separately labelled **recorded-error RS+CRC replay**: observed byte errors
+are applied to encoded packets and decoded without clean-label assistance. This
+benchmark estimates a proposed packet layout's resilience; it is not recovery of
+packets actually carried by those raw-symbol recordings. `--rs-parity 32` is the
+default, and `--rs-parity 0` disables replay.
 
 For W-tube, native real validation is the primary population whenever available;
 auxiliary origins have separate summaries. A corpus without native validation is
-explicitly reported as auxiliary-only. W-tube defaults to 50% native captures
-within each grid/direction real quota that has both native and auxiliary data.
-Auxiliary origins share the remainder; unavailable origins redistribute their
-quota. With complete coverage and uniformly selected grids, the expected real
-mix is 50% native, 43.75% resampled and 6.25% header-G64; the header contribution
-is 25% within G64 itself. This is separate from the unchanged 50/50 real/synthetic
-pairing. Existing W-tube weights can initialize training on regenerated synthetics;
+explicitly reported as auxiliary-only. W-tube defaults to explicit global real-origin
+ratios of **50% native, 35% resampled and 15% header-G64**. Set all three with
+`--origin-ratios native=.5,resampled=.35,header-g64=.15`. Each update uses one
+origin, with a uniform draw among its available grids; complete coverage gives
+G64 36.25% of updates and G16/G32/G128 21.25% each. Positive ratios for missing
+origins are rejected. This is separate from the unchanged 50/50 real/synthetic
+pairing. The explicit `--native-real-fraction` option selects the alternative
+uniform-grid, within-grid native-quota policy and cannot be combined with
+`--origin-ratios`. Existing W-tube weights can initialize training on regenerated synthetics;
 continuation via `--initialize` requires a W-tube checkpoint and a new run folder.
 The [W-tube training guide](../../docs/NEURAL_CORRECTOR_TRAINING.md#train-w-tube)
 provides complete training, continuation and evaluation commands.
