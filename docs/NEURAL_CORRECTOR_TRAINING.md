@@ -251,6 +251,91 @@ W-tube ONNX export, browser parity and live reception are separate remaining
 steps. Use these commands for Python model development; the live demo continues
 to use its existing trained G64 corrector.
 
+### RS-aware weighted cross-entropy
+
+Ordinary masked CE remains the default (`--loss ce`). For sixteen-color Neural-QR
+datasets, `--loss rs-weighted-ce` adds a bounded emphasis on RS blocks near their
+correction budget. It uses the same `--rs-parity` as validation replay; weighted
+training requires a nonzero even value from 2 through 64. This option changes
+training only: there is no change to the model, recordings, dataset files,
+inference, or checkpoint weight shapes.
+
+The loss uses the canonical data-cell mask, row-major order and high-nibble-first
+packing described above. Two cells form one byte. If either or both cells are
+wrong, that byte counts as **one** error. Bytes are assigned to the same balanced
+shortened blocks and round-robin interleave as validation replay. Reference cells
+are excluded; an odd trailing data cell remains in CE with weight one. Samples
+whose capacity cannot hold the chosen RS+CRC layout use ordinary CE.
+
+With `--rs-parity 32`, each block's guaranteed unknown-error budget is 16 bytes.
+The loss counts hard prediction errors with gradients detached and assigns:
+
+| Wrong bytes in an RS block | Weight for its data cells |
+| --- | ---: |
+| 0–12 | 1 |
+| 13–24 | 3 |
+| 25 or more | 2 |
+
+For another parity count, let `t = parity / 2`; the two boundaries are
+`floor(.75*t)` and `floor(1.5*t)`. These are experimental emphasis bands around
+the budget, not alternate RS correction limits. Blocks just beyond the budget
+can be more useful to improve than blocks already well below it; severely
+corrupted blocks still contribute, with a bounded weight.
+
+For each example, compute ordinary masked CE and a second CE normalized by the
+sum of its cell weights. `--rs-loss-mix .25` gives:
+
+\[
+L = 0.75\,L_{\mathrm{CE}} + 0.25\,L_{\mathrm{weighted\ CE}}.
+\]
+
+Both terms first normalize within each example, then average examples equally
+across the microbatch. Larger grids or higher total block weights do not gain
+extra example weight. Setting the mix to zero recovers ordinary CE. Uniform
+weights within an example also cancel under normalization: a one-block example
+with no unpaired trailing cell retains ordinary CE. The weighting redistributes
+emphasis within a matrix, rather than upweighting entire matrices. No gradient passes through error counts
+or weight selection; gradients flow through the weighted CE values.
+
+**Keep the augmentations enabled.** Each phase-grouped training sample retains
+two booleans identifying its horizontal and vertical flips. Before assigning RS
+blocks, the objective reverses these flips on the small G×G CE, hard-error and
+mask maps. The camera inputs remain augmented, and gradients through the flipped
+CE map still reach the corresponding logits. No full-size RGB copy or per-cell
+identifier tensor is needed. Phase permutations consistently relabel targets by
+XOR and reorder input slots; they leave spatial membership and the correct/wrong
+status of each cell unchanged under the corresponding label permutation.
+Photometric noise, tint and exposure augmentation need no special handling.
+
+The raw matrices are not RS codewords, so this objective does not enforce an RS
+syndrome or run a differentiable decoder. Its block weights are a heuristic for
+the proposed packet layout. Unchanged validation CE, exact matrices and RS+CRC
+replay establish whether it helps. Raw CE/CER remain separately reported from
+the optimized objective, and checkpoint selection remains the balanced raw exact
+score with CE as its tie-breaker.
+
+To test it from the current refinement checkpoint, reuse the prepared datasets
+and select a new output directory:
+
+```sh
+python experiments/neural-corrector/train.py \
+  --model W-tube --frames 8 \
+  --train local-data/w-tube/real/train local-data/w-tube/synthetic/train \
+  --validation local-data/w-tube/real/validation \
+  --paired-targets --real-fraction .5 \
+  --origin-ratios native=.60,resampled=.25,header-g64=.15 \
+  --initialize checkpoints/neural-corrector/w-tube-camera-refine/best.pt \
+  --loss rs-weighted-ce --rs-loss-mix .25 --rs-parity 32 \
+  --batch-size 8 --accumulate 4 --lr .00005 --steps 8000 \
+  --validation-samples 0 --device cuda \
+  --out checkpoints/neural-corrector/w-tube-rs-weighted
+```
+
+This starts a fresh optimizer from the selected weights; an already running
+process does not adopt the new loss. Compare the new run's baseline and later
+G64/G128 RS+CRC replay counts on the same validation corpus, alongside raw CE and
+CER. No synthetic regeneration or checkpoint conversion is required.
+
 ## Existing prepared 2×2-cell multires experiment
 
 The following commands remain available for already prepared datasets in
@@ -524,8 +609,10 @@ Held-out real recovery must establish whether the additional effects help.
 
 ## Train and evaluate
 
-There is one training path: plain PyTorch/AdamW, float32, ordinary masked
-cross-entropy, microbatches of 4 and accumulation of 4 (effective batch 16).
+The shared training path uses plain PyTorch/AdamW, float32 and ordinary masked
+cross-entropy by default, with microbatches of 4 and accumulation of 4 (effective
+batch 16). The optional [RS-aware objective](#rs-aware-weighted-cross-entropy)
+applies to Neural-QR datasets; the prepared OBM experiment here retains plain CE.
 Training defaults to **32,000 updates**, learning rate `1e-4` for fresh weights or
 `5e-5` for an initialized checkpoint, and weight decay `.01`. Full validation
 runs every 1,000 updates. `--steps`, `--lr`, `--eval-every` and
@@ -668,7 +755,9 @@ transmission directions in the browser before claiming live performance.
 
 The live tqdm bar contains only **training** statistics for the current interval:
 overall CE/CER, real then synthetic CE/CER, mapped groups in sorted order, and
-learning rate. W-tube also shows actual real-origin proportions in the stable
+learning rate. Weighted-loss runs additionally show the optimized objective;
+every CE field and table `lossSum` still describes unweighted masked CE, preserving
+comparisons with ordinary-CE runs. W-tube also shows actual real-origin proportions in the stable
 order native → resampled → header-G64. It does not repeat the last validation result. At each validation
 step, a stable multiline summary prints:
 
@@ -707,6 +796,12 @@ rows with a small headline/selection/coverage summary. The training origin count
 are actual draws; the configured fraction is a policy target whose attainable
 value depends on coverage. There are no per-session, per-burst or per-capture
 rows in the default files.
+
+For weighted-loss runs, `settings.loss` is `rs-weighted-cross-entropy` and
+`settings.rsLoss` records the static block-weighting policy. Each history step's
+`training.meanObjective` records the optimized interval average separately from
+the raw CE numerators in the training table. This adds one aggregate value per
+validation step, without per-block or per-example logs.
 
 Standalone files have `format: "neural-corrector-evaluation"` and `version: 2`.
 Their static information is in `metadata`, column names in `tables.evaluation`,

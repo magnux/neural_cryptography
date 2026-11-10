@@ -138,7 +138,8 @@ class VariableTrainingTests(unittest.TestCase):
         sample = BurstIndex(rows, 8, min_frames=4, presence=True).train_sample(
             rows[0], random.Random(7), actual_frames=5)
         original, _, _ = sample.tensors()
-        pixels, labels, mask = training_tensors([sample], RealAugmentation(seed=8))
+        pixels, labels, mask, spatial_flips = training_tensors([sample], RealAugmentation(seed=8))
+        np.testing.assert_array_equal(spatial_flips, np.zeros((1, 2), dtype=np.bool_))
         self.assertEqual(pixels.shape, (1, 32, 256, 256))
         np.testing.assert_array_equal(pixels[0, 24:], original[24:])
         for slot in range(8):

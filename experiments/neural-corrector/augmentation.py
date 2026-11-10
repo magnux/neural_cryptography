@@ -65,7 +65,9 @@ class PhaseAugmentation:
     Pixel values are never recolored. Reordering the four phase pairs corresponds
     to XORing data labels by one of the closed palette-mask group elements.
     Pilots are unchanged by phase relabeling. Spatial flips transform all inputs,
-    targets and masks together; they are never applied during wire recovery.
+    targets and masks together. Each batch also returns two flags per example so
+    an RS-aware training objective can restore canonical byte/block order on its
+    small cell maps. Actual wire recovery always uses unaugmented coordinates.
     """
 
     def __init__(self, *, seed, flip_probability=.25, permutations=True):
@@ -81,7 +83,9 @@ class PhaseAugmentation:
         return {"scope": "phase-grouped-training-only", "phasePermutations": self.permutations,
                 "horizontalFlipProbability": self.flip_probability,
                 "verticalFlipProbability": self.flip_probability,
-                "rngSeed": self.seed, "recovery": "unaugmented-canonical-coordinates"}
+                "rngSeed": self.seed, "recovery": "unaugmented-canonical-coordinates",
+                "spatialMetadata": ["horizontalFlip", "verticalFlip"],
+                "rsLossGrouping": "undo-spatial-flips-on-cell-maps"}
 
     @staticmethod
     def transform(pixels, labels, mask, *, delta=0, horizontal=False, vertical=False):
@@ -109,10 +113,22 @@ class PhaseAugmentation:
                 np.ascontiguousarray(target_mask))
 
     def __call__(self, pixels, labels, masks):
+        """Return augmented arrays and boolean [N, 2] horizontal/vertical flags.
+
+        Phase relabeling does not move cells and preserves equality between a
+        prediction and its target, so it needs no metadata for RS error grouping.
+        Keep the historical phase, horizontal, vertical RNG draw order per row.
+        """
         from phases import PHASE_MASKS
-        transformed = [self.transform(row, target, mask,
-                       delta=int(self.rng.choice(PHASE_MASKS)) if self.permutations else 0,
-                       horizontal=self.rng.random() < self.flip_probability,
-                       vertical=self.rng.random() < self.flip_probability)
-                       for row, target, mask in zip(pixels, labels, masks)]
-        return tuple(np.stack([row[index] for row in transformed]) for index in range(3))
+        if not len(pixels) or len(pixels) != len(labels) or len(pixels) != len(masks):
+            raise ValueError("Expected one label and mask map per nonempty input batch row")
+        transformed, spatial_flips = [], []
+        for row, target, mask in zip(pixels, labels, masks):
+            delta = int(self.rng.choice(PHASE_MASKS)) if self.permutations else 0
+            horizontal = self.rng.random() < self.flip_probability
+            vertical = self.rng.random() < self.flip_probability
+            transformed.append(self.transform(row, target, mask, delta=delta,
+                                              horizontal=horizontal, vertical=vertical))
+            spatial_flips.append((horizontal, vertical))
+        arrays = tuple(np.stack([row[index] for row in transformed]) for index in range(3))
+        return (*arrays, np.asarray(spatial_flips, dtype=np.bool_))

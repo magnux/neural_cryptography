@@ -429,7 +429,7 @@ crop, so it has no entries in this mask. The mask comes from the public grid
 layout, not from whether a cell was easy to recognize or the classical decoder
 succeeded. Hard data cells remain in the objective.
 
-For example i with D_i data cells, the supervised loss is:
+For example i with D_i data cells, the default supervised loss is:
 
 \[
 L_i = \frac{1}{D_i}\sum_{x,y} M_i(x,y)\,
@@ -444,6 +444,13 @@ color/context evidence and affect gradients through data-cell predictions.
 Excluding a reference from loss does not erase it from the input. A spatial flip
 moves the loss mask together with the targets; a phase permutation leaves its
 positions unchanged.
+
+Sixteen-color Neural-QR training also supports an optional
+[RS-aware weighted CE](NEURAL_CORRECTOR_TRAINING.md#rs-aware-weighted-cross-entropy).
+It retains this data-cell mask and equal example weighting, while emphasizing
+blocks near the RS error budget. Two flip flags per example restore canonical
+byte order for the weighting calculation; input and phase augmentations remain
+enabled. Ordinary CE is still reported separately from that training objective.
 
 ### Active-class mask: which palette entries are legal
 

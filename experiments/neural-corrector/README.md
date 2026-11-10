@@ -124,6 +124,17 @@ benchmark estimates a proposed packet layout's resilience; it is not recovery of
 packets actually carried by those raw-symbol recordings. `--rs-parity 32` is the
 default, and `--rs-parity 0` disables replay.
 
+For sixteen-color Neural-QR training, `--loss rs-weighted-ce --rs-loss-mix .25`
+optionally blends ordinary CE with normalized block-weighted CE. With RS parity
+32, blocks containing 0–12, 13–24 and more than 24 wrong bytes receive weights
+1, 3 and 2 respectively; two wrong cells in the same byte count once. Horizontal
+and vertical flip flags restore the small loss/error/mask maps to canonical
+byte order, so phase permutations, spatial flips and photometric augmentation
+remain enabled. This is a training heuristic, not an RS decoder or codeword
+constraint. It requires nonzero `--rs-parity`; ordinary CE remains the default,
+and validation/checkpoint selection stay unchanged. See the
+[loss definition and continuation command](../../docs/NEURAL_CORRECTOR_TRAINING.md#rs-aware-weighted-cross-entropy).
+
 For W-tube, native real validation is the primary population whenever available;
 auxiliary origins have separate summaries. A corpus without native validation is
 explicitly reported as auxiliary-only. W-tube defaults to explicit global real-origin
@@ -151,14 +162,17 @@ explains the explicit naming update for already trained weights.
 Phase-grouped synthetics use one coherent optical trajectory across all four
 palette assignments. Training applies exact XOR phase-group permutations and
 joint horizontal/vertical flips to inputs and targets; these augmentations do
-not rewrite recordings and do not run during evaluation. The supervised loss is
-ordinary data-cell cross-entropy. Paired sampling balances real/synthetic sources
+not rewrite recordings and do not run during evaluation. The default supervised
+loss is ordinary data-cell cross-entropy, with the optional RS-aware blend above
+for Neural-QR datasets. Paired sampling balances real/synthetic sources
 and mapped real directions; additional sessions improve diversity rather than
 changing those direction weights.
 
 Training defaults to 32,000 updates, AdamW weight decay .01, LR `1e-4` fresh or
 `5e-5` initialized, and validation every 1,000 updates. The live bar displays
 training metrics; validation checkpoints print a separate consolidated summary.
+Weighted-loss runs distinguish the optimized objective from raw CE; per-source
+and per-grid CE remain unweighted and comparable across objectives.
 Per-grid rows separate real training, synthetic training and real validation.
 `CER (cell)` pools data cells; `CER(size)` averages per-grid rates equally.
 Default version-2 JSON reports store canonical metric rows once, with grid,
@@ -184,6 +198,7 @@ browser performance remains the next measurement.
 | `synthetic.py`, `camera_geometry.py`, `augmentation.py` | Camera-scaled coherent corruptions and training-only transformations |
 | `sampling.py`, `session_groups.py` | Source/direction balance and session assignments |
 | `train.py` | Optimization, progress summaries, compact history and checkpoint selection |
+| `losses.py` | Training-only RS block weighting in canonical coordinates |
 | `evaluate.py` | Held-out cell metrics; exact Neural-QR matrices or independent OBM payload recovery |
 | `checkpoint.py` | Strict finite float32 parameter/metadata validation |
 | `export.py` | ONNX graph export, parity fixtures and manifest |

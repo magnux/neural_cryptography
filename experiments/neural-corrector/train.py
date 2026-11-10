@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train an optical classifier with ordinary masked cross-entropy.
+"""Train an optical classifier with masked CE or RS-aware weighted CE.
 
 Plain PyTorch, float32, AdamW. Optional target pairing places real captures and
 synthetic renders of the same matrix in each optimizer update. Validation uses
@@ -27,6 +27,7 @@ from checkpoint import load_model_checkpoint, initialize_multires
 from data import DATASET_FORMAT, Dataset, assert_disjoint, check_checkpoint_overlap, digest
 from evaluate import evaluate_model, require_implemented_model_contract
 from packet_replay import validate_rs_parity, replay_policy
+from losses import rs_weighted_loss, rs_loss_policy
 from reporting import (compact_report, evaluation_document, evaluation_step, lean_json,
                        training_rows, TRAIN_COLUMNS, EVALUATION_COLUMNS)
 from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, NeuralCorrector, initialize_frames
@@ -65,14 +66,31 @@ def origin_sampling_options(profile, native_real_fraction=None, origin_ratios=No
     return None, parse_origin_ratios(DEFAULT_ORIGIN_RATIOS if origin_ratios is None else origin_ratios)
 
 
-def training_loss(logits, labels, mask, colors):
+def training_loss(logits, labels, mask, colors, *, loss="ce", rs_parity=32,
+                  rs_loss_mix=.25, spatial_flips=None):
     """Mean data-cell CE per input example, then equal weight per batch member."""
+    if loss == "rs-weighted-ce":
+        return rs_weighted_loss(logits, labels, mask, colors, rs_parity=rs_parity,
+                                mix=rs_loss_mix, spatial_flips=spatial_flips)
+    if loss != "ce":
+        raise ValueError("Loss must be ce or rs-weighted-ce")
     counts = mask.flatten(1).sum(1)
     if colors not in (4, 16) or not torch.all(counts > 0):
         raise ValueError("A supported palette and nonempty data-cell mask per input example are required")
     cells = F.cross_entropy(logits[:, :colors], labels, reduction="none")
     per_frame = (cells*mask).flatten(1).sum(1)/counts
     return per_frame.mean(), per_frame
+
+
+def training_loss_options(loss, rs_parity, rs_loss_mix):
+    """Validate the objective before allocating the model or creating a run."""
+    if loss not in ("ce", "rs-weighted-ce"):
+        raise ValueError("Loss must be ce or rs-weighted-ce")
+    if (isinstance(rs_loss_mix, bool) or not isinstance(rs_loss_mix, (int, float))
+            or not np.isfinite(rs_loss_mix) or not 0 <= rs_loss_mix <= 1):
+        raise ValueError("rs-loss-mix must be finite and in [0, 1]")
+    validate_rs_parity(rs_parity)
+    return rs_loss_policy(rs_parity, rs_loss_mix) if loss == "rs-weighted-ce" else None
 
 
 def training_cell_counts(logits, labels, mask, colors):
@@ -149,6 +167,8 @@ def format_training_metrics(interval):
         return "no optimizer updates"
     text = (f"CE {interval['loss']/interval['updates']:.4f}"
             f" CER {interval['wrongCells']/interval['dataCells']:.2%} (cell)")
+    if "objective" in interval:
+        text += f" | objective {interval['objective']/interval['updates']:.4f}"
     if "sizeSources" in interval:
         macro = size_macro_cer(summarize_training_counters(interval["sizes"]))
         if macro is not None:
@@ -243,7 +263,7 @@ def training_tensors(samples, augmentation, phase_augmentation=None):
         if not all(sample.phase_grouped for sample in samples):
             raise ValueError("Phase augmentation requires phase-grouped inputs")
         return phase_augmentation(pixels, labels, masks)
-    return pixels, labels, masks
+    return pixels, labels, masks, np.zeros((len(samples), 2), dtype=np.bool_)
 
 
 def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, batch_size=4,
@@ -252,13 +272,14 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                  session_groups=None, weight_decay=.01, paired_targets=False, frames=None, no_progress=False,
                  real_noise_std=.008, real_tint_stops=.06, real_exposure_stops=.08,
                  phase_flip_probability=.25, no_phase_permutations=False, show_goal=False,
-                 native_real_fraction=None, origin_ratios=None, rs_parity=32):
+                 native_real_fraction=None, origin_ratios=None, rs_parity=32,
+                 loss="ce", rs_loss_mix=.25):
     # Validate the dataset representation before building a sampler; the exact
     # profile/raster pairing is checked again once the model is instantiated.
     require_implemented_model_contract(train)
     require_implemented_model_contract(validation)
     steps, learning_rate = training_defaults(initialize, steps, learning_rate)
-    validate_rs_parity(rs_parity)
+    loss_policy = training_loss_options(loss, rs_parity, rs_loss_mix)
     if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
         raise ValueError("Input frame count must be an integer from 1 through 64")
     integers = ((steps, 1, 1_000_000), (batch_size, 1, 128), (accumulate, 1, 128),
@@ -278,6 +299,9 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         raise ValueError("Only validation samples may select checkpoints")
     assert_disjoint(train, validation)
     neural_qr_data = train.dataset_format == "neural-qr-dataset"
+    if loss_policy is not None and (not neural_qr_data
+            or any(sample.shape[1] != 16 for sample in train.samples)):
+        raise ValueError("RS-weighted CE requires Neural-QR training data with 16 colors")
     if ((validation.dataset_format, validation.dataset_version) !=
             (train.dataset_format, train.dataset_version)):
         raise ValueError("Training and validation must use the same experiment dataset format and raster version")
@@ -360,12 +384,14 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                "networkInputClip": [NETWORK_INPUT_MIN, NETWORK_INPUT_MAX],
                "realAugmentation": real_augmentation.settings(),
                "phaseAugmentation": phase_augmentation.settings() if phase_augmentation else None,
-               "loss": "mean-masked-cross-entropy",
+               "loss": "mean-masked-cross-entropy" if loss == "ce" else "rs-weighted-cross-entropy",
                "evalEvery": eval_every, "validationSamples": validation_samples,
                "showGoal": show_goal,
                "evaluationGrouping": VARIABLE_EVALUATION_POLICY if variable_frames else EVALUATION_POLICY,
                "evaluationSeed": EVALUATION_SEED,
                "sampling": "paired-targets" if paired_targets else "source-group-session-payload-phase"}
+    if loss_policy is not None:
+        options["rsLoss"] = loss_policy
     provenance = {"seed": seed, "samples": len(train.samples), "batchSize": batch_size,
                   "gradientAccumulation": accumulate, "device": str(device), "realFraction": real_fraction,
                   "pairedTargets": paired_targets, "framesPerInput": model.frames, "selection": "validation-exact", "datasetFormat": train.dataset_format,
@@ -464,6 +490,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                   "validationSelection": selection, "validationGroups": report["groups"],
                   "selected": selected, "learningRate": current_lr,
                   "elapsedSeconds": time.perf_counter()-started}
+        if loss_policy is not None:
+            record["trainObjective"] = interval["objective"]/interval["updates"] if interval["updates"] else None
         if "classical" in summary:
             record["classicalExact"] = summary["classical"]["exactRate"]
         if neural_qr_data:
@@ -490,6 +518,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                          "frameCounts": [interval["frameCounts"][str(count)] for count in frame_counts],
                          "sampling": interval["sampling"]},
             "validation": evaluation_step(report)})
+        if loss_policy is not None:
+            persisted_history[-1]["training"]["meanObjective"] = record["trainObjective"]
         lines = [f"Step {step}/{steps} | lr {current_lr:.2g}{' | best' if selected else ''}",
                  f"  Train | {format_training_metrics(interval)}",
                  f"  Val   | {format_validation_metrics(report)}"]
@@ -516,6 +546,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     def empty_interval():
         return {"loss": 0., "updates": 0, "wrongCells": 0, "dataCells": 0, "sources": {}, "groups": {}, "sizes": {},
                 "table": {}, "origins": {},
+                **({"objective": 0.} if loss_policy is not None else {}),
                 **({"sizeSources": {}} if neural_qr_data else {}),
                 "frameCounts": {str(count): 0 for count in frame_counts},
                 "sampling": {"repeatedBursts": 0, "repeatedSamples": 0, "pairedTargets": 0}}
@@ -528,6 +559,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             "validationMetadata": validation_metadata,
             "history": persisted_history,
             "note": "Training CE/CER include configured photometric and phase/spatial augmentation; validation inputs are unchanged. "
+                    "CE always denotes unweighted cross-entropy; meanObjective separately records the weighted training loss when enabled. "
                     "CER(cell) pools data cells; CER(size) averages per-grid CER over represented grids. "
                     "Grid metrics separate real and synthetic training sources. "
                     "Validation selects checkpoints; untouched real test sessions establish generalization."}))
@@ -544,20 +576,23 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             interval = empty_interval()
             for step in range(1, steps+1):
                 optimizer.zero_grad(set_to_none=True)
-                update_loss = 0.
+                update_loss, update_objective = 0., 0.
                 batches = draw_training_bursts(sampler.draw_update(batch_size, accumulate),
                                                sampler, burst_index, burst_rng)
                 for samples in batches:
-                    pixels, labels, mask = training_tensors(samples, real_augmentation, phase_augmentation)
+                    pixels, labels, mask, spatial_flips = training_tensors(samples, real_augmentation, phase_augmentation)
                     pixels = torch.from_numpy(pixels)
                     labels = torch.from_numpy(labels).to(device)
                     mask = torch.from_numpy(mask).to(device)
                     output = model(pixels.to(device))
-                    loss, ce = training_loss(output, labels, mask, samples[0].shape[1])
-                    if not torch.isfinite(loss):
+                    objective, ce = training_loss(output, labels, mask, samples[0].shape[1],
+                        loss=loss, rs_parity=rs_parity, rs_loss_mix=rs_loss_mix,
+                        spatial_flips=spatial_flips)
+                    if not torch.isfinite(objective):
                         raise RuntimeError("Non-finite training loss")
-                    (loss/accumulate).backward()
-                    update_loss += float(loss.detach())/accumulate
+                    (objective/accumulate).backward()
+                    update_loss += float(ce.detach().mean())/accumulate
+                    update_objective += float(objective.detach())/accumulate
                     wrong, cells = training_cell_counts(output.detach(), labels, mask, samples[0].shape[1])
                     metrics = torch.stack((ce.detach(), wrong, cells), dim=1).cpu().tolist()
                     for sample, (value, wrong_count, cell_count) in zip(samples, metrics):
@@ -591,6 +626,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                 if neural_qr_data:
                     learned_sizes.update(sample.shape[0] for samples in batches for sample in samples)
                 interval["loss"] += update_loss
+                if loss_policy is not None:
+                    interval["objective"] += update_objective
                 interval["updates"] += 1
                 for name in interval["sampling"]:
                     interval["sampling"][name] += sampler.last_counts.get(name, 0)
@@ -656,7 +693,11 @@ def main():
     parser.add_argument("--initialize", type=Path, help="initialize validated weights; --model multires also allows an explicit U-tube-2x-attn warm start; optimizer starts fresh")
     parser.add_argument("--node", default="node")
     parser.add_argument("--rs-parity", type=int, default=32,
-                        help="Neural-QR recorded-error RS+CRC replay: even parity bytes per block, 2–64; 0 disables (default: 32)")
+                        help="Neural-QR RS replay and weighted-loss parity bytes per block, even 2–64; 0 disables replay with plain CE only (default: 32)")
+    parser.add_argument("--loss", choices=("ce", "rs-weighted-ce"), default="ce",
+                        help="training objective (default: ce); RS weighting requires 16-color Neural-QR data")
+    parser.add_argument("--rs-loss-mix", type=float, default=.25,
+                        help="RS-weighted CE fraction in [0,1]; remaining fraction is ordinary CE (default: .25)")
     parser.add_argument("--no-progress", action="store_true", help="hide the live bar; keep concise validation summaries")
     parser.add_argument("--show-goal", action="store_true", help="include the phone-to-PC 50%% recovery goal at validation events")
     args = parser.parse_args()
