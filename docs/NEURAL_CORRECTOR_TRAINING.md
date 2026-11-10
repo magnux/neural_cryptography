@@ -4,7 +4,7 @@
 > version 2 at G16/G32/G64/G128 with 4×4 pixels per cell. Use the
 > [W-tube data guide](W_TUBE_DATA.md) to import current and eligible earlier
 > recordings, generate clean targets and create harder paired synthetics.
-> **W-tube training and evaluation are implemented** for this corpus; export
+> **W-tube and VW training and evaluation are implemented** for this corpus; export
 > and browser integration remain pending. The separate `multires` commands
 > below still use prepared **2×2-cell datasets**.
 
@@ -87,11 +87,69 @@ draws and the complete validation presets require at least two distinct captures
 of every phase per target. The importer can retain smaller pools, but this
 training recipe rejects them; do not duplicate captures to fill slots.
 
+### Train VW
+
+**`VW` adds a third complete U spatial path**, including its own target-sized
+bottleneck, feature skips and residual fusion. Each stage keeps the current
+W-tube bottleneck's two convolutions and two attention layers. The architecture
+has **696,400 parameters**; see [the three-path diagram](NEURAL_CORRECTOR.md#vw).
+This is a new profile, while `W-tube` continues to select the two-stage model.
+
+Reuse the existing version-2 `local-data/w-tube` corpus. The model change requires
+no new recordings, dataset regeneration or file conversion. Start this experiment
+from scratch, without `--initialize`:
+
+```sh
+python experiments/neural-corrector/train.py \
+  --model VW --frames 8 \
+  --train local-data/w-tube/real/train local-data/w-tube/synthetic/train \
+  --validation local-data/w-tube/real/validation \
+  --paired-targets --real-fraction .5 \
+  --origin-ratios native=.60,resampled=.25,header-g64=.15 \
+  --loss rs-weighted-ce --rs-loss-mix .25 --rs-parity 32 \
+  --batch-size 8 --accumulate 4 --lr .0001 --steps 32000 \
+  --validation-samples 0 --device cuda \
+  --out checkpoints/neural-corrector/vw-phase8
+```
+
+This retains 32 bursts per update, the 50/50 paired real/synthetic mixture,
+K4–K8 phase grouping, all current augmentations and the
+[RS-aware objective](#rs-aware-weighted-cross-entropy). The origin mix matches
+the latest W-tube refinement: 60% native, 25% resampled and 15% header-G64 among
+real examples. These are explicit experiment settings; the shared origin-ratio
+defaults remain 50/35/15. Full-resolution activations pass through a third U,
+so if G128 exceeds available VRAM, use `--batch-size 4 --accumulate 8` to retain
+the same effective batch size.
+
+Evaluate its selected checkpoint on the same complete validation corpus:
+
+```sh
+python experiments/neural-corrector/evaluate.py \
+  --dataset local-data/w-tube/real/validation --split validation \
+  --checkpoint checkpoints/neural-corrector/vw-phase8/best.pt \
+  --max-samples 0 --rs-parity 32 --device cuda \
+  --out local-results/neural-corrector/vw-phase8-validation.json
+```
+
+Compare sustained G128 RS+CRC replay recovery and CER with the W-tube baseline,
+while checking that G64 recovery remains strong. Replay is still a diagnostic
+benchmark, not live packet authentication. Checkpoint selection remains balanced
+raw exact-matrix recovery with CE as its tie-breaker; it does not switch to RS
+replay for this profile.
+
+To continue a VW run later, keep `--model VW`, add
+`--initialize checkpoints/neural-corrector/vw-phase8/best.pt`, select a new empty
+output directory and set the intended refinement learning rate. Initialization
+loads weights and provenance with a fresh optimizer; it is not an exact optimizer
+resume. Both profile and three-stage geometry are checked. A two-stage W-tube
+checkpoint cannot initialize VW through an automatic conversion. VW export and
+browser integration remain pending, just as for W-tube.
+
 ### W-tube sampling policy
 
 Quotas apply to the **whole optimizer update**, before splitting it into
 microbatches. Changing `8 × 4` to `4 × 8` therefore preserves the sampling policy.
-The default W-tube hierarchy is:
+The default hierarchy for both `W-tube` and `VW` is:
 
 1. Draw one recording origin for the optimizer update using
    `--origin-ratios native=.5,resampled=.35,header-g64=.15`.
@@ -245,7 +303,7 @@ python experiments/neural-corrector/train.py \
 `--initialize` loads weights and split provenance, then starts a fresh optimizer
 and step counter. It is fine-tuning initialization, not an exact optimizer-state
 resume. Checkpoint loading validates the profile, four-pixel contract, supported
-sizes, anchors and both U stages. Wrong-architecture initialization is rejected.
+sizes, anchors and the profile's U-stage count. Wrong-architecture initialization is rejected.
 
 W-tube ONNX export, browser parity and live reception are separate remaining
 steps. Use these commands for Python model development; the live demo continues

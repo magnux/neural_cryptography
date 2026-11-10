@@ -2,7 +2,7 @@
 
 > The current collector records **Neural-QR v2, 4×4 pixels/cell,
 > G16/G32/G64/G128**. Collection, [offline imports and paired synthetic generation](../../docs/W_TUBE_DATA.md)
-> and **W-tube training/evaluation** are available. W-tube export and browser
+> and **W-tube/VW training and evaluation** are available. Their export and browser
 > integration remain pending. The separate
 > `multires` profile described below consumes existing prepared **2×2-cell**
 > datasets and cannot train on the new recordings. Keep them in a separate
@@ -30,14 +30,15 @@ static serving and browser tests.
 The next integrated transport is [Neural-QR](../../docs/NEURAL_QR.md), designed to supply
 geometry, phase identity and normalized crops without a separately decoded dense
 header. **W-tube** processes its current four-pixel inputs through two complete
-U stages, with independent low-frequency anchors at G16/G32/G64/G128. The
+U stages; **VW** adds a third complete stage, including its own bottleneck and
+feature skips. Both use independent low-frequency anchors at G16/G32/G64/G128. The
 separate `multires` architecture shares a trunk across six sizes, with independent
 per-size low-frequency anchors and six alternating convolution/attention
 blocks, with two layers in each block. The
 [current collector](../../docs/MULTIRES_COLLECTION.md) records G16…G128 at 4×4
 pixels per cell for W-tube, with a public collection code for offline association.
 The earlier prepared 2×2-cell datasets remain usable for the existing `multires`
-experiment. Browser integration of W-tube is a later step; the U-tube experiments
+experiment. Browser integration of W-tube and VW is a later step; the U-tube experiments
 retain their independent four-pixels-per-axis input contract.
 
 ## Model family
@@ -45,6 +46,7 @@ retain their independent four-pixels-per-axis input contract.
 | Profile | Input forms | Internal design | Parameters |
 | --- | --- | --- | --- |
 | `W-tube` | Four-phase burst, 4–8 observations in eight slots; G16/G32/G64/G128 | Two full-resolution U stages, 32 channels, two convolutions + two attention layers per bottleneck, independent cosine anchors | 454,992 processing + 32,768 anchors = **487,760** |
+| `VW` | Same four-phase, four-pixel input contract as W-tube | Three complete full-resolution U stages with independent weights; each keeps the W-tube bottleneck | 663,632 processing + 32,768 anchors = **696,400** |
 | `multires` | Four-phase burst, 4–8 observations in eight slots; G8…G256 | One-level 2G→G→2G U; six alternating conv/attention blocks; independent cosine anchors | 231,120 shared + 43,008 anchor coefficients = 274,128 |
 | `U-tube` | Single RGB frame or fixed T-frame burst | Full-resolution U, 32 channels, two convs per block | 140,976 at T=1; 144,432 at T=5 |
 | `U-tube-2x` | Single RGB frame or fixed T-frame burst | Same U width; residual blocks with four outer/eight bottleneck convs | 276,336 at T=1; 279,792 at T=5 |
@@ -52,8 +54,10 @@ retain their independent four-pixels-per-axis input contract.
 
 `U-tube` is the default profile. The trained four-phase experiment uses
 `U-tube-2x-attn`. Select `--model multires --frames 8` only for prepared 2×2-cell Neural-QR datasets.
-Select **`--model W-tube --frames 8`** for the new version-2 four-pixel corpus.
-All profiles produce `[N,16,G,G]` logits. W-tube and the three U-tube profiles use four input
+Select **`--model W-tube --frames 8`** or **`--model VW --frames 8`** for the
+version-2 four-pixel corpus. VW trains from scratch with the
+[new experiment command](../../docs/NEURAL_CORRECTOR_TRAINING.md#train-vw).
+All profiles produce `[N,16,G,G]` logits. W-tube, VW and the three U-tube profiles use four input
 pixels per axis per output cell; `multires` uses two. For G64, the U-tube path operates at **256→128→64→128→256**, followed by a
 **256→128→64** outlet. Block outputs remain 32 channels. Skip concatenations
 briefly have 64 channels; the head produces 16 logits. No raw RGB bypass reaches
@@ -73,6 +77,16 @@ features through residual addition, channel normalization and ReLU. A single
 selected anchor is added after the inlet; its 16×16 cosine coefficients reconstruct
 a G×G field and are enlarged fourfold. The final outlet performs **4G→2G→G**
 reduction before the sixteen-class head. See [the W-tube diagrams](../../docs/NEURAL_CORRECTOR.md#w-tube).
+
+VW reuses that complete stage **three times with independent weights**. It keeps
+two convolutions plus two attention layers per bottleneck, rather than adding
+cycles within the two existing bottlenecks. Every U still reaches G and returns
+to 4G; the inlet adds the selected anchor once, and the shared final outlet
+reduces the last reconstructed features to G. The additional stage contributes
+208,640 parameters. See [the VW diagram and comparison](../../docs/NEURAL_CORRECTOR.md#vw).
+Its recordings, input packing, labels and dataset format match W-tube exactly.
+The extra full-resolution stage increases computation and activation memory;
+browser speed remains to be measured.
 
 `multires` reconstructs a separate G×G positional field from at most 16×16
 learned cosine coefficients per channel, then enlarges that field 2× at the
@@ -112,9 +126,9 @@ receiving proportionally more camera resolution. See
 [the physical scaling and provenance](../../docs/W_TUBE_DATA.md#camera-scaled-coherent-corruptions)
 for the approximation, defaults and limits.
 
-W-tube and multires training use one resolution per update and balance sources,
+W-tube, VW and multires training use one resolution per update and balance sources,
 recorded device directions and physical sessions. Multires chooses grids uniformly;
-W-tube first draws a recording origin, then a grid available for that origin. Their
+W-tube and VW first draw a recording origin, then a grid available for that origin. Their
 validation measures exact **logical data matrices** and masked cell error, with
 equal weight across resolutions, directions and K4…K8. There are no packet bytes
 or CRC recovery claims in the raw-symbol Neural-QR dataset. Validation additionally
@@ -135,9 +149,9 @@ constraint. It requires nonzero `--rs-parity`; ordinary CE remains the default,
 and validation/checkpoint selection stay unchanged. See the
 [loss definition and continuation command](../../docs/NEURAL_CORRECTOR_TRAINING.md#rs-aware-weighted-cross-entropy).
 
-For W-tube, native real validation is the primary population whenever available;
+For W-tube and VW, native real validation is the primary population whenever available;
 auxiliary origins have separate summaries. A corpus without native validation is
-explicitly reported as auxiliary-only. W-tube defaults to explicit global real-origin
+explicitly reported as auxiliary-only. Both profiles default to explicit global real-origin
 ratios of **50% native, 35% resampled and 15% header-G64**. Set all three with
 `--origin-ratios native=.5,resampled=.35,header-g64=.15`. Each update uses one
 origin, with a uniform draw among its available grids; complete coverage gives
@@ -145,8 +159,10 @@ G64 36.25% of updates and G16/G32/G128 21.25% each. Positive ratios for missing
 origins are rejected. This is separate from the unchanged 50/50 real/synthetic
 pairing. The explicit `--native-real-fraction` option selects the alternative
 uniform-grid, within-grid native-quota policy and cannot be combined with
-`--origin-ratios`. Existing W-tube weights can initialize training on regenerated synthetics;
-continuation via `--initialize` requires a W-tube checkpoint and a new run folder.
+`--origin-ratios`. Existing weights can initialize training on regenerated synthetics;
+continuation via `--initialize` requires a checkpoint of the same profile and a new
+run folder. VW requires its own fresh run; a two-stage W-tube checkpoint is not
+converted to three stages.
 The [W-tube training guide](../../docs/NEURAL_CORRECTOR_TRAINING.md#train-w-tube)
 provides complete training, continuation and evaluation commands.
 

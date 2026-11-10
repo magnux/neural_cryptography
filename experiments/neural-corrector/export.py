@@ -25,7 +25,7 @@ from contract import (ATOL, CLASSES, FORMAT, FRAME_COUNTS, MAX_FRAMES, INPUT_NAM
                       RTOL, VERSION, CAPTURE_INPUT_MIN, CAPTURE_INPUT_MAX,
                       NETWORK_INPUT_MIN, NETWORK_INPUT_MAX,
                       describe_file, fixture_input, shapes, write_f32)
-from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, NeuralCorrector, parameter_count
+from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, W_TUBE_PROFILES, NeuralCorrector, parameter_count
 from checkpoint import load_checkpoint, load_model_checkpoint, training_provenance
 
 
@@ -141,8 +141,8 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
                       "training": training_provenance(loaded["training"])}
     else:
         model = NeuralCorrector(profile or DEFAULT_MODEL_PROFILE, frames=frames).cpu().eval()
-    if model.profile == "W-tube":
-        raise ValueError("W-tube training/checkpoints are supported, but its browser bundle export "
+    if model.profile in W_TUBE_PROFILES:
+        raise ValueError(f"{model.profile} training/checkpoints are supported, but its browser bundle export "
                          "and runtime parity are a separate pending milestone. "
                          "No output bundle was created.")
     available_sizes = (tuple(loaded["training"]["trainedSizes"])

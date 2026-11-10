@@ -2,8 +2,8 @@
 
 > **Current collection:** Neural-QR v2 records G16/G32/G64/G128 at 4×4 pixels
 > per cell with optical size cues. The [collection guide](MULTIRES_COLLECTION.md)
-> describes this input contract. **W-tube training and evaluation are implemented**
-> for it. W-tube export and browser integration are separate remaining steps.
+> describes this input contract. **W-tube and VW training and evaluation are implemented**
+> for it. Their export and browser integration are separate remaining steps.
 > The `multires` architecture below retains its prepared 2×2-cell experiment.
 
 The **neural corrector** estimates a corrected optical matrix from one or more
@@ -35,11 +35,13 @@ header-based descriptions below document the currently implemented OBM5 path;
 they are not used by the new Neural-QR collector. Its current cue-based acquisition
 and public-code session association are documented in [the collection guide](MULTIRES_COLLECTION.md).
 
-The current four-pixel multi-resolution model is **`W-tube`**: two complete U
-stages, independent low-frequency anchors at G16/G32/G64/G128, and four-phase
-K4–K8 inputs. Its [architecture](#w-tube) and
-[training commands](NEURAL_CORRECTOR_TRAINING.md#train-w-tube) are implemented;
-real-device accuracy remains to be measured after training.
+The four-pixel multi-resolution models are **`W-tube`** with two complete U
+stages and **`VW`** with three. Both use independent low-frequency anchors at
+G16/G32/G64/G128 and four-phase K4–K8 inputs. VW adds a full third spatial
+contraction/reconstruction path, including its own bottleneck and feature skips.
+See the [W-tube](#w-tube) and [VW](#vw) architectures and
+[training commands](NEURAL_CORRECTOR_TRAINING.md#train-vw). Browser performance
+and real-device accuracy remain to be measured after training.
 
 The separate two-pixel training model is **`multires`**, with a shared convolution/attention trunk and
 an independent low-frequency positional anchor for every supported size, G8…G256.
@@ -55,7 +57,7 @@ experiments keep their established 4×4 contract.
 
 Let **G** be the matrix width in cells, **T** a fixed number of observations,
 **K** the number of available observations in a variable input, and **N** the
-batch size. A U-tube or W-tube rectified crop has four pixels per cell along each axis: a G64
+batch size. A U-tube, W-tube or VW rectified crop has four pixels per cell along each axis: a G64
 matrix produces a 256×256 RGB crop. Multires uses two pixels per cell, so G64
 produces a 128×128 crop. The crop includes the colored reference
 grid; it does not include the full camera image or monochrome transport header.
@@ -73,7 +75,7 @@ the network.
 | Fixed frame burst | U-tube, U-tube-2x | `[N,3T,4G,4G]` | T distinct observations of the same logical matrix and palette phase; T=1…64 |
 | Phase-grouped burst | U-tube-2x-attn | `[N,32,256,256]` | Eight phase-paired RGB slots plus eight presence planes; K=4…8 |
 | Multi-resolution phase burst | multires | `[N,32,2G,2G]` | Same phase slots and presence planes; G8…G256, K=4…8 |
-| Full-resolution multi-resolution phase burst | W-tube | `[N,32,4G,4G]` | Same phase slots and presence planes; G16/G32/G64/G128, K=4…8 |
+| Full-resolution multi-resolution phase burst | W-tube, VW | `[N,32,4G,4G]` | Same phase slots and presence planes; G16/G32/G64/G128, K=4…8 |
 
 Every model produces **`logits: [N,16,G,G]`**. These are unnormalized class
 scores, not a rendered RGB image. Softmax over the active palette produces
@@ -84,7 +86,7 @@ models use two internal label conventions:
 
 - **U-tube and U-tube-2x** predict physical displayed palette classes. The
   receiver uses the validated phase header to reverse that palette mapping.
-- **U-tube-2x-attn, multires and W-tube** predict canonical, phase-zero logical data classes directly.
+- **U-tube-2x-attn, multires, W-tube and VW** predict canonical, phase-zero logical data classes directly.
   Their output must not undergo another phase reversal.
 
 Reference-grid cells occupy positions in the output tensor but are excluded from
@@ -154,6 +156,7 @@ operations.
 | `U-tube-2x` | 4 / 8 | Residual pairs; one normalization per resolution block | `275472 + 864T`; 279,792 at T=5 |
 | `U-tube-2x-attn` | 4 / 8 | Learned positional anchor and two window-attention blocks | 432,848, fixed eight-slot capacity |
 | `W-tube` | 4 / 2 within each of two full U stages | Four attention layers overall; four independent low-frequency anchors | 454,992 processing + 32,768 anchors = **487,760** |
+| `VW` | 4 / 2 within each of three full U stages | Six attention layers overall; the same four independent low-frequency anchors | 663,632 processing + 32,768 anchors = **696,400** |
 
 The default profile is `U-tube`. The successful four-phase experiment uses
 `U-tube-2x-attn`. A checkpoint identifies its own profile and input contract;
@@ -245,6 +248,93 @@ is not yet selectable in the live demo.
 All four grids are structurally supported, but a run updates only the anchors
 for grids sampled during training. Checkpoint `trainedSizes` records those grids;
 an untouched anchor is not evidence of a trained corrector at that resolution.
+
+### VW
+
+VW adds **one complete U stage** to W-tube. The three stages have independent
+weights and each follows **4G → 2G → G → 2G → 4G**, with its own bottleneck,
+encoder-to-decoder skips and normalized residual fusion. Each bottleneck keeps
+the W-tube design: **two residual convolutions followed by two attention layers**,
+using 8×8 windows with shifts zero and four. VW therefore has three bottlenecks
+and six attention layers overall. It does not add extra conv/attention cycles
+inside the existing bottlenecks.
+
+The added path lets the model revisit full-resolution camera evidence after a
+third round of context aggregation. All three bottlenecks remain at **G×G**;
+no stage reduces the representation below the target cell grid. Every block
+still outputs 32 channels, and each skip concatenation temporarily creates 64.
+The diagram shows every contraction/reconstruction path, its local feature skips,
+and the full-resolution residual passed around that stage:
+
+```mermaid
+flowchart TD
+    X["Eight phase-paired RGB slots + presence"] --> I["Gating, clipping and inlet: 32 × 4G × 4G"]
+    P["Selected independent low-frequency anchor"] --> A["Add anchor expanded 4×"]
+    I --> A
+    subgraph U1["First U: independent weights"]
+        E10["Outer block: 4G"] --> E11["Contraction: 2G"]
+        E11 --> B1["Bottleneck: G · 2 convs + 2 attention layers"]
+        B1 --> D11["Reconstruction + skip: 2G"]
+        E11 -->|"feature skip"| D11
+        D11 --> D10["Reconstruction + skip + residual fusion: 4G"]
+        E10 -->|"feature skip"| D10
+    end
+    subgraph U2["Second U: independent weights"]
+        E20["Outer block: 4G"] --> E21["Contraction: 2G"]
+        E21 --> B2["Bottleneck: G · 2 convs + 2 attention layers"]
+        B2 --> D21["Reconstruction + skip: 2G"]
+        E21 -->|"feature skip"| D21
+        D21 --> D20["Reconstruction + skip + residual fusion: 4G"]
+        E20 -->|"feature skip"| D20
+    end
+    subgraph U3["Third U: independent weights"]
+        E30["Outer block: 4G"] --> E31["Contraction: 2G"]
+        E31 --> B3["Bottleneck: G · 2 convs + 2 attention layers"]
+        B3 --> D31["Reconstruction + skip: 2G"]
+        E31 -->|"feature skip"| D31
+        D31 --> D30["Reconstruction + skip + residual fusion: 4G"]
+        E30 -->|"feature skip"| D30
+    end
+    A --> E10
+    A -->|"stage residual"| D10
+    D10 --> E20
+    D10 -->|"stage residual"| D20
+    D20 --> E30
+    D20 -->|"stage residual"| D30
+    D30 --> O["Outlet: 4G → 2G → G"]
+    O --> Y["1×1 head: 16 × G × G logical logits"]
+```
+
+Each reconstruction node upsamples, concatenates its local encoder skip and
+applies the same four-convolution residual block as W-tube. The 4G node then
+fuses its stage input as
+`ReLU(ChannelLayerNorm(stage_input + reconstructed_features))`.
+There is no raw RGB shortcut or cross-stage weight sharing. The selected
+positional anchor is added **once after the inlet**, rather than once per U.
+
+| Property | W-tube | VW |
+| --- | ---: | ---: |
+| Complete U stages / target-sized bottlenecks | 2 | 3 |
+| Main 3×3 convolutions, including inlet/outlet | 40 | 58 |
+| Window-attention layers | 4 | 6 |
+| Processing parameters | 454,992 | 663,632 |
+| Independent anchor coefficients | 32,768 | 32,768 |
+| Total parameters | 487,760 | **696,400** |
+
+For G128, **each** U traverses 512 → 256 → 128 → 256 → 512. The added stage
+increases both high-resolution computation and activation memory; parameter
+count alone is not a latency or VRAM estimate. This is a test of greater depth
+and spatial context, not evidence that obscured or undersampled captures are
+recoverable.
+
+The input/output contract, recordings, prepared W-tube datasets, sampling,
+augmentations and optional RS-aware loss are unchanged. Start the VW experiment
+from fresh weights using [these commands](NEURAL_CORRECTOR_TRAINING.md#train-vw).
+Its checkpoints record `modelProfile: "VW"` and three stages; a W-tube checkpoint
+does not silently become VW. Continue a VW run with another VW checkpoint and
+a new output directory. PyTorch training/evaluation and strict checkpoint loading
+are implemented; ONNX export, browser parity and live reception remain separate
+work, as for W-tube.
 
 ### U-tube
 
@@ -356,7 +446,7 @@ training. Evaluation fixes a seeded shuffle before forming nonoverlapping groups
 it does not select consecutive frames by default. Sources, sessions, payloads
 and phases never get mixed in a fixed burst.
 
-The phase-grouped profiles (`U-tube-2x-attn`, `multires`, and `W-tube`) use these
+The phase-grouped profiles (`U-tube-2x-attn`, `multires`, `W-tube`, and `VW`) use these
 fixed slot meanings:
 
 | Phase | RGB slots | Logical-to-physical data-symbol XOR |
@@ -408,7 +498,7 @@ different axes and must not be interchanged.
 
 The three phase-grouped profiles have an observation-presence mask: **eight binary
 flags per example**, broadcast to the input crop's spatial size. That is 256×256
-for U-tube-2x-attn, 2G×2G for multires and 4G×4G for W-tube. A present
+for U-tube-2x-attn, 2G×2G for multires and 4G×4G for W-tube/VW. A present
 slot has flag one; an absent slot has flag zero and normally contains zero RGB.
 The model multiplies each RGB triplet by its flag before the inlet, then supplies
 the same flags as input channels. This makes missingness explicit: a zero RGB
@@ -473,13 +563,15 @@ not a learned parameter and does not change the supervised target.
 
 ## Training sampling
 
-W-tube uses one uniformly chosen grid per optimizer update, equal paired real
-and synthetic counts, and balanced acquisition directions. Within each
-represented grid/direction real quota, the default native fraction is 0.5 when
-both native and auxiliary evidence exist. Available auxiliary origins share
-the remainder; missing origins redistribute their share locally. Synthetic
-partners retain the real sample's origin and target. The policy is applied
-before gradient accumulation is divided into microbatches. See
+W-tube and VW use one grid per optimizer update, equal paired real
+and synthetic counts, and balanced available acquisition directions. The default
+first draws a recording origin with global shares of 50% native, 35% resampled
+and 15% header-G64, then chooses a grid uniformly among that origin's available
+grids. `--origin-ratios` sets those shares explicitly; a positive share for a
+missing origin is rejected. Synthetic partners retain the real sample's origin
+and target. The policy is applied before gradient accumulation is divided into
+microbatches. The separate `--native-real-fraction` option selects an alternative
+uniform-grid, within-grid native quota. See
 [the sampling policy](NEURAL_CORRECTOR_TRAINING.md#w-tube-sampling-policy) for
 coverage gaps, stochastic rounding and the effective-batch example.
 
@@ -487,14 +579,14 @@ coverage gaps, stochastic rounding and the effective-batch example.
 
 Evaluation reports cell cross-entropy and cell error rate. The OBM experiment
 also reports exact payload recovery through the classical byte decoder. Neural-QR
-multires and W-tube instead report exact logical data matrices, since their
+multires, W-tube and VW instead report exact logical data matrices, since their
 training symbols have no packet/CRC envelope. Both classical fusion and
 the neural corrector receive the same actual captures. Phase-grouped evaluation
 uses nested K4/K5/K6/K7/K8 subsets of fixed shuffled phase pairs, so all five
 presets have the same logical candidates. The candidate count is not multiplied
 by five when describing the amount of independent held-out data.
 
-W-tube gives fresh native real captures priority in validation: if native
+W-tube and VW give fresh native real captures priority in validation: if native
 candidates exist, headline metrics and checkpoint selection use that population.
 The report retains native, resampled and header-G64 as separate table dimensions
 and derives origin summaries without pooling them into the native headline.

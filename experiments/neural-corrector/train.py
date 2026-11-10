@@ -30,7 +30,7 @@ from packet_replay import validate_rs_parity, replay_policy
 from losses import rs_weighted_loss, rs_loss_policy
 from reporting import (compact_report, evaluation_document, evaluation_step, lean_json,
                        training_rows, TRAIN_COLUMNS, EVALUATION_COLUMNS)
-from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, NeuralCorrector, initialize_frames
+from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, W_TUBE_PROFILES, NeuralCorrector, initialize_frames
 from sampling import (BalancedSampler, load_session_groups, validate_session_groups, infer_session_groups,
                       DEFAULT_ORIGIN_RATIOS, parse_origin_ratios)
 
@@ -41,10 +41,10 @@ def training_defaults(initialize=None, steps=None, learning_rate=None):
 
 
 def native_sampling_fraction(profile, value):
-    """Origin quotas apply to the W-tube corpus, whose origins are explicit."""
-    if profile != "W-tube":
+    """Origin quotas apply to the four-pixel W-tube/VW corpus."""
+    if profile not in W_TUBE_PROFILES:
         if value is not None:
-            raise ValueError("--native-real-fraction is supported only for W-tube")
+            raise ValueError("--native-real-fraction is supported only for W-tube or VW")
         return None
     value = .5 if value is None else value
     if (isinstance(value, bool) or not isinstance(value, (int, float))
@@ -54,12 +54,12 @@ def native_sampling_fraction(profile, value):
 
 
 def origin_sampling_options(profile, native_real_fraction=None, origin_ratios=None):
-    """W-tube defaults to explicit global shares; a native quota is an alternative."""
+    """W-tube/VW use global origin shares, or an explicit native quota."""
     if native_real_fraction is not None and origin_ratios is not None:
         raise ValueError("Choose --origin-ratios or --native-real-fraction, not both")
-    if profile != "W-tube":
+    if profile not in W_TUBE_PROFILES:
         if origin_ratios is not None:
-            raise ValueError("--origin-ratios is supported only for W-tube")
+            raise ValueError("--origin-ratios is supported only for W-tube or VW")
         return native_sampling_fraction(profile, native_real_fraction), None
     if native_real_fraction is not None:
         return native_sampling_fraction(profile, native_real_fraction), None
@@ -408,7 +408,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
         options["rsReplayPolicy"] = replay_policy(rs_parity)
         options.update({**geometry, "trainingSizes": training_sizes,
                         "sampling": "uniform-size/source-group-session-payload-phase",
-                        "selectionMetric": ("native-first/" if model.profile == "W-tube" else "")
+                        "selectionMetric": ("native-first/" if model.profile in W_TUBE_PROFILES else "")
                             + "size-group-frame-balanced-real/exact-logical-data-matrix"})
         provenance.update(geometry)
         architecture = {"anchor": model.anchor_metadata, "bottleneck": model.bottleneck_metadata}
@@ -500,7 +500,7 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             record["validationSizeMacroCellErrorRate"] = report["sizeMacroCellErrorRate"]
             record["validationSources"] = report["sources"]
             record["validationBySize"] = report["bySize"]
-        if model.profile == "W-tube":
+        if model.profile in W_TUBE_PROFILES:
             record["trainOrigins"] = summarize_training_counters(interval["origins"])
             record["validationPopulation"] = report["evaluationPopulation"]
             record["primarySizes"] = report["primarySizes"]
@@ -664,7 +664,7 @@ def main():
     parser.add_argument("--lr", type=float, help="default: 1e-4 fresh weights, 5e-5 initialized weights")
     parser.add_argument("--weight-decay", type=float, default=.01, help="AdamW decay (default: .01)")
     parser.add_argument("--frames", type=int, choices=FRAME_COUNTS,
-                        metavar="1..64", help="input capacity: U-tube-2x-attn/multires/W-tube use 8 phase-paired slots with 4–8 observations; other fresh profiles default to 1")
+                        metavar="1..64", help="input capacity: U-tube-2x-attn/multires/W-tube/VW use 8 phase-paired slots with 4–8 observations; other fresh profiles default to 1")
     parser.add_argument("--paired-targets", action="store_true",
                         help="pair real captures with synthetic examples of the same target; requires real-fraction .5")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -675,9 +675,9 @@ def main():
     parser.add_argument("--real-fraction", type=float, default=.5)
     origins = parser.add_mutually_exclusive_group()
     origins.add_argument("--origin-ratios",
-                         help="W-tube global real-origin shares: native=.5,resampled=.35,header-g64=.15 (default); positive unavailable origins are rejected")
+                         help="W-tube/VW global real-origin shares: native=.5,resampled=.35,header-g64=.15 (default); positive unavailable origins are rejected")
     origins.add_argument("--native-real-fraction", type=float,
-                         help="W-tube alternative: uniform grids, then this native share inside each grid/direction; auxiliaries split the remainder")
+                         help="W-tube/VW alternative: uniform grids, then this native share inside each grid/direction; auxiliaries split the remainder")
     parser.add_argument("--real-noise-std", type=float, default=.008,
                         help="real training noise standard deviation in RGB [0,1] units (default: .008)")
     parser.add_argument("--real-tint-stops", type=float, default=.06,

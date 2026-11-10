@@ -17,8 +17,11 @@ remaining model and packet-integration steps. Version-2 header-free acquisition 
 in `capture.html`, including optical size identification, G16/G32/G64/G128
 recordings at 4×4 pixels per cell and server uploads. The [W-tube data pipeline](docs/W_TUBE_DATA.md)
 imports eligible earlier captures and generates harder paired synthetics. **W-tube
-training and evaluation are implemented** for this four-pixel corpus, including
+and VW training and evaluation are implemented** for this four-pixel corpus, including
 explicit global recording-origin ratios, camera-scaled synthetic generation and lean metric tables.
+VW adds a third complete U pass with its own bottleneck; W-tube keeps two.
+See the [VW architecture and diagram](docs/NEURAL_CORRECTOR.md#vw) and
+[training instructions](docs/NEURAL_CORRECTOR_TRAINING.md#train-vw).
 Validation reports raw exact matrices alongside a labelled recorded-error RS+CRC
 replay benchmark. The collector can request 1440p, 4K or the maximum camera mode
 and reports the actual delivered resolution. Model export and browser
@@ -45,7 +48,7 @@ for the original dynamical-systems exploration.
 | Neural-QR transport research | [Design](docs/NEURAL_QR.md), [current Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Custom neural-readable matrices. Header-free rendering/acquisition runs in `capture.html`; OBM5 remains the working authentication baseline until multires model and packet integration. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
 | Neural-ZKBoo authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | A 32-repetition phone/PC exchange completed with trained four-phase data reception and static QR ACKs. Baseline for Neural-QR integration. |
-| Neural corrector | [Model and training](experiments/neural-corrector/README.md), [collection guide](docs/MULTIRES_COLLECTION.md), `corrector.html` and `capture.html` | W-tube training/evaluation on version-2 G16–G128 four-pixel data; separate U-tube and two-pixel multires experiments remain available. Earlier phase-grouped G64 training powers the separate working authentication baseline. |
+| Neural corrector | [Model and training](experiments/neural-corrector/README.md), [collection guide](docs/MULTIRES_COLLECTION.md), `corrector.html` and `capture.html` | W-tube (two U passes) and VW (three U passes) training/evaluation on version-2 G16–G128 four-pixel data; separate U-tube and two-pixel multires experiments remain available. Earlier phase-grouped G64 training powers the separate working authentication baseline. |
 
 Read [use cases](docs/USE_CASES.md), [format boundaries](docs/FORMATS.md), and
 [development instructions](docs/DEVELOPMENT.md) before changing a protocol.

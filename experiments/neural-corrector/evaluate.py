@@ -26,6 +26,7 @@ from bursts import BurstIndex, EVALUATION_POLICY, EVALUATION_SEED
 from contract import FRAME_COUNTS, MAX_FRAMES
 from reporting import compact_report, evaluation_document, lean_json
 from packet_replay import validate_rs_parity
+from model import W_TUBE_PROFILES
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -47,11 +48,11 @@ def require_implemented_model_contract(dataset, model=None):
     if model is None:
         return
     profile = model if isinstance(model, str) else getattr(model, "profile", None)
-    expected = ("neural-qr-dataset", 2, 4) if profile == "W-tube" else (
+    expected = ("neural-qr-dataset", 2, 4) if profile in W_TUBE_PROFILES else (
         ("neural-qr-dataset", 1, 2) if profile == "multires" else
         ("optical-decoder-dataset", 1, 4))
     if (format_, version, ppc) != expected:
-        raise ValueError("W-tube requires Neural-QR v2 at 4 pixels per cell; multires requires "
+        raise ValueError("W-tube requires Neural-QR v2 at 4 pixels per cell, as does VW; multires requires "
                          "Neural-QR v1 at 2 pixels per cell; U-tube profiles require OBM datasets")
     if hasattr(model, "pixels_per_cell") and model.pixels_per_cell != ppc:
         raise ValueError("Model raster scale disagrees with its dataset contract")
@@ -446,14 +447,14 @@ def evaluate_model(model, dataset: Dataset, *, device="cpu", max_samples=0, node
         raise ValueError("detailed must be a boolean")
     if type(max_samples) is not int or max_samples < 0:
         raise ValueError("max_samples must be a nonnegative integer")
-    if getattr(model, "profile", None) in ("multires", "W-tube"):
+    if getattr(model, "profile", None) in ("multires", *W_TUBE_PROFILES):
         from multires_evaluation import evaluate_matrices
         result = evaluate_matrices(model, dataset, device=device, max_samples=max_samples,
                                    session_groups=session_groups, detailed=detailed,
                                    rs_parity=rs_parity, node=node, work_dir=work_dir)
         return {**result, "reportDetail": "detailed"} if detailed else compact_report(result)
     if getattr(dataset, "dataset_format", "optical-decoder-dataset") != "optical-decoder-dataset":
-        raise ValueError("Neural-QR datasets require the matching multires or W-tube model")
+        raise ValueError("Neural-QR datasets require the matching multires, W-tube or VW model")
     supported = getattr(model, "supported_sizes", (64, 128))
     if any(sample.shape[0] not in supported for sample in dataset.samples):
         raise ValueError(f"Model supports only matrix sizes {supported}")
@@ -560,7 +561,7 @@ def main():
             session_groups = load_session_groups(args.session_groups)
         model, checkpoint = load_model_checkpoint(args.checkpoint)
         check_checkpoint_overlap(checkpoint, dataset, args.split)
-        if model.profile in ("multires", "W-tube"):
+        if model.profile in ("multires", *W_TUBE_PROFILES):
             unseen = {sample.shape[0] for sample in dataset.samples} - set(checkpoint["training"]["trainedSizes"])
             if unseen:
                 raise ValueError(f"Checkpoint anchors have not been trained for grids {sorted(unseen)}")

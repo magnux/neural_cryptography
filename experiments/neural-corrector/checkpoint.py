@@ -10,7 +10,7 @@ import torch
 
 from contract import FRAME_COUNTS, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 from model import (MODEL_PROFILES, MULTIRES_SIZES, ANCHOR_METADATA, BOTTLENECK_METADATA,
-                   W_TUBE_BOTTLENECK_METADATA,
+                   W_TUBE_PROFILES, wtube_bottleneck_metadata,
                    NeuralCorrector, profile_from_state, frames_from_state, project_anchor)
 
 
@@ -90,8 +90,8 @@ def training_provenance(training: dict) -> dict:
         if training["modelProfile"] not in MODEL_PROFILES:
             raise ValueError("Invalid checkpoint modelProfile")
         result["modelProfile"] = training["modelProfile"]
-    bottleneck = (W_TUBE_BOTTLENECK_METADATA if training.get("modelProfile") == "W-tube"
-                  else BOTTLENECK_METADATA)
+    bottleneck = (wtube_bottleneck_metadata(training["modelProfile"])
+                  if training.get("modelProfile") in W_TUBE_PROFILES else BOTTLENECK_METADATA)
     for key, expected in (("anchor", ANCHOR_METADATA), ("bottleneck", bottleneck)):
         if key in training:
             value = training[key]
@@ -99,7 +99,7 @@ def training_provenance(training: dict) -> dict:
             if (not isinstance(value, dict) or value != expected
                     or type(value.get(integer_key)) is not int):
                 raise ValueError(f"Invalid checkpoint {key}: use the declared model architecture")
-            if key == "bottleneck" and training.get("modelProfile") == "W-tube":
+            if key == "bottleneck" and training.get("modelProfile") in W_TUBE_PROFILES:
                 if (type(value.get("stages")) is not int
                         or any(type(scale) is not int for scale in value.get("scales", []))):
                     raise ValueError("Invalid W-tube bottleneck geometry metadata")
@@ -229,11 +229,11 @@ def load_checkpoint(path: Path, model: NeuralCorrector | None = None) -> dict:
             raise ValueError(f"Checkpoint {name} disagrees with model parameters")
     if model.variable_frames and checkpoint["training"].get("framesPerInput") != 8:
         raise ValueError(f"{model.profile} checkpoint requires eight-slot frame metadata")
-    if model.profile in ("multires", "W-tube"):
+    if model.profile in ("multires", *W_TUBE_PROFILES):
         geometry = {"modelProfile": model.profile, "datasetFormat": "neural-qr-dataset",
                     "pixelsPerCell": model.pixels_per_cell, "supportedSizes": list(model.supported_sizes),
                     "anchor": model.anchor_metadata, "bottleneck": model.bottleneck_metadata}
-        if model.profile == "W-tube":
+        if model.profile in W_TUBE_PROFILES:
             geometry["datasetVersion"] = 2
         for name, expected_value in geometry.items():
             if checkpoint["training"].get(name) != expected_value:

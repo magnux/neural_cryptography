@@ -3,7 +3,8 @@
 Fixed-frame profiles accept stacked RGB, [N,3*T,4G,4G]. U-tube-2x-attn accepts
 eight RGB slots followed by eight presence planes, [N,32,256,256]. Multires
 uses the same channel packing at [N,32,2G,2G] with independent G8..G256 anchors.
-W-tube uses [N,32,4G,4G], G16..G128 anchors, and two full-resolution U passes.
+W-tube profiles use [N,32,4G,4G], G16..G128 anchors, and two or three
+full-resolution U passes with independent weights.
 All produce
 palette logits [N,16,G,G]: physical classes for fixed-frame models, canonical
 logical data classes for the phase-grouped model. The public output adapter
@@ -20,7 +21,9 @@ from torch.nn import functional as F
 from contract import CHANNELS, FRAME_COUNTS, MAX_FRAMES, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX
 
 
-MODEL_PROFILES = ("U-tube", "U-tube-2x", "U-tube-2x-attn", "multires", "W-tube")
+W_TUBE_PROFILES = ("W-tube", "VW")
+W_TUBE_STAGE_COUNTS = {"W-tube": 2, "VW": 3}
+MODEL_PROFILES = ("U-tube", "U-tube-2x", "U-tube-2x-attn", "multires", *W_TUBE_PROFILES)
 DEFAULT_MODEL_PROFILE = "U-tube"
 MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
 W_TUBE_SIZES = (16, 32, 64, 128)
@@ -31,6 +34,15 @@ BOTTLENECK_METADATA = {"blocks": ["conv", "attention", "conv", "attention", "con
                        "layersPerBlock": 2}
 W_TUBE_BOTTLENECK_METADATA = {"stages": 2, "blocks": ["conv", "attention"],
     "layersPerBlock": 2, "scales": [4, 2, 1, 2, 4], "fusion": "normalized-residual"}
+
+
+def wtube_bottleneck_metadata(profile: str) -> dict:
+    """Describe one exact complete-U stage count, without mutable shared lists."""
+    if profile not in W_TUBE_PROFILES:
+        raise ValueError("Expected a W-tube model profile")
+    return {**W_TUBE_BOTTLENECK_METADATA, "stages": W_TUBE_STAGE_COUNTS[profile],
+            "blocks": list(W_TUBE_BOTTLENECK_METADATA["blocks"]),
+            "scales": list(W_TUBE_BOTTLENECK_METADATA["scales"])}
 
 
 def dct_anchor_basis(size: int, *, device=None, dtype=torch.float32) -> torch.Tensor:
@@ -200,7 +212,7 @@ class WindowAttentionBlock(nn.Module):
 
 
 class UTubeStage(nn.Module):
-    """One 4G -> 2G -> G -> 2G -> 4G pass in the W-tube.
+    """One 4G -> 2G -> G -> 2G -> 4G pass shared by W-tube and VW.
 
     Each skip contains normalized learned features. The bottleneck has exactly
     two convolutions and two attention layers; no operation goes below G.
@@ -243,7 +255,9 @@ class NeuralCorrector(nn.Module):
     window-attention layers. Each independent anchor is limited to 16x16 cosine
     modes per channel; no learned dense position map exists.
     W-tube restores two contractions to the target grid and repeats the complete
-    U twice with independent weights. Each U has one conv/attention pair at G.
+    U twice (W-tube) or three times (VW), with independent weights.
+    Each U has one conv/attention pair at G; a third U adds a complete spatial
+    contraction/reconstruction path rather than additional bottleneck cycles.
     """
 
     def __init__(self, profile: str = DEFAULT_MODEL_PROFILE, frames: int | None = None) -> None:
@@ -251,20 +265,20 @@ class NeuralCorrector(nn.Module):
         if profile not in MODEL_PROFILES:
             raise ValueError(f"Choose model profile from {MODEL_PROFILES}")
         if frames is None:
-            frames = 8 if profile in ("U-tube-2x-attn", "multires", "W-tube") else 1
+            frames = 8 if profile in ("U-tube-2x-attn", "multires", *W_TUBE_PROFILES) else 1
         if type(frames) is not int or frames not in FRAME_COUNTS:
             raise ValueError(f"Choose 1 to {MAX_FRAMES} input frames")
-        if profile in ("U-tube-2x-attn", "multires", "W-tube") and frames != 8:
+        if profile in ("U-tube-2x-attn", "multires", *W_TUBE_PROFILES) and frames != 8:
             raise ValueError(f"{profile} uses eight phase-paired slots, with four to eight present frames")
         self.profile = profile
         self.frames = frames
-        self.variable_frames = profile in ("U-tube-2x-attn", "multires", "W-tube")
+        self.variable_frames = profile in ("U-tube-2x-attn", "multires", *W_TUBE_PROFILES)
         self.min_frames = 4 if self.variable_frames else frames
         self.input_channels = 4 * frames if self.variable_frames else 3 * frames
         self.input_layout = "phase-paired-rgb-presence-planes" if self.variable_frames else "stacked-rgb"
         self.output_label_space = "logical" if self.variable_frames else "physical"
         self.phase_masks = (0, 15, 7, 8) if self.variable_frames else ()
-        self.supported_sizes = (W_TUBE_SIZES if profile == "W-tube" else
+        self.supported_sizes = (W_TUBE_SIZES if profile in W_TUBE_PROFILES else
                                 MULTIRES_SIZES if profile == "multires" else
                                 ((64,) if self.variable_frames else (64, 128)))
         self.pixels_per_cell = 2 if profile == "multires" else 4
@@ -294,12 +308,10 @@ class NeuralCorrector(nn.Module):
             for size in self.supported_sizes:
                 self.register_buffer(f"anchor_basis_{size}", dct_anchor_basis(size), persistent=False)
                 nn.init.normal_(self.anchor_coefficients[str(size)], mean=0., std=.02)
-        elif profile == "W-tube":
-            self.stages = nn.ModuleList([UTubeStage(), UTubeStage()])
+        elif profile in W_TUBE_PROFILES:
+            self.stages = nn.ModuleList(UTubeStage() for _ in range(W_TUBE_STAGE_COUNTS[profile]))
             self.anchor_metadata = dict(ANCHOR_METADATA)
-            self.bottleneck_metadata = {**W_TUBE_BOTTLENECK_METADATA,
-                "blocks": list(W_TUBE_BOTTLENECK_METADATA["blocks"]),
-                "scales": list(W_TUBE_BOTTLENECK_METADATA["scales"])}
+            self.bottleneck_metadata = wtube_bottleneck_metadata(profile)
             self.anchor_coefficients = nn.ParameterDict({
                 str(size): nn.Parameter(torch.empty(1, 32, min(size, ANCHOR_MAX_MODES),
                                                       min(size, ANCHOR_MAX_MODES)))
@@ -332,7 +344,7 @@ class NeuralCorrector(nn.Module):
         across resolutions. Interpolation to the profile's camera-raster size
         follows this reconstruction; only the positional prior is bandwidth-limited.
         """
-        if self.profile not in ("multires", "W-tube") or type(size) is not int or size not in self.supported_sizes:
+        if self.profile not in ("multires", *W_TUBE_PROFILES) or type(size) is not int or size not in self.supported_sizes:
             raise ValueError("Spatial anchor requires a supported anchored-model grid")
         coefficients = self.anchor_coefficients[str(size)]
         basis = getattr(self, f"anchor_basis_{size}")
@@ -367,10 +379,10 @@ class NeuralCorrector(nn.Module):
             pixels = torch.clamp(pixels, NETWORK_INPUT_MIN, NETWORK_INPUT_MAX)
         features = self.inlet(pixels)
         if self.variable_frames:
-            anchor = self.spatial_anchor(size) if self.profile in ("multires", "W-tube") else self.position_anchor
+            anchor = self.spatial_anchor(size) if self.profile in ("multires", *W_TUBE_PROFILES) else self.position_anchor
             features = features + F.interpolate(anchor, scale_factor=self.pixels_per_cell,
                                                  mode="bilinear", align_corners=False)
-        if self.profile == "W-tube":
+        if self.profile in W_TUBE_PROFILES:
             for stage in self.stages:
                 features = stage(features)
             return self.head(self.outlet(features))
@@ -401,9 +413,17 @@ def profile_from_state(state: dict) -> str:
     inlet = state.get("inlet.0.0.weight")
     if not isinstance(inlet, torch.Tensor) or inlet.ndim != 4:
         raise ValueError("Checkpoint has no valid corrector inlet")
-    if ("anchor_coefficients.16" in state and "stages.0.attention.0.qkv.weight" in state
-            and "stages.1.attention.1.qkv.weight" in state and inlet.shape[1] == 32):
-        return "W-tube"
+    stage_keys = [name for name in state if name.startswith("stages.")]
+    if stage_keys:
+        indexes = {name.split(".")[1] for name in stage_keys}
+        profiles = {frozenset(str(i) for i in range(count)): profile
+                    for profile, count in W_TUBE_STAGE_COUNTS.items()}
+        profile = profiles.get(frozenset(indexes))
+        if (profile is None or "anchor_coefficients.16" not in state or inlet.shape[1] != 32
+                or any(f"stages.{i}.attention.{j}.qkv.weight" not in state
+                       for i in range(W_TUBE_STAGE_COUNTS.get(profile, 0)) for j in (0, 1))):
+            raise ValueError("W-tube weights require exactly two or three contiguous complete U stages")
+        return profile
     if ("anchor_coefficients.64" in state and "attention_third.0.qkv.weight" in state
             and "bottleneck_third.pairs.0.conv1.weight" in state and inlet.shape[1] == 32):
         return "multires"
@@ -426,7 +446,7 @@ def profile_from_state(state: dict) -> str:
 def frames_from_state(state: dict) -> int:
     """Read the input width; remaining tensor shapes are checked by the loader."""
     weight = state.get("inlet.0.0.weight") if isinstance(state, dict) else None
-    if profile_from_state(state) in ("U-tube-2x-attn", "multires", "W-tube"):
+    if profile_from_state(state) in ("U-tube-2x-attn", "multires", *W_TUBE_PROFILES):
         return 8
     if (not isinstance(weight, torch.Tensor) or weight.ndim != 4
             or weight.shape[1] % CHANNELS != 0 or weight.shape[1] // CHANNELS not in FRAME_COUNTS):

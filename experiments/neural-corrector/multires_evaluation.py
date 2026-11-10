@@ -18,6 +18,7 @@ from sampling import infer_session_groups, validate_session_groups
 from reporting import evaluation_table
 from packet_replay import (REPLAY_COUNTERS, ReplayBatch, add_replay,
                            replay_policy, replay_summary, validate_rs_parity)
+from model import W_TUBE_PROFILES
 
 
 def counter():
@@ -126,9 +127,9 @@ def evaluate_matrices(model, dataset, *, device="cpu", max_samples=0, session_gr
     from evaluate import select_samples, require_implemented_model_contract
     validate_rs_parity(rs_parity)
     require_implemented_model_contract(dataset, model)
-    if dataset.dataset_format != "neural-qr-dataset" or model.profile not in ("multires", "W-tube"):
-        raise ValueError("Neural-QR matrix evaluation requires its matching multires or W-tube model")
-    wtube = model.profile == "W-tube"
+    if dataset.dataset_format != "neural-qr-dataset" or model.profile not in ("multires", *W_TUBE_PROFILES):
+        raise ValueError("Neural-QR matrix evaluation requires its matching multires, W-tube or VW model")
+    wtube = model.profile in W_TUBE_PROFILES
     if wtube and any(sample.metadata.get("origin") not in ("native", "resampled", "header-g64")
                      for sample in dataset.samples):
         raise ValueError("W-tube evaluation requires explicit native/resampled/header-g64 origin metadata")
