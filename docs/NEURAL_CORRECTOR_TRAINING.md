@@ -394,6 +394,106 @@ process does not adopt the new loss. Compare the new run's baseline and later
 G64/G128 RS+CRC replay counts on the same validation corpus, alongside raw CE and
 CER. No synthetic regeneration or checkpoint conversion is required.
 
+### EMA feature self-distillation
+
+For an already trained **W-tube or VW**, enable `--self-distillation` to train
+the first U's features against the final U's features from a frozen EMA teacher.
+A residual projector with two 3×3 convolutions, nonlinearities and a skip
+connection adapts the student's features. The
+[architecture diagram and mask definition](NEURAL_CORRECTOR.md#training-only-ema-feature-distillation)
+describe the two paths. The ordinary supervised objective remains active on all
+student examples, including when `--loss rs-weighted-ce` is selected.
+
+| Option | Default | Meaning |
+| --- | ---: | --- |
+| `--self-distillation` | Off | Enable the auxiliary objective for W-tube/VW. |
+| `--distill-weight` | `.05` | Maximum multiplier of normalized feature distance. |
+| `--distill-ramp` | `1000` | Optimizer updates to reach the maximum multiplier. |
+| `--ema-decay` | `.995` | Teacher parameter EMA decay, applied once per optimizer update. |
+| `--distill-noise-std` | `.01` | Additional student noise standard deviation in RGB [0,1] units. |
+| `--distill-tint-stops` | `.04` | Additional student per-channel gain range in stops. |
+| `--distill-exposure-stops` | `.04` | Additional student exposure range in stops. |
+
+Both branches share the sampled burst, missing slots, phase permutation, H/V
+flips and existing real-only photometric augmentation. The student then receives
+the extra perturbations above; the teacher does not. The extra tint/exposure
+gain is shared across each burst, while pixel noise differs across captures.
+Synthetic examples also receive this extra student augmentation. Neither path
+changes the sender labels, data mask or stored recordings. The teacher's
+physically captured inputs are still imperfect; this is a consistency objective,
+not clean-target image supervision.
+
+**Continue the trained model rather than starting from scratch.** The following
+bounded refinement retains the latest 60/25/15 origin mix and effective batch
+of 32. Use the existing synthetic dataset to start immediately:
+
+```sh
+python experiments/neural-corrector/train.py \
+  --model VW --frames 8 \
+  --train local-data/w-tube/real/train local-data/w-tube/synthetic/train \
+  --validation local-data/w-tube/real/validation \
+  --paired-targets --real-fraction .5 \
+  --origin-ratios native=.60,resampled=.25,header-g64=.15 \
+  --initialize checkpoints/neural-corrector/vw-phase8/best.pt \
+  --loss rs-weighted-ce --rs-loss-mix .25 --rs-parity 32 \
+  --self-distillation --distill-weight .05 --distill-ramp 1000 --ema-decay .995 \
+  --batch-size 4 --accumulate 8 --lr .00002 --steps 8000 \
+  --validation-samples 0 --device cuda \
+  --out checkpoints/neural-corrector/vw-distill
+```
+
+For W-tube, use `--model W-tube`, its own checkpoint and a distinct output
+directory. A W-tube checkpoint cannot initialize VW. The student weights are
+loaded normally; the teacher is copied from them before training. The optimizer,
+residual projector and weight ramp start fresh. Gradient accumulation does not
+multiply the EMA update frequency or shorten the ramp.
+
+To use the enhanced glare/shade distribution, regenerate only the synthetic
+training branch from the existing managed build's clean targets and real
+captures. This preserves recorded data and pairing identities:
+
+```sh
+python experiments/neural-corrector/synthetic.py \
+  --clean local-data/w-tube/clean/train \
+  --paired-real local-data/w-tube/real/train \
+  --recipe w-tube --synthetic-ratio 4 --frames 8 \
+  --severity-min .5 --severity 1 --seed 42 \
+  --out local-data/w-tube/synthetic-glare/train
+```
+
+Use a new or empty output directory; add `--plan` first for an estimate if needed.
+Then replace only the second `--train` path above with
+`local-data/w-tube/synthetic-glare/train`. There is no need to regenerate the
+real validation set or change checkpoint metadata. The upgraded `w-tube` recipe
+already enables structured light effects; its
+[glare/shade controls](W_TUBE_DATA.md#screen-glare-shades-and-reflections) retain
+easier examples alongside harder ones. If clean targets were prepared separately,
+substitute their existing directory for `local-data/w-tube/clean/train`.
+
+Only the student is validated and saved. Raw CE/CER still describe its
+supervised predictions; the optimized objective and feature term are reported
+separately as aggregate scalars. No feature arrays or extra per-burst logs are
+written. The saved `best.pt` remains a normal same-profile corrector checkpoint;
+teacher and projector weights are discarded, so restarting from it starts a new
+distillation experiment rather than restoring the exact EMA trajectory.
+
+Evaluate it with the unchanged held-out command:
+
+```sh
+python experiments/neural-corrector/evaluate.py \
+  --dataset local-data/w-tube/real/validation --split validation \
+  --checkpoint checkpoints/neural-corrector/vw-distill/best.pt \
+  --max-samples 0 --rs-parity 32 --device cuda \
+  --out local-results/neural-corrector/vw-distill-validation.json
+```
+
+Compare G128 RS+CRC replay and CER with the run's step-zero baseline, including
+phone→PC separately, and confirm G64 recovery is retained. Checkpoint selection
+remains balanced raw exact recovery with CE as its tie-breaker. Training has an
+extra teacher forward pass and feature loss; reduce microbatch size and increase
+accumulation if needed. Student inference cost is unchanged. This experiment does
+not implement the still-pending W-tube/VW browser export.
+
 ## Existing prepared 2×2-cell multires experiment
 
 The following commands remain available for already prepared datasets in
@@ -813,7 +913,7 @@ transmission directions in the browser before claiming live performance.
 
 The live tqdm bar contains only **training** statistics for the current interval:
 overall CE/CER, real then synthetic CE/CER, mapped groups in sorted order, and
-learning rate. Weighted-loss runs additionally show the optimized objective;
+learning rate. Weighted-loss and self-distillation runs additionally show the optimized objective;
 every CE field and table `lossSum` still describes unweighted masked CE, preserving
 comparisons with ordinary-CE runs. W-tube also shows actual real-origin proportions in the stable
 order native → resampled → header-G64. It does not repeat the last validation result. At each validation
@@ -860,6 +960,15 @@ For weighted-loss runs, `settings.loss` is `rs-weighted-cross-entropy` and
 `training.meanObjective` records the optimized interval average separately from
 the raw CE numerators in the training table. This adds one aggregate value per
 validation step, without per-block or per-example logs.
+
+Self-distillation adds its static policy in `settings.selfDistillation`. Each
+history entry's `training` object records `meanSupervisedObjective`,
+`meanDistillation` (raw normalized feature distance), `meanDistillationWeight`
+(the mean ramp multiplier) and `meanWeightedDistillation` (the actual mean
+weighted contribution). `meanObjective` is the combined optimized objective.
+The live `SD` value shows raw feature distance followed by its actual weighted
+contribution in parentheses. These are a handful of scalars per validation interval, with no
+feature tensors, teacher predictions or per-capture records in the history.
 
 Standalone files have `format: "neural-corrector-evaluation"` and `version: 2`.
 Their static information is in `metadata`, column names in `tables.evaluation`,

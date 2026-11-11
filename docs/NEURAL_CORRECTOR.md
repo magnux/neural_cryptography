@@ -561,6 +561,77 @@ into disallowed attention scores before Softmax, preventing that wraparound.
 It does not mark missing captures or remove difficult cells from training. It is
 not a learned parameter and does not change the supervised target.
 
+## Training-only EMA feature distillation
+
+W-tube and VW optionally use **`--self-distillation`** to give the first U a
+target representation produced by an exponential-moving-average (EMA) copy of
+the complete corrector. This adds an auxiliary feature objective to supervised
+CE or RS-weighted CE; it does not replace the known sender labels.
+
+The teacher and student see the **same selected captures, phase-pair order,
+presence flags and spatial flips**. The existing real-only augmentation produces
+their shared weak input. Only the student receives an additional mild tint,
+exposure shift and independent pixel noise. These additional changes also apply
+to synthetic examples. Missing RGB slots remain zero and presence channels are
+unchanged. Both paths use the same network-input clipping convention.
+
+```mermaid
+flowchart TD
+  B["Shared phase burst and geometry"] --> T["Weak view: EMA teacher"]
+  B --> A["Extra student noise and tint"]
+  A --> S["Student first U"]
+  S --> R["Remaining student U stages"]
+  R --> C["Outlet and supervised loss"]
+  S --> P["Residual feature projector"]
+  T --> F["Final-U features: stop gradient"]
+  P --> D["Normalized masked feature loss"]
+  F --> D
+```
+
+Both feature maps have shape `[N,32,4G,4G]`, after their U stage's residual
+fusion. The projector is a training-only **32-channel residual block with two
+3×3 convolutions, nonlinearities, a residual connection and channel
+normalization**. It is more expressive than a pointwise linear adapter and can
+adjust nearby spatial features without changing their resolution. The projector
+receives gradients together with the student. The teacher receives none.
+
+For a projector P, channel-vector normalization n and detached teacher target T,
+the auxiliary objective compares `n(P(first_U_student))` with
+`n(last_U_teacher)`, using unit L2 normalization along the 32-channel axis at
+each position. Squared differences are summed over channels. The G×G data-cell
+mask is expanded to 4G×4G by nearest-neighbor replication. That per-position
+distance is averaged over the masked positions
+within each example, then equally over examples. This excludes reference-cell
+targets while keeping their observed RGB available as context. The mask uses
+the already augmented coordinates, so there is no separate spatial alignment
+or phase transformation between teacher and student.
+
+The optimized objective is:
+
+\[
+L = L_{\mathrm{supervised}} + \lambda(s)L_{\mathrm{features}},\qquad
+\lambda(s)=\lambda_{\max}\min(1,s/R).
+\]
+
+Here s counts optimizer updates, not microbatches; the default maximum weight is
+0.05 and ramp length R is 1,000 updates. The frozen teacher starts from the
+initialized student's weights and is updated once after each optimizer step:
+`teacher = decay × teacher + (1 − decay) × student`, with default decay 0.995.
+Teacher feature extraction skips the classification outlet and runs without an
+autograd graph. Feature targets still come from physically corrupted captures;
+EMA does not supply missing clean optical information.
+
+Validation and `best.pt` contain the **student corrector only**. The projector
+and teacher are not inference layers or checkpoint weight keys. Consequently
+existing same-profile checkpoints can initialize this experiment and the
+resulting student keeps its usual model contract and parameter count. A new
+`--initialize` run creates a fresh optimizer, projector, teacher and ramp; it is
+not an exact resumption of the distillation state. Training costs an additional
+teacher forward pass and projector work, but deployment gains no extra layers.
+W-tube/VW browser export remains a separate, pending task.
+
+See [the continuation recipe and controls](NEURAL_CORRECTOR_TRAINING.md#ema-feature-self-distillation).
+
 ## Training sampling
 
 W-tube and VW use one grid per optimizer update, equal paired real

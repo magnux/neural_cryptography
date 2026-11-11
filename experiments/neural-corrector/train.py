@@ -28,6 +28,7 @@ from data import DATASET_FORMAT, Dataset, assert_disjoint, check_checkpoint_over
 from evaluate import evaluate_model, require_implemented_model_contract
 from packet_replay import validate_rs_parity, replay_policy
 from losses import rs_weighted_loss, rs_loss_policy
+from distillation import EMADistillation, StudentAugmentation, distillation_weight
 from reporting import (compact_report, evaluation_document, evaluation_step, lean_json,
                        training_rows, TRAIN_COLUMNS, EVALUATION_COLUMNS)
 from model import DEFAULT_MODEL_PROFILE, MODEL_PROFILES, W_TUBE_PROFILES, NeuralCorrector, initialize_frames
@@ -91,6 +92,30 @@ def training_loss_options(loss, rs_parity, rs_loss_mix):
         raise ValueError("rs-loss-mix must be finite and in [0, 1]")
     validate_rs_parity(rs_parity)
     return rs_loss_policy(rs_parity, rs_loss_mix) if loss == "rs-weighted-ce" else None
+
+
+def distillation_options(enabled, weight, ramp, decay, noise_std, tint_stops, exposure_stops):
+    """Validate the optional training-only teacher before creating a run directory."""
+    if type(enabled) is not bool:
+        raise ValueError("self-distillation must be boolean")
+    for name, value, upper in (("distill-weight", weight, 1.), ("ema-decay", decay, 1.),
+                              ("distill-noise-std", noise_std, 1.),
+                              ("distill-tint-stops", tint_stops, 4.),
+                              ("distill-exposure-stops", exposure_stops, 4.)):
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not np.isfinite(value) or not 0 <= value <= upper):
+            raise ValueError(f"{name} must be finite and in [0, {upper:g}]")
+    if not 0 <= decay < 1:
+        raise ValueError("ema-decay must be in [0, 1)")
+    if type(ramp) is not int or not 0 <= ramp <= 1_000_000:
+        raise ValueError("distill-ramp must be an integer from 0 through 1000000")
+    if enabled and weight == 0:
+        raise ValueError("Enabled self-distillation needs a positive distill-weight")
+    if not enabled:
+        return None
+    return {"enabled": True, "maximumWeight": float(weight), "rampUpdates": ramp,
+            "scope": "real-and-synthetic-training",
+            "teacherInput": "shared-base-augmentation-without-student-extra-noise-or-tint"}
 
 
 def training_cell_counts(logits, labels, mask, colors):
@@ -169,6 +194,9 @@ def format_training_metrics(interval):
             f" CER {interval['wrongCells']/interval['dataCells']:.2%} (cell)")
     if "objective" in interval:
         text += f" | objective {interval['objective']/interval['updates']:.4f}"
+    if "distillation" in interval:
+        text += (f" | SD {interval['distillation']/interval['updates']:.4f}"
+                 f" (+{interval['weightedDistillation']/interval['updates']:.4f})")
     if "sizeSources" in interval:
         macro = size_macro_cer(summarize_training_counters(interval["sizes"]))
         if macro is not None:
@@ -273,13 +301,18 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                  real_noise_std=.008, real_tint_stops=.06, real_exposure_stops=.08,
                  phase_flip_probability=.25, no_phase_permutations=False, show_goal=False,
                  native_real_fraction=None, origin_ratios=None, rs_parity=32,
-                 loss="ce", rs_loss_mix=.25):
+                 loss="ce", rs_loss_mix=.25, self_distillation=False,
+                 distill_weight=.05, distill_ramp=1000, ema_decay=.995,
+                 distill_noise_std=.01, distill_tint_stops=.04, distill_exposure_stops=.04):
     # Validate the dataset representation before building a sampler; the exact
     # profile/raster pairing is checked again once the model is instantiated.
     require_implemented_model_contract(train)
     require_implemented_model_contract(validation)
     steps, learning_rate = training_defaults(initialize, steps, learning_rate)
     loss_policy = training_loss_options(loss, rs_parity, rs_loss_mix)
+    distill_policy = distillation_options(self_distillation, distill_weight, distill_ramp,
+        ema_decay, distill_noise_std, distill_tint_stops, distill_exposure_stops)
+    objective_reporting = loss_policy is not None or distill_policy is not None
     if frames is not None and (type(frames) is not int or frames not in FRAME_COUNTS):
         raise ValueError("Input frame count must be an integer from 1 through 64")
     integers = ((steps, 1, 1_000_000), (batch_size, 1, 128), (accumulate, 1, 128),
@@ -334,6 +367,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             model = initialize_frames(model, frames)
     require_implemented_model_contract(train, model)
     require_implemented_model_contract(validation, model)
+    if self_distillation and model.profile not in W_TUBE_PROFILES:
+        raise ValueError("Self-distillation is supported only for W-tube or VW")
     native_real_fraction, origin_ratios = origin_sampling_options(
         model.profile, native_real_fraction, origin_ratios)
     sampler = BalancedSampler(train.samples, sampler_groups, seed=seed, real_fraction=real_fraction,
@@ -373,7 +408,16 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     learned_sizes = set(previous["training"].get("trainedSizes", [])) if previous and transfer is None else set()
     out.mkdir(parents=True, exist_ok=True)
     model.to(device).train()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    distiller = EMADistillation(model, decay=ema_decay) if self_distillation else None
+    student_augmentation = StudentAugmentation(seed=seed, noise_std=distill_noise_std,
+        tint_stops=distill_tint_stops, exposure_stops=distill_exposure_stops) if self_distillation else None
+    optimized_parameters = list(model.parameters())
+    if distiller is not None:
+        distiller.projector.to(device).train()
+        optimized_parameters.extend(distiller.projector.parameters())
+        distill_policy.update(distiller.settings())
+        distill_policy["studentExtraAugmentation"] = student_augmentation.settings()
+    optimizer = torch.optim.AdamW(optimized_parameters, lr=learning_rate, weight_decay=weight_decay)
     options = {"requestedSteps": steps, "batchSize": batch_size,
                "gradientAccumulation": accumulate, "initialLearningRate": learning_rate,
                "weightDecay": weight_decay, "realFraction": real_fraction,
@@ -392,6 +436,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                "sampling": "paired-targets" if paired_targets else "source-group-session-payload-phase"}
     if loss_policy is not None:
         options["rsLoss"] = loss_policy
+    if distill_policy is not None:
+        options["selfDistillation"] = distill_policy
     provenance = {"seed": seed, "samples": len(train.samples), "batchSize": batch_size,
                   "gradientAccumulation": accumulate, "device": str(device), "realFraction": real_fraction,
                   "pairedTargets": paired_targets, "framesPerInput": model.frames, "selection": "validation-exact", "datasetFormat": train.dataset_format,
@@ -490,8 +536,17 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                   "validationSelection": selection, "validationGroups": report["groups"],
                   "selected": selected, "learningRate": current_lr,
                   "elapsedSeconds": time.perf_counter()-started}
-        if loss_policy is not None:
+        if objective_reporting:
             record["trainObjective"] = interval["objective"]/interval["updates"] if interval["updates"] else None
+        if distill_policy is not None:
+            record["trainDistillation"] = (interval["distillation"]/interval["updates"]
+                                           if interval["updates"] else None)
+            record["trainSupervisedObjective"] = (interval["supervisedObjective"]/interval["updates"]
+                                                  if interval["updates"] else None)
+            record["trainDistillationWeight"] = (interval["distillationWeight"]/interval["updates"]
+                                                 if interval["updates"] else None)
+            record["trainWeightedDistillation"] = (interval["weightedDistillation"]/interval["updates"]
+                                                   if interval["updates"] else None)
         if "classical" in summary:
             record["classicalExact"] = summary["classical"]["exactRate"]
         if neural_qr_data:
@@ -518,8 +573,14 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                          "frameCounts": [interval["frameCounts"][str(count)] for count in frame_counts],
                          "sampling": interval["sampling"]},
             "validation": evaluation_step(report)})
-        if loss_policy is not None:
+        if objective_reporting:
             persisted_history[-1]["training"]["meanObjective"] = record["trainObjective"]
+        if distill_policy is not None:
+            persisted_history[-1]["training"].update({
+                "meanSupervisedObjective": record["trainSupervisedObjective"],
+                "meanDistillation": record["trainDistillation"],
+                "meanDistillationWeight": record["trainDistillationWeight"],
+                "meanWeightedDistillation": record["trainWeightedDistillation"]})
         lines = [f"Step {step}/{steps} | lr {current_lr:.2g}{' | best' if selected else ''}",
                  f"  Train | {format_training_metrics(interval)}",
                  f"  Val   | {format_validation_metrics(report)}"]
@@ -546,7 +607,9 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
     def empty_interval():
         return {"loss": 0., "updates": 0, "wrongCells": 0, "dataCells": 0, "sources": {}, "groups": {}, "sizes": {},
                 "table": {}, "origins": {},
-                **({"objective": 0.} if loss_policy is not None else {}),
+                **({"objective": 0.} if objective_reporting else {}),
+                **({"distillation": 0., "supervisedObjective": 0., "distillationWeight": 0.,
+                    "weightedDistillation": 0.} if distill_policy is not None else {}),
                 **({"sizeSources": {}} if neural_qr_data else {}),
                 "frameCounts": {str(count): 0 for count in frame_counts},
                 "sampling": {"repeatedBursts": 0, "repeatedSamples": 0, "pairedTargets": 0}}
@@ -559,7 +622,8 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             "validationMetadata": validation_metadata,
             "history": persisted_history,
             "note": "Training CE/CER include configured photometric and phase/spatial augmentation; validation inputs are unchanged. "
-                    "CE always denotes unweighted cross-entropy; meanObjective separately records the weighted training loss when enabled. "
+                    "CE always denotes unweighted cross-entropy; meanObjective separately records the total optimized loss when enabled. "
+                    "Self-distillation records only scalar averages, never features; validation and checkpoints use the student. "
                     "CER(cell) pools data cells; CER(size) averages per-grid CER over represented grids. "
                     "Grid metrics separate real and synthetic training sources. "
                     "Validation selects checkpoints; untouched real test sessions establish generalization."}))
@@ -577,17 +641,33 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
             for step in range(1, steps+1):
                 optimizer.zero_grad(set_to_none=True)
                 update_loss, update_objective = 0., 0.
+                update_distillation, update_supervised = 0., 0.
+                sd_weight = distillation_weight(step, maximum=distill_weight,
+                    ramp_updates=distill_ramp) if distiller is not None else 0.
                 batches = draw_training_bursts(sampler.draw_update(batch_size, accumulate),
                                                sampler, burst_index, burst_rng)
                 for samples in batches:
                     pixels, labels, mask, spatial_flips = training_tensors(samples, real_augmentation, phase_augmentation)
-                    pixels = torch.from_numpy(pixels)
+                    pixels = torch.from_numpy(pixels).to(device)
                     labels = torch.from_numpy(labels).to(device)
                     mask = torch.from_numpy(mask).to(device)
-                    output = model(pixels.to(device))
+                    if distiller is None:
+                        output = model(pixels)
+                    else:
+                        # Run the detached teacher before keeping the student's graph.
+                        teacher_features = distiller.target(pixels)
+                        student_pixels = student_augmentation(pixels)
+                        output, early_features, late_features = model.forward_with_features(student_pixels)
+                        del late_features
                     objective, ce = training_loss(output, labels, mask, samples[0].shape[1],
                         loss=loss, rs_parity=rs_parity, rs_loss_mix=rs_loss_mix,
                         spatial_flips=spatial_flips)
+                    if distiller is not None:
+                        auxiliary = distiller.loss(early_features, teacher_features, mask)
+                        update_supervised += float(objective.detach())/accumulate
+                        update_distillation += float(auxiliary.detach())/accumulate
+                        objective = objective + sd_weight*auxiliary
+                        del teacher_features, early_features, student_pixels
                     if not torch.isfinite(objective):
                         raise RuntimeError("Non-finite training loss")
                     (objective/accumulate).backward()
@@ -621,13 +701,20 @@ def run_training(train: Dataset, validation: Dataset, out: Path, *, steps=None, 
                             counter["inputCaptures"] += count
                             counter["wrongCells"] += wrong_count
                             counter["dataCells"] += cell_count
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
+                torch.nn.utils.clip_grad_norm_(optimized_parameters, 5.)
                 optimizer.step()
+                if distiller is not None:
+                    distiller.update(model)
                 if neural_qr_data:
                     learned_sizes.update(sample.shape[0] for samples in batches for sample in samples)
                 interval["loss"] += update_loss
-                if loss_policy is not None:
+                if objective_reporting:
                     interval["objective"] += update_objective
+                if distiller is not None:
+                    interval["supervisedObjective"] += update_supervised
+                    interval["distillation"] += update_distillation
+                    interval["distillationWeight"] += sd_weight
+                    interval["weightedDistillation"] += sd_weight*update_distillation
                 interval["updates"] += 1
                 for name in interval["sampling"]:
                     interval["sampling"][name] += sampler.last_counts.get(name, 0)
@@ -698,6 +785,20 @@ def main():
                         help="training objective (default: ce); RS weighting requires 16-color Neural-QR data")
     parser.add_argument("--rs-loss-mix", type=float, default=.25,
                         help="RS-weighted CE fraction in [0,1]; remaining fraction is ordinary CE (default: .25)")
+    parser.add_argument("--self-distillation", action="store_true",
+                        help="W-tube/VW: match early student U features to a frozen EMA teacher's final U; training only")
+    parser.add_argument("--distill-weight", type=float, default=.05,
+                        help="maximum auxiliary feature-loss weight (default: .05)")
+    parser.add_argument("--distill-ramp", type=int, default=1000,
+                        help="optimizer updates for linear distillation warmup; 0 applies full weight immediately (default: 1000)")
+    parser.add_argument("--ema-decay", type=float, default=.995,
+                        help="teacher weight EMA decay, updated once per optimizer step (default: .995)")
+    parser.add_argument("--distill-noise-std", type=float, default=.01,
+                        help="extra student noise in RGB [0,1] units, all training sources (default: .01)")
+    parser.add_argument("--distill-tint-stops", type=float, default=.04,
+                        help="extra student per-RGB tint range in stops (default: .04)")
+    parser.add_argument("--distill-exposure-stops", type=float, default=.04,
+                        help="extra student exposure range in stops (default: .04)")
     parser.add_argument("--no-progress", action="store_true", help="hide the live bar; keep concise validation summaries")
     parser.add_argument("--show-goal", action="store_true", help="include the phone-to-PC 50%% recovery goal at validation events")
     args = parser.parse_args()

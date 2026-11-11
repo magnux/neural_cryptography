@@ -149,6 +149,17 @@ constraint. It requires nonzero `--rs-parity`; ordinary CE remains the default,
 and validation/checkpoint selection stay unchanged. See the
 [loss definition and continuation command](../../docs/NEURAL_CORRECTOR_TRAINING.md#rs-aware-weighted-cross-entropy).
 
+W-tube and VW also support optional **`--self-distillation`**. A frozen EMA
+teacher's final-U features supervise the student's first-U features through a
+training-only residual projector with two 3×3 convolutions. Both paths share
+captures, phase order, flips and masks; the student receives additional mild
+noise/tint/exposure changes. Normalized feature distance is added to the existing
+supervised objective with a small ramped weight. Teacher updates occur once per
+optimizer update, including when accumulating gradients. Validation and saved
+weights remain student-only, so the model's inference graph and parameter count
+are unchanged. See [the diagram](../../docs/NEURAL_CORRECTOR.md#training-only-ema-feature-distillation)
+and [the continuation recipe](../../docs/NEURAL_CORRECTOR_TRAINING.md#ema-feature-self-distillation).
+
 For W-tube and VW, native real validation is the primary population whenever available;
 auxiliary origins have separate summaries. A corpus without native validation is
 explicitly reported as auxiliary-only. Both profiles default to explicit global real-origin
@@ -176,7 +187,11 @@ names in checkpoint metadata are separate from filenames; the serving guide
 explains the explicit naming update for already trained weights.
 
 Phase-grouped synthetics use one coherent optical trajectory across all four
-palette assignments. Training applies exact XOR phase-group permutations and
+palette assignments. The stronger W-tube recipe includes broad soft shadows,
+structured window reflections and elongated glare streaks in addition to the
+existing rounded glare/veil and rectangle/ellipse overlays; see
+[screen-light effects](../../docs/W_TUBE_DATA.md#screen-glare-shades-and-reflections).
+Training applies exact XOR phase-group permutations and
 joint horizontal/vertical flips to inputs and targets; these augmentations do
 not rewrite recordings and do not run during evaluation. The default supervised
 loss is ordinary data-cell cross-entropy, with the optional RS-aware blend above
@@ -215,6 +230,7 @@ browser performance remains the next measurement.
 | `sampling.py`, `session_groups.py` | Source/direction balance and session assignments |
 | `train.py` | Optimization, progress summaries, compact history and checkpoint selection |
 | `losses.py` | Training-only RS block weighting in canonical coordinates |
+| `distillation.py` | Frozen EMA teacher, residual feature projector and extra student-only photometric/noise augmentation |
 | `evaluate.py` | Held-out cell metrics; exact Neural-QR matrices or independent OBM payload recovery |
 | `checkpoint.py` | Strict finite float32 parameter/metadata validation |
 | `export.py` | ONNX graph export, parity fixtures and manifest |

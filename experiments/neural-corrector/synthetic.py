@@ -29,7 +29,7 @@ from camera_geometry import (CameraGeometryConfig, build_camera_pools,
 
 CORRUPTION_KIND = "correlated-calibrated-crop-v9"
 MULTIRES_CORRUPTION_KIND = "correlated-calibrated-crop-multires-v2"
-W_TUBE_CORRUPTION_KIND = "correlated-camera-scale-w-tube-v2"
+W_TUBE_CORRUPTION_KIND = "correlated-camera-scale-w-tube-v3"
 NEURAL_QR_DATASET_FORMAT = "neural-qr-dataset"
 MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
 
@@ -85,6 +85,7 @@ class PhotometricConfig:
     glare_strength: float = .6
     rgb_offset_probability: float = .6
     rgb_offset_pixels: float = .5
+    structured_light_probability: float = 0.
 
     def __post_init__(self):
         for name, limit in (("white_balance_stops", 4), ("exposure_stops", 4),
@@ -94,7 +95,7 @@ class PhotometricConfig:
                             ("linear_blur_pixels", 12), ("rotation_blur_degrees", 5),
                             ("zoom_blur_fraction", .05), ("glare_probability", 1),
                             ("glare_strength", 1), ("rgb_offset_probability", 1),
-                            ("rgb_offset_pixels", 1)):
+                            ("rgb_offset_pixels", 1), ("structured_light_probability", 1)):
             value = getattr(self, name)
             if isinstance(value, bool) or not np.isfinite(value) or not 0 <= value <= limit:
                 raise ValueError(f"{name.replace('_', '-')} must be finite and in [0, {limit}]")
@@ -133,11 +134,11 @@ def recipe_photometric(recipe):
     if recipe == "standard":
         return PhotometricConfig()
     return PhotometricConfig(white_balance_stops=.8, exposure_stops=1.75,
-        shade_opacity=.55, shade_probability=.8, rolling_shutter_stops=.8,
+        shade_opacity=.65, shade_probability=.8, rolling_shutter_stops=.8,
         rolling_shutter_probability=.8, rolling_shutter_skew=.65,
         motion_probability=.8, linear_blur_pixels=3., rotation_blur_degrees=.45,
-        zoom_blur_fraction=.008, glare_probability=.75, glare_strength=.7,
-        rgb_offset_probability=.7, rgb_offset_pixels=.65)
+        zoom_blur_fraction=.008, glare_probability=.75, glare_strength=.8,
+        rgb_offset_probability=.7, rgb_offset_pixels=.65, structured_light_probability=.65)
 
 
 def resolution_config(config, pixels_per_cell):
@@ -224,6 +225,19 @@ def sample_photometric(rng, frames, severity, config):
                 "feather": float(rng.uniform(.08, .45)), "gradient": float(rng.uniform(-.4, .4)),
                 "driftX": float(rng.uniform(-.01, .01)), "driftY": float(rng.uniform(-.01, .01)),
                 "phase": float(rng.uniform(0, 2*np.pi))})
+            if config.structured_light_probability > 0 and rng.random() < config.structured_light_probability:
+                # A hand/room edge or window reflection is a broad field, not a
+                # second independently placed corruption. Its extent is a
+                # fraction of the screen and therefore spans more cells at G128.
+                overlay = overlays[-1]
+                overlay.update(shape="edge" if kind == "shadow" else "window",
+                    width=float(rng.uniform(.55, 1.1)), height=float(rng.uniform(.5, 1.1)),
+                    feather=float(rng.uniform(.15, .5)),
+                    driftX=float(rng.uniform(-.035, .035)), driftY=float(rng.uniform(-.035, .035)),
+                    angleDrift=float(rng.uniform(-.08, .08)))
+                if kind == "reflection":
+                    overlay.update(columns=int(rng.integers(2, 5)), rows=int(rng.integers(1, 4)),
+                                   barWidth=float(rng.uniform(.035, .09)))
     return {"whiteBalanceGains": np.exp2(wb_stops).astype(np.float32),
             "exposureStops": exposure.astype(np.float32), "overlays": overlays}
 
@@ -241,11 +255,27 @@ def overlay_alpha(side, overlay, frame):
     movement = np.sin(frame*.35+overlay["phase"])-np.sin(overlay["phase"])
     x = x-overlay["cx"]-overlay["driftX"]*movement
     y = y-overlay["cy"]-overlay["driftY"]*movement
-    sine, cosine = np.sin(overlay["angle"]), np.cos(overlay["angle"])
+    angle = overlay["angle"]+overlay.get("angleDrift", 0.)*movement
+    sine, cosine = np.sin(angle), np.cos(angle)
     u = (cosine*x+sine*y)/(overlay["width"]/2)
     v = (-sine*x+cosine*y)/(overlay["height"]/2)
-    radius = torch.maximum(u.abs(), v.abs()) if overlay["shape"] == "rectangle" else torch.sqrt(u*u+v*v)
-    feathered = ((1-radius)/overlay["feather"]).clamp(0, 1)
+    shape = overlay["shape"]
+    if shape == "edge":
+        # A smooth half-plane shade may run off any edge of the crop. It does
+        # not move symbols, and remains partly transmissive at maximum opacity.
+        feathered = (.5-u/(2*overlay["feather"])).clamp(0, 1)
+    else:
+        radius = (torch.sqrt(u*u+v*v) if shape == "ellipse"
+                  else torch.maximum(u.abs(), v.abs()))
+        feathered = ((1-radius)/overlay["feather"]).clamp(0, 1)
+        if shape == "window":
+            # Dim mullions inside a tinted reflected window. Smooth bars avoid
+            # introducing a pixel-size texture unrelated to screen geometry.
+            dx = torch.remainder((u+1)*overlay["columns"]/2+.5, 1)-.5
+            dy = torch.remainder((v+1)*overlay["rows"]/2+.5, 1)-.5
+            bars = torch.maximum(torch.exp(-.5*(dx/overlay["barWidth"]).square()),
+                                 torch.exp(-.5*(dy/overlay["barWidth"]).square()))
+            feathered = feathered*(1-.8*bars)
     gradient = (1+overlay["gradient"]*u.clamp(-1, 1))/(1+abs(overlay["gradient"]))
     opacity = overlay["opacity"]*(.95+.05*np.sin(frame*.3+overlay["phase"]))
     return opacity*feathered*gradient
@@ -277,13 +307,20 @@ def sample_glare(rng, severity, config):
     strength = float(severity*config.glare_strength*rng.uniform(.35, 1))
     tint = rng.uniform(.88, 1, 3)
     tint /= tint.max()
-    return {"cx": float(rng.uniform(.05, .95)), "cy": float(rng.uniform(.05, .95)),
+    glare = {"cx": float(rng.uniform(.05, .95)), "cy": float(rng.uniform(.05, .95)),
             "radiusX": radius*np.sqrt(aspect), "radiusY": radius/np.sqrt(aspect),
             "angle": float(rng.uniform(-np.pi, np.pi)), "haloScale": float(rng.uniform(2.5, 4)),
             "coreStrength": strength, "veilStrength": strength*float(rng.uniform(.35, .65)),
             "color": tint.tolist(), "driftX": float(rng.uniform(-.035, .035)),
             "driftY": float(rng.uniform(-.035, .035)), "phase": float(rng.uniform(0, 2*np.pi)),
             "velocity": float(rng.uniform(.18, .4))}
+    if config.structured_light_probability > 0 and rng.random() < config.structured_light_probability:
+        # Elongated light-source reflection, e.g. a ceiling strip, plus the
+        # existing veiling halo. This replaces the spot rather than stacking
+        # another bright layer on it. The burst shares its orientation/motion.
+        glare.update(radiusX=float(rng.uniform(.17, .38)), radiusY=float(rng.uniform(.025, .06)),
+                     haloScale=float(rng.uniform(2., 3.)), shape="streak")
+    return glare
 
 
 def glare_maps(side, glare, frame, *, device=None, dtype=torch.float32):
@@ -1011,7 +1048,9 @@ def main():
     parser.add_argument("--shade-opacity", type=float, default=None,
                         help="max soft shadow/reflection strength at severity 1 (default: .45); 0 disables")
     parser.add_argument("--shade-probability", type=float, default=None,
-                        help="fraction of bursts with rotated rectangles/ellipses (default: .7)")
+                        help="fraction of bursts with soft shadows/reflections (default: .7)")
+    parser.add_argument("--structured-light-probability", type=float, default=None,
+                        help="fraction of shade/glare events using edge shadows, window reflections or light streaks (standard: 0; w-tube: .65)")
     parser.add_argument("--glare-probability", type=float, default=None,
                         help="fraction of bursts with drifting highlight/veiling glare, 0–1 (default: .65)")
     parser.add_argument("--glare-strength", type=float, default=None,

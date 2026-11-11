@@ -350,7 +350,8 @@ class NeuralCorrector(nn.Module):
         basis = getattr(self, f"anchor_basis_{size}")
         return (basis @ coefficients @ basis.transpose(0, 1)) * (size/coefficients.shape[-1])
 
-    def forward(self, pixels: torch.Tensor, grid_size: int | None = None) -> torch.Tensor:
+    def _input_features(self, pixels: torch.Tensor, grid_size: int | None = None) -> torch.Tensor:
+        """Shared input preparation; training feature taps add no model weights."""
         # Preserve calibrated overshoot in recordings/preprocessing; every
         # learned layer consumes the same bounded range for real and synthetic
         # inputs. ONNX exports this operation, including browser camera inference.
@@ -382,6 +383,39 @@ class NeuralCorrector(nn.Module):
             anchor = self.spatial_anchor(size) if self.profile in ("multires", *W_TUBE_PROFILES) else self.position_anchor
             features = features + F.interpolate(anchor, scale_factor=self.pixels_per_cell,
                                                  mode="bilinear", align_corners=False)
+        return features
+
+    def _stage_features(self, pixels: torch.Tensor, grid_size: int | None = None):
+        if self.profile not in W_TUBE_PROFILES:
+            raise ValueError("Stage feature distillation requires W-tube or VW")
+        features = self._input_features(pixels, grid_size)
+        first = None
+        for index, stage in enumerate(self.stages):
+            features = stage(features)
+            if index == 0:
+                first = features
+        return first, features
+
+    def forward_with_features(self, pixels: torch.Tensor, grid_size: int | None = None):
+        """Return logits and first/last U features for training-only distillation.
+
+        Features are taken after each U's normalized residual fusion, before
+        the shared outlet, at [N,32,4G,4G]. Ordinary inference is unchanged.
+        """
+        first, last = self._stage_features(pixels, grid_size)
+        return self.head(self.outlet(last)), first, last
+
+    def final_stage_features(self, pixels: torch.Tensor, grid_size: int | None = None):
+        """Teacher target without computing the unused classification outlet."""
+        if self.profile not in W_TUBE_PROFILES:
+            raise ValueError("Stage feature distillation requires W-tube or VW")
+        features = self._input_features(pixels, grid_size)
+        for stage in self.stages:
+            features = stage(features)
+        return features
+
+    def forward(self, pixels: torch.Tensor, grid_size: int | None = None) -> torch.Tensor:
+        features = self._input_features(pixels, grid_size)
         if self.profile in W_TUBE_PROFILES:
             for stage in self.stages:
                 features = stage(features)

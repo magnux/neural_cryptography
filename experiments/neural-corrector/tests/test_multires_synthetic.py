@@ -143,7 +143,8 @@ class MultiresSyntheticTests(unittest.TestCase):
             cli_plan = json.loads(cli.stdout)
             self.assertEqual(cli_plan['captures'], plan['captures'])
             self.assertEqual(cli_plan['recipe']['photometric']['white_balance_stops'], .1)
-            self.assertEqual(cli_plan['recipe']['photometric']['glare_strength'], .7)
+            self.assertEqual(cli_plan['recipe']['photometric']['glare_strength'], .8)
+            self.assertEqual(cli_plan['recipe']['photometric']['structured_light_probability'], .65)
             self.assertFalse((root/'planned-only').exists())
             with self.assertRaisesRegex(ValueError, 'Choose paired-real'):
                 generate([root/'clean'], root/'bad', paired_real=[root/'joined'],

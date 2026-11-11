@@ -17,7 +17,7 @@ if HAS_TORCH:
                            apply_motion_blur, corrupt_burst, corrupt_phase_group, motion_blur_grids,
                            overlay_alpha, rolling_shutter_maps, sample_motion_blur,
                            sample_photometric, sample_rolling_shutter, sample_glare, glare_maps,
-                           sample_rgb_offset, rgb_motion_blur_grids)
+                           sample_rgb_offset, rgb_motion_blur_grids, recipe_photometric)
     torch.set_num_threads(1)
 
 
@@ -152,6 +152,93 @@ class PhotometricTests(unittest.TestCase):
                     PhotometricConfig(rolling_shutter_probability=1, rolling_shutter_skew=.75))
         _, offsets = rolling_shutter_maps(512, maximum, 3)
         self.assertLess(float(offsets.abs().max())+.9, 2.)
+
+    def test_structured_light_draws_both_shadow_and_reflection_with_easy_cases(self):
+        config = recipe_photometric("w-tube")
+        shapes, glare_shapes = set(), set()
+        shade_free = glare_free = False
+        for seed in range(64):
+            lighting = sample_photometric(np.random.default_rng(seed), 8, .8, config)
+            repeated = sample_photometric(np.random.default_rng(seed), 8, .8, config)
+            self.assertEqual(lighting["overlays"], repeated["overlays"])
+            shade_free |= not lighting["overlays"]
+            for overlay in lighting["overlays"]:
+                shapes.add(overlay["shape"])
+                if overlay["shape"] == "edge":
+                    self.assertEqual(overlay["kind"], "shadow")
+                if overlay["shape"] == "window":
+                    self.assertEqual(overlay["kind"], "reflection")
+                alpha = overlay_alpha(64, overlay, 7)
+                self.assertTrue(torch.isfinite(alpha).all())
+                self.assertGreaterEqual(float(alpha.min()), 0)
+                self.assertLessEqual(float(alpha.max()), .8*config.shade_opacity)
+            glare = sample_glare(np.random.default_rng(seed), .8, config)
+            self.assertEqual(glare, sample_glare(np.random.default_rng(seed), .8, config))
+            glare_free |= glare is None
+            if glare is not None:
+                glare_shapes.add(glare.get("shape", "spot"))
+        self.assertEqual(shapes, {"rectangle", "ellipse", "edge", "window"})
+        self.assertEqual(glare_shapes, {"spot", "streak"})
+        self.assertTrue(shade_free and glare_free)
+
+    def test_structured_shadow_and_window_scale_with_screen_not_cell_pixels(self):
+        edge = self.overlay(shape="edge", width=.8, height=.8, feather=.25)
+        window = self.overlay(shape="window", kind="reflection", color=[1., .9, .8],
+                              width=.8, height=.7, columns=3, rows=2, barWidth=.06)
+        for overlay in (edge, window):
+            means, affected_cells = [], []
+            for grid in (16, 32, 64, 128):
+                alpha = overlay_alpha(4*grid, overlay, 0)
+                means.append(float(alpha.mean()))
+                affected_cells.append(float((alpha > .05).sum())/16)
+            self.assertLess(max(means)-min(means), .004)
+            # The same visible shadow/reflection covers ~64x as many cells in
+            # G128 as G16, rather than shrinking with the stored raster.
+            self.assertAlmostEqual(affected_cells[-1]/affected_cells[0], 64, delta=2)
+        image = torch.full((3, 128, 128), .25)
+        shaded = apply_overlays(image, [edge])
+        self.assertTrue(torch.all(shaded <= image))
+        self.assertTrue(torch.all(shaded > 0))
+        reflected = apply_overlays(image, [window])
+        self.assertTrue(torch.all(reflected >= image))
+        alpha = overlay_alpha(128, window, 0)
+        torch.testing.assert_close(reflected[:, alpha == 0], image[:, alpha == 0])
+        pane_free = overlay_alpha(128, {**window, "shape": "rectangle"}, 0)
+        self.assertLess(float(alpha.sum()), float(pane_free.sum()))
+
+    def test_structured_glare_is_elongated_bounded_and_correlated(self):
+        config = PhotometricConfig(glare_probability=1, structured_light_probability=1)
+        glare = sample_glare(np.random.default_rng(7), 1, config)
+        self.assertEqual(glare["shape"], "streak")
+        self.assertGreater(glare["radiusX"]/glare["radiusY"], 2.8)
+        first, veil = glare_maps(128, glare, 0)
+        next_frame, _ = glare_maps(128, glare, 1)
+        self.assertLessEqual(float(first.max()), config.glare_strength)
+        self.assertGreaterEqual(float(veil.min()), 0)
+        self.assertLessEqual(float(veil.max()), glare["veilStrength"])
+        correlation = torch.corrcoef(torch.stack((first.flatten(), next_frame.flatten())))[0, 1]
+        self.assertGreater(float(correlation), .9)
+
+    def test_structured_light_uses_shared_continuous_phase_group_trajectory(self):
+        import synthetic
+        clean = np.zeros((4, 3, 64, 64), dtype=np.float32)
+        config = PhotometricConfig(shade_probability=1, glare_probability=1,
+                                    structured_light_probability=1)
+        with patch("synthetic.sample_photometric", wraps=sample_photometric) as lighting, \
+                patch("synthetic.sample_glare", wraps=sample_glare) as glare, \
+                patch("synthetic.apply_overlays", wraps=apply_overlays) as apply_shade, \
+                patch("synthetic.apply_glare", wraps=apply_glare) as apply_highlight:
+            result = corrupt_phase_group(clean, 42, frames=2, severity=.8, photometric=config)
+        self.assertEqual(lighting.call_count, 1)
+        self.assertEqual(glare.call_count, 1)
+        self.assertEqual([call.args[2] for call in apply_shade.call_args_list], list(range(8)))
+        self.assertEqual([call.args[2] for call in apply_highlight.call_args_list], list(range(8)))
+        self.assertEqual(result.shape, (4, 2, 3, 64, 64))
+        self.assertTrue(np.isfinite(result).all())
+        self.assertLessEqual(np.abs(result).max(), 1)
+        np.testing.assert_array_equal(clean, np.zeros_like(clean))
+        np.testing.assert_array_equal(result, corrupt_phase_group(clean, 42, frames=2,
+                                         severity=.8, photometric=config))
 
     def test_glare_is_bounded_correlated_elliptical_core_and_broad_halo(self):
         config = PhotometricConfig(glare_probability=1)
@@ -379,7 +466,7 @@ class PhotometricTests(unittest.TestCase):
                               ("linear_blur_pixels", 12), ("rotation_blur_degrees", 5),
                               ("zoom_blur_fraction", .05), ("glare_probability", 1),
                               ("glare_strength", 1), ("rgb_offset_probability", 1),
-                              ("rgb_offset_pixels", 1)):
+                              ("rgb_offset_pixels", 1), ("structured_light_probability", 1)):
             for value in (-.1, maximum+.01, np.nan, np.inf, -np.inf, True):
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                     PhotometricConfig(**{name: value})

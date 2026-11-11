@@ -277,6 +277,65 @@ controls remain:
 | `--seed` | `41` | Reproducible generation seed. |
 | `--max-output-mib` | `1048576` | Aggregate estimated output budget; `0` disables this budget check. |
 
+### Screen glare, shades and reflections
+
+These effects extend the existing photometric corruption model rather than
+introducing a second synthetic pipeline. Simple rotated rectangles/ellipses and
+an elliptical glare core with a broad veiling halo remain available. The
+`w-tube` recipe also draws:
+
+- **Broad soft edge shadows:** smooth transitions across a substantial part of
+  the screen, with slowly drifting direction and position.
+- **Structured window reflections:** soft bright panes separated by darker
+  divisions, with tint and motion across the crop.
+- **Elongated glare streaks:** localized bright bands with a wider veil that
+  reduces surrounding contrast.
+
+Shadows attenuate the displayed signal; reflections and glare add light and can
+clip highlights. Their shapes are specified in normalized screen coordinates,
+so a fixed fraction of the screen spans more logical cells at G128 than G16.
+One trajectory is shared across all four phase assignments, with temporal
+variation between exposures. This avoids presenting unrelated reflection
+patterns as if they were consecutive captures of the same physical burst.
+Shapes and lighting parameters are independent of payload labels.
+
+The recipe defaults are:
+
+| Option | `standard` | `w-tube` | Meaning |
+| --- | ---: | ---: | --- |
+| `--shade-probability` | `.7` | `.8` | Probability of a shadow/reflection event. |
+| `--shade-opacity` | `.45` | `.65` | Maximum event strength before severity scaling. |
+| `--glare-probability` | `.65` | `.75` | Probability of a glare event. |
+| `--glare-strength` | `.6` | `.8` | Maximum localized glare strength before severity scaling. |
+| `--structured-light-probability` | `0` | `.65` | Select a structured shape within an eligible light event. |
+
+The structured-light probability is conditional on a shade/glare event; it does
+not add that many extra events. Setting it to zero retains simple shapes while
+the other options continue to control overall incidence and strength. The
+existing 15% easier-camera fraction and trajectory severity range remain in
+place. Some trajectories have no glare, and severity zero is still exact clean
+identity. Harder training should include recoverable examples rather than
+forcing every burst to lose its signal.
+
+Regenerate only synthetics from the current managed build when trying this
+distribution, leaving real imports, clean targets and held-out validation
+unchanged:
+
+```sh
+python experiments/neural-corrector/synthetic.py \
+  --clean local-data/w-tube/clean/train \
+  --paired-real local-data/w-tube/real/train \
+  --recipe w-tube --synthetic-ratio 4 --frames 8 \
+  --severity-min .5 --severity 1 --seed 42 \
+  --out local-data/w-tube/synthetic-glare/train
+```
+
+The destination must be new or empty. This keeps exact target/session/origin
+pairing, the 4:1 stored-capture ratio and the model's 50/50 training source mix.
+An existing generated corpus does not acquire the effects until regenerated.
+The [EMA continuation recipe](NEURAL_CORRECTOR_TRAINING.md#ema-feature-self-distillation)
+uses the resulting branch by changing only the synthetic `--train` path.
+
 The source geometry can produce less than one camera pixel per logical cell.
 Upsampling reproduces the resulting information loss; it does not restore detail
 or guarantee that a target remains recoverable. This is still an approximate
