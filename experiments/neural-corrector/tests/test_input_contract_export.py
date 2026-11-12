@@ -35,7 +35,7 @@ class CaptureNormalizationTests(unittest.TestCase):
                         self.assertTrue(np.all(rgb == 0))
                     else:
                         self.assertGreater(float(np.abs(rgb).max()), 1.)
-        for size, frames in ((128, 8), (64, 5)):
+        for size, frames in ((256, 8), (64, 5)):
             with self.assertRaises(ValueError):
                 shapes(size, frames, presence=True)
         for count in (0, 3, 9, True):

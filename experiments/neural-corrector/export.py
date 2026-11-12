@@ -36,7 +36,7 @@ ALLOWED_OPERATORS = {"Conv", "Relu", "Concat", "Resize", "Constant", "ReduceMean
                      "Slice", "Unsqueeze", "Where", "Equal", "Expand", "ConstantOfShape"}
 
 
-class _StaticMultires(NeuralCorrector):
+class _StaticAnchoredCorrector(NeuralCorrector):
     """Export-only copy with one reconstructed, unexpanded spatial anchor.
 
     Training stores independent low-frequency coefficients and differentiates
@@ -46,7 +46,7 @@ class _StaticMultires(NeuralCorrector):
     """
 
     def __init__(self, source: NeuralCorrector, size: int) -> None:
-        super().__init__("multires", frames=source.frames)
+        super().__init__(source.profile, frames=source.frames)
         self.load_state_dict(source.state_dict(), strict=True)
         self._selected_grid = size
         with torch.no_grad():
@@ -61,14 +61,14 @@ class _StaticMultires(NeuralCorrector):
 
 
 def static_export_model(model: NeuralCorrector, size: int) -> NeuralCorrector:
-    """Create a static multires copy; other profile graphs use their own model."""
-    if model.profile != "multires":
+    """Bake one selected anchor for multires/W-tube/VW static deployment."""
+    if model.profile not in ("multires", *W_TUBE_PROFILES):
         return model
     if size not in model.supported_sizes:
-        raise ValueError("Cannot bake an unsupported multires grid")
+        raise ValueError("Cannot bake an unsupported anchored-model grid")
     # Constructing the copy must not consume the caller's random stream.
     with torch.random.fork_rng(devices=[]):
-        return _StaticMultires(model, size).eval()
+        return _StaticAnchoredCorrector(model, size).eval()
 
 
 def native_parity(model_path: Path, pairs: Path, threads: int) -> list[dict]:
@@ -113,7 +113,7 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
 
     Validate every graph and, unless explicitly disabled, two independent inputs
     per size against Python ONNX Runtime before publishing manifest.json.
-    The CLI exports the selected profile's supported grids. Trained multires
+    The CLI exports the selected profile's supported grids. Trained anchored
     checkpoints export only their trained sizes; --sizes can select a subset.
     Existing unrelated output files are not deleted.
     """
@@ -141,12 +141,8 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
                       "training": training_provenance(loaded["training"])}
     else:
         model = NeuralCorrector(profile or DEFAULT_MODEL_PROFILE, frames=frames).cpu().eval()
-    if model.profile in W_TUBE_PROFILES:
-        raise ValueError(f"{model.profile} training/checkpoints are supported, but its browser bundle export "
-                         "and runtime parity are a separate pending milestone. "
-                         "No output bundle was created.")
     available_sizes = (tuple(loaded["training"]["trainedSizes"])
-                       if checkpoint is not None and model.profile == "multires"
+                       if checkpoint is not None and model.profile in ("multires", *W_TUBE_PROFILES)
                        else model.supported_sizes)
     sizes = available_sizes if sizes is None else sizes
     if not sizes or len(sizes) != len(set(sizes)):
@@ -169,7 +165,7 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
     manifest = {
         "format": FORMAT, "version": VERSION, "status": "trained" if checkpoint is not None else "untrained", "seed": seed,
         "modelProfile": model.profile, "parameterCount": count, "pixelsPerCell": model.pixels_per_cell,
-        "datasetFormat": "neural-qr-dataset" if model.profile == "multires" else "optical-decoder-dataset",
+        "datasetFormat": "neural-qr-dataset" if model.profile in ("multires", *W_TUBE_PROFILES) else "optical-decoder-dataset",
         "framesPerInput": model.frames, "channels": model.input_channels,
         "inputLayout": model.input_layout, "minFramesPerInput": model.min_frames,
         "outputLabelSpace": model.output_label_space, "phaseMasks": list(model.phase_masks),
@@ -186,10 +182,12 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
         "cases": [],
         **provenance,
     }
-    if model.profile == "multires":
+    if model.profile in ("multires", *W_TUBE_PROFILES):
         manifest.update(anchor=dict(model.anchor_metadata),
                         bottleneck=dict(model.bottleneck_metadata),
                         anchorDeployment="baked-selected-spatial-grid")
+    if model.profile in W_TUBE_PROFILES:
+        manifest["datasetVersion"] = 2
     with tempfile.TemporaryDirectory(prefix=".optical-export-", dir=out.parent) as temporary:
         stage = Path(temporary)
         for name, contents in project_notices.items():
@@ -212,7 +210,7 @@ def export_smoke(out: Path, seed: int = 7, sizes: tuple[int, ...] | None = None,
                               opset_version=OPSET, dynamo=False, do_constant_folding=True)
             graph = onnx.load(model_path)
             onnx.checker.check_model(graph, full_check=True)
-            if model.profile == "multires":
+            if model.profile in ("multires", *W_TUBE_PROFILES):
                 anchors = {item.name: list(item.dims) for item in graph.graph.initializer
                            if "anchor" in item.name}
                 if anchors != {"baked_anchor": [1, 32, size, size]}:
@@ -298,8 +296,10 @@ def main() -> None:
         print("This model is untrained. Benchmark execution/parity only; do not use it for live payload decisions.")
     else:
         print("Trained checkpoint exported. Runtime parity and held-out real-device recovery still require validation.")
-    if manifest["modelProfile"] == "multires":
-        print("Multires profiles require the Neural-QR 2-pixel-cell receiver; the existing U-tube browser demo does not load them yet.")
+    if manifest["modelProfile"] in W_TUBE_PROFILES:
+        print("Neural-QR version-2 profiles use 4-pixel cells; prepare this bundle for the asymmetric Neural-ZKBoo demo.")
+    elif manifest["modelProfile"] == "multires":
+        print("Multires profiles use the separate Neural-QR 2-pixel-cell experiment contract.")
 
 
 if __name__ == "__main__":

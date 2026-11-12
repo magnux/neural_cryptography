@@ -3,8 +3,9 @@
  * CRC/SHA-256 provide channel integrity, not peer authentication.
  */
 import {encodePacket, decodePacket, sha256, randomId, hexToBytes, DATA_OVERHEAD} from '../link/protocol.js';
+import {chunkBytesForSize} from '../neural-qr/packet.js';
 
-export const TURN_LIMITS = Object.freeze({chunkBytes: 1200, maxMessageBytes: 2 * 1024 * 1024,
+export const TURN_LIMITS = Object.freeze({chunkBytes: chunkBytesForSize(128), defaultChunkBytes: 1200, maxMessageBytes: 2 * 1024 * 1024,
   maxMessages: 32, timeoutMs: 10 * 60 * 1000, maxTimeoutMs: 60 * 60 * 1000});
 const terminal = new Set(['delivered', 'failed', 'timed-out', 'cancelled']);
 const same = (a,b) => a.sessionId===b.sessionId && a.messageId===b.messageId && a.messageType===b.messageType;
@@ -24,7 +25,7 @@ function expectedBytes(meta,index) {return Math.min(meta.chunkBytes,meta.totalBy
 
 export async function createTurnSender(payload,options={}) {
   if(!(payload instanceof Uint8Array)||payload.length>TURN_LIMITS.maxMessageBytes)throw Error('A turn message must be Uint8Array of at most 2 MiB.');
-  const bytes=payload.slice(), chunkBytes=integer(options.chunkBytes??TURN_LIMITS.chunkBytes,1,TURN_LIMITS.chunkBytes,'chunk size');
+  const bytes=payload.slice(), chunkBytes=integer(options.chunkBytes??TURN_LIMITS.defaultChunkBytes,1,TURN_LIMITS.chunkBytes,'chunk size');
   const meta={sessionId:options.sessionId??randomId(16),messageId:options.messageId??randomId(8),messageType:'raw',
     totalBytes:bytes.length,chunkBytes,chunkCount:Math.max(1,Math.ceil(bytes.length/chunkBytes)),windowSize:1,digest:await sha256(bytes)};
   hexToBytes(meta.sessionId,16);hexToBytes(meta.messageId,8);

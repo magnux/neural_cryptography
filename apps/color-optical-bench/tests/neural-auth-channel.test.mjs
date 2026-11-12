@@ -1,16 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {TurnChannel} from '../dist/js/neural-auth/channel.js';
-import {packetFrames,unpackOptical,DATA_PROFILE} from '../dist/js/neural-auth/optical.js';
-import {renderACK,readACK} from '../dist/js/neural-auth/qr-ack.js';
+import {packetFrames,unpackOptical} from '../dist/js/neural-auth/optical.js';
+import {decodeNeuralQRSymbols,chunkBytesForSize} from '../dist/js/neural-qr/packet.js';
 import {decodePacket,encodePacket} from '../dist/js/link/protocol.js';
 import {createTurnSender,TURN_LIMITS} from '../dist/js/neural-auth/transport.js';
-import {capacity,parseHeader} from '../dist/js/format.js';
-import {isTransportData} from '../dist/js/corrector-lab/live-burst.js';
 
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 async function prepared(channel) {
-  for(let i=0;i<100&&channel.snapshot().preparing;i++)await flush();
+  const deadline=performance.now()+5000;
+  while(channel.snapshot().preparing&&performance.now()<deadline)await new Promise(resolve=>setTimeout(resolve,1));
   assert.equal(channel.snapshot().preparing,false);
   assert.equal(channel.snapshot().mode,'send');
 }
@@ -109,32 +108,44 @@ test('enqueue is bounded, and an application handler error closes cleanly after 
   await assert.rejects(fresh.enqueue(new Uint8Array()),/size/);fresh.close();
 });
 
-test('padded data uses the learned profile and current turn ACKs round-trip through QR',async()=>{
+test('dense protected data and ACKs use four-phase Neural-QR without QR headers',async()=>{
   const sender=await createTurnSender(bytes(1),{now:0}),start=sender.next(1);
   const dataFrames=packetFrames(start),otherFrames=packetFrames(start);
   assert.equal(dataFrames.length,4);
-  for(const frame of dataFrames) {
-    assert.equal(frame.holdMs,150);assert.equal(isTransportData(parseHeader(frame.header)),true);
-    assert.equal(frame.chunk.length,capacity(DATA_PROFILE.size,DATA_PROFILE.colors,DATA_PROFILE));
-    assert.deepEqual(unpackOptical(frame.chunk,'data'),start);
-  }
-  assert.notDeepEqual(dataFrames[0].chunk,otherFrames[0].chunk);
+  for(const frame of dataFrames){assert.equal(frame.holdMs,150);assert.equal(frame.header,undefined);}
+  const decoded=decodeNeuralQRSymbols(dataFrames[0].symbols,64);
+  assert.equal(decoded.ok,true,decoded.error);assert.deepEqual(unpackOptical(decoded.chunk,'data'),start);
+  assert.notDeepEqual(dataFrames[0].symbols,otherFrames[0].symbols);
   const receiver=new TurnChannel({now:()=>1});await receiver.receive(start);
-  const ack=receiver.current(),decoded=readACK(renderACK(ack));
-  assert.equal(decoded.ok,true,decoded.error);assert.deepEqual(unpackOptical(decoded.chunk,'ack'),ack);
-  assert.throws(()=>packetFrames(ack),/ACKs use QR/);
-  assert.equal(sender.receive(decoded.chunk,2).accepted,true);receiver.close();
+  const ack=receiver.current(),ackFrames=packetFrames(ack),ackDecoded=decodeNeuralQRSymbols(ackFrames[0].symbols,32);
+  assert.equal(ackFrames.length,4);assert.equal(ackFrames[0].size,32);
+  assert.equal(ackDecoded.ok,true,ackDecoded.error);assert.deepEqual(unpackOptical(ackDecoded.chunk,'ack'),ack);
+  assert.equal(sender.receive(ackDecoded.chunk,2).accepted,true);receiver.close();
 });
 
-test('optical container rejects wrong lengths, packet kinds and damaged embedded packet checksums',async()=>{
-  const sender=await createTurnSender(bytes(20),{now:0}),start=sender.next(1),frame=packetFrames(start)[0];
-  assert.throws(()=>unpackOptical(start,'data'),/container/);
-  assert.throws(()=>unpackOptical(frame.chunk,'ack'));
-  assert.throws(()=>unpackOptical(frame.chunk.subarray(1),'data'),/container/);
-  const badLength=frame.chunk.slice();new DataView(badLength.buffer).setUint16(4,65535);
-  assert.throws(()=>unpackOptical(badLength,'data'),/length/);
-  const corrupt=frame.chunk.slice();corrupt[15]^=1;assert.throws(()=>unpackOptical(corrupt,'data'),/CRC|checksum/i);
+test('optical packet validation rejects wrong kinds, damaged CRCs and invalid phase timing',async()=>{
+  const sender=await createTurnSender(bytes(20),{now:0}),start=sender.next(1);
+  assert.deepEqual(unpackOptical(start,'data'),start);
+  assert.throws(()=>unpackOptical(start,'ack'),/kind/);
+  assert.throws(()=>unpackOptical(start.subarray(1),'data'));
+  const corrupt=start.slice();corrupt[15]^=1;assert.throws(()=>unpackOptical(corrupt,'data'),/CRC|checksum/i);
   assert.throws(()=>packetFrames(start,{phaseMs:49}),/Phase/);
   assert.throws(()=>packetFrames(start,{phaseMs:95.5}),/Phase/);
 });
 
+test('outgoing geometry is independent per device and changes only between messages',async()=>{
+  const pc=new TurnChannel({initiator:true,outgoingSize:128,now:()=>1});
+  const phone=new TurnChannel({outgoingSize:64,now:()=>1});
+  assert.equal(pc.snapshot().outgoingSize,128);assert.equal(phone.snapshot().outgoingSize,64);
+  const done=pc.enqueue(bytes(6000));await prepared(pc);
+  assert.equal(pc.snapshot().outgoing.chunkBytes,chunkBytesForSize(128));
+  assert.throws(()=>pc.setOutgoingSize(64),/between messages/);
+  await transfer(pc,phone);await done;
+  pc.setOutgoingSize(64);assert.equal(pc.snapshot().outgoingSize,64);
+  phone.setOutgoingSize(32);assert.equal(phone.snapshot().outgoingSize,32);
+  const reply=phone.enqueue(bytes(500));await phone.nextTurn();
+  assert.equal(phone.snapshot().outgoing.chunkBytes,chunkBytesForSize(32));
+  await transfer(phone,pc);await reply;
+  assert.throws(()=>phone.setOutgoingSize(16),/G32/);
+  pc.close();phone.close();assert.throws(()=>phone.setOutgoingSize(64),/closed/);
+});

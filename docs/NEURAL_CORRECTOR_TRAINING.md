@@ -4,8 +4,8 @@
 > version 2 at G16/G32/G64/G128 with 4×4 pixels per cell. Use the
 > [W-tube data guide](W_TUBE_DATA.md) to import current and eligible earlier
 > recordings, generate clean targets and create harder paired synthetics.
-> **W-tube and VW training and evaluation are implemented** for this corpus; export
-> and browser integration remain pending. The separate `multires` commands
+> **W-tube and VW training, evaluation, export and browser integration are implemented**
+> for this corpus. Follow the [demo guide](NEURAL_ZKBOO_DEMO.md) for device validation. The separate `multires` commands
 > below still use prepared **2×2-cell datasets**.
 
 The earlier **multires** training path consumes header-free Neural-QR recordings
@@ -142,8 +142,7 @@ To continue a VW run later, keep `--model VW`, add
 output directory and set the intended refinement learning rate. Initialization
 loads weights and provenance with a fresh optimizer; it is not an exact optimizer
 resume. Both profile and three-stage geometry are checked. A two-stage W-tube
-checkpoint cannot initialize VW through an automatic conversion. VW export and
-browser integration remain pending, just as for W-tube.
+checkpoint cannot initialize VW through an automatic conversion. VW and W-tube support static ONNX export and the current Neural-QR demo.
 
 ### W-tube sampling policy
 
@@ -305,9 +304,8 @@ and step counter. It is fine-tuning initialization, not an exact optimizer-state
 resume. Checkpoint loading validates the profile, four-pixel contract, supported
 sizes, anchors and the profile's U-stage count. Wrong-architecture initialization is rejected.
 
-W-tube ONNX export, browser parity and live reception are separate remaining
-steps. Use these commands for Python model development; the live demo continues
-to use its existing trained G64 corrector.
+For ONNX export, browser parity and live reception with W-tube or VW, follow
+the [Neural-ZKBoo demo guide](NEURAL_ZKBOO_DEMO.md).
 
 ### RS-aware weighted cross-entropy
 
@@ -491,8 +489,8 @@ Compare G128 RS+CRC replay and CER with the run's step-zero baseline, including
 phone→PC separately, and confirm G64 recovery is retained. Checkpoint selection
 remains balanced raw exact recovery with CE as its tie-breaker. Training has an
 extra teacher forward pass and feature loss; reduce microbatch size and increase
-accumulation if needed. Student inference cost is unchanged. This experiment does
-not implement the still-pending W-tube/VW browser export.
+accumulation if needed. Student inference cost is unchanged. The [export workflow](CORRECTOR_LAB.md) deploys the resulting W-tube/VW student
+without any training-only distillation layers.
 
 ## Existing prepared 2×2-cell multires experiment
 
@@ -605,8 +603,8 @@ The deployment path exports a selected trained size from the shared checkpoint
 and bakes only that size's reconstructed G×G anchor into an export copy, keeping
 training coefficients unchanged. No browser FFT is required. The baked spatial
 field and attention masks can make the ONNX file larger than the compressed
-training parameter count suggests. This task prepares training/evaluation;
-new Neural-QR packet/authentication integration remains a separate step. See
+training parameter count suggests. This two-pixel experiment remains separate
+from the current four-pixel W-tube/VW Neural-QR authentication path. See
 [model deployment design](NEURAL_CORRECTOR.md) for that boundary.
 
 ## Independent U-tube experiment: prepared 4×4-cell datasets
@@ -1240,10 +1238,10 @@ for existing checkpoints, CPU ONNX export, prepared static assets, trusted HTTPS
 backend selection, caching, and device checks. The browser serves ONNX weights
 and graph data; the `.pt` checkpoint stays in the training workspace.
 
-The implementation already provides export, numerical fixtures, asset
-preparation and worker inference. The next demo change connects corrected
-logical scores to live RS/CRC recovery and displays accepted content, then
-reuses that channel for Neural ZKBoo authentication. The offline validation
-result is the reason to proceed to those tests, not evidence that real-time
-recovery or optical throughput has already been measured.
+The implementation provides export, numerical fixtures, asset preparation and
+worker inference. The current [Neural-ZKBoo demo](NEURAL_ZKBOO_DEMO.md) connects
+trained W-tube/VW scores to Neural-QR RS/CRC packet recovery for data and G32 ACKs.
+It supports G128 computer-to-phone and G64 phone-to-computer. Offline validation
+motivates the next device tests; it does not measure real-time recovery or
+optical throughput.
 

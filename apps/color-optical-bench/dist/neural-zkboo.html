@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f4f5f1">
-  <title>Neural-ZKBoo · Color authentication</title>
+  <title>Neural-ZKBoo · Neural-QR authentication</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./style.css">
   <link rel="stylesheet" href="./js/neural-auth/style.css">
@@ -16,7 +16,7 @@
   </header>
   <nav class="app-nav" aria-label="Application"><a href="./index.html">Optical Bench</a><a href="./crypto.html">Crypto Lab</a><a href="./link.html">Live Demo</a><a href="./corrector.html">Corrector Lab</a><a href="./neural-zkboo.html" aria-current="page">Neural-ZKBoo</a></nav>
   <main id="authApp" data-mode="idle">
-    <section class="auth-intro"><div><div class="eyebrow">COLOR MATRICES · TURN-BASED AUTHENTICATION</div><h1>One exchange. One turn at a time.</h1><p>Exchange public keys, compare the pairing code, and prove possession of the neural key.</p></div><span class="auth-profile">64 × 64 / 16 colors<br>4 palette phases</span></section>
+    <section class="auth-intro"><div><div class="eyebrow">NEURAL-QR · TURN-BASED AUTHENTICATION</div><h1>One exchange. One turn at a time.</h1><p>Exchange public keys, compare the pairing code, and prove possession of the neural key.</p></div><span class="auth-profile">G128 → phone · G64 → computer<br>16 colors · 4 palette phases</span></section>
     <noscript><p class="notice">Enable JavaScript to run this browser-local experiment.</p></noscript>
     <div id="error" class="notice auth-error" role="alert" hidden></div>
     <details class="panel auth-settings" id="settings" open>
@@ -24,15 +24,18 @@
       <fieldset id="settingsFields">
         <legend class="sr-only">Authentication and camera settings</legend>
         <div class="auth-fields">
-          <label for="role">This device<select id="role"><option value="verifier">Verifier · sends first</option><option value="prover">Key holder · receives first</option></select></label>
+          <label for="deviceProfile">This screen<select id="deviceProfile"><option value="pc">Computer</option><option value="phone">Phone</option></select></label>
+          <label for="outgoingSize">Outgoing data grid<select id="outgoingSize"><option value="128">G128 · maximum</option><option value="64">G64</option><option value="32">G32</option></select></label>
+          <label for="role">Authentication role<select id="role"><option value="verifier">Verifier · sends first</option><option value="prover">Key holder · receives first</option></select></label>
           <label for="repetitions">Proof repetitions<select id="repetitions"><option value="32">32 · quick test</option><option value="64">64</option><option value="110">110</option><option value="160">160</option><option value="219">219</option></select></label>
           <label for="camera">Camera<select id="camera"><option value="">Default camera</option></select></label>
-          <label for="resolution">Requested resolution<select id="resolution"><option value="720">720p</option><option value="1080">1080p</option><option value="480">480p</option></select></label>
+          <label for="resolution">Requested resolution<select id="resolution"><option value="720">720p</option><option value="1080">1080p</option><option value="1440" selected>1440p</option><option value="2160">4K</option><option value="max">Maximum available</option><option value="480">480p</option></select></label>
           <label for="backend">Corrector backend<select id="backend"><option value="auto">Auto · GPU, then CPU</option><option value="wasm">WASM · CPU</option><option value="webgpu">WebGPU · GPU</option></select></label>
           <label for="phaseMs">Phase display interval (ms)<input id="phaseMs" type="number" min="50" max="10000" step="1" value="150" inputmode="numeric"></label>
           <label for="captureMs">Camera sampling interval (ms)<input id="captureMs" type="number" min="50" max="2000" step="1" value="100" inputmode="numeric"></label>
         </div>
-        <p class="auth-help">Choose one verifier and one key holder. Start both devices with 32 repetitions. Short proofs are for development; increasing repetitions increases proof size and work. Sampling and processing may take longer than the selected intervals.</p>
+        <p class="auth-direction" id="directionProfile">Computer: receive up to G64 · G32 controls</p>
+        <p class="auth-help">Choose Computer or Phone independently of its authentication role. Computer screens can send up to G128; phone screens up to G64. Choose a smaller outgoing grid when alignment is difficult. Choose one verifier and one key holder. Start both devices with 32 repetitions. Short proofs are for development; increasing repetitions increases proof size and work. Sampling and processing may take longer than the selected intervals.</p>
       </fieldset>
       <p class="auth-model" id="modelStatus" role="status">The trained neural corrector will be checked when you start.</p>
     </details>
@@ -55,12 +58,12 @@
         <canvas id="captureCanvas" hidden></canvas>
       </div>
       <div class="auth-stage-controls"><span id="transferStatus">No transfer yet</span><label for="displaySize">Display size <output id="displaySizeValue" for="displaySize">100%</output><input id="displaySize" type="range" min="50" max="100" step="1" value="100"></label></div>
-      <div class="auth-next-turn"><p>When a QR ACK appears, turn the phone so the sender can read it. For color matrices, orange marks detected corners with an unreadable header; green marks a readable header. Keep the ACK visible until the sender confirms delivery.</p><button id="nextTurn" class="button primary" disabled>Send next turn →</button></div>
+      <div class="auth-next-turn"><div><p>When a G32 ACK appears, turn the phone so the sender can read it. Orange marks uncertain geometry, size or phase; green means acquisition cues passed. Only an RS+CRC-valid packet advances the exchange. Keep the ACK visible until the sender confirms delivery.</p><label class="auth-next-grid" for="nextGeometry">Next outgoing message<select id="nextGeometry" disabled><option value="128">G128</option><option value="64">G64</option><option value="32">G32</option></select></label><p class="auth-help">You can reduce the grid between outgoing messages. To change a stalled message, stop and restart both devices with the smaller grid.</p></div><button id="nextTurn" class="button primary" disabled>Send next turn →</button></div>
       <div class="auth-pairing" id="pairingPanel" hidden><div><span class="eyebrow">COMPARE ON BOTH DEVICES</span><code id="pairingCode">—</code><p id="pairingNote">Confirm only when the pairing codes match.</p></div><button id="confirmPairing" class="button secondary" disabled>Codes match · confirm</button></div>
-      <dl class="auth-metrics"><div><dt>Received matrices</dt><dd id="receivedCount">0</dd></div><div><dt>Last inference</dt><dd id="inferenceMs">—</dd></div><div><dt>Proof size</dt><dd id="proofBytes">—</dd></div><div><dt>Elapsed</dt><dd id="elapsed">0 s</dd></div></dl>
+      <dl class="auth-metrics"><div><dt>Received matrices</dt><dd id="receivedCount">0</dd></div><div><dt>Last inference</dt><dd id="inferenceMs">—</dd></div><div><dt>Camera sampling</dt><dd id="cameraDensity">—</dd></div><div><dt>Last message goodput</dt><dd id="goodput">—</dd></div><div><dt>Proof size</dt><dd id="proofBytes">—</dd></div><div><dt>Elapsed</dt><dd id="elapsed">0 s</dd></div></dl>
     </section>
     <details class="panel auth-report"><summary><strong>Session notes &amp; report</strong><span class="summary-action">Details</span></summary><div class="auth-report-body"><label for="reportNotes">Device and test notes<textarea id="reportNotes" rows="2" maxlength="1000" placeholder="Phone/PC model, cameras, alignment, and anything that stalled…"></textarea></label><button id="downloadReport" class="button secondary" disabled>Download JSON report ↓</button><ol id="eventLog" aria-label="Recent session events"></ol><p>Reports contain settings, outcomes and timings. Camera images and private keys stay out of the report.</p></div></details>
-    <footer class="page-footer"><span>NEURAL-ZKBOO · COLOR AUTHENTICATION</span><p>Research POC · keys and proof computation stay on the device.</p><a href="./corrector.html">Corrector Lab →</a></footer>
+    <footer class="page-footer"><span>NEURAL-ZKBOO · NEURAL-QR AUTHENTICATION</span><p>Research POC · keys and proof computation stay on the device.</p><a href="./corrector.html">Corrector Lab →</a></footer>
   </main>
   <script type="module" src="./js/neural-auth/app.js"></script>
 </body>

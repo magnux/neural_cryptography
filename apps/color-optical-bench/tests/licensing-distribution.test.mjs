@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,mkdir,mkdtemp,rm} from 'node:fs/promises';
+import {readFile,writeFile,mkdir,mkdtemp,rm,stat} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
@@ -31,8 +31,8 @@ test('prepared standalone apps carry exact project attribution and unchanged ven
     assert.deepEqual(await readFile(join(root,'apps',app,'dist/js/crypto/vendor/noble-hashes/LICENSE')),await readFile(source));
   }
   const qr=join(root,'apps/qr-neural-key/dist/vendor');
-  for(const file of ['jsQR-LICENSE.txt','qrcodegen-LICENSE.txt'])assert.deepEqual(
-    await readFile(join(root,'apps/color-optical-bench/dist/js/qr-core/vendor',file)),await readFile(join(qr,file)));
+  for(const file of ['jsQR-LICENSE.txt','qrcodegen-LICENSE.txt'])assert.ok((await readFile(join(qr,file))).length);
+  await assert.rejects(stat(join(root,'apps/color-optical-bench/dist/js/qr-core')), {code:'ENOENT'});
 });
 
 test('missing project notices fail preparation before existing app files are touched',async t=>{

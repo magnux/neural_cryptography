@@ -6,31 +6,28 @@ computation locally. The demo server serves static assets and can optionally
 store recording JSONs explicitly uploaded from the data collector.
 
 The goal is **fast, reliable and secure optical authentication between a phone
-and computer**. A complete Neural-ZKBoo device exchange has now succeeded using
-the trained neural corrector for color data and standard QR ACKs. The new acquisition format
-is **Neural-QR**: our custom optical matrices built specifically for neural
-correction, with asymmetric geometric markers and phase cues instead of the
-current dense monochrome header. Neural-QR is not a standard QR code.
+and computer**. The current Neural-ZKBoo demo carries both data and acknowledgments
+using **Neural-QR**, our header-free optical format read by the trained neural
+corrector. The asymmetrical profile permits G128 computer→phone and G64
+phone→computer, with G32 controls and smaller outgoing grids selectable between
+messages. The separate standard-QR experiment remains available for comparison.
 
-The [Neural-QR design](docs/NEURAL_QR.md) and [roadmap](docs/ROADMAP.md) define the
-remaining model and packet-integration steps. Version-2 header-free acquisition is implemented
-in `capture.html`, including optical size identification, G16/G32/G64/G128
-recordings at 4×4 pixels per cell and server uploads. The [W-tube data pipeline](docs/W_TUBE_DATA.md)
-imports eligible earlier captures and generates harder paired synthetics. **W-tube
-and VW training and evaluation are implemented** for this four-pixel corpus, including
-explicit global recording-origin ratios, camera-scaled synthetic generation and lean metric tables.
-VW adds a third complete U pass with its own bottleneck; W-tube keeps two.
-See the [VW architecture and diagram](docs/NEURAL_CORRECTOR.md#vw) and
-[training instructions](docs/NEURAL_CORRECTOR_TRAINING.md#train-vw).
-Validation reports raw exact matrices alongside a labelled recorded-error RS+CRC
-replay benchmark. The collector can request 1440p, 4K or the maximum camera mode
-and reports the actual delivered resolution. Model export and browser
-integration remain next steps. The `multires` model retains its
-separate 2×2-cell experiment contract. The existing `neural-zkboo.html` remains the working
-baseline while that format is developed. Functional success does not establish
-cryptographic security or a controlled throughput advantage over QR; those are
-separate acceptance criteria. Earlier experiments remain available as research
-foundations.
+**W-tube and VW export, browser inference and Neural-QR packet integration are
+implemented.** Export the trained checkpoint to static ONNX profiles, prepare
+the local runtime/assets, and follow the [device test guide](docs/NEURAL_ZKBOO_DEMO.md).
+The browser performs acquisition, neural correction, RS+CRC recovery and
+Neural-ZKBoo proof work locally. Model initialization checks numerical parity and
+preloads the receiving profiles; no inference server is used.
+
+The [W-tube data pipeline](docs/W_TUBE_DATA.md) imports native and auxiliary
+recordings and generates paired camera-scaled synthetics. VW adds a third U pass
+to W-tube; optional EMA feature distillation changes training only. See the
+[architecture diagrams](docs/NEURAL_CORRECTOR.md) and
+[training instructions](docs/NEURAL_CORRECTOR_TRAINING.md).
+The Optical Bench's OBM transport, the standard-QR app and the two-pixel
+`multires` model remain separate experiments. Functional success and recorded
+RS+CRC replay do not establish live throughput or cryptographic security;
+new physical device tests are required for this Neural-QR integration.
 
 The repository keeps one current implementation of each experiment; earlier
 revisions belong in Git history. The hosted test sites are intentionally blank.
@@ -45,10 +42,10 @@ for the original dynamical-systems exploration.
 | Neural dynamics / symmetric neural key | [Python experiment](experiments/neural-dynamics/README.md) | Recurrent CNNs, rotating kernels, diffusion, bias, numerical agreement, and surrogate attacks. |
 | Python ZKBoo | [Python experiment and core](experiments/python-zkboo/README.md) | Exact binary circuit, compact prover/verifier, command-line provisioning and optical simulation, and Python↔JavaScript parity. |
 | Browser Crypto Lab | [Color app](apps/color-optical-bench/README.md), `crypto.html` | Generate keys, prove, verify, reject tampering, and measure local performance in a worker. |
-| Neural-QR transport research | [Design](docs/NEURAL_QR.md), [current Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Custom neural-readable matrices. Header-free rendering/acquisition runs in `capture.html`; OBM5 remains the working authentication baseline until multires model and packet integration. |
+| Neural-QR transport research | [Design](docs/NEURAL_QR.md), [current Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Custom neural-readable matrices. Header-free acquisition runs in `capture.html`; Neural-ZKBoo uses the trained corrector and in-band RS+CRC packets. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
-| Neural-ZKBoo authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | A 32-repetition phone/PC exchange completed with trained four-phase data reception and static QR ACKs. Baseline for Neural-QR integration. |
-| Neural corrector | [Model and training](experiments/neural-corrector/README.md), [collection guide](docs/MULTIRES_COLLECTION.md), `corrector.html` and `capture.html` | W-tube (two U passes) and VW (three U passes) training/evaluation on version-2 G16–G128 four-pixel data; separate U-tube and two-pixel multires experiments remain available. Earlier phase-grouped G64 training powers the separate working authentication baseline. |
+| Neural-ZKBoo authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | Header-free Neural-QR DATA and G32 ACKs with trained VW/W-tube inference and independent directional geometry limits. |
+| Neural corrector | [Model and training](experiments/neural-corrector/README.md), [collection guide](docs/MULTIRES_COLLECTION.md), `corrector.html` and `capture.html` | W-tube and VW training, evaluation and static ONNX export on version-2 G16–G128 four-pixel data; U-tube and two-pixel multires remain separate experiments. |
 
 Read [use cases](docs/USE_CASES.md), [format boundaries](docs/FORMATS.md), and
 [development instructions](docs/DEVELOPMENT.md) before changing a protocol.
@@ -117,12 +114,13 @@ the capture page itself needs only the existing static app. To test the whole
 stack, export and prepare the trained checkpoint, then open **Neural-ZKBoo** on
 both devices using [the setup and turn sequence](docs/NEURAL_ZKBOO_DEMO.md).
 The original Optical Bench/Live Demo retain their classical receiver; the new
-authentication page requires the trained corrector for DATA and uses static QR ACKs.
+authentication page requires the trained corrector for both Neural-QR DATA and G32 ACKs.
 
 ## Status and scope
 
 On **4 November 2026**, the owner completed a 32-repetition Neural-ZKBoo exchange
-using learned G64 data recovery and static QR ACKs. Verification and final result
+using the earlier learned G64 transport and static QR ACKs. This historical result
+predates the current Neural-QR integration. Verification and final result
 delivery completed in approximately **6 minutes 17 seconds**. The 17,474-byte
 proof took approximately **160 seconds** to transfer and acknowledge, or **109 B/s**
 including turns and alignment. This validates the integrated path, not a matched

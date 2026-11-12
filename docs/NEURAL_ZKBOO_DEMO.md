@@ -1,37 +1,29 @@
-# Neural-ZKBoo color authentication demo
+# Neural-ZKBoo over Neural-QR
 
-`apps/color-optical-bench/dist/neural-zkboo.html` is the separate, turn-based
-authentication interface. It carries the existing neural-key ZKBoo-style proof
-over color matrices, using the trained **U-tube-2x-attn** corrector for incoming
-data and static standard QR codes for ACKs. The full QR transport interface remains a
-separate experiment; both apps share its QR codec. **Neural-ZKBoo** is the protocol's project name; this naming
-change does not alter its existing proof bytes or circuit.
+`apps/color-optical-bench/dist/neural-zkboo.html` runs the turn-based authentication
+POC using **header-free Neural-QR for both data and acknowledgments**, corrected
+by the trained **VW** or **W-tube** model. The physical directions have independent
+limits: G128 from computer to phone, G64 from phone to computer. Authentication
+roles can be reversed without reversing these limits.
 
-The **4 November 2026** device reports confirm a complete 32-repetition exchange,
-including the final result ACK, in approximately 6 minutes 17 seconds. This page
-describes that working baseline. The [Neural-QR design](NEURAL_QR.md) defines the
-next transport, including replacement of the dense header and standard QR ACKs;
-those format changes are not implemented by this documentation update.
+This iteration integrates the existing trained model and Neural-ZKBoo proof;
+it does not require another training run. It replaces the earlier G64 transport
+and standard QR ACKs. The separate QR experiment remains available for reference.
+Neural-ZKBoo is the project's ZKBoo-style neural-key protocol name, not a change
+to the proof circuit or a claim of independently established cryptographic security.
 
-The original Neural-ZKBoo implementation and documentation use
-[Apache-2.0](../LICENSE), with author/project attribution in [NOTICE](../NOTICE).
-See [licensing scope](LICENSING.md) and [citation metadata](../CITATION.cff).
+The original implementation and documentation use [Apache-2.0](../LICENSE), with
+author/project attribution in [NOTICE](../NOTICE). See [licensing scope](LICENSING.md).
 
-Automated checks exercise the real 32-repetition proof, clean rendered color
-matrices and QR ACKs, including lost-ACK retries; they do not
-establish live-camera reliability or speed with the trained checkpoint. The
-model's recorded validation success motivates this test, rather than replacing it.
+## Prepare and serve
 
-## Prepare the trained model and app
-
-Both devices need the prepared, trained G64 phase-grouped model. Directory
-renaming alone does not update an older checkpoint's descriptive profile: follow
-the [one-time checkpoint metadata instruction](CORRECTOR_LAB.md#rename-the-descriptive-profile-in-an-existing-checkpoint)
-first. No retraining is needed. From the repository root:
+Export the trained checkpoint with all receiving geometries. Use your actual
+checkpoint path if its directory has a different name:
 
 ```sh
 python experiments/neural-corrector/export.py \
-  --checkpoint checkpoints/neural-corrector/U-tube-2x-attn/best.pt \
+  --checkpoint checkpoints/neural-corrector/vw-distill/best.pt \
+  --sizes 32 64 128 \
   --out experiments/neural-corrector/artifacts/selected
 npm ci --prefix experiments/neural-corrector/browser-runtime
 npm run prepare:apps
@@ -42,191 +34,243 @@ python apps/color-optical-bench/serve.py \
   --cert certs/dev.pem --key certs/dev-key.pem
 ```
 
+The export produces one static ONNX graph per size, numerical fixtures and a
+manifest. PyTorch-to-ONNX Runtime parity is checked during export; the WASM test
+checks the browser runtime implementation. Export the student inference model:
+the training-only EMA teacher and projection block are not needed in the app.
+The demo accepts trained, four-phase, eight-slot, four-pixels-per-cell W-tube/VW
+bundles. G16 is optional for other experiments, but **cannot carry this demo's
+complete control packets**; G32 must be present.
+
 Use a certificate trusted by the phone and matching the server hostname. Open
-`https://YOUR-COMPUTER-HOST:8000/neural-zkboo.html` on both devices. For a local
-webcam-only check, the server can instead use ordinary localhost HTTP. The
-[serving guide](CORRECTOR_LAB.md) explains the ONNX bundle and runtime assets.
-The demo rejects untrained bundles and incompatible model input contracts.
+`https://YOUR-COMPUTER-HOST:8000/neural-zkboo.html` on both devices, with the same
+prepared app and artifact bundle. Localhost HTTP is enough for a computer-only
+webcam check. See [the serving and corrector guide](CORRECTOR_LAB.md) for runtime
+assets and certificate setup. After updating, prepare the app and reload both
+devices. No hosted site is automatically activated.
 
-For this ACK/acquisition update, run `npm run prepare:apps` after pulling the
-code, then reload **both devices**. Preparation copies the QR codec and its
-licensed dependencies locally; there is no CDN or QR service. An already
-prepared trained model needs no re-export or retraining for this change.
-The authentication demo accepts QR ACKs only; its former color ACK path is removed.
+The server supplies static app code and models. Keys, camera frames, proof
+creation and verification stay on the devices. The browser loads ONNX files,
+not the `.pt` checkpoint. Static attention masks can make those files substantially
+larger than the checkpoint; allow initialization to finish before timing a transfer.
 
-The server serves static code and model files. It does not generate keys,
-receive camera frames, create proofs, or verify them. Initialization caches the
-model in each device's worker. To test offline operation, first **start both
-devices and wait until both show the trained model and camera ready**, then
-disconnect the server/network while leaving both pages open. Do not disconnect
-before initialization or reload afterward: the first load still needs assets.
+## Settings and direction
 
-## Default configuration
-
-| Setting | Initial value | Purpose |
+| Setting | Computer | Phone |
 | --- | --- | --- |
-| Cryptographic circuit | Side 8, 16 circuit rounds | Same reduced-proof test circuit as QR authentication |
-| Proof repetitions | 32 | Quick development test; 17,474 raw proof bytes |
-| Other repetition choices | 64, 110, 160, 219 | Increase proof work and size; not certified security levels |
-| DATA and START matrices | 64×64, 16 colors, grid-8 references, RS32 | Trained corrector's supported geometry |
-| Palette phases | Four permuted phases | Exactly the model's phase-grouped input |
-| Phase display interval | 150 ms | Sender target; approximately 600 ms per four-phase cycle |
-| Camera sampling interval | 100 ms | Receiver target between distinct camera exposures |
-| Model input | K=4…8 captures | At least one capture of every phase, up to two per phase |
-| ACK codes | Static QR, byte mode, version 5-M, 37×37 modules plus quiet zone | Carries the complete 84-byte OLM1 ACK; no color calibration or neural inference |
-| Multipart payload | Up to 1,200 bytes per DATA packet | One packet outstanding; wait for its matching ACK |
-| Camera / backend | 720p / Auto | WebGPU when available, with initialization fallback to WASM |
+| **This screen** | Computer | Phone |
+| Default outgoing data | G128 | G64 |
+| Other outgoing choices | G64, G32 | G32 |
+| Incoming maximum | G64 | G128 |
+| ACK in either direction | G32, four phases | G32, four phases |
+| First authentication role | Verifier | Key holder |
 
-Choose matching proof repetitions for the first test. The verifier's requested
-count must satisfy the key holder's minimum; the application checks this policy.
-Changing repetitions leaves the optical geometry and corrector unchanged.
+The screen preset describes the physical direction, independently of the
+**Authentication role**. A phone acting as verifier still sends at most G64;
+a computer acting as key holder can still send G128.
 
-The 150/100 ms defaults give more time within each phase. They do not synchronize
-camera exposures or guarantee a complete burst within one display cycle.
-Display refresh, rolling shutter, exposure, detection and inference all add
-latency; processing can reduce the actual sampling rate. Capture and inference
-run without an accumulating job queue. Both intervals remain configurable;
-report the selected settings and observed acquisition behavior.
+| Shared setting | Default / contract |
+| --- | --- |
+| Circuit | Side 8, 16 circuit rounds |
+| Proof repetitions | 32; 17,474 raw proof bytes |
+| Other repetition choices | 64, 110, 160, 219 |
+| Neural-QR | 16 colors, grid-8 references, four palette phases, RS32 and CRC32 |
+| Phase display interval | 150 ms |
+| Camera sampling interval | 100 ms |
+| Capture resolution | Requested 1440p; actual camera settings are reported |
+| Backend | Auto: WebGPU, with initialization/parity fallback to WASM |
+| Model input | K=4…8 distinct captures, one or two per phase |
+| Multipart DATA payload | G32: 244 B; G64: 1,288 B; G128: 5,416 B per packet |
 
-## Device sequence and physical turns
+Choose 32 repetitions on both devices for the first exchange. A verifier's
+challenge must satisfy the key holder's minimum; increasing repetitions changes
+proof work and bytes, not the optical format. These are research settings, not
+certified security levels.
 
-1. Choose **Verifier** on the PC and **Key holder** on the phone. Start with 32
-   repetitions on both, select cameras, and press **Start authentication** on
-   each device. The verifier sends first; the key holder initially receives.
-2. Aim the receiver at the sender's complete matrix. **Orange** marks finder
-   candidates and the estimated frame when its header is unreadable. **Green**
-   marks a checksum-valid header; it does not imply payload recovery. Per-phase
-   counts show collection. The sender keeps cycling the same
-   logical matrix until it receives the matching ACK.
-3. When the receiver displays **QR ACK**, turn the phone so the sender's camera can
-   read that ACK. Keep it visible until the sender advances. Aim back at the
-   sender's next matrix. Repeat this for the message START packet and every data
-   chunk; simultaneous bidirectional alignment is unnecessary.
-4. At the end of a message, its final ACK remains visible. Wait for the sending
-   device to confirm that the outgoing message was fully acknowledged. If the
-   receiver has a reply ready, press **Send next turn** there. This explicitly
-   replaces the final ACK with the next outgoing message.
-5. After both public identities arrive, compare the pairing code on the two
-   screens and press **Codes match · confirm** on both. Stop and restart if they
-   differ. Confirmation may queue the next outgoing turn; use the same final-ACK
-   handoff before sending it.
-6. Transfer the fresh challenge, then the generated proof, using the same turns.
-   The verifier checks the proof locally and sends its result. **Also deliver
-   the final result ACK** so the verifier knows that result delivery finished.
-7. Download a report from each device, including any failed attempt. Repeat with
-   roles reversed after the first successful exchange.
+The four phases repeat the same packet using different palette permutations;
+they do not multiply its payload capacity. The payload sizes above exclude the
+optical and multipart overhead. G16's remaining protected packet space is too
+small for an 84-byte ACK or an 88-byte START, so controls use G32.
 
-The **Verified locally** result on the verifier differs from the key holder's
-**Peer reports accepted** result. This iteration proves the key holder's secret
-to the verifier; the result message does not prove the verifier's identity.
-Keys are ephemeral and stay in the browser workers. There is no persistent
-enrollment or mutual authentication in a single attempt.
+Four 150 ms phases take 600 ms to display. This is a display cycle, not a promised
+packet latency: exposure, dropped phases, preprocessing, inference and the ACK
+turn add time. A 100 ms sampling setting is a target interval between distinct
+camera exposures. Processing can make it slower. There is one capture/inference
+job at a time and no growing frame queue.
+
+Use **Next outgoing message** to lower the geometry between messages. An active
+message keeps its original chunking and geometry. If that message cannot be
+read, stop both devices and start a fresh attempt at the smaller size; the app
+does not silently rechunk a partly acknowledged message.
+
+## Run the exchange
+
+1. Select the screen presets above and one verifier and one key holder. Select
+   cameras and press **Start authentication** on both. Each device first loads
+   and checks all its incoming model sizes, then starts the camera and local keys.
+2. Aim the receiving camera at the whole Neural-QR, including its corners and
+   reference frame. **Orange** indicates detected candidates with uncertain
+   orientation, size or phase. **Green** means acquisition cues passed, not that
+   the packet or proof has been accepted. The display keeps cycling one packet
+   until its matching ACK arrives.
+3. When **G32 ACK** appears, turn the phone so the sender's camera can read its
+   four phases. Keep it visible until the sender advances. Aim back at the next
+   packet. Repeat for START and each DATA packet; simultaneous alignment is not
+   required.
+4. The final ACK of a message stays visible. Wait until the sender confirms full
+   delivery. If the other device has a reply queued, press **Send next turn**
+   there. This manual handoff replaces the ACK with the next message.
+5. Compare the pairing codes on both screens and press **Codes match · confirm**
+   on both only if they match. Stop and restart if they differ. Continue the
+   same handoff for challenge, proof and result.
+6. Deliver the result's final ACK too. The verifier should show **Verified
+   locally** with result delivery complete, and the key holder **Peer reports
+   accepted**. Download a report from both devices.
+
+The five application messages are HELLO, IDENTITY, CHALLENGE, PROOF and RESULT.
+Each message has its own START/ACK and sequential DATA/ACK exchanges. Duplicated
+packets and repeated final ACKs do not create duplicate application deliveries.
+
+This is one-way proof of the key holder's secret, using fresh ephemeral keys and
+a fresh, pairing-bound challenge. Both public identities are exchanged and
+compared, but the result message is not a second proof of the verifier's secret.
+Swapping roles in a new attempt tests the other direction; it does not turn one
+attempt into mutual authentication or persistent enrollment.
+
+## Correction, packet acceptance and resource bounds
+
+The receiver first tries the recent geometry on the current exposure, then
+searches for markers again if needed. A geometry hint expires after 400 ms;
+successful reuse does not extend that deadline. Orientation, size cues, phase
+cues and palette references are remeasured from every exposure. There is no
+monochrome payload header and no settling delay in this path.
+
+Rectified inputs use 4×4 pixels per cell: 128×128 at G32, 256×256 at G64, and
+512×512 at G128. The model input has eight RGB slots and eight presence planes
+(32 channels). One exposure from each phase permits the first K4 attempt. After
+failed recovery, the next inference waits for two captures per phase (K8).
+Further K8 retries wait for four new valid captures in total, which need not be
+one from each phase. The pool replaces the oldest sample of the newly observed
+phase. Missed detections and duplicate exposure callbacks do not count toward
+those four captures. The model emits canonical logical-color logits; phase inversion
+must not be applied again to its output.
+
+Geometry and phase cues are not a packet identity. A transition between packets
+can temporarily mix observations and fail recovery; fresh exposures replace
+those observations until a protected packet can be recovered. The receiver
+resets its pool on geometry, run or DATA/ACK mode changes and expires old
+observations within 60 seconds. It never uses expected sender bytes to guide
+correction or acceptance.
 
 ```mermaid
-stateDiagram-v2
-  [*] --> PublicIdentities
-  PublicIdentities --> Pairing: Both messages acknowledged
-  Pairing --> Challenge: Both codes confirmed
-  Challenge --> Proof: Fresh request delivered
-  Proof --> Result: Local proof verification
-  Result --> Complete: Result ACK received
-  PublicIdentities --> Stopped: Cancel or timeout
-  Challenge --> Stopped: Cancel or timeout
-  Proof --> Stopped: Cancel or timeout
+flowchart TD
+  A[Camera exposure] --> B[Geometry and phase cues]
+  B --> C[Phase-paired capture pool]
+  C --> D[Neural corrector]
+  D --> E[Canonical symbols]
+  E --> F[RS and CRC]
+  F -->|Valid packet| G[Session, sequence and digest checks]
+  F -->|Recovery fails| C
+  G -->|Expected bytes| H[Multipart message]
+  H --> I[Neural-ZKBoo session]
 ```
 
-Each message in this sequence uses a START/ACK exchange, followed by sequential
-DATA/ACK exchanges. Phase repetition continues until acknowledgment rather than
-sending a new chunk on a timer. The explicit handoff is especially useful when
-the phone must be physically turned between receiving and displaying.
+The current `NQP1` in-band container carries protected geometry, packet kind and
+length, followed by the OLM packet and random padding. Reed–Solomon protection
+and CRC32 cover the container. Grid references stay in their physical colors;
+only payload cells follow the four phase permutations. Random padding keeps
+short control packets visually dense; it is not authentication.
 
-## Corrector and transport behavior
+A corrected matrix advances transport only after RS/CRC recovery, container
+validation and matching multipart identifiers/state. The full message digest is
+checked before application delivery. Proof verification, challenge binding and
+replay rejection remain separate cryptographic checks. ACKs use this same
+Neural-QR/corrector path, not a QR decoder or an old optical-header fallback.
 
-The worker first tries the most recent valid geometry on the current exposure,
-then falls back to full finder detection if the current header cannot be read.
-The hint contains coordinates only: phase, header CRC, payload and color
-references always come from the new exposure. A full search refreshes geometry
-after 500 ms; successful reuse does not extend that deadline. New runs, camera
-dimension changes and DATA/ACK mode changes reset the hint. A failed neural
-payload recovery also invalidates it so the next capture reacquires alignment.
-There is no settling timer in this live path.
+The live capture pool holds at most eight crops: 24 MiB at G128, before the packed
+input, camera image and runtime working memory. Initialization fetches and
+verifies all allowed incoming artifacts: G32/G64 on the computer and G32/G64/G128
+on the phone. It checks browser numerical parity for each, keeps at most two
+compiled sessions, and retains the verified model/fixture bytes for all allowed
+sizes. Returning to an evicted size recompiles it from those bytes. Actual peak
+memory includes runtime/GPU allocations and is not inferred from the buffer bound.
 
-The worker validates the monochrome header, rectifies each camera
-frame, and applies the same measured color normalization/input contract as the
-trained model. It collects distinct exposures into the four phase pairs, first
-tries K=4, and incorporates additional observations through K=8 after recovery
-fails. At capacity it replaces older evidence and tries again; transient missed
-headers do not discard all useful observations. Matrix identity changes and
-evidence age bounds prevent unrelated frames from mixing.
+After **both devices show the model and camera ready**, all allowed incoming
+sizes are available in the workers for the current attempt, including a smaller
+fallback size. You can disconnect the server/network and leave both pages open
+to test offline operation. Reloading, cancelling/restarting the workers, closing
+or hiding the page requires a new attempt and may need the server again; this is
+not an installed offline app. No CDN is required during the exchange.
 
-Logical palette scores pass through the existing Reed–Solomon and CRC recovery
-path. **Only CRC-valid bytes reach the multipart receiver.** Known sender data
-or expected proof bytes never enter correction. ACK reception uses the bundled
-QR decoder directly in the worker, bypassing the custom matrix header and color
-calibration. Each QR contains the existing complete OLM1 ACK: packet CRC, session
-and message identifiers, acknowledgment state and message digest remain checked.
-A decoded QR is not accepted until it matches the outstanding transfer. ACKs
-stay static and visible until the sender advances or the explicit next turn starts.
+A message has a ten-minute deadline and an authentication attempt thirty minutes.
+Cancel/reset stops workers and camera tracks. Hiding the page stops the attempt;
+keep both pages in the foreground while turning the devices or waiting for proof
+creation.
 
-Non-ACK packets are wrapped in the current `NZM1` optical container, which records
-the packet length and fills the remainder of the 1,344-byte matrix payload with
-secure random bytes. This makes short START/identity messages visually dense,
-closer to the random data used during training. Padding is not an authentication
-mechanism. The OLM1 packet identities, sequencing and whole-message digest remain
-responsible for transport consistency, while Neural-ZKBoo verifies the proof.
+## First device tests and reports
 
-Buffers and reports are bounded. A message has a ten-minute deadline and an
-authentication attempt a thirty-minute deadline. Cancel/reset stops workers and
-camera tracks. Hiding the page also stops the attempt; reopen and start fresh on
-both devices. Stay on the page while waiting for an ACK or generating a proof.
+Run these short checks before increasing proof repetitions:
 
-## What to report from the first device test
+1. **Model and camera readiness.** Confirm parity passes for G32/G64 on the PC
+   and G32/G64/G128 on the phone. Use Auto first; record the effective backend,
+   initialization time, inference time and actual capture resolution. If the
+   browser reports a memory/runtime error, save that report before restarting.
+2. **Conservative full exchange.** Choose G64 outgoing on both devices, keeping
+   150 ms phases, 100 ms sampling and 32 repetitions. Verify packet ACKs, matching
+   pairing codes, completed proof verification and final result acknowledgment.
+3. **Asymmetric exchange.** Use computer G128 and phone G64. Compare inference
+   latency and sent-message goodput with the G64 baseline. A larger packet helps
+   only if acquisition, inference and ACK timing make the whole exchange faster.
+4. **Recovery and role swap.** Briefly cover the camera while an ACK is displayed,
+   then restore alignment. Confirm the same packet retries without duplicate
+   delivery. Test smaller geometry between messages, then a fresh attempt with
+   roles reversed while keeping the physical screen presets unchanged.
+5. **Offline exchange.** Start both devices online, wait for model/camera readiness,
+   disconnect the server/network and finish a 32-repetition exchange. Keep the
+   pages open. Check a permitted smaller outgoing geometry at a message boundary
+   as well if the exchange needs fallback.
 
-Save both JSON reports and note the phone/PC models, browser versions, selected
-cameras, display brightness/size and physical arrangement. Reports exclude
-camera images and private keys; they include settings, model/backend identity,
-recent inference timings, received/accepted code counts, separate DATA/ACK
-failure-stage counts (`captureStages`), geometry reuse count (`geometryReuses`), transport progress,
-authentication state and bounded event history. Add a short note naming the
-step that stalled, if any.
+Download both **version 2** JSON reports, including failures. Add the device and
+camera models, brightness, approximate distance/angle, lighting, and what stalled.
+Useful comparisons are:
 
-Start with the default 150/100 ms settings and 720p. Check these outcomes in order:
+- Effective backend and per-size startup parity/inference timings.
+- Actual and processed camera resolution, observed pixels per cell, missing phases
+  or orange acquisition feedback.
+- Per-grid capture attempts, inference count/time, CRC-accepted matrices and
+  transport-accepted matrices, with separate DATA/ACK failure stages.
+- Per-message bytes, elapsed time and goodput in **bytes/second**, proof creation
+  and verification times, and final outcome on each device.
 
-1. Both trained models initialize. Orange marker feedback changes to green as
-   the color header becomes readable; phase counts begin increasing.
-2. Static QR ACKs advance START and DATA packets, including the final message ACK.
-3. Public identities arrive and pairing codes match.
-4. The 32-repetition proof arrives, verifies, and the result is acknowledged.
-5. The same exchange succeeds with roles reversed and after server disconnection.
+Sent-message goodput includes the final ACK; received-message timing starts at
+the first valid START and ends at message assembly. Compare sent-message metrics
+when assessing throughput. Reports are bounded and contain no camera images or
+private keys.
 
-If a run stalls, report whether the receiver sees no markers, orange markers,
-green geometry with missing phases, repeated payload recovery failures, or an
-unreadable QR ACK. The camera status distinguishes a decoded ACK from an ACK
-that matches the transfer. Do not change matrices to 128×128 or add palette phases for this
-model: its trained contract is specifically G64/16 colors/four phases.
-
-The first goal is a completed, measurable exchange. Live recovery rate,
-throughput and practical reliability still need these physical tests; recorded
-validation and clean-render tests cannot determine them.
+Automated tests run actual 32-repetition cryptography through clean rendered
+Neural-QR acquisition, phase packing, a deterministic test-only classifier, and
+RS/CRC recovery in both directions. They check G32 ACKs, G128/G64 chunks, lost
+final ACKs, duplicates, tampered proofs and challenge/session binding. They do
+not substitute for the trained checkpoint's browser parity or live-camera tests.
+Run `npm run test:neural-zkboo` for the focused suite.
 
 ## Source boundaries
 
 | Component | Canonical source |
 | --- | --- |
-| Turn-oriented UI, capture loop and local report | `apps/color-optical-bench/dist/js/neural-auth/app.js` |
-| Message turns and sticky ACK handoff | `neural-auth/channel.js` |
-| Stop-and-wait multipart state | `neural-auth/transport.js` |
-| DATA matrix profile and optical container | `neural-auth/optical.js` |
-| Static QR ACK rendering and packet validation | `neural-auth/qr-ack.js`; codec from `apps/qr-neural-key/dist/js/qr.js` |
-| Bounded geometry reuse and ACK/DATA acquisition | `neural-auth/capture.js`, `js/vision.js` |
-| Marker/header/payload acquisition feedback | `neural-auth/feedback.js` |
-| Learned crop collection, ONNX inference and CRC recovery | `js/corrector-lab/worker.js` and `js/learned-input.js` |
-| Public-key pairing/challenge/proof/result session | `shared/browser-crypto/auth/`, prepared into `js/auth-core/` |
+| UI, camera loop and reports | `apps/color-optical-bench/dist/js/neural-auth/app.js` |
+| Physical device direction limits | `neural-auth/profiles.js` |
+| Turns and sticky final ACK | `neural-auth/channel.js` |
+| Stop-and-wait multipart messages | `neural-auth/transport.js` |
+| DATA/ACK optical adapter | `neural-auth/optical.js` |
+| Header-free drawing and acquisition | `neural-qr/layout.js`, `neural-qr/vision.js` |
+| Protected optical packet and shared RS framing | `neural-qr/packet.js`, `neural-qr/fec-packet.js` |
+| Geometry reuse and acquisition feedback | `neural-auth/capture.js`, `neural-auth/feedback.js` |
+| Burst packing, ONNX execution and artifact cache | `corrector-lab/live-burst.js`, `runtime.js`, `worker.js` |
+| Pairing, challenge, proof and result | `shared/browser-crypto/auth/` |
 | Neural proof engine and crypto worker | `shared/browser-crypto/` |
 
-The neural proof engine and authentication session have one canonical source;
-the QR and color interfaces provide separate transport adapters. Prepared assets
-under each app are generated copies. No hosted site is activated by this work.
-
-Run `npm run test:neural-zkboo` from the repository root for the focused demo checks.
-
+The JS paths after the first row are relative to the app's `dist/js/` directory,
+except the explicitly named shared sources. `prepare:apps` copies the canonical
+crypto sources into each app. See [Neural-QR](NEURAL_QR.md) for the visual format
+and [the corrector design](NEURAL_CORRECTOR.md) for the models.

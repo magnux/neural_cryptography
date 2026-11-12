@@ -1,9 +1,9 @@
 # Neural Corrector Lab — export, serving, and device inference
 
-The Neural Corrector Lab runs the trained U-tube family locally in a browser
+The Neural Corrector Lab runs U-tube, W-tube and VW models locally in a browser
 worker. It measures PyTorch-to-browser numerical agreement, model loading,
-inference time, and camera-burst preparation. The reported successful
-`U-tube-2x-attn` training run is ready for this device check.
+inference time, and camera-burst preparation. The current Neural-ZKBoo demo uses
+a trained W-tube/VW checkpoint with header-free Neural-QR data and G32 ACKs.
 
 The serving path already exists. The Python `.pt` file is the training
 checkpoint; the browser loads its **ONNX export**, a small manifest and the
@@ -25,7 +25,8 @@ From the repository root, with the training virtual environment active:
 ```sh
 python -m pip install -r experiments/neural-corrector/requirements.txt
 python experiments/neural-corrector/export.py \
-  --checkpoint checkpoints/neural-corrector/u-tube-2x-attn-phase8/best.pt \
+  --checkpoint checkpoints/neural-corrector/vw-distill/best.pt \
+  --sizes 32 64 128 \
   --out experiments/neural-corrector/artifacts/selected
 npm ci --prefix experiments/neural-corrector/browser-runtime
 npm run prepare:apps
@@ -37,6 +38,12 @@ Set the checkpoint path to the local filename you chose. Export infers the
 architecture and input shape from the validated checkpoint. It creates fresh
 numerical fixtures using those exact weights; omitting `--checkpoint` produces
 an **untrained** feasibility model and is unsuitable for a recognition test.
+W-tube/VW export independent static G16/G32/G64/G128 graphs for their trained
+anchors. A trained export must include G32 and G64 for the demo, and G128 to
+receive at that size; use `--sizes 32 64 128` to omit the unused G16 graph.
+These are exports of one checkpoint, not separate training runs. Static attention
+masks make a G128 VW graph roughly 17.5 MB even though its learned parameter
+count is small; fixture inputs and runtime working memory are additional.
 `U-tube-2x-attn` exports G64 only. The two fixed-input profiles can export G64 and
 G128, but successful export alone does not establish cross-size recognition.
 
@@ -149,15 +156,16 @@ SHA-256 hashes. A partially replaced or mismatched bundle fails validation.
 
 | Location under `apps/color-optical-bench/dist/` | Purpose |
 | --- | --- |
-| `corrector.html`, `js/corrector-lab/`, `corrector-lab.css` | Lab UI and worker code |
+| `corrector.html`, `js/corrector-lab/` | Lab UI, styles and worker code |
 | `models/neural-corrector/manifest.json` | Trained status, profile, input/output contract, versions, artifact hashes and bounded provenance |
-| `models/neural-corrector/model-64.onnx` | Browser inference graph and weights |
-| `models/neural-corrector/input-64.f32`, `expected-64.f32` | Public numerical fixture and expected PyTorch logits |
+| `models/neural-corrector/model-G.onnx` | Static inference graph and weights for each exported G |
+| `models/neural-corrector/input-G.f32`, `expected-G.f32` | Public numerical fixture and expected PyTorch logits for that G |
 | `vendor/onnxruntime/` | Pinned JS/WASM runtime and license notices |
 
-The checkpoint stays outside the served `dist/` directory. At 432,848 parameters,
-its roughly 1.7 MB weight payload is small; the current ONNX graph is about
-2.84 MB because it also contains graph constants. Runtime assets are additional:
+The checkpoint stays outside the served `dist/` directory. VW has 696,400
+parameters, but the static graphs include additional constants: approximately
+3.7 MB at G32, 6.5 MB at G64 and 17.5 MB at G128 in the checked export.
+The packed G128 numerical input alone is 32 MiB. Runtime assets are additional:
 the prepared WASM variants are roughly 12–25 MB each, and the chosen backend
 loads its required assets. Cold download/initialization and warm inference are
 reported separately. Preparation copies the necessary runtime variants locally;
@@ -219,21 +227,26 @@ explicit local setup steps and do not reactivate any hosted test site.
 3. Start the camera at 720p and repeat the numerical benchmark. This measures
    contention while the preview is active. Compare 1080p only if useful for the
    intended receiving configuration.
-4. On the other device, display the same **64×64/16-color logical matrix in four
-   permuted phases**, using grid-8 references. Cycle the phases, align the whole
-   marker and select **Test matrix burst**. Test 4, 5, 6, 7 and 8 camera exposures;
+4. For W-tube/VW, display a **Neural-QR matrix at the selected grid size**, with
+   16 colors, four permuted phases and grid-8 references. Start at G64, then
+   check G32 controls and G128 on the phone. Cycle the same logical matrix, align
+   the whole frame and select **Test matrix burst**. Test 4, 5, 6, 7 and 8 camera exposures;
    **Model default** collects eight. Four means one distinct capture per phase.
 5. Reverse the devices and repeat. Try cancel/restart, and save both successful
    and failed device reports before leaving the page.
 
-Fixed-input U-tube profiles accept only their configured T and collect one
-header/phase. `U-tube-2x-attn` accepts K=4–8, with phase pairs
-`P0a,P0b,P1a,P1b,P2a,P2b,P3a,P3b` and eight binary presence planes. It keeps at
-most two captures per phase and requires all four phases. A matching phase
-change preserves the partial group. Brief detection failures retain prior
-valid phases; a different logical header, a new run, cancel/restart, or evidence
-older than 60 seconds clears the group. Video timestamps and presented-frame
-counters enforce distinct exposures.
+W-tube/VW camera probes use header-free Neural-QR acquisition. The phase pairs
+are `P0a,P0b,P1a,P1b,P2a,P2b,P3a,P3b`, with eight binary presence planes. They
+keep at most two captures per phase and require all four phases. Brief detection
+failures retain prior valid phases; a different geometry, new run, cancel/restart
+or evidence older than 60 seconds clears the group. Video timestamps and
+presented-frame counters enforce distinct exposures. Size and phase cues do not
+identify a payload, so keep the same logical matrix visible throughout the probe.
+
+The separate U-tube camera probes use their Optical Bench format: fixed-input
+profiles accept only their configured T at one header/phase; `U-tube-2x-attn`
+accepts K=4–8 in the same phase-paired slot arrangement. A different logical
+header resets their capture group.
 
 Collection targets 100 ms start-to-start sampling, with at most 512 attempts
 and eight stored crops for phase-grouped input. Processing can reduce that rate.
@@ -259,12 +272,17 @@ The lab's camera button remains a crop-preparation and finite-logit probe. The
 new **`neural-zkboo.html`** interface uses the same worker's transport operations
 to run the trained four-phase model, pass its logical scores through byte/RS/CRC
 recovery, and deliver accepted packets to the authentication channel. It attempts
-K=4 first, grows through K=8 when recovery fails, then replaces observations and
-retries within bounded retention and timeout limits.
+K=4 first, waits for two captures per phase before the next K=8 attempt, then
+waits for four new valid captures in total before retrying K=8. They need not
+cover every phase; the pool replaces the oldest sample of each observed phase.
+Missed detections and duplicate exposures do not count. These retries remain
+within bounded retention and timeout limits.
 
-The demo cycles DATA phases at 95 ms and targets distinct camera samples every
-100 ms, with both intervals configurable. Small classical ACK matrices and
-explicit turns let the user rotate the phone between receiving and displaying.
+The demo cycles DATA and G32 ACK phases at 150 ms and targets distinct camera
+samples every 100 ms, with both intervals configurable. Both packet types use
+Neural-QR and the trained corrector. Explicit turns let the user rotate the phone
+between receiving and displaying. Computer data can use G128 and phone data G64;
+physical device limits are independent of authentication roles.
 See the [complete setup and device sequence](NEURAL_ZKBOO_DEMO.md) for the initial
 32-repetition exchange, pairing confirmation, final result acknowledgment and
 reports. Both devices load the trained ONNX bundle before the exchange; no

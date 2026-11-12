@@ -2,10 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createTurnSender,TurnReceiver,TURN_LIMITS} from '../dist/js/neural-auth/transport.js';
 import {encodePacket,decodePacket,sha256} from '../dist/js/link/protocol.js';
-import {paletteMap} from '../dist/js/grid.js';
-import {decodeSymbols} from '../dist/js/format.js';
+import {paletteMap,gridLayout} from '../dist/js/grid.js';
+import {decodeNeuralQRSymbols,chunkBytesForSize} from '../dist/js/neural-qr/packet.js';
 import {packetFrames,unpackOptical} from '../dist/js/neural-auth/optical.js';
-import {renderACK,readACK} from '../dist/js/neural-auth/qr-ack.js';
 
 const sessionId='ab'.repeat(16),messageId='cd'.repeat(8);
 const ids={sessionId,messageId,messageType:'raw'};
@@ -81,7 +80,7 @@ test('malformed and oversized input fails before state allocation',async()=>{
   assert.equal((await r.receive(s.next(1),1)).reason,'unsupported-message');assert.equal(r.snapshot().bufferedBytes,0);
   const broken=s.next(2);broken[10]^=1;assert.equal((await r.receive(broken,2)).reason,'malformed');
   assert.equal((await r.receive(new Uint8Array(2000),3)).reason,'malformed');
-  await assert.rejects(()=>sender(0,{chunkBytes:1201}),/chunk size/);
+  await assert.rejects(()=>sender(0,{chunkBytes:TURN_LIMITS.chunkBytes+1}),/chunk size/);
   await assert.rejects(()=>createTurnSender(new Uint8Array(TURN_LIMITS.maxMessageBytes+1)),/2 MiB/);
 });
 
@@ -111,15 +110,30 @@ test('sender and receiver expose copies of packets, and sender snapshots caller 
   got.ack.fill(0);assert.notDeepEqual(r.ack(),got.ack);
 });
 
-test('data survives color framing and its full ACK survives QR framing',async()=>{
+test('data and full ACK survive the same header-free Neural-QR framing',async()=>{
   const s=await sender(),r=new TurnReceiver(),startBytes=s.next(1),ready=await r.receive(startBytes,1);s.receive(ready.ack,2);
-  const data=s.next(3);
-  const frames=packetFrames(data);assert.equal(frames.length,4);
-  for(const f of frames){
-    const decoded=decodeSymbols(f.symbols.map(value=>paletteMap(value,f)),f);
-    assert.deepEqual(unpackOptical(decoded.chunk,'data'),data);
+  for(const [bytes,expected] of [[s.next(3),'data'],[ready.ack,'ack']]){
+    const frames=packetFrames(bytes);assert.equal(frames.length,4);
+    for(const frame of frames){
+      const logical=frame.symbols.slice(),layout=gridLayout(frame.size,16,8);
+      for(const cell of layout.cells)logical[cell]=paletteMap(logical[cell],frame);
+      const decoded=decodeNeuralQRSymbols(logical,frame.size);
+      assert.equal(decoded.ok,true,decoded.error);assert.deepEqual(unpackOptical(decoded.chunk,expected),bytes);
+      assert.equal(frame.size,expected==='ack'?32:64);
+    }
   }
-  const decoded=readACK(renderACK(ready.ack));assert.equal(decoded.ok,true,decoded.error);
-  assert.deepEqual(unpackOptical(decoded.chunk,'ack'),ready.ack);
 });
 
+for(const size of [32,64,128])test(`G${size} negotiated chunks transfer exactly at optical capacity`,async()=>{
+  const chunkBytes=chunkBytesForSize(size),s=await sender(chunkBytes*2+1,{chunkBytes}),r=new TurnReceiver();
+  let delivered=null,now=0;
+  while(s.snapshot().state!=='delivered'){
+    const bytes=s.next(++now),frame=packetFrames(bytes,{size})[0];
+    const decoded=decodeNeuralQRSymbols(frame.symbols,size);assert.equal(decoded.ok,true,decoded.error);
+    const received=await r.receive(decoded.chunk,++now);assert.equal(received.accepted,true,received.reason);
+    if(received.delivery)delivered=received.delivery.bytes;
+    const ack=decodeNeuralQRSymbols(packetFrames(received.ack)[0].symbols,32);
+    assert.equal(ack.ok,true,ack.error);assert.equal(s.receive(ack.chunk,++now).accepted,true);
+  }
+  assert.deepEqual(delivered,payload(chunkBytes*2+1));assert.equal(s.snapshot().ackedChunks,3);
+});

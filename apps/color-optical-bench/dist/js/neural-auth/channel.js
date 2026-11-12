@@ -1,9 +1,11 @@
 /** UI-independent turn scheduling. Final ACKs persist until an explicit handoff. */
 import {createTurnSender,TurnReceiver} from './transport.js';
 import {decodePacket,randomId} from '../link/protocol.js';
+import {chunkBytesForSize} from '../neural-qr/packet.js';
 
 export class TurnChannel {
-  constructor({initiator=false,now=()=>performance.now(),onChange=()=>{},onMessage=()=>{},onError=()=>{}}={}) {
+  constructor({initiator=false,outgoingSize=64,now=()=>performance.now(),onChange=()=>{},onMessage=()=>{},onError=()=>{}}={}) {
+    chunkBytesForSize(outgoingSize);this.outgoingSize=outgoingSize;
     this.now=now;this.onChange=onChange;this.onMessage=onMessage;this.onError=onError;
     this.sessionId=initiator?randomId(16):null;
     this.receiver=new TurnReceiver({sessionId:this.sessionId,maxMessageBytes:524288});
@@ -15,8 +17,14 @@ export class TurnChannel {
   notify(){this.onChange(this.snapshot());}
   snapshot(){return {mode:this.outgoing?'send':this.stickyAck?'ack':'receive',
     queued:!!this.pending,preparing:this.preparing,canSendNext:!!this.pending&&!this.outgoing&&!this.preparing,
-    receivedMessages:this.receivedMessages,sessionId:this.sessionId,
+    receivedMessages:this.receivedMessages,sessionId:this.sessionId,outgoingSize:this.outgoingSize,
     outgoing:this.outgoing?.sender.snapshot()??null,incoming:this.receiver.snapshot(),lastTransfer:this.lastTransfer,closed:this.closed};}
+  setOutgoingSize(size){
+    chunkBytesForSize(size);
+    if(this.closed)throw Error('Optical channel is closed.');
+    if(this.outgoing||this.preparing)throw Error('Change outgoing geometry between messages, not during a transfer.');
+    this.outgoingSize=size;this.notify();
+  }
   enqueue(bytes){
     if(this.closed)return Promise.reject(Error('Optical channel is closed.'));
     if(this.pending||this.outgoing||this.preparing)return Promise.reject(Error('Another authentication message is pending.'));
@@ -31,7 +39,7 @@ export class TurnChannel {
     if(!this.sessionId)throw Error('Receive the verifier identity before sending.');
     const epoch=this.epoch,pending=this.pending;this.preparing=true;this.notify();
     try{
-      const sender=await createTurnSender(pending.bytes,{sessionId:this.sessionId,now:this.clock()});
+      const sender=await createTurnSender(pending.bytes,{sessionId:this.sessionId,now:this.clock(),chunkBytes:chunkBytesForSize(this.outgoingSize)});
       if(this.closed||epoch!==this.epoch)return false;
       this.outgoing={...pending,sender};this.pending=null;this.stickyAck=null;this.started=true;
       sender.next(this.clock());return true;

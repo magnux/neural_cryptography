@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Copy canonical crypto, authentication and QR codecs into independently servable apps. */
+/** Copy canonical crypto and authentication into independently servable apps. */
 import { cp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -7,11 +7,7 @@ import { join } from 'node:path';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const shared = join(root, 'shared', 'browser-crypto');
 const fixtures = join(root, 'shared', 'fixtures', 'zk');
-const qrSource = join(root, 'apps', 'qr-neural-key', 'dist');
 const projectNotices = ['LICENSE', 'NOTICE', 'CITATION.cff', 'THIRD_PARTY.md'];
-const qrFiles = ['js/qr.js', 'js/qr-capacities.js',
-  'vendor/qrcodegen.js', 'vendor/jsQR.js', 'vendor/qrcodegen-LICENSE.txt',
-  'vendor/jsQR-LICENSE.txt', 'vendor/README.md', 'vendor/manifest.json'];
 const workers = ['client.js', 'operations.js', 'reference-fixture.js', 'worker.js'];
 const applications = {
   'color-optical-bench': 'crypto-lab',
@@ -61,9 +57,6 @@ async function prepare() {
   }
   for (const name of workers) await requirePath(join(shared, 'worker', name));
   for (const name of ['envelope.js', 'session.js']) await requirePath(join(shared, 'auth', name));
-  if (names.includes('color-optical-bench')) {
-    for (const file of qrFiles) await requirePath(join(qrSource, file));
-  }
 
   for (const name of names) {
     const app = join(root, 'apps', name);
@@ -86,12 +79,10 @@ async function prepare() {
     // The color app keeps its own lab.js and reports.js beside these modules.
     for (const file of workers) await cp(join(shared, 'worker', file), join(worker, file));
     if (name === 'color-optical-bench') {
-      const qr = join(app, 'dist', 'js', 'qr-core');
-      await rm(qr, { recursive: true, force: true });
-      for (const directory of ['js', 'vendor']) await mkdir(join(qr, directory), { recursive: true });
-      for (const file of qrFiles) await cp(join(qrSource, file), join(qr, file));
+      // This generated directory is no longer used by Neural-QR authentication.
+      await rm(join(app, 'dist', 'js', 'qr-core'), {recursive:true, force:true});
     }
-    console.log(`Prepared ${name}: shared crypto, authentication, worker, public test fixtures${name === 'color-optical-bench' ? ', and QR ACK codec' : ''}.`);
+    console.log(`Prepared ${name}: shared crypto, authentication, worker and public test fixtures.`);
   }
 }
 

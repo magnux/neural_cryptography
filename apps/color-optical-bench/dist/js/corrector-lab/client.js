@@ -22,7 +22,9 @@ export class CorrectorClient {
     }
     const id = ++this.serial;
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => this.cancel(new Error('Corrector operation exceeded two minutes. Try WASM or the smaller grid.')), 120000);
+      const startup = operation === 'transport-init' || operation === 'benchmark';
+      const limitMs = startup ? 300000 : 120000;
+      const timeout = setTimeout(() => this.cancel(new Error(`Corrector operation exceeded ${startup ? 'five' : 'two'} minutes. Try WASM or the smaller grid.`)), limitMs);
       this.pending = {id, resolve, reject, timeout};
       try { this.worker.postMessage({id, operation, options}, transfer); }
       catch (error) { this.cancel(error); }

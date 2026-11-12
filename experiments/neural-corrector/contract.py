@@ -10,6 +10,7 @@ FORMAT = "neural-corrector"
 VERSION = 1
 SIZES = (64, 128)
 MULTIRES_SIZES = (8, 16, 32, 64, 128, 256)
+FOUR_PIXEL_PHASE_SIZES = (16, 32, 64, 128)
 PIXELS_PER_CELL = 4
 CHANNELS = 3
 MAX_FRAMES = 64
@@ -34,12 +35,12 @@ def shapes(size: int, frames: int = 1, *, presence: bool = False,
            pixels_per_cell: int = PIXELS_PER_CELL) -> tuple[tuple[int, ...], tuple[int, ...]]:
     if type(pixels_per_cell) is not int or pixels_per_cell not in (2, 4):
         raise ValueError("Use 2 pixels per cell for multires or 4 for U-tube")
-    sizes = MULTIRES_SIZES if pixels_per_cell == 2 else SIZES
+    sizes = MULTIRES_SIZES if pixels_per_cell == 2 else (FOUR_PIXEL_PHASE_SIZES if presence else SIZES)
     if isinstance(size, bool) or not isinstance(size, int) or size not in sizes:
         raise ValueError(f"Unsupported grid size for {pixels_per_cell} pixels per cell: {size}")
     if type(frames) is not int or frames not in FRAME_COUNTS:
         raise ValueError(f"The corrector supports 1 to {MAX_FRAMES} input frames")
-    if type(presence) is not bool or presence and (frames != 8 or pixels_per_cell == 4 and size != 64):
+    if type(presence) is not bool or presence and frames != 8:
         raise ValueError("Presence-plane inputs require eight slots and a supported phase-grouped grid")
     if pixels_per_cell == 2 and not presence:
         raise ValueError("Multires requires phase-paired RGB and presence planes")
@@ -63,7 +64,7 @@ def normalize_rgb(calibrated_hwc: np.ndarray, *, pixels_per_cell: int = PIXELS_P
         raise ValueError("Expected a square calibrated HWC RGB crop")
     if type(pixels_per_cell) is not int or pixels_per_cell not in (2, 4):
         raise ValueError("Use 2 pixels per cell for multires or 4 for U-tube")
-    sizes = MULTIRES_SIZES if pixels_per_cell == 2 else SIZES
+    sizes = MULTIRES_SIZES if pixels_per_cell == 2 else FOUR_PIXEL_PHASE_SIZES
     if rgb.shape[0] not in tuple(s * pixels_per_cell for s in sizes):
         raise ValueError(f"Unsupported calibrated crop for {pixels_per_cell} pixels per cell")
     if (not np.issubdtype(rgb.dtype, np.number) or np.iscomplexobj(rgb)

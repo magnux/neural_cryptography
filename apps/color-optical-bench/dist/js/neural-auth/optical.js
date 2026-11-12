@@ -1,33 +1,21 @@
-/** Optical framing for the turn demo. Random fill keeps short data matrices dense.
- * This padding has no cryptographic security role; OLM1 and Neural-ZKBoo own theirs.
- */
-import {capacity,encodeSequence,phaseFrames,randomBytes} from '../format.js';
-import {decodePacket,DATA_OVERHEAD} from '../link/protocol.js';
-import {TURN_LIMITS} from './transport.js';
+/** Header-free Neural-QR framing for both directions of the turn demo. */
+import {decodePacket} from '../link/protocol.js';
+import {encodeNeuralQR,CONTROL_SIZE,packetCapacity} from '../neural-qr/packet.js';
+export {CONTROL_SIZE,chunkBytesForSize} from '../neural-qr/packet.js';
 
-export const DATA_PROFILE=Object.freeze({size:64,colors:16,gridBlock:8,parity:32,phases:4,permute:true});
-const MAGIC=Uint8Array.of(78,90,77,49); // NZM1: current padded optical packet container.
-const HEADER_BYTES=6;
-const DATA_BYTES=capacity(DATA_PROFILE.size,DATA_PROFILE.colors,DATA_PROFILE);
-export function packetFrames(bytes,{phaseMs=150}={}) {
-  if(!Number.isInteger(phaseMs)||phaseMs<50||phaseMs>10000)throw Error('Phase time must be 50–10000 ms.');
+export const DATA_PROFILE=Object.freeze({size:64,colors:16,gridBlock:8,parity:32,phases:4,permute:true,pixelsPerCell:4});
+
+export function packetFrames(bytes,{size=64,phaseMs=150}={}){
   const packet=decodePacket(bytes);
-  if(!['start','data'].includes(packet.kind))throw Error('Color matrices carry START and DATA; ACKs use QR.');
-  if(bytes.length>TURN_LIMITS.chunkBytes+DATA_OVERHEAD)throw Error('Optical packet exceeds the turn limit.');
-  if(bytes.length+HEADER_BYTES>DATA_BYTES)throw Error('Turn packet does not fit a data matrix.');
-  const payload=randomBytes(DATA_BYTES);payload.set(MAGIC);new DataView(payload.buffer).setUint16(4,bytes.length);payload.set(bytes,HEADER_BYTES);
-  return phaseFrames(encodeSequence(payload,{...DATA_PROFILE,holdMs:phaseMs,maxFrames:1}));
+  return encodeNeuralQR(bytes,{size:packet.kind==='ack'?CONTROL_SIZE:size,phaseMs});
 }
-export function unpackOptical(bytes,expected) {
-  if(!(bytes instanceof Uint8Array)||!['data','ack'].includes(expected))throw Error('Invalid optical packet input.');
-  let packetBytes=bytes;
-  if(expected==='data'){
-    if(bytes.length!==DATA_BYTES||MAGIC.some((v,i)=>bytes[i]!==v))throw Error('Unexpected data matrix container.');
-    const n=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength).getUint16(4);
-    if(n<40||n>TURN_LIMITS.chunkBytes+DATA_OVERHEAD||n+HEADER_BYTES>bytes.length)throw Error('Invalid optical packet length.');
-    packetBytes=bytes.slice(HEADER_BYTES,HEADER_BYTES+n);
-  }
-  const packet=decodePacket(packetBytes);
-  if(expected==='ack'?packet.kind!=='ack':!['start','data'].includes(packet.kind))throw Error('Unexpected optical packet kind.');
-  return packetBytes;
+
+/** FEC decoding already returned the protected OLM bytes; enforce expected turn. */
+export function unpackOptical(bytes,expected){
+  if(!(bytes instanceof Uint8Array)||!['data','ack'].includes(expected)||bytes.length>packetCapacity(128))
+    throw Error('Invalid optical packet input.');
+  const packet=decodePacket(bytes);
+  if(packet.messageType!=='raw'||(expected==='ack'?packet.kind!=='ack':!['start','data'].includes(packet.kind)))
+    throw Error('Unexpected optical packet kind.');
+  return bytes.slice();
 }

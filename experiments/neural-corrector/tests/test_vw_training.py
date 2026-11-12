@@ -148,18 +148,18 @@ class VWTrainingTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), before)
 
     @unittest.skipUnless(HAS_EXPORT, "ONNX needed to import the exporter")
-    def test_export_guard_does_not_create_or_replace_browser_bundle(self):
+    def test_unsupported_export_grid_does_not_create_or_replace_browser_bundle(self):
         from export import export_smoke
         with tempfile.TemporaryDirectory() as temporary:
             out = Path(temporary)/"bundle"
-            with self.assertRaisesRegex(ValueError, "browser bundle export"):
-                export_smoke(out, profile="VW", sizes=(16,), check_ort=False)
+            with self.assertRaisesRegex(ValueError, "supports grid sizes"):
+                export_smoke(out, profile="VW", sizes=(8,), check_ort=False)
             self.assertFalse(out.exists())
             out.mkdir()
             sentinel = out/"keep.txt"
             sentinel.write_text("existing bundle")
-            with self.assertRaisesRegex(ValueError, "browser bundle export"):
-                export_smoke(out, profile="VW", sizes=(64,), check_ort=False)
+            with self.assertRaisesRegex(ValueError, "supports grid sizes"):
+                export_smoke(out, profile="VW", sizes=(256,), check_ort=False)
             self.assertEqual(sentinel.read_text(), "existing bundle")
             self.assertEqual(list(out.iterdir()), [sentinel])
 

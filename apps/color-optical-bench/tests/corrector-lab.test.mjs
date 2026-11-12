@@ -6,14 +6,15 @@ import {CorrectorClient} from '../dist/js/corrector-lab/client.js';
 
 function manifest(frames=1,profile='U-tube') {
   const entry=(file,bytes)=>({file,bytes,sha256:'a'.repeat(64)});
-  const attention=profile==='U-tube-2x-attn';
-  const [base,perFrame]={'U-tube':[140112,864],'U-tube-2x':[275472,864],'U-tube-2x-attn':[432848,0]}[profile];
+  const neuralQR=['W-tube','VW'].includes(profile),attention=neuralQR||profile==='U-tube-2x-attn';
+  const [base,perFrame]={'U-tube':[140112,864],'U-tube-2x':[275472,864],'U-tube-2x-attn':[432848,0],'W-tube':[487760,0],'VW':[696400,0]}[profile];
   const channels=attention?32:3*frames;
   const count=base+perFrame*frames;
   return {format:'neural-corrector',version:1,status:'untrained',modelProfile:profile,framesPerInput:frames,inputLayout:attention?'phase-paired-rgb-presence-planes':'stacked-rgb',
     minFramesPerInput:attention?4:frames,frameCounts:attention?[4,5,6,7,8]:[frames],outputLabelSpace:attention?'logical':'physical',phaseMasks:attention?[0,15,7,8]:[],parameterCount:count,pixelsPerCell:4,channels,classes:16,
     normalization:{divisor:127.5,offset:-1,clip:[-1.5,1.5]},networkInputClip:[-1,1],tolerance:{atol:1e-4,rtol:1e-3},
-    inputName:'pixels',outputName:'logits',seed:7,opset:17,versions:{torch:'test'},cases:(attention?[64]:[64,128]).map(size=>({size,framesAvailable:attention?4:frames,
+    ...(neuralQR?{datasetFormat:'neural-qr-dataset',datasetVersion:2,anchor:{representation:'dct-low-frequency',maxModes:16,normalization:'ortho',spatialScale:'grid-over-modes'},anchorDeployment:'baked-selected-spatial-grid',bottleneck:{stages:profile==='VW'?3:2,blocks:['conv','attention'],layersPerBlock:2,scales:[4,2,1,2,4],fusion:'normalized-residual'}}:{}),
+    inputName:'pixels',outputName:'logits',seed:7,opset:17,versions:{torch:'test'},cases:(neuralQR?[16,32,64,128]:attention?[64]:[64,128]).map(size=>({size,framesAvailable:attention?4:frames,
       inputShape:[1,channels,4*size,4*size],outputShape:[1,16,size,size],model:entry(`model-${size}.onnx`,500000),
       input:entry(`input-${size}.f32`,channels*16*size*size*4),expected:entry(`expected-${size}.f32`,16*size*size*4)}))};
 }
@@ -58,7 +59,7 @@ test('trained exports require checkpoint provenance and the current format',()=>
 });
 test('bounded benchmark choices reject oversized workloads',()=>{
   assert.deepEqual(validateOptions(),{size:64,backend:'auto',iterations:10,captureFrames:0});
-  for(const options of [{size:32},{backend:'webgl'},{iterations:31},{iterations:0},{iterations:NaN},{iterations:2.5},{captureFrames:3},{captureFrames:9},{captureFrames:5.5}]) assert.throws(()=>validateOptions(options));
+  for(const options of [{size:8},{backend:'webgl'},{iterations:31},{iterations:0},{iterations:NaN},{iterations:2.5},{captureFrames:3},{captureFrames:9},{captureFrames:5.5}]) assert.throws(()=>validateOptions(options));
 });
 test('parity checks every logit including a late mismatch and non-finite values',()=>{
   const expected=new Float32Array(1000).fill(.25),actual=expected.slice();
@@ -312,4 +313,25 @@ test('phase capture survives undetected transition frames but expires stale evid
   burst.add(cameraCrop(0,{phase:0,permute:true}),identity(62));
   assert.deepEqual(burst.miss({...identity(0),context:'newrun'}).phaseCounts,[0,0,0,0]);
   assert.throws(()=>burst.miss({...identity(0),context:'newrun'}),/distinct/);
+});
+
+
+test('VW and W-tube manifests admit only current four-pixel static Neural-QR geometries',()=>{
+  for(const profile of ['W-tube','VW']){
+    const valid=manifest(8,profile);valid.cases.at(-1).model.bytes=17500980;
+    assert.equal(validateManifest(valid),valid);
+    for(const mutate of [m=>m.datasetVersion=1,m=>m.pixelsPerCell=2,m=>m.parameterCount++,
+      m=>m.anchor.maxModes=32,m=>m.bottleneck.stages=1,m=>m.cases[0].size=256,
+      m=>m.cases.at(-1).model.bytes=32*1024*1024+1,m=>m.cases=[]]){
+      const bad=structuredClone(valid);mutate(bad);assert.throws(()=>validateManifest(bad));
+    }
+    for(const size of [16,32,64,128]){
+      assert.equal(validateOptions({size}).size,size);
+      const plane=(4*size)**2,stack=new Float32Array(4*3*plane).fill(.25);
+      const packed=packFrameStack(stack,valid,size,{phases:[3,1,0,2]});
+      assert.deepEqual(inputPresence(packed,valid,size),[0,2,4,6]);
+      assert.equal(packed.length,32*plane);
+      assert.ok(packed.subarray(3*plane,6*plane).every(v=>v===0));
+    }
+  }
 });

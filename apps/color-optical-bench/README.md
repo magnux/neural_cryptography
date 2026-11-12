@@ -39,7 +39,7 @@ import; current readers do not guess between versions.
 The collection milestone is ready independently of model training. The existing
 Python `multires` model expects its earlier 2×2-cell experiment data. The new
 **W-tube**, auxiliary-data conversion, stronger synthetics and browser model
-integration remain next steps. Full rebuild stops before replacing datasets;
+integration are implemented for W-tube/VW. Full rebuild stops before replacing datasets;
 use `join-uploads` to validate the new recording pairs.
 
 Follow the [collection guide](../../docs/MULTIRES_COLLECTION.md) for setup,
@@ -57,11 +57,15 @@ local use and reference. Crypto Lab now uses the compact v2 proof format; the
 color transport experiments remain available without a new deployment.
 
 The new [Neural-ZKBoo interface](../../docs/NEURAL_ZKBOO_DEMO.md) uses the shared
-authentication session through a dedicated color stop-and-wait channel. The
+authentication session through a dedicated Neural-QR stop-and-wait channel.
+Both data and G32 ACKs use the trained W-tube/VW corrector. Physical-device
+profiles allow G128 computer→phone and G64 phone→computer, independently of
+cryptographic roles; smaller grids can be selected between messages. The
 [neural corrector](../../docs/NEURAL_CORRECTOR.md) completed phase-grouped
 training and passed the recorded recovery target. Its live worker feeds
-CRC-valid packets into authentication; the 4 November 2026 device exchange
-completed proof verification and final result delivery. The existing Live Demo
+CRC-valid packets into authentication. The historical 4 November 2026 exchange
+completed verification and result delivery with the earlier G64 transport and
+QR ACKs; the current header-free integration needs fresh device tests. The existing Live Demo
 still transfers bytes only and remains an
 independent transport workspace. [Research connections](../../docs/RESEARCH_CONNECTIONS.md)
 describe the exploratory background and later cryptanalytic work.
@@ -69,7 +73,7 @@ describe the exploratory background and later cryptanalytic work.
 The optical transport supports 8/16 palette phases, progressive reception, per-cell robust
 sample selection, and reliability-guided Reed–Solomon recovery. **OBM5 is the only
 accepted format in those transport workspaces.** The collector exclusively uses
-the new Neural-QR acquisition layout. Reload both devices together. There is no old-format reader or
+the new Neural-QR acquisition layout, also used by the authentication interface. Reload both devices together. There is no old-format reader or
 migration path.
 
 ## Reliable optical messages · step 3.3a

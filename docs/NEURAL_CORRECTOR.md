@@ -2,8 +2,9 @@
 
 > **Current collection:** Neural-QR v2 records G16/G32/G64/G128 at 4×4 pixels
 > per cell with optical size cues. The [collection guide](MULTIRES_COLLECTION.md)
-> describes this input contract. **W-tube and VW training and evaluation are implemented**
-> for it. Their export and browser integration are separate remaining steps.
+> describes this input contract. **W-tube and VW training, evaluation, static ONNX
+> export and browser integration are implemented** for it. The next validation is
+> the [trained model on the physical devices](NEURAL_ZKBOO_DEMO.md).
 > The `multires` architecture below retains its prepared 2×2-cell experiment.
 
 The **neural corrector** estimates a corrected optical matrix from one or more
@@ -28,11 +29,11 @@ Original Neural-Corrector code and documentation use [Apache-2.0](../LICENSE),
 with credit to Neural Cryptography and **Alejandro Hernandez Ruiz (magnux)** in
 [NOTICE](../NOTICE). See [licensing scope](LICENSING.md) for model releases.
 
-The next optical transport is [Neural-QR](NEURAL_QR.md). Its implemented collector acquisition
-replaces the current separately decoded header with geometric anchors and phase
-cues while reusing the palette, phase grouping and logical-label conventions. The
-header-based descriptions below document the currently implemented OBM5 path;
-they are not used by the new Neural-QR collector. Its current cue-based acquisition
+The current authentication transport is [Neural-QR](NEURAL_QR.md). Its acquisition
+replaces the separately decoded header with geometric anchors and phase cues
+while reusing the palette, phase grouping and logical-label conventions. The
+header-based descriptions below document the separate OBM5/U-tube experiments;
+they are not used by the Neural-QR collector or current authentication demo. Its current cue-based acquisition
 and public-code session association are documented in [the collection guide](MULTIRES_COLLECTION.md).
 
 The four-pixel multi-resolution models are **`W-tube`** with two complete U
@@ -241,9 +242,10 @@ cell-scale patterns.
 The current release supports PyTorch training, evaluation and strict W-tube
 checkpoint loading. Start W-tube from scratch; the two-pixel multires and earlier
 U-tube checkpoints have different architectures. Continuing a W-tube run uses
-`--initialize` with a W-tube checkpoint and a new output directory. Exported
-ONNX graphs and browser latency/parity are a separate milestone, so this model
-is not yet selectable in the live demo.
+`--initialize` with a W-tube checkpoint and a new output directory. Static
+ONNX export and native/WASM parity checks are implemented, and the live
+Neural-ZKBoo demo accepts trained W-tube and VW bundles. Device latency and
+recognition still require measurement with the actual checkpoint and cameras.
 
 All four grids are structurally supported, but a run updates only the anchors
 for grids sampled during training. Checkpoint `trainedSizes` records those grids;
@@ -333,8 +335,8 @@ from fresh weights using [these commands](NEURAL_CORRECTOR_TRAINING.md#train-vw)
 Its checkpoints record `modelProfile: "VW"` and three stages; a W-tube checkpoint
 does not silently become VW. Continue a VW run with another VW checkpoint and
 a new output directory. PyTorch training/evaluation and strict checkpoint loading
-are implemented; ONNX export, browser parity and live reception remain separate
-work, as for W-tube.
+are implemented, as are static ONNX export, native/WASM parity checks and
+Neural-QR live reception. See the [device test workflow](NEURAL_ZKBOO_DEMO.md).
 
 ### U-tube
 
@@ -628,7 +630,7 @@ resulting student keeps its usual model contract and parameter count. A new
 `--initialize` run creates a fresh optimizer, projector, teacher and ramp; it is
 not an exact resumption of the distillation state. Training costs an additional
 teacher forward pass and projector work, but deployment gains no extra layers.
-W-tube/VW browser export remains a separate, pending task.
+W-tube/VW export includes only the student, with no teacher or projector.
 
 See [the continuation recipe and controls](NEURAL_CORRECTOR_TRAINING.md#ema-feature-self-distillation).
 
@@ -798,8 +800,8 @@ into G/8 windows per axis. Presence planes still express exactly eight
 availability flags; only their spatial extent changes. The spatial loss mask
 follows the actual reference grid at each size, never an interpolated G64 mask.
 The Python model parameterizes RGB packing, anchor reconstruction, attention
-geometry and tensor validation together. The existing browser contract remains
-specific to the established U-tube demo until its separate Neural-QR integration.
+geometry and tensor validation together. This two-pixel experiment is separate
+from the current four-pixel W-tube/VW browser authentication contract.
 
 ### Parameter counts and model capacity
 
@@ -846,8 +848,8 @@ exported byte counts rather than estimating the bundle from training parameters.
 
 Keep numerical parity checks enabled for each export. Graph/parity tests on
 public untrained fixtures establish execution agreement, not camera recognition
-or phone latency. Browser loading and live Neural-QR packet integration still
-require the corresponding contract update and real-device measurements.
+or phone latency. This two-pixel model is not used by the current live
+Neural-QR demo, which implements the four-pixel W-tube/VW contract.
 
 On 5 November 2026, native ONNX Runtime passed two public fixtures each at G8,
 G16, G64 and G256, with maximum absolute logit error 2.21×10⁻⁶ and zero changed
@@ -927,7 +929,7 @@ References: [ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/),
 [dynamic dimension overrides](https://onnxruntime.ai/docs/tutorials/web/env-flags-and-session-options.html#freedimensionoverrides),
 and [WebGPU graph capture](https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html#graph-capture).
 
-## Browser integration and the next transport
+## Browser integration and optical transport
 
 The demo server serves static assets. Python loads the training `.pt` checkpoint
 and exports the selected network to ONNX together with a manifest and numerical
@@ -938,15 +940,19 @@ endpoint. See the [explicit serving workflow](CORRECTOR_LAB.md).
 The standalone Corrector Lab checks numerical parity and performs camera crop
 inference. The separate [Neural-ZKBoo demo](NEURAL_ZKBOO_DEMO.md) now connects
 corrected logical scores to packet recovery and the authentication session. The
-4 November 2026 device exchange completed proof verification and final result
-delivery using neural DATA reception and static QR ACKs. The Optical Bench's
+historical 4 November 2026 device exchange completed proof verification and
+final result delivery using the earlier neural DATA reception and static QR ACKs;
+it predates the current header-free Neural-QR integration. The Optical Bench's
 other transport workspaces remain separate experiments.
 
-The next step is [Neural-QR](NEURAL_QR.md): remove the dense external header,
-use the shared multi-resolution 2×2-cell model, and carry both DATA and controls
-through neural recovery. Initialize from existing weights and fine-tune for the
-new sampling and sizes. Acceptance still requires packet integrity and context
-checks; Neural-ZKBoo proof verification remains independent of transport recovery.
-Measure exact recovery, acquisition, inference, ACK time and complete authentication
-in both directions. A larger matrix or new architecture is not a prerequisite.
-
+The current [Neural-QR demo](NEURAL_ZKBOO_DEMO.md) uses W-tube or VW with
+4×4 pixels per cell and header-free neural recovery for both DATA and controls.
+Computer-to-phone defaults to G128, phone-to-computer to G64, and ACKs use G32.
+Geometry limits follow the physical devices, independently of authentication
+roles. Packet RS/CRC, message digest and context checks precede delivery;
+Neural-ZKBoo proof verification remains independent of transport recovery.
+Export numerical parity is covered in native ONNX Runtime and Web/WASM. Trained
+checkpoint accuracy, WebGPU compatibility and end-to-end goodput still require
+the actual phone and webcam. Measure acquisition, inference, ACK time and total
+authentication separately; fall back to a smaller outgoing geometry between
+messages when the larger one is slower or unreliable.

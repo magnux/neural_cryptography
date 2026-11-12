@@ -2,8 +2,8 @@
 
 > The current collector records **Neural-QR v2, 4×4 pixels/cell,
 > G16/G32/G64/G128**. Collection, [offline imports and paired synthetic generation](../../docs/W_TUBE_DATA.md)
-> and **W-tube/VW training and evaluation** are available. Their export and browser
-> integration remain pending. The separate
+> and **W-tube/VW training, evaluation, export and browser integration** are available.
+> See the [Neural-ZKBoo demo](../../docs/NEURAL_ZKBOO_DEMO.md) for device testing. The separate
 > `multires` profile described below consumes existing prepared **2×2-cell**
 > datasets and cannot train on the new recordings. Keep them in a separate
 > directory; see [collection instructions](../../docs/MULTIRES_COLLECTION.md).
@@ -27,7 +27,7 @@ recordings, synthetic generation, training and evaluation. The
 [Corrector Lab guide](../../docs/CORRECTOR_LAB.md) describes checkpoint export,
 static serving and browser tests.
 
-The next integrated transport is [Neural-QR](../../docs/NEURAL_QR.md), designed to supply
+The current integrated transport is [Neural-QR](../../docs/NEURAL_QR.md), designed to supply
 geometry, phase identity and normalized crops without a separately decoded dense
 header. **W-tube** processes its current four-pixel inputs through two complete
 U stages; **VW** adds a third complete stage, including its own bottleneck and
@@ -38,8 +38,8 @@ blocks, with two layers in each block. The
 [current collector](../../docs/MULTIRES_COLLECTION.md) records G16…G128 at 4×4
 pixels per cell for W-tube, with a public collection code for offline association.
 The earlier prepared 2×2-cell datasets remain usable for the existing `multires`
-experiment. Browser integration of W-tube and VW is a later step; the U-tube experiments
-retain their independent four-pixels-per-axis input contract.
+experiment. W-tube and VW support static ONNX export and browser Neural-QR
+reception; the U-tube experiments retain their independent input contracts.
 
 ## Model family
 
@@ -250,13 +250,16 @@ python -m pip install -r experiments/neural-corrector/requirements.txt
 python -m unittest discover -s experiments/neural-corrector/tests -v
 ```
 
-For the existing U-tube browser demo, using a checkpoint whose metadata uses its current profile name:
+For the current Neural-ZKBoo demo, export the trained W-tube/VW checkpoint at
+all required receiving sizes (adjust the checkpoint directory to your run):
 
 ```sh
 python experiments/neural-corrector/export.py \
-  --checkpoint checkpoints/neural-corrector/U-tube-2x-attn/best.pt \
+  --checkpoint checkpoints/neural-corrector/vw-distill/best.pt \
+  --sizes 32 64 128 \
   --out experiments/neural-corrector/artifacts/selected
 npm ci --prefix experiments/neural-corrector/browser-runtime
+npm run prepare:apps
 npm run prepare:corrector -- --artifacts experiments/neural-corrector/artifacts/selected
 npm run test:corrector:wasm -- --artifacts experiments/neural-corrector/artifacts/selected
 ```
@@ -270,9 +273,9 @@ marks the native check as not run, and still requires browser runtime validation
 
 The prepared browser assets are **ONNX, a manifest, numerical fixtures and the
 pinned JavaScript/WASM runtime**. The `.pt` file stays on the training/export
-machine. That U-tube checkpoint's roughly 1.7 MB weight size does not determine the entire
-browser bundle size; the attention ONNX graph is approximately 2.84 MB, and runtime
-assets are additional. The static demo server serves these files normally;
+machine. Checkpoint weight size does not determine the entire browser bundle:
+VW's static G128 ONNX graph is roughly 17.5 MB because it includes attention
+masks and a reconstructed anchor; fixtures and runtime assets are additional. The static demo server serves these files normally;
 inference runs locally inside the browser worker. Detailed commands and the
 one-time profile-metadata naming step for an existing checkpoint are in the
 [serving guide](../../docs/CORRECTOR_LAB.md).
@@ -284,7 +287,7 @@ no FFT operator is required by the browser. A trained checkpoint may
 export only sizes actually included in training. Current multires checkpoints
 record low-frequency anchor and six-block bottleneck metadata; prior dense-anchor
 multires runs belong to their source revision and are not automatically loaded.
-This does not yet update the existing browser worker or packet transport to the new input/format contract.
+The current Neural-ZKBoo demo uses the four-pixel W-tube/VW contract; the two-pixel multires experiment remains separate.
 
 Without `--checkpoint`, export produces **untrained** numerical smoke fixtures.
 Those fixtures establish execution/parity only and cannot establish optical
@@ -302,6 +305,7 @@ before inference; matching tensor shapes alone do not prove matching semantics.
 | Layout | Input tensor | Output label space |
 | --- | --- | --- |
 | `stacked-rgb` | `[N,3T,4G,4G]` | Physical palette classes |
+| `phase-paired-rgb-presence-planes` (W-tube/VW) | `[N,32,4G,4G]` | Canonical logical data classes |
 | `phase-paired-rgb-presence-planes` (U-tube-2x-attn) | `[N,32,256,256]` | Canonical logical data classes |
 | `phase-paired-rgb-presence-planes` (multires) | `[N,32,2G,2G]` | Canonical logical data classes |
 
@@ -317,14 +321,16 @@ observation cases. Checkpoint selection averages direction metrics equally and,
 for attention, averages the five capture-count results. This balanced selection
 score can differ from the sample-weighted headline exact rate.
 
-A batch-one attention input occupies **8 MiB** before runtime work buffers. It
-uses the same eight-slot graph at K4 and K8; collection time can fall with fewer
+A batch-one phase-paired four-pixel input occupies **8 MiB at G64** and
+**32 MiB at G128**, before runtime work buffers. It uses the same eight-slot
+graph at K4 and K8; collection time can fall with fewer
 observations while inference work stays approximately constant. No phone/WebGPU
 latency or live goodput is inferred from offline recovery percentages.
 
 The standalone Corrector Lab supports numerical parity and camera crop inference.
-The Neural-ZKBoo demo now feeds learned G64 scores into packet recovery and has
-completed a physical-device exchange with QR ACKs. The next integration uses
-Neural-QR and `multires`; model verification, byte acceptance and cryptographic
-authentication remain distinct checks.
+The current Neural-ZKBoo demo uses W-tube/VW for header-free Neural-QR data
+and G32 ACKs, allowing G128 computer-to-phone and G64 phone-to-computer. The
+earlier G64/QR-ACK physical exchange is a historical result; the current
+integration needs fresh device tests. Model verification, byte acceptance and
+cryptographic authentication remain distinct checks.
 

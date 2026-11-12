@@ -1,6 +1,6 @@
 /** Current corrector contract, shared by preparation and browser tests. */
 export const MODEL_FORMAT = 'neural-corrector';
-export const MAX_MODEL_BYTES = 4 * 1024 * 1024;
+export const MAX_MODEL_BYTES = 32 * 1024 * 1024;
 export const MAX_INPUT_FRAMES = 64;
 export const MAX_INPUT_BYTES = 3 * MAX_INPUT_FRAMES * 512 * 512 * 4;
 export const validFrameCount = frames => Number.isInteger(frames) && frames >= 1 && frames <= MAX_INPUT_FRAMES;
@@ -9,9 +9,13 @@ const shapeEqual = (a, b) => Array.isArray(a) && a.length === b.length && a.ever
 export const MODEL_PROFILES = Object.freeze({
   'U-tube':Object.freeze({base:140112,perFrame:864}),
   'U-tube-2x':Object.freeze({base:275472,perFrame:864}),
-  'U-tube-2x-attn':Object.freeze({base:432848,perFrame:0})
+  'U-tube-2x-attn':Object.freeze({base:432848,perFrame:0}),
+  'W-tube':Object.freeze({base:487760,perFrame:0}),
+  'VW':Object.freeze({base:696400,perFrame:0})
 });
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
+const validPackedSize = (manifest,size) => ['W-tube','VW'].includes(manifest.modelProfile)
+  ? [16,32,64,128].includes(size) : size===64;
 
 export function validateManifest(manifest) {
   if (!plain(manifest) || manifest.format !== MODEL_FORMAT || manifest.version !== 1 ||
@@ -27,14 +31,22 @@ export function validateManifest(manifest) {
   }
   const profile=manifest.modelProfile;
   if (!Object.hasOwn(MODEL_PROFILES,profile)||MODEL_PROFILES[profile].base+MODEL_PROFILES[profile].perFrame*manifest.framesPerInput!==manifest.parameterCount) throw new Error('Invalid corrector model profile/count.');
-  const attention=profile==='U-tube-2x-attn',frames=manifest.framesPerInput;
+  const neuralQR=['W-tube','VW'].includes(profile),attention=neuralQR||profile==='U-tube-2x-attn',frames=manifest.framesPerInput;
+  if(neuralQR && (manifest.datasetFormat!=='neural-qr-dataset'||manifest.datasetVersion!==2||
+      manifest.anchor?.representation!=='dct-low-frequency'||manifest.anchor?.maxModes!==16||
+      manifest.anchor?.normalization!=='ortho'||manifest.anchor?.spatialScale!=='grid-over-modes'||
+      manifest.anchorDeployment!=='baked-selected-spatial-grid'||
+      manifest.bottleneck?.stages!==(profile==='VW'?3:2)||
+      !shapeEqual(manifest.bottleneck?.blocks,['conv','attention'])||manifest.bottleneck?.layersPerBlock!==2||
+      !shapeEqual(manifest.bottleneck?.scales,[4,2,1,2,4])||manifest.bottleneck?.fusion!=='normalized-residual'))
+    throw Error('Invalid Neural-QR architecture or raster contract. Regenerate the current export.');
   if (manifest.inputLayout!==(attention?'phase-paired-rgb-presence-planes':'stacked-rgb') ||
       manifest.channels!==(attention?32:3*frames) || attention&&frames!==8 ||
       manifest.minFramesPerInput!==(attention?4:frames) ||
       !shapeEqual(manifest.frameCounts,attention?[4,5,6,7,8]:[frames]) ||
       manifest.outputLabelSpace!==(attention?'logical':'physical') ||
       !shapeEqual(manifest.phaseMasks,attention?[0,15,7,8]:[]) ||
-      manifest.cases.length!==(attention?1:2)) throw Error('Invalid corrector input layout/frame policy.');
+      (neuralQR ? manifest.cases.length<1||manifest.cases.length>4 : manifest.cases.length!==(attention?1:2))) throw Error('Invalid corrector input layout/frame policy.');
   // Preserve calibrated overshoot in captures/fixtures; the exported graph
   // clips to the common real/synthetic range before its first learned layer.
   if (!plain(manifest.normalization) || manifest.normalization.divisor !== 127.5 ||
@@ -47,7 +59,7 @@ export function validateManifest(manifest) {
   }
   const sizes = new Set(), files = new Set();
   for (const entry of manifest.cases) {
-    if (!plain(entry) || !(attention?[64]:[64, 128]).includes(entry.size) || sizes.has(entry.size)) throw new Error('Invalid corrector grid cases.');
+    if (!plain(entry) || !(neuralQR?[16,32,64,128]:attention?[64]:[64,128]).includes(entry.size) || sizes.has(entry.size)) throw new Error('Invalid corrector grid cases.');
     sizes.add(entry.size);
     const g = entry.size;
     if (!manifest.frameCounts.includes(entry.framesAvailable)) throw Error('Invalid fixture observation count.');
@@ -56,7 +68,7 @@ export function validateManifest(manifest) {
       const artifact = entry[name];
       if (!plain(artifact) || typeof artifact.file !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(artifact.file) ||
           artifact.file.includes('..') || files.has(artifact.file) || !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
-          !Number.isSafeInteger(artifact.bytes) || artifact.bytes < 1 || artifact.bytes > (name==='model'?MAX_MODEL_BYTES:MAX_INPUT_BYTES) ||
+          !Number.isSafeInteger(artifact.bytes) || artifact.bytes < 1 || artifact.bytes > (name==='model'?(neuralQR?MAX_MODEL_BYTES:4*1024*1024):MAX_INPUT_BYTES) ||
           (bytes !== null && artifact.bytes !== bytes)) throw new Error(`Invalid ${name} artifact in corrector manifest.`);
       files.add(artifact.file);
     }
@@ -65,7 +77,7 @@ export function validateManifest(manifest) {
 }
 
 export function validateOptions({size = 64, backend = 'auto', iterations = 10, captureFrames = 0} = {}) {
-  if (![64, 128].includes(size)) throw new Error('Choose a 64 or 128 cell grid.');
+  if (![16,32,64,128].includes(size)) throw new Error('Choose a 16, 32, 64 or 128 cell grid.');
   if (!['auto', 'wasm', 'webgpu'].includes(backend)) throw new Error('Unknown inference backend.');
   if (!Number.isInteger(iterations) || iterations < 1 || iterations > 30) throw new Error('Benchmark runs must be 1–30.');
   if (![0,4,5,6,7,8].includes(captureFrames)) throw Error('Choose model-default camera exposures, or 4–8 for a phase-grouped model.');
@@ -80,7 +92,7 @@ export function inputPresence(pixels, manifest, size) {
   if (!(pixels instanceof Float32Array)||pixels.length!==manifest.channels*plane||
       pixels.some(value=>!Number.isFinite(value))) throw Error('Input does not match the prepared frame-stack contract.');
   if (manifest.inputLayout==='stacked-rgb') return Array.from({length:frames},(_,i)=>i);
-  if (manifest.inputLayout!=='phase-paired-rgb-presence-planes'||frames!==8||size!==64||manifest.channels!==32)
+  if (manifest.inputLayout!=='phase-paired-rgb-presence-planes'||frames!==8||!validPackedSize(manifest,size)||manifest.channels!==32)
     throw Error('Unsupported packed corrector input.');
   const active=[];
   for(let slot=0;slot<frames;slot++) {
@@ -95,7 +107,7 @@ export function inputPresence(pixels, manifest, size) {
 }
 
 /** Pack genuine camera observations into their declared phase pairs.
- * The phase ID is public header metadata, never inferred from RGB or targets.
+ * The phase ID comes from measured phase cues (or the separate OBM lab header), never from payload targets.
  */
 export function packFrameStack(stack, manifest, size, placement) {
   const plane=(4*size)**2,one=3*plane,capacity=manifest.framesPerInput;
@@ -107,7 +119,7 @@ export function packFrameStack(stack, manifest, size, placement) {
     if(available!==capacity||placement!==undefined)throw Error('Fixed RGB models require their complete ordered frame stack.');
     return stack;
   }
-  if(manifest.inputLayout!=='phase-paired-rgb-presence-planes'||capacity!==8||size!==64)throw Error('Unsupported packed corrector input.');
+  if(manifest.inputLayout!=='phase-paired-rgb-presence-planes'||capacity!==8||!validPackedSize(manifest,size))throw Error('Unsupported packed corrector input.');
   if(!plain(placement)||!Array.isArray(placement.phases)||placement.phases.length!==available||
       placement.phases.some(phase=>!Number.isInteger(phase)||phase<0||phase>3))throw Error('Phase-grouped packing requires a phase ID for every capture.');
   const counts=[0,0,0,0],defaults=placement.phases.map(phase=>2*phase+counts[phase]++);

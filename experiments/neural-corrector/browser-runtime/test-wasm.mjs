@@ -46,6 +46,7 @@ async function main() {
     return verifyArtifact(buffer, entry);
   }
   for (const entry of manifest.cases) {
+    console.error(`Checking ${manifest.modelProfile} G${entry.size}: WASM parity, clipping and observation masks.`);
     const model = await artifact(entry.model);
     const input = decodeFloat32(await artifact(entry.input));
     const expected = decodeFloat32(await artifact(entry.expected));
@@ -77,7 +78,7 @@ async function main() {
       // graph on an explicitly clipped copy must give the identical logits.
       const [low, high] = manifest.networkInputClip;
       const clippedInput = clipNetworkInput(input,manifest,entry.size);
-      const rgbLength=3*manifest.framesPerInput*(4*entry.size)**2;
+      const rgbLength=3*manifest.framesPerInput*(manifest.pixelsPerCell*entry.size)**2;
       const changedValues = input.subarray(0,rgbLength).reduce((n, value) => n+Number(value<low || value>high), 0);
       if (!changedValues) throw new Error('Numerical fixture must exercise the network input clip.');
       const clippedTensor = new ort.Tensor('float32', clippedInput, entry.inputShape);
@@ -92,7 +93,7 @@ async function main() {
         for (const result of [original, clipped]) for (const value of Object.values(result || {})) value.dispose?.();
       }
       if(manifest.inputLayout==='phase-paired-rgb-presence-planes') {
-        const poisoned=input.slice(),one=3*(4*entry.size)**2;
+        const poisoned=input.slice(),one=3*(manifest.pixelsPerCell*entry.size)**2;
         const missing=Array.from({length:manifest.framesPerInput},(_,i)=>i).filter(i=>!present.includes(i));
         if(!missing.length)throw Error('The variable-frame parity fixture must exercise missing slots.');
         for(const slot of missing)for(let i=slot*one;i<(slot+1)*one;i++)poisoned[i]=20+(i%37)*.1;
@@ -109,7 +110,7 @@ async function main() {
         }
       }
       if(manifest.inputLayout==='phase-paired-rgb-presence-planes') {
-        const plane=(4*entry.size)**2,one=3*plane;
+        const plane=(manifest.pixelsPerCell*entry.size)**2,one=3*plane;
         const first=[0,1,2,3].map(phase=>present.find(slot=>Math.floor(slot/2)===phase));
         const order=[...first,...Array.from({length:manifest.framesPerInput},(_,i)=>i).filter(i=>!first.includes(i))];
         // Exercise every advertised observation count. These are runtime/mask
@@ -147,6 +148,8 @@ async function main() {
     } finally { tensor.dispose(); await session.release(); }
     report.cases.push({size: entry.size, modelSha256: entry.model.sha256, initMs, parity, exportToleranceParity, clippingParity, maskedSlotParity, frameCountChecks, framesAvailable:present.length,
       timings: summarizeTimings(samples), timingScope: 'session.run plus CPU output copy; excludes parity comparison'});
+    console.error(`G${entry.size}: ${parity.passed && exportToleranceParity.passed && clippingParity.passed &&
+      (maskedSlotParity===null || maskedSlotParity.passed) && frameCountChecks.every(check=>check.passed) ? 'passed' : 'FAILED'}.`);
   }
   report.passed = report.cases.every(entry=>entry.parity.passed && entry.exportToleranceParity.passed && entry.clippingParity.passed && (entry.maskedSlotParity===null||entry.maskedSlotParity.passed) && entry.frameCountChecks.every(check=>check.passed));
   const text = JSON.stringify(report, null, 2)+'\n';

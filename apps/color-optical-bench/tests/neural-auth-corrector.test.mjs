@@ -1,24 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {encodeSequence,phaseFrames,parseHeader} from '../dist/js/format.js';
+import {encodePacket} from '../dist/js/link/protocol.js';
+import {packetFrames} from '../dist/js/neural-auth/optical.js';
 import {paletteMap} from '../dist/js/grid.js';
 import {LivePhaseBurst,requireTransportModel,isTransportData,recoverCorrectedPayload} from '../dist/js/corrector-lab/live-burst.js';
 
 const ID=Uint8Array.of(1,2,3,4,5,6,7,8),ONE=3*256*256;
-const PAYLOAD=Uint8Array.from({length:500},(_,i)=>(17*i+9)&255);
+const PAYLOAD=encodePacket({kind:'data',messageType:'raw',sessionId:'12'.repeat(16),messageId:'34'.repeat(8),index:0,data:Uint8Array.from({length:500},(_,i)=>(17*i+9)&255)});
 function frames(payload=PAYLOAD) {
-  return phaseFrames(encodeSequence(payload,{size:64,colors:16,gridBlock:8,parity:32,phases:4,permute:true,id:ID}));
+  return packetFrames(payload,{size:64});
 }
-function crop(frame,value=0) {return {info:parseHeader(frame.header),input:new Float32Array(ONE).fill(value),stats:{preprocessMs:1}};}
+function crop(frame,value=0) {return {info:{...frame},input:new Float32Array(ONE).fill(value),stats:{preprocessMs:1}};}
 const identity=(frame,context='camera/1')=>({context,mediaTime:frame/10,presentedFrames:frame});
-const goodModel={status:'trained',modelProfile:'U-tube-2x-attn',inputLayout:'phase-paired-rgb-presence-planes',
-  outputLabelSpace:'logical',framesPerInput:8,minFramesPerInput:4,cases:[{size:64}]};
+const goodModel={status:'trained',modelProfile:'VW',datasetFormat:'neural-qr-dataset',datasetVersion:2,pixelsPerCell:4,inputLayout:'phase-paired-rgb-presence-planes',
+  outputLabelSpace:'logical',framesPerInput:8,minFramesPerInput:4,cases:[{size:32},{size:64},{size:128}]};
 
 test('live authentication rejects untrained or incompatible model exports',()=>{
   assert.doesNotThrow(()=>requireTransportModel(goodModel));
   for(const patch of [{status:'untrained'},{modelProfile:'U-tube'},{inputLayout:'stacked-rgb'},
     {outputLabelSpace:'physical'},{framesPerInput:5},{minFramesPerInput:5},{cases:[{size:128}]},{cases:[]}]) {
-    assert.throws(()=>requireTransportModel({...goodModel,...patch}),/trained U-tube-2x-attn/);
+    assert.throws(()=>requireTransportModel({...goodModel,...patch}),/trained W-tube or VW/);
   }
 });
 
@@ -67,21 +68,21 @@ test('full pools replace old evidence and remain bounded after repeated CRC fail
   assert.equal(Math.min(...pool.snapshot().presentedFrames),29);
 });
 
-test('transient misses retain good phases, but age, logical matrix and run changes clear them',()=>{
+test('transient misses retain good phases, but age, geometry and run changes clear them',()=>{
   const pool=new LivePhaseBurst(),source=frames();
   pool.add(crop(source[0]),identity(1));pool.add(crop(source[1]),identity(2));
   assert.deepEqual(pool.miss(identity(3)).phaseCounts,[1,1,0,0]);
   assert.deepEqual(pool.miss({context:'camera/1',mediaTime:61,presentedFrames:100}).phaseCounts,[0,0,0,0]);
   pool.add(crop(source[2]),{context:'camera/1',mediaTime:62,presentedFrames:101});
   assert.equal(pool.add(crop(source[0]),identity(1,'camera/2')).collected,1);
-  const other=frames(Uint8Array.of(1,2,3));
-  assert.equal(pool.add(crop(other[1]),identity(2,'camera/2')).collected,1);
+  const other={...crop(source[1]),info:{...source[1],size:32},input:new Float32Array(3*128*128)};
+  assert.equal(pool.add(other,identity(2,'camera/2')).collected,1);
   assert.deepEqual(pool.status().phaseCounts,[0,1,0,0]);
 });
 
 test('malformed captures, identities and unsupported transport profiles cannot enter the pool',()=>{
   const pool=new LivePhaseBurst(),source=frames(),item=crop(source[0]);
-  for(const change of [{gridBlock:0},{parity:0},{phases:8},{permute:false},{size:128},{count:2},{probePattern:1}]) {
+  for(const change of [{gridBlock:0},{pixelsPerCell:2},{phases:8},{permute:false},{size:256},{colors:4},{phase:4}]) {
     assert.equal(isTransportData({...item.info,...change}),false);
     assert.throws(()=>pool.add({...item,info:{...item.info,...change}},identity(1)),/Invalid/);
   }
@@ -99,12 +100,51 @@ test('logical neural scores recover exact bytes for any phase, CRC failure never
   for(const frame of frames()) {
     const cells=frame.size**2,logits=new Float32Array(16*cells).fill(-12);
     frame.symbols.forEach((physical,cell)=>{logits[paletteMap(physical,frame)*cells+cell]=12;});
-    const result=recoverCorrectedPayload(logits,parseHeader(frame.header));
+    const result=recoverCorrectedPayload(logits,frame);
     assert.equal(result.ok,true,result.error);assert.deepEqual(result.chunk,PAYLOAD);
-    assert.equal(result.stats.rawCRC,true);
+    assert.equal(result.stats.rawCRCValid,1);
   }
-  const invalid=recoverCorrectedPayload(new Float32Array(16*64*64),parseHeader(frames()[0].header));
+  const invalid=recoverCorrectedPayload(new Float32Array(16*64*64),frames()[0]);
   assert.equal(invalid.ok,false);assert.equal(invalid.chunk,undefined);
 });
 
 
+
+
+test('Neural-QR geometry alone never claims packet identity, while accepted-packet reset drops all old phases',()=>{
+  const pool=new LivePhaseBurst(),a=frames(),b=frames(encodePacket({kind:'data',messageType:'raw',sessionId:'12'.repeat(16),messageId:'34'.repeat(8),index:1,data:new Uint8Array(500)}));
+  pool.add(crop(a[0]),identity(1));pool.add(crop(b[1]),identity(2));
+  assert.equal(pool.status().collected,2); // Neither payload is known before inference.
+  pool.reset();assert.equal(pool.status().collected,0);
+  assert.equal(pool.add(crop(b[2]),identity(3)).collected,1);
+});
+
+test('G128 pools remain bounded and lab capture budgets can request K8 directly',()=>{
+  const pool=new LivePhaseBurst(),source=packetFrames(PAYLOAD,{size:128}),length=3*512*512;
+  for(let i=1;i<=8;i++)pool.add({info:source[(i-1)%4],input:new Float32Array(length)},identity(i));
+  assert.equal(pool.status().bufferBytes,24*1024*1024);
+  assert.equal(pool.snapshot({frames:8}).inputCaptures,8);
+  assert.equal(pool.snapshot({frames:4}).inputCaptures,4);
+  assert.throws(()=>pool.snapshot({frames:9}));
+});
+
+test('transport attempts K4, K8, then waits for four genuine fresh captures per retry',()=>{
+  const pool=new LivePhaseBurst(),source=frames(),attempts=[];
+  for(let i=1;i<=16;i++) {
+    pool.add(crop(source[(i-1)%4],i/16),identity(i));
+    const snapshot=pool.nextTransportSnapshot();
+    if(snapshot)attempts.push([i,snapshot.inputCaptures,snapshot.presentedFrames]);
+    assert.equal(pool.add(crop(source[0]),identity(i)).duplicateExposure,true);
+    assert.equal(pool.nextTransportSnapshot(),null,'duplicate exposure must not schedule inference');
+    assert.ok(pool.status().bufferBytes<=8*ONE*4);
+  }
+  assert.deepEqual(attempts.map(([exposure,k])=>[exposure,k]),[[4,4],[8,8],[12,8],[16,8]]);
+  assert.equal(Math.min(...attempts.at(-1)[2]),9);
+  assert.equal(pool.status().replacements,8);
+  for(let i=17;i<=21;i++)pool.miss(identity(i));
+  assert.equal(pool.nextTransportSnapshot(),null,'misses are not fresh evidence');
+  // Four new captures may come from one phase; each remains bounded to two.
+  for(let i=22;i<=25;i++)pool.add(crop(source[0]),identity(i));
+  assert.equal(pool.nextTransportSnapshot().inputCaptures,8);
+  assert.deepEqual(pool.status().phaseCounts,[2,2,2,2]);
+});
