@@ -1241,7 +1241,7 @@ and graph data; the `.pt` checkpoint stays in the training workspace.
 The implementation provides export, numerical fixtures, asset preparation and
 worker inference. The current [Neural-ZKBoo demo](NEURAL_ZKBOO_DEMO.md) connects
 trained W-tube/VW scores to Neural-QR RS/CRC packet recovery for data and G32 ACKs.
-It supports G128 computer-to-phone and G64 phone-to-computer. Offline validation
+It supports G32/G64/G128 in either direction. Offline validation
 motivates the next device tests; it does not measure real-time recovery or
 optical throughput.
 

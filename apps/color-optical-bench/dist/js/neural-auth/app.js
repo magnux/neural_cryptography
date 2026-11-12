@@ -23,9 +23,9 @@ const notices=new TurnNotices({onChange:value=>{
     $('turnNoticeIcon').textContent=value.tone==='success'?'✓':value.tone==='error'?'!':'↔';
   }
 }});
-const reading=new ReadingCue({onChange:value=>{
-  $('stage').dataset.reading=String(value);$('readProgress').hidden=!value;
-},onReadingStarted:()=>notices.dismiss()});
+const reading=new ReadingCue({onChange:state=>{
+  $('stage').dataset.reading=state;$('readProgress').hidden=state==='idle';
+}});
 const supported=isSecureContext&&Boolean(globalThis.crypto?.subtle)&&typeof Worker==='function'&&Boolean(navigator.mediaDevices?.getUserMedia);
 let active=false,epoch=0,stream=null,corrector=null,cryptoClient=null,session=null,channel=null,config=null;
 let frameCallback=null,displayTimer=null,heartbeat=null,lastCapture=-Infinity,lastPresented=0,scanning=false,frameWaitStarted=0;
@@ -37,14 +37,14 @@ const int=(value,min,max,label)=>{const n=Number(value);if(!Number.isSafeInteger
 function settings(){
   const role=$('role').value,backend=$('backend').value,repetitions=Number($('repetitions').value),resolution=$('resolution').value;
   if(!['verifier','prover'].includes(role)||!['auto','wasm','webgpu'].includes(backend)||![32,64,110,160,219].includes(repetitions)||!['480','720','1080','1440','2160','max'].includes(resolution))throw Error('Unsupported test settings.');
-  return {role,backend,repetitions,resolution,...transportProfile($('deviceProfile').value,$('outgoingSize').value,$('g128Test').checked),
+  return {role,backend,repetitions,resolution,...transportProfile($('deviceProfile').value,$('outgoingSize').value),
     phaseMs:int($('phaseMs').value,50,10000,'Phase interval'),
     captureMs:int($('captureMs').value,50,2000,'Capture interval'),cameraId:$('camera').value};
 }
 function populateProfiles(){
-  const profile=deviceProfile($('deviceProfile').value,$('g128Test').checked);
+  const profile=deviceProfile($('deviceProfile').value);
   for(const id of ['outgoingSize','nextGeometry']){
-    $(id).replaceChildren(...profile.outgoingSizes.map(size=>new Option(`G${size}${size===profile.defaultOutgoingSize?' · maximum':''}`,String(size))));
+    $(id).replaceChildren(...profile.outgoingSizes.map(size=>new Option(`G${size}${size===profile.defaultOutgoingSize?' · default':''}`,String(size))));
     $(id).value=String(profile.defaultOutgoingSize);
   }
   $('directionProfile').textContent=`${profile.name}: receive up to G${profile.incomingMaxSize} · G32 controls`;
@@ -375,7 +375,6 @@ $('repeatAck').addEventListener('click',()=>{
 });
 $('downloadReport').addEventListener('click',download);
 $('deviceProfile').addEventListener('change',populateProfiles);
-$('g128Test').addEventListener('change',populateProfiles);
 $('nextGeometry').addEventListener('change',()=>{
   if(!active||!channel)return;
   try{

@@ -34,9 +34,8 @@
           <label for="phaseMs">Phase display interval (ms)<input id="phaseMs" type="number" min="50" max="10000" step="1" value="150" inputmode="numeric"></label>
           <label for="captureMs">Camera sampling interval (ms)<input id="captureMs" type="number" min="50" max="2000" step="1" value="100" inputmode="numeric"></label>
         </div>
-        <label class="auth-test-option"><input id="g128Test" type="checkbox"> Test G128 in both directions</label>
-        <p class="auth-direction" id="directionProfile">Computer: receive up to G64 · G32 controls</p>
-        <p class="auth-help">Choose Computer or Phone independently of its authentication role. Defaults allow G128 from computers and G64 from phones. The G128 test option enables G128 sending and receiving on both devices; enable it on both screens for that experiment. Choose a smaller grid when alignment is difficult. Choose one verifier and one key holder. Start both devices with 32 repetitions. Short proofs are for development; increasing repetitions increases proof size and work. Sampling and processing may take longer than the selected intervals.</p>
+        <p class="auth-direction" id="directionProfile">Computer: receive up to G128 · G32 controls</p>
+        <p class="auth-help">Both devices can send and receive G32, G64 or G128, independently of the authentication role. Choose the outgoing grid on each screen; phones initially select G64. Choose a smaller grid when alignment is difficult. Choose one verifier and one key holder. Start both devices with 32 repetitions. Short proofs are for development; increasing repetitions increases proof size and work. Sampling and processing may take longer than the selected intervals.</p>
       </fieldset>
       <p class="auth-model" id="modelStatus" role="status">The trained neural corrector will be checked when you start.</p>
     </details>
@@ -52,7 +51,7 @@
       <div class="auth-stage" id="stage" data-mirror="false" style="--matrix-scale:100%">
         <div class="auth-matrix-panel">
           <div class="auth-matrix-meta"><span id="matrixStatus">Waiting for an outgoing matrix</span><span id="phaseStatus">—</span><span id="readProgress" hidden>Reading incoming matrix · not confirmed</span></div>
-          <div class="auth-matrix-holder"><canvas id="matrix" width="1024" height="1024" aria-label="Outgoing optical matrix"></canvas></div>
+          <div class="auth-matrix-holder"><div class="auth-matrix-surface"><canvas id="matrix" width="1024" height="1024" aria-label="Outgoing optical matrix"></canvas><div class="auth-reading-overlay" aria-hidden="true"></div></div></div>
         </div>
         <div class="auth-camera-panel">
           <div class="auth-camera-title"><span>Camera alignment</span><button id="mirrorCamera" type="button" aria-pressed="false">Mirror</button></div>

@@ -19,21 +19,22 @@
 @keyframes auth-notice-in{from{opacity:0}to{opacity:1}}
 @media(max-width:580px){.neural-auth .auth-turn{min-height:108px;padding:10px 12px}.neural-auth .auth-turn-notice{padding:9px 11px;gap:8px}.neural-auth #turnNoticeIcon{font-size:20px}.neural-auth .auth-turn-notice strong{font-size:16px}.neural-auth .auth-turn-notice p{font-size:11px}.neural-auth .auth-stage{padding:7px 10px;gap:7px}.neural-auth .auth-matrix-meta{min-height:62px;padding:6px 3px}}
 @media(max-width:380px){.neural-auth .auth-turn{min-height:122px}}
-.neural-auth .auth-matrix-holder canvas{max-width:min(100%,650px,calc(100svh - 220px))}
+.neural-auth .auth-matrix-surface{position:relative;isolation:isolate;width:var(--matrix-scale);max-width:min(100%,650px,calc(100svh - 220px))}
+.neural-auth .auth-matrix-surface canvas{width:100%;max-width:100%}
 @media(prefers-reduced-motion:reduce){.neural-auth .auth-turn-notice{animation:none}}
 .neural-auth .auth-direction{margin:0 0 .55rem;font-size:.85rem;color:#3d604e;font-weight:600}
 .neural-auth .auth-next-grid{display:flex;align-items:center;gap:.75rem;margin:.7rem 0;font-size:.85rem;font-weight:600}
 .neural-auth .auth-next-grid select{max-width:11rem;min-height:2.5rem;padding:.35rem .6rem;border:1px solid var(--line,#d8ddd4);border-radius:8px;background:#fff;color:inherit}
 .neural-auth .auth-next-turn>div{min-width:0}
-.auth-test-option{display:flex;align-items:center;gap:8px;margin:12px 0;font-size:12px;color:#46624d}.auth-test-option input{width:auto}
 .auth-ack-recovery{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;background:#fff5df;border-bottom:1px solid #e3d8ba}.auth-ack-recovery[hidden]{display:none}.auth-ack-recovery p{margin:0;font-size:11px;line-height:1.4;color:#71552e}.auth-ack-recovery button{flex:none;padding:9px 12px;font-size:11px}
-/* A candidate can be a repeated peer packet. Grey the chrome, never the optical
-   pixels: the other camera may still need the displayed data or final ACK. */
+/* The provisional overlay is independent of handoff notices. It is anchored to
+   the actual code surface at every display scale, and cannot intercept input. */
 .auth-matrix-meta{position:relative}
-#readProgress{position:absolute;inset:0;display:flex;align-items:center;background:#e3e5e2;color:#5c625c;font:10px/1.35 var(--mono);padding:4px 6px}
+#readProgress{position:absolute;inset:0;display:flex;align-items:center;background:#edf1e7;color:#5c625c;font:10px/1.35 var(--mono);padding:4px 6px}
 #readProgress[hidden]{display:none}
-.auth-stage[data-reading=true] .auth-matrix-holder{outline:3px solid #b3b8b1;outline-offset:3px;background:#e3e5e2}
-.auth-stage[data-reading=true] .auth-camera-title{background:#555f55}
+.auth-reading-overlay{position:absolute;inset:0;z-index:1;pointer-events:none;background:#808080;opacity:0;transition:none}
+.auth-stage[data-reading=reading] .auth-reading-overlay{opacity:.28;transition:opacity .1s linear}
+.auth-stage[data-reading=decaying] .auth-reading-overlay{opacity:0;transition:opacity 3s linear}
 @media(max-width:580px){.auth-ack-recovery{padding:8px 12px;flex-wrap:wrap}.auth-ack-recovery p{flex:1;min-width:140px}.auth-ack-recovery button{min-height:38px}}
 .neural-auth .auth-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
 @media(max-width:600px){.neural-auth .auth-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.neural-auth .auth-next-grid{justify-content:space-between}}

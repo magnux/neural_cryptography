@@ -1,32 +1,45 @@
-/** Provisional camera activity only; samples do not establish packet identity.
- * Use this to mute the surrounding UI, never the transmitted matrix pixels.
- */
+/** Provisional camera activity, independent of transport notices or acceptance. */
+export const READING_DECAY_MS=3000;
+
 export class ReadingCue {
-  constructor({onChange=()=>{},onReadingStarted=()=>{}}={}){
-    this.onChange=onChange;this.onReadingStarted=onReadingStarted;
-    this.active=false;this.key=null;this.started=false;
+  constructor({onChange=()=>{},setTimer=(callback,delay)=>globalThis.setTimeout(callback,delay),
+    clearTimer=id=>globalThis.clearTimeout(id)}={}){
+    this.onChange=onChange;this.setTimer=setTimer;this.clearTimer=clearTimer;
+    this.state='idle';this.key=null;this.timer=null;this.revision=0;
   }
-  setActive(active){
-    if(active===this.active)return;
-    this.active=active;this.onChange(active);
+  setState(state){
+    if(state===this.state)return;
+    this.state=state;this.onChange(state);
+  }
+  cancelDecay(){
+    this.revision++;
+    if(this.timer!==null)this.clearTimer(this.timer);
+    this.timer=null;
+  }
+  decay(){
+    // Repeated misses cannot extend the fade or flicker it back to full opacity.
+    if(this.state!=='reading')return;
+    this.setState('decaying');
+    const revision=++this.revision;
+    this.timer=this.setTimer(()=>{
+      if(revision!==this.revision)return;
+      this.timer=null;this.setState('idle');
+    },READING_DECAY_MS);
   }
   displayed(key){
     if(key===this.key)return;
-    this.key=key;this.started=false;this.setActive(false);
+    this.key=key;this.settle();
   }
   observe(result={}){
     const {stage,info}=result;
     if(result.ok||stage==='profile')this.settle();
     else if(result.updated===true&&info&&!result.duplicateExposure){
-      this.setActive(true);
-      // A repeated old peer packet can start another candidate after recovery.
-      // Dismiss a stale handoff notice at most once for our displayed packet.
-      if(!this.started){this.started=true;this.onReadingStarted();}
+      this.cancelDecay();this.setState('reading');
     }else if(stage==='collect'&&result.duplicateExposure||info&&['fec','crc'].includes(stage)){
       // Repeated exposures and unsuccessful recovery do not imply lost geometry.
-    }else this.settle();
-    return this.active;
+    }else this.decay();
+    return this.state;
   }
-  settle(){this.setActive(false);}
-  reset(){this.key=null;this.started=false;this.setActive(false);}
+  settle(){this.cancelDecay();this.setState('idle');}
+  reset(){this.key=null;this.settle();}
 }

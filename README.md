@@ -8,9 +8,10 @@ store recording JSONs explicitly uploaded from the data collector.
 The goal is **fast, reliable and secure optical authentication between a phone
 and computer**. The current Neural-ZKBoo demo carries both data and acknowledgments
 using **Neural-QR**, our header-free optical format read by the trained neural
-corrector. The asymmetrical profile permits G128 computer→phone and G64
-phone→computer, with G32 controls and smaller outgoing grids selectable between
-messages. The separate standard-QR experiment remains available for comparison.
+corrector. Both devices can send and receive through G128, with G32 controls and
+independently selectable outgoing grids. The initial selections are G128 on
+computers and G64 on phones. The separate standard-QR experiment remains available
+for comparison.
 
 **W-tube and VW export, browser inference and Neural-QR packet integration are
 implemented.** Export the trained checkpoint to static ONNX profiles, prepare

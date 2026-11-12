@@ -2,10 +2,9 @@
 
 `apps/color-optical-bench/dist/neural-zkboo.html` runs the turn-based authentication
 POC using **header-free Neural-QR for both data and acknowledgments**, corrected
-by the trained **VW** or **W-tube** model. The physical directions have independent
-default limits: G128 from computer to phone, G64 from phone to computer.
-Authentication roles can be reversed without reversing these limits. The optional
-**Test G128 in both directions** setting enables a symmetric G128 experiment.
+by the trained **VW** or **W-tube** model. Both devices can send and receive
+G32, G64 and G128. Choose each outgoing grid independently of the authentication
+role; the initial selections are G128 on computers and G64 on phones.
 
 This iteration integrates the existing trained model and Neural-ZKBoo proof;
 it does not require another training run. It replaces the earlier G64 transport
@@ -61,19 +60,16 @@ larger than the checkpoint; allow initialization to finish before timing a trans
 | --- | --- | --- |
 | **This screen** | Computer | Phone |
 | Default outgoing data | G128 | G64 |
-| Other outgoing choices | G64, G32 | G32 |
-| Incoming maximum | G64 | G128 |
+| Other outgoing choices | G64, G32 | G128, G32 |
+| Incoming maximum | G128 | G128 |
 | ACK in either direction | G32, four phases | G32, four phases |
 | First authentication role | Verifier | Key holder |
 
-The screen preset describes the physical direction, independently of the
-**Authentication role**. A phone acting as verifier still sends at most G64;
-a computer acting as key holder can still send G128.
-
-To test **G128 both ways**, enable **Test G128 in both directions** on both
-devices before starting. It selects G128 outgoing data and raises both receiving
-limits to G128; controls stay G32. The export must include G32, G64 and G128. The
-normal Computer/Phone defaults return when the option is unchecked. Keep 32 proof
+The screen preset describes the physical device, independently of the
+**Authentication role**. Both presets allow every supported outgoing grid and
+receive through G128. To test **G128 both ways**, choose G128 in each outgoing
+grid dropdown; there is no separate test switch. Controls stay G32, and the
+export must include G32, G64 and G128. Keep 32 proof
 repetitions and the phase/camera intervals that already work, and compare delivered
 proof goodput and inference times in both reports. Four times the cell count can
 increase inference work and recovery retries; greater capacity alone does not
@@ -156,11 +152,14 @@ other device finish reading it before pressing **Send next turn**. The normal
 status and instructions remain available after each notice disappears.
 
 From the **first valid sample**, a provisional **Reading incoming matrix · not
-confirmed** cue greys the display labels/frame and dismisses the previous notice
-once for the current outgoing packet. The optical pixels retain their exact colors
-so the other camera can still read them. A sample may belong to a repeated old
-packet; only validated transport progress confirms a new one. Missed acquisition
-clears the cue, and repeated samples do not continually dismiss notifications.
+confirmed** cue puts a translucent grey overlay in front of the currently
+displayed matrix. It is a display layer; the underlying canvas is unchanged.
+When acquisition is lost, the overlay fades out over **three seconds**. Repeated
+misses do not restart that decay; a fresh sample restores it. Successful recovery,
+a new outgoing matrix or reset clears it immediately. A sample may belong to a
+repeated old packet; only validated transport progress confirms a new one.
+Reading and fading never dismiss or restart handoff notices: those retain their
+own three-second lifetime and can be replaced by the next actual protocol event.
 
 ### Recover an early handoff
 
@@ -257,8 +256,8 @@ Neural-QR/corrector path, not a QR decoder or an old optical-header fallback.
 
 The live capture pool holds at most eight crops: 24 MiB at G128, before the packed
 input, camera image and runtime working memory. Initialization fetches and
-verifies all allowed incoming artifacts: G32/G64 on the computer and G32/G64/G128
-on the phone. It checks browser numerical parity for each, keeps at most two
+verifies G32/G64/G128 incoming artifacts on both devices. It checks browser
+numerical parity for each, keeps at most two
 compiled sessions, and retains the verified model/fixture bytes for all allowed
 sizes. Returning to an evicted size recompiles it from those bytes. Actual peak
 memory includes runtime/GPU allocations and is not inferred from the buffer bound.
