@@ -291,7 +291,7 @@ function showCapture(record){
     ? `Optical G${size} · rectified ${side}×${side} (${CAPTURE_PIXELS_PER_CELL} px/cell) · camera ${cameraPixels} px/cell`
     : record.stage==='profile'&&size
       ? `Optical G${size} ≠ expected G${stats.expectedSize??assignment()?.profile.size} · no sample saved`
-      : `${size?`Optical G${size}`:'Optical grid —'} · ${record.stage==='size'?'size markers unclear':record.stage==='phase'?'phase cues unclear':'waiting for clear markers'} · camera ${cameraPixels} px/cell`;
+      : `${size?`Optical G${size}`:'Optical grid —'} · ${({quad:'marker arrangement unclear',contrast:'finder contrast insufficient',orientation:'orientation uncertain',size:'size markers unclear',phase:'phase cues unclear'})[record.stage]??'waiting for clear markers'} · camera ${cameraPixels} px/cell`;
   $('latestCapture').textContent=record.ok
     ? `Orientation, optical size and phase cues accepted · G${record.info.size} / ${record.info.colors} colors · phase ${record.info.phase+1}/${record.info.phases}. Collection ${record.info.id}; payload labels are joined offline.`
     : `${record.stage??'Capture'}: ${record.error??'No usable image.'}`;
@@ -317,7 +317,7 @@ function clearOverlay(){const canvas=$('alignmentOverlay');canvas.getContext('2d
 function restartScanner(){receiverEpoch++;scanner.stop();buffer.resetStability();if(stream&&assignment()&&!(automaticSession()&&sessionBlocked))scanner.start();}
 async function scanOne(){
   const selected=assignment();if(!selected)throw Error('Enter the sender’s eight-character collection code and select its grid.');
-  const options={...currentImage(),...selected};
+  const options={...currentImage(),...selected,captureIntervalMs:Number($('scanInterval').value)};
   const full=collecting;
   options.original=full&&$('saveOriginal').checked&&activeKey&&!originalAttempts.has(activeKey)&&buffer.originals<2;
   if(options.original)originalAttempts.add(activeKey);

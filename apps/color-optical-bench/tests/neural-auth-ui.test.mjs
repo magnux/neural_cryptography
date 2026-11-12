@@ -25,3 +25,15 @@ test('Neural-QR UI separates screen geometry from proof role and retains full ca
   assert.match(html,/G32 ACK/);assert.match(html,/RS\+CRC-valid/);
   assert.doesNotMatch(html,/QR ACK|readable header|unreadable header/);
 });
+
+test('live camera controls are separate from locked setup and retain acquisition diagnostics without frames',()=>{
+  assert.ok(html.indexOf('id="cameraControls"')>html.indexOf('</fieldset>'));
+  assert.match(html,/Camera exposure &amp; focus/);
+  assert.match(html,/id="cameraControlStatus"[^>]+role="status"/);
+  assert.match(app,/captureIntervalMs:config.captureMs/);
+  assert.match(app,/cameraControls\.close\(\)/);
+  assert.match(app,/report\.cameraControls=cameraControls\.snapshot\(\)/);
+  assert.match(app,/report\.lastAcquisition=acquisitionDiagnostics\(result\)/);
+  assert.match(app,/controller!==cameraControls/);
+  assert.doesNotMatch(app,/ctx\.filter|brightness\(/);
+});

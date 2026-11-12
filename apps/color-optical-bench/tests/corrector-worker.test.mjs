@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
+import {packetFrames} from '../dist/js/neural-auth/optical.js';
+import {encodePacket} from '../dist/js/link/protocol.js';
+import {renderNeuralQR} from '../dist/js/neural-qr/layout.js';
 
 const workerURL=new URL('../dist/js/corrector-lab/worker.js',import.meta.url);
 const original=await readFile(workerURL,'utf8');
@@ -52,7 +55,7 @@ async function harness({sizes,gpu=false,badGPU=false,badWASM=false,corrupt=false
   const source=original.replace(/from '(\.[^']+)'/g,(_,path)=>`from '${new URL(path,workerURL).href}'`)
     .replaceAll('import.meta.url',JSON.stringify(workerURL.href))
     .replace('let ort, busy = false','let ort=globalThis.__correctorTestRuntime, busy = false')+
-    `\nexport {initializeTransport,load,sessions,assets};\n// harness ${serial++}`;
+    `\nexport {initializeTransport,load,sessions,assets,scanTransport};\n// harness ${serial++}`;
   const worker=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
   return {worker,state,manifest,restore(){for(const [name,descriptor]of saved){if(descriptor)Object.defineProperty(globalThis,name,descriptor);else delete globalThis[name];}}};
 }
@@ -88,4 +91,21 @@ test('wrong inference or artifact bytes cannot initialize live authentication',a
       assert.equal(h.worker.sessions.size,0);
     }finally{h.restore();}
   }
+});
+
+
+test('live worker forwards the configured reading interval through acquisition',async()=>{
+  const h=await harness({sizes:[32]});try{
+    await h.worker.initializeTransport({size:32,backend:'wasm'},()=>{});
+    const packet=encodePacket({kind:'data',messageType:'raw',sessionId:'12'.repeat(16),messageId:'34'.repeat(8),index:0,data:new Uint8Array(16)});
+    const frames=packetFrames(packet,{size:32});
+    const scan=(phase,time,captureIntervalMs=500)=>h.worker.scanTransport({size:32,backend:'wasm'},()=>{},
+      {image:renderNeuralQR(frames[phase],512),runId:1,mediaTime:time,presentedFrames:phase+1,expected:'data',captureIntervalMs});
+    const first=await scan(0,0);assert.equal(first.stats.geometryMaxAgeMs,1000);
+    assert.equal(first.stats.geometrySource,'detected');
+    const second=await scan(1,.5);assert.equal(second.stats.geometrySource,'previous');
+    assert.equal(second.stats.captureIntervalMs,500);
+    const third=await scan(2,1);assert.equal(third.stats.geometrySource,'detected');
+    await assert.rejects(scan(3,1.5,0),/interval/i);
+  }finally{h.restore();}
 });

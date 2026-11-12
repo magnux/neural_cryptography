@@ -4,7 +4,7 @@ import {CameraBurst} from './burst.js';
 import {TransportCapture} from '../neural-auth/capture.js';
 import {LivePhaseBurst,requireTransportModel,isTransportData,recoverCorrectedPayload} from './live-burst.js';
 import {CONTROL_SIZE} from '../neural-qr/packet.js';
-import {extractNeuralQR} from '../neural-qr/vision.js';
+import {geometryHintMaxAgeMs} from '../neural-qr/vision.js';
 
 const assetRoot = new URL('../../models/neural-corrector/', import.meta.url);
 const vendorRoot = new URL('../../vendor/onnxruntime/', import.meta.url);
@@ -16,7 +16,7 @@ const sessions=new Map(),assets=new Map();
 const MAX_SESSIONS=2,MAX_ASSET_SETS=3;
 let transportContext=null,transportMode=null;
 const liveBurst=new LivePhaseBurst();
-const transportCapture=new TransportCapture();
+const transportCapture=new TransportCapture(),labCapture=new TransportCapture();
 
 async function fetchBounded(url, maximum) {
   const response = await fetch(url, {cache: 'no-cache'});
@@ -179,14 +179,15 @@ async function benchmark(options, progress) {
   return {...describe(context, options), operation: 'benchmark', warmups: 2, parity, timings: summarizeTimings(times), samplesMs: times,
     timingScope: 'session.run plus CPU output copy; excludes fixture comparison and camera preprocessing'};
 }
-async function capture(options, progress, image, runId, mediaTime, presentedFrames) {
+async function capture(options, progress, image, runId, mediaTime, presentedFrames, captureIntervalMs=100) {
+  geometryHintMaxAgeMs(captureIntervalMs);
   transportContext=null;transportMode=null;liveBurst.reset();
   if (!Number.isSafeInteger(runId)||runId<1||!Number.isFinite(mediaTime)||mediaTime<0||!Number.isSafeInteger(presentedFrames)||presentedFrames<1) throw Error('Capture needs a fresh run and video frame identity.');
   const context = await load(options, progress), frames=options.captureFrames||context.manifest.framesPerInput;
   if(!context.manifest.frameCounts.includes(frames))throw Error(`The prepared model supports ${context.manifest.frameCounts.join('/')} captures; choose model default or a supported count.`);
   const phaseGrouped=context.manifest.inputLayout==='phase-paired-rgb-presence-planes';
   if(context.manifest.datasetFormat==='neural-qr-dataset')
-    return captureNeuralQR(options,progress,context,image,{runId,mediaTime,presentedFrames},frames);
+    return captureNeuralQR(options,progress,context,image,{runId,mediaTime,presentedFrames,captureIntervalMs},frames);
   if (!cameraBurst||cameraBurst.frames!==frames||cameraBurst.phaseGrouped!==phaseGrouped) cameraBurst=new CameraBurst(frames,{phaseGrouped});
   const identity={context:`${context.key}/${runId}/${frames}`,mediaTime,presentedFrames};
   progress('Validating the monochrome header and rectifying the current exposure…');
@@ -228,11 +229,12 @@ async function captureNeuralQR(options,progress,context,image,identity,frames){
   const frameIdentity={context:`lab/${context.key}/${identity.runId}/${frames}`,
     mediaTime:identity.mediaTime,presentedFrames:identity.presentedFrames};
   progress('Reading Neural-QR grid and phase cues…');
-  const crop=extractNeuralQR(image);
+  const crop=labCapture.scan(image,{expected:'data',context:frameIdentity.context,mediaTime:identity.mediaTime,
+    captureIntervalMs:identity.captureIntervalMs});
   if(!crop.ok){
     const state=cameraBurst.miss(frameIdentity);
     return {operation:'capture',waiting:true,collected:state.collected,phaseCounts:state.phaseCounts,
-      framesPerInput:8,requiredCaptures:frames,phaseGrouped:true,skippedExposure:true,error:crop.error};
+      framesPerInput:8,requiredCaptures:frames,phaseGrouped:true,skippedExposure:true,error:crop.error,stage:crop.stage,stats:crop.stats};
   }
   if(crop.info.size!==options.size){cameraBurst=null;throw Error(`Camera sees G${crop.info.size}; select that model size first.`);}
   const state=cameraBurst.add(crop,frameIdentity),burst=cameraBurst.snapshot({frames});
@@ -243,7 +245,7 @@ async function captureNeuralQR(options,progress,context,image,identity,frames){
     const packed=packFrameStack(burst.input,context.manifest,options.size,{phases:burst.phases,slots:burst.slots});
     const result=await inference(context,packed);
     if(result.values.some(value=>!Number.isFinite(value)))throw Error('Camera inference produced non-finite logits.');
-    return {...describe(context,options),operation:'capture',inputStats:crop.stats,inferenceMs:result.ms,
+    return {...describe(context,options),operation:'capture',inputStats:{...crop.stats,preprocessMs:burst.preprocessMs},inferenceMs:result.ms,
       requiredCaptures:frames,phaseGrouped:true,phaseCounts:burst.phaseCounts,inputCaptures:frames,
       paletteColors:16,logitsFinite:true,mediaTimes:burst.mediaTimes,presentedFrames:burst.presentedFrames,
       note:'Header-free Neural-QR crop inference only. Live authentication additionally requires RS/CRC and transfer-context checks.'};
@@ -251,7 +253,7 @@ async function captureNeuralQR(options,progress,context,image,identity,frames){
 }
 
 async function initializeTransport(options,progress) {
-  cameraBurst=null;liveBurst.reset();transportCapture.reset();transportMode=null;transportContext=null;
+  cameraBurst=null;liveBurst.reset();transportCapture.reset();labCapture.reset();transportMode=null;transportContext=null;
   if(![32,64,128].includes(options.size))throw Error('Neural-QR transport reception requires a G32, G64 or G128 cap.');
   const manifest=validateManifest(JSON.parse(new TextDecoder().decode(await fetchBounded(new URL('manifest.json',assetRoot),65536))));
   requireTransportModel(manifest);
@@ -288,12 +290,13 @@ async function scanTransport(options,progress,raw) {
   const settings=transportContext;
   if(!settings||settings.maxSize!==options.size||settings.backend!==options.backend)
     throw Error('Initialize the trained corrector before starting the camera receiver.');
-  const {image,runId,mediaTime,presentedFrames,expected}=raw;
+  const {image,runId,mediaTime,presentedFrames,expected,captureIntervalMs=100}=raw;
+  geometryHintMaxAgeMs(captureIntervalMs);
   if(!['data','ack'].includes(expected)||!Number.isSafeInteger(runId)||runId<1)throw Error('Invalid Neural-ZKBoo capture request.');
   const identity={context:`${runId}/${expected}`,mediaTime,presentedFrames};
   if(transportMode!==expected){liveBurst.reset();transportCapture.reset();transportMode=expected;}
   const before=liveBurst.status();
-  const capture=transportCapture.scan(image,{expected,context:identity.context,mediaTime});
+  const capture=transportCapture.scan(image,{expected,context:identity.context,mediaTime,captureIntervalMs});
   const base={operation:'transport-scan',transport:'neural-qr',expected,info:capture.info??null,
     corners:capture.corners??[],tentativeCorners:capture.tentativeCorners??[],markers:capture.markers??[],
     phaseCounts:before.phaseCounts,collected:before.collected,stats:capture.stats??{},method:'neural-corrector'};
@@ -333,12 +336,12 @@ self.onmessage = async event => {
     const validated = validateOptions(options);
     let result;
     if (operation === 'benchmark') result = await benchmark(validated, progress);
-    else if (operation === 'capture') result = await capture(validated, progress, options.image, options.runId, options.mediaTime, options.presentedFrames);
+    else if (operation === 'capture') result = await capture(validated, progress, options.image, options.runId, options.mediaTime, options.presentedFrames, options.captureIntervalMs);
     else if (operation === 'transport-init') result = await initializeTransport(validated,progress);
     else if (operation === 'transport-scan') result = await scanTransport(validated,progress,options);
     else if (operation === 'transport-reset') {liveBurst.reset();transportCapture.reset();transportMode=null;result={operation,ready:Boolean(transportContext)};}
     else throw new Error('Unknown corrector operation.');
     self.postMessage({id, type: 'result', result});
-  } catch (error) { cameraBurst=null;liveBurst.reset();transportCapture.reset(); self.postMessage({id, type: 'error', error: error.message || String(error)}); }
+  } catch (error) { cameraBurst=null;liveBurst.reset();transportCapture.reset();labCapture.reset(); self.postMessage({id, type: 'error', error: error.message || String(error)}); }
   finally { busy = false; }
 };

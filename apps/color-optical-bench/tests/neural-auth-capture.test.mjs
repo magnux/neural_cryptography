@@ -5,14 +5,14 @@ import {captureFeedback} from '../dist/js/neural-auth/feedback.js';
 import {packetFrames} from '../dist/js/neural-auth/optical.js';
 import {encodePacket} from '../dist/js/link/protocol.js';
 import {NQR_LAYOUT,renderNeuralQR} from '../dist/js/neural-qr/layout.js';
-import {GEOMETRY_MAX_AGE_MS} from '../dist/js/neural-qr/vision.js';
+import {geometryHintMaxAgeMs} from '../dist/js/neural-qr/vision.js';
 import {PALETTE} from '../dist/js/format.js';
 
 const common={messageType:'raw',sessionId:'12'.repeat(16),messageId:'34'.repeat(8)};
 const packet=encodePacket({...common,kind:'data',index:0,data:Uint8Array.from({length:512},(_,i)=>i&255)});
 const frames=packetFrames(packet,{size:64});
 const images=frames.map(frame=>renderNeuralQR(frame,512));
-const scan=(reader,time,phase=0,context='camera/1')=>reader.scan(images[phase],{expected:'data',context,mediaTime:time});
+const scan=(reader,time,phase=0,context='camera/1',captureIntervalMs=100)=>reader.scan(images[phase],{expected:'data',context,mediaTime:time,captureIntervalMs});
 function paint(image,x,y,w,h,color){
   const scale=image.width/256;
   for(let yy=Math.floor(y*scale);yy<Math.ceil((y+h)*scale);yy++)for(let xx=Math.floor(x*scale);xx<Math.ceil((x+w)*scale);xx++)
@@ -23,11 +23,11 @@ test('geometry reuse reads every current phase and expires from the last full de
   const reader=new TransportCapture();
   const first=scan(reader,0);assert.equal(first.ok,true,first.error);assert.equal(first.stats.geometrySource,'detected');
   const next=scan(reader,.1,1);assert.equal(next.info.phase,1);assert.equal(next.stats.geometrySource,'previous');
-  const third=scan(reader,(GEOMETRY_MAX_AGE_MS-1)/1000,2);assert.equal(third.info.phase,2);
+  const third=scan(reader,(geometryHintMaxAgeMs(100)-1)/1000,2);assert.equal(third.info.phase,2);
   assert.equal(third.stats.geometrySource,'previous');assert.equal(third.geometry.acquiredAt,0);
-  const expired=scan(reader,GEOMETRY_MAX_AGE_MS/1000,3);assert.equal(expired.info.phase,3);
+  const expired=scan(reader,geometryHintMaxAgeMs(100)/1000,3);assert.equal(expired.info.phase,3);
   assert.equal(expired.stats.geometrySource,'detected');
-  assert.equal(scan(reader,(GEOMETRY_MAX_AGE_MS+100)/1000,0).stats.geometrySource,'previous');
+  assert.equal(scan(reader,(geometryHintMaxAgeMs(100)+100)/1000,0).stats.geometrySource,'previous');
 });
 
 test('new runs, backwards timestamps, camera dimensions and explicit failures invalidate hints',()=>{
@@ -73,9 +73,9 @@ test('disagreeing phase cues give orange feedback; acquired phases provide green
   assert.equal(result.ok,false);assert.equal(result.stage,'phase');assert.equal(result.input,undefined);
   const feedback=captureFeedback({...result,expected:'data'});
   assert.equal(feedback.validated,false);assert.equal(feedback.corners.length,4);
-  assert.match(feedback.label,/Markers found.*phase unreadable/);assert.ok(feedback.markers.length>=4);
-  assert.equal(reader.geometry,null);
-  const good=scan(reader,.1,1);
+  assert.match(feedback.label,/Phase cues uncertain.*disagree/);assert.ok(feedback.markers.length>=4);
+  assert.ok(reader.geometry,'validated geometry survives a phase transition');
+  const good=scan(reader,.1,1);assert.equal(good.stats.geometrySource,'previous');
   const accepted=captureFeedback({...good,ok:false,stage:'collect',expected:'data',phaseCounts:[0,1,0,0],collected:1});
   assert.equal(accepted.validated,true);assert.match(accepted.label,/G64.*0 \/ 1 \/ 0 \/ 0.*1 captures/);
   assert.doesNotMatch(accepted.label,/RS\+CRC passed/);
@@ -98,4 +98,31 @@ test('capture context validation rejects invalid expected kinds and timestamps',
   for(const options of [{expected:'qr',context:'camera',mediaTime:0},{expected:'data',context:'',mediaTime:0},
     {expected:'data',context:'camera',mediaTime:-1},{expected:'data',context:'camera',mediaTime:NaN}])
     assert.throws(()=>reader.scan(images[0],options),/context/);
+});
+
+
+test('capture hint lifetime is exactly two configured reading intervals',()=>{
+  for(const interval of [100,500]){
+    const reader=new TransportCapture();scan(reader,0,0,'timing',interval);
+    const within=scan(reader,(2*interval-1)/1000,1,'timing',interval);
+    assert.equal(within.stats.geometrySource,'previous');
+    assert.equal(within.stats.geometryMaxAgeMs,2*interval);
+    assert.equal(within.stats.captureIntervalMs,interval);
+    assert.equal(within.geometry.acquiredAt,0);
+    const expired=scan(reader,2*interval/1000,2,'timing',interval);
+    assert.equal(expired.stats.previousGeometryTried,false);
+    assert.equal(expired.stats.geometrySource,'detected');
+  }
+  const reader=new TransportCapture();
+  for(const interval of [0,49,5001,NaN,'500'])
+    assert.throws(()=>scan(reader,0,0,'invalid',interval),/interval/i);
+});
+
+test('acquisition feedback preserves the specific failure and stays orange',()=>{
+  for(const [stage,heading] of [['quad','arrangement'],['contrast','contrast'],['orientation','Orientation'],['size','Grid-size'],['phase','Phase']]){
+    const feedback=captureFeedback({expected:'data',ok:false,stage,error:'Measured local contrast is too low.',
+      tentativeCorners:[[0,0],[1,0],[1,1],[0,1]],markers:[{x:0,y:0}]});
+    assert.equal(feedback.validated,false);assert.equal(feedback.corners.length,4);
+    assert.ok(feedback.label.includes(heading));assert.match(feedback.label,/Measured local contrast/);
+  }
 });

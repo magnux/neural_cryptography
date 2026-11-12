@@ -103,6 +103,14 @@ are attached to capture metadata. Existing recording versions and tensor shapes
 are unchanged: G128 still stores a 512×512 calibrated crop, now potentially
 reconstructed from more camera evidence.
 
+Neural-QR marker acquisition uses local contrast checks and bounded adaptive/
+higher-resolution fallback searches when the fast global search fails. These
+operate on detector buffers; saved RGB crops keep the same calibrated input
+contract. A geometry hint lasts twice the selected scan interval (100 ms →
+200 ms; 500 ms → 1,000 ms), counted from the last full detection. Its current
+markers and cues are still checked. A phase failure may retain verified geometry
+within that age limit, but never adds a crop or a guessed phase to the dataset.
+
 Compare the displayed **camera pixels/cell** before and after changing resolution.
 A higher requested setting is useful only if the actual stream and matrix
 coverage improve; it may reduce frame rate or increase processing time. A 100 ms

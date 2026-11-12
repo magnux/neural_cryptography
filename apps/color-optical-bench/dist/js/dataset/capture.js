@@ -1,12 +1,13 @@
 /** Receiver evidence; a public collection assignment contains no sender labels. */
-import {extractNeuralQR} from '../neural-qr/vision.js';
+import {extractNeuralQR,geometryHintMaxAgeMs} from '../neural-qr/vision.js';
 import {captureSignature} from './diversity.js';
 import {captureKey,bytesToBase64,floatBytes,base64ToBytes,floatsFromBytes,validateSessionId,validateCollectionCode,validateProfile,captureProfile,NEURAL_QR_VERSION,CAPTURE_PIXELS_PER_CELL,MAX_CAPTURE_BYTES,DEFAULT_CAPTURE_BYTES,MAX_RECORDS} from './contract.js';
 
-export function captureFrame(image,{timestamp=Date.now(),camera={},signature=false,profile,collectionCode,previousGeometry=null,probe=false}={}) {
+export function captureFrame(image,{timestamp=Date.now(),camera={},signature=false,profile,collectionCode,previousGeometry=null,probe=false,captureIntervalMs=100}={}) {
   if(!Number.isFinite(timestamp)||timestamp<0)throw Error('Invalid capture timestamp.');
+  geometryHintMaxAgeMs(captureIntervalMs);
   validateProfile(profile);validateCollectionCode(collectionCode);
-  const capture=extractNeuralQR(image,{profile,previousGeometry,now:timestamp,dense:!probe});
+  const capture=extractNeuralQR(image,{profile,previousGeometry,now:timestamp,dense:!probe,captureIntervalMs});
   const base={timestamp,camera,probe,ok:capture.ok,stage:capture.stage,error:capture.error,
     stats:capture.stats,transform:capture.transform,geometry:capture.geometry,corners:capture.corners,tentativeCorners:capture.tentativeCorners};
   if(!capture.ok)return base;

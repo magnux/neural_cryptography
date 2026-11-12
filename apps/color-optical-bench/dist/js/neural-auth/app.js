@@ -4,6 +4,7 @@ import {CorrectorClient} from '../corrector-lab/client.js';
 import {sameBytes} from '../format.js';
 import {renderNeuralQR} from '../neural-qr/layout.js';
 import {openCaptureCamera,captureDimensions} from '../dataset/camera.js';
+import {CameraControls,acquisitionDiagnostics} from '../dataset/camera-controls.js';
 import {deviceProfile,transportProfile,transferMetrics} from './profiles.js';
 import {decodePacket} from '../link/protocol.js';
 import {TurnChannel} from './channel.js';
@@ -17,6 +18,7 @@ let frameCallback=null,displayTimer=null,heartbeat=null,lastCapture=-Infinity,la
 let shown=null,rendered=[],phaseStarted=0,phaseIndex=-1,authState=null,report=null,startedAt=0;
 const events=[],transfers=new Map();
 let lastIncomingSize=null;
+let cameraControls=null,changingCameraControls=false;
 const int=(value,min,max,label)=>{const n=Number(value);if(!Number.isSafeInteger(n)||n<min||n>max)throw Error(`${label} must be ${min}–${max}.`);return n;};
 function settings(){
   const role=$('role').value,backend=$('backend').value,repetitions=Number($('repetitions').value),resolution=$('resolution').value;
@@ -56,6 +58,59 @@ function event(text){
   $('eventLog').replaceChildren(...events.slice(-20).map(item=>{const li=document.createElement('li');li.textContent=`${item.seconds}s · ${item.text}`;return li;}));
 }
 function cameraSettings(){const v=stream?.getVideoTracks()[0]?.getSettings()??{};return {width:v.width,height:v.height,frameRate:v.frameRate,facingMode:v.facingMode};}
+const controlLabels={exposureMode:'Exposure mode',exposureCompensation:'Exposure compensation (EV)',exposureTime:'Exposure time (camera units)',focusMode:'Focus mode',focusDistance:'Focus distance (camera units)'};
+const modeLabels={continuous:'Auto · continuous','single-shot':'Auto · single shot',manual:'Manual'};
+const controlValue=value=>typeof value==='number'?Number(value.toPrecision(5)).toString():modeLabels[value]??'Not reported';
+function renderCameraControls(message=''){
+  const panel=$('cameraControls'),fields=$('cameraControlFields');panel.hidden=!cameraControls||!active;
+  fields.replaceChildren();if(panel.hidden)return;
+  const snapshot=cameraControls.snapshot();if(report)report.cameraControls=snapshot;
+  for(const key of Object.keys(controlLabels)){
+    const cap=snapshot.capabilities[key];if(!cap)continue;
+    const label=document.createElement('label'),title=document.createElement('span'),actual=snapshot.actual[key];
+    label.htmlFor=`control-${key}`;title.textContent=controlLabels[key];label.append(title);
+    let input;
+    if(Array.isArray(cap)){
+      input=document.createElement('select');
+      if(!cap.includes(actual))input.append(new Option('Current mode not reported','',true,true));
+      for(const mode of cap)input.append(new Option(modeLabels[mode],mode));
+      if(cap.includes(actual))input.value=actual;
+    }else{
+      input=document.createElement('input');input.type='range';input.min=String(cap.min);input.max=String(cap.max);input.step=String(cap.step??'any');
+      input.value=String(Number.isFinite(actual)?Math.min(cap.max,Math.max(cap.min,actual)):(cap.min+cap.max)/2);
+      const values=document.createElement('output');values.htmlFor=`control-${key}`;
+      values.textContent=`Camera: ${controlValue(actual)}`;label.append(values);
+      input.addEventListener('input',()=>{values.textContent=`Request: ${controlValue(Number(input.value))} · camera: ${controlValue(actual)}`;});
+    }
+    input.id=`control-${key}`;
+    const mode=key==='exposureTime'?'exposureMode':key==='focusDistance'?'focusMode':null;
+    const needsManual=mode&&snapshot.capabilities[mode]?.includes('manual')&&snapshot.actual[mode]!=='manual';
+    input.disabled=changingCameraControls||Boolean(needsManual);
+    if(needsManual)input.title='Choose Manual mode first.';
+    input.addEventListener('change',()=>void changeCameraControl(key,Array.isArray(cap)?input.value:Number(input.value)));
+    label.append(input);fields.append(label);
+  }
+  $('cameraControlStatus').textContent=message||(fields.children.length
+    ?'Only controls exposed by this camera are shown. No settings are changed automatically. Values report what the camera actually applied.'
+    :'This browser/camera exposes no adjustable exposure or focus controls. Use the webcam’s own settings if available.');
+}
+async function changeCameraControl(key,value){
+  if(!active||!cameraControls||changingCameraControls)return;
+  const controller=cameraControls,token=epoch;changingCameraControls=true;renderCameraControls('Applying camera setting…');
+  let message;
+  try{
+    await controller.apply({[key]:value});
+    if(!active||token!==epoch||controller!==cameraControls)return;
+    const snapshot=controller.snapshot(),actual=snapshot.actual[key];
+    message=`${controlLabels[key]} · requested ${controlValue(snapshot.requested[key])}; camera reports ${controlValue(actual)}.`;
+    event(message);
+  }catch(e){
+    if(!active||token!==epoch||controller!==cameraControls)return;
+    message=`Camera setting was not applied: ${e.message||String(e)}`;
+  }finally{
+    if(active&&token===epoch&&controller===cameraControls){changingCameraControls=false;renderCameraControls(message);}
+  }
+}
 function update(){
   const link=channel?.snapshot();
   $('authApp').dataset.mode=active?(link?.mode??'receive'):'idle';
@@ -163,12 +218,14 @@ async function scan(metadata,token){
   const image=ctx.getImageData(0,0,canvas.width,canvas.height),expected=channel?.snapshot().mode==='send'?'ack':'data';
   report.captureAttempts++;
   const result=await corrector.call('transport-scan',{size:config.incomingMaxSize,backend:config.backend,image,expected,
-    runId:token,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames},[image.data.buffer]);
+    captureIntervalMs:config.captureMs,runId:token,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames},[image.data.buffer]);
   if(!active||token!==epoch)return;
   const feedback=captureFeedback(result);overlay(feedback,canvas.width,canvas.height);
   $('cameraStatus').textContent=feedback.label;
   const stage=result.ok?'decoded':result.stage??'unknown',counts=report.captureStages[expected];
   counts[stage]=(counts[stage]??0)+1;
+  report.lastAcquisition=acquisitionDiagnostics(result);
+  if(!result.ok&&result.error)report.lastAcquisitionFailure=acquisitionDiagnostics(result);
   if(result.stats?.geometrySource==='previous')report.geometryReuses++;
   if(expected==='data'&&result.info?.size)lastIncomingSize=result.info.size;
   if(Number.isFinite(result.stats?.pixelsPerCell))$('cameraDensity').textContent=`${result.stats.pixelsPerCell.toFixed(2)} px/cell`;
@@ -210,7 +267,7 @@ async function start(){
   lastCapture=-Infinity;lastPresented=0;scanning=false;$('result').textContent='';$('receivedCount').textContent='0';$('inferenceMs').textContent='—';$('elapsed').textContent='0 s';$('goodput').textContent='—';$('cameraDensity').textContent='—';
   report={format:'neural-zkboo-auth-report',version:2,started:new Date().toISOString(),settings:{...config,cameraId:undefined},
     captureAttempts:0,captureMisses:0,crcAcceptedMatrices:0,transportAcceptedMatrices:0,transportRejectedMatrices:0,
-    rejectedContainers:0,inferenceCount:0,inferenceMs:[],geometries:{},transfers:[],captureStages:{data:{},ack:{}},geometryReuses:0,model:null,camera:null,authentication:null,transport:null};
+    rejectedContainers:0,inferenceCount:0,inferenceMs:[],geometries:{},transfers:[],captureStages:{data:{},ack:{}},geometryReuses:0,model:null,camera:null,cameraControls:null,lastAcquisition:null,lastAcquisitionFailure:null,authentication:null,transport:null};
   corrector=new CorrectorClient({onProgress:text=>{if(active&&token===epoch)$('modelStatus').textContent=text;}});
   cryptoClient=new CryptoClient({onInvalidate:e=>{if(active&&token===epoch)fail(e);}});
   update();
@@ -225,6 +282,7 @@ async function start(){
     $('video').srcObject=stream;await $('video').play();
     if(!active||token!==epoch)return;
     report.camera={...cameraSettings(),...opened.request};$('cameraPlaceholder').hidden=true;
+    cameraControls=new CameraControls(stream.getVideoTracks()[0]);changingCameraControls=false;renderCameraControls();
     $('cameraStatus').textContent=`${report.camera.width} × ${report.camera.height} · ${Math.round(report.camera.frameRate??0)} fps`;
     await populateCameras();if(!active||token!==epoch)return;
     const deviceId=crypto.randomUUID();
@@ -251,6 +309,8 @@ function stop(reason='Stopped by the user.'){
   clearTimeout(displayTimer);clearInterval(heartbeat);
   if(frameCallback!==null)$('video').cancelVideoFrameCallback(frameCallback);frameCallback=null;
   channel?.close();session?.close(reason);cryptoClient?.destroy();corrector?.cancel();
+  if(cameraControls){if(report)report.cameraControls=cameraControls.snapshot();cameraControls.close();cameraControls=null;}
+  changingCameraControls=false;$('cameraControls').hidden=true;$('cameraControlFields').replaceChildren();
   stream?.getTracks().forEach(track=>track.stop());stream=null;$('video').srcObject=null;
   $('cameraPlaceholder').hidden=false;$('cameraStatus').textContent='Camera is off';
   shown=null;rendered=[];scanning=false;
@@ -260,6 +320,7 @@ function stop(reason='Stopped by the user.'){
 function fail(e){error(e?.message||String(e));stop(e?.message||String(e));}
 function download(){
   if(!report)return;
+  if(cameraControls)report.cameraControls=cameraControls.snapshot();
   const value={...report,elapsedMs:report.elapsedMs??performance.now()-startedAt,notes:$('reportNotes').value.slice(0,1000),events:[...events]};
   const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'})),a=document.createElement('a');
   a.href=url;a.download=`neural-zkboo-${config.role}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);

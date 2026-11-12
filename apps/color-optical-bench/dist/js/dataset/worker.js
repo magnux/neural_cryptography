@@ -41,7 +41,7 @@ self.onmessage=async event=>{
       result={...selectCaptureReplacement(options.signatures,options.incomingSignature,{reference:references.get(key)}),
         ...(!options.reference?{reference:references.get(key)}:{})};
     }else if(operation==='capture'||operation==='probe'){
-      const {image,timestamp,camera,original=false}=options;
+      const {image,timestamp,camera,original=false,captureIntervalMs=100}=options;
       if(!image||!Number.isSafeInteger(image.width)||!Number.isSafeInteger(image.height)||
          image.width<32||image.height<32||image.width*image.height>MAX_CAPTURE_PIXELS||
          !(image.data instanceof Uint8ClampedArray)||image.data.length!==image.width*image.height*4)throw Error('Capture exceeds the 20-megapixel processing limit or has invalid pixels.');
@@ -50,9 +50,9 @@ self.onmessage=async event=>{
       const assignment=`${collectionCode}/${profile?.size}`;
       if(assignment!==geometryAssignment){previousGeometry=null;geometryAssignment=assignment;references.clear();}
       result=captureFrame(image,{timestamp,camera,signature:operation==='capture',profile,collectionCode,
-        previousGeometry,probe:operation==='probe'});
-      if(result.ok)previousGeometry=result.geometry;
-      else if(['detect','orientation','size','profile'].includes(result.stage))previousGeometry=null;
+        previousGeometry,probe:operation==='probe',captureIntervalMs});
+      if(result.geometry)previousGeometry=result.geometry;
+      else if(['detect','quad','contrast','orientation','size','profile'].includes(result.stage))previousGeometry=null;
       if(original){
         try{const snapshot=await originalPNG(image);if(snapshot.omitted)result.originalNote=snapshot.omitted;else result.original=snapshot;}
         catch(error){result.originalNote=`Original snapshot unavailable: ${error.message}`;}

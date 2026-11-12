@@ -99,15 +99,30 @@ function refineCenter(marker,binary,w,h){
   if(poly.length!==4)return marker;
   try{const H=homography([[0,0],[1,0],[1,1],[0,1]],poly),[x,y]=project(H,.5,.5);return {...marker,x,y};}catch{return marker;}
 }
-export function findMarkers(image){
+function adaptiveBinary(gray,w,h,window){
+  // Integral-image local means keep the fallback linear in camera pixels.
+  // At the supported 2000px side bound the sum fits safely in uint32.
+  const stride=w+1,integral=new Uint32Array(stride*(h+1)),binary=new Uint8Array(w*h),r=window>>1;
+  for(let y=0;y<h;y++){let row=0;for(let x=0;x<w;x++){row+=gray[y*w+x];integral[(y+1)*stride+x+1]=integral[y*stride+x+1]+row;}}
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const x0=Math.max(0,x-r),x1=Math.min(w,x+r+1),y0=Math.max(0,y-r),y1=Math.min(h,y+r+1);
+    const sum=integral[y1*stride+x1]-integral[y0*stride+x1]-integral[y1*stride+x0]+integral[y0*stride+x0];
+    binary[y*w+x]=gray[y*w+x]<sum/((x1-x0)*(y1-y0))-7?1:0;
+  }
+  return binary;
+}
+export function findMarkers(image,{thresholdMode='global',maxSide=1000,adaptiveWindow=63}={}){
+  if(!['global','adaptive'].includes(thresholdMode)||!Number.isInteger(maxSide)||maxSide<128||maxSide>2000||
+    !Number.isInteger(adaptiveWindow)||adaptiveWindow<31||adaptiveWindow>255||adaptiveWindow%2!==1)
+    throw Error('Invalid marker detection bounds.');
   // Downsample detection only; payload/color sampling always uses the original image.
-  const scale=Math.min(1,1000/Math.max(image.width,image.height)),w=Math.max(1,Math.round(image.width*scale)),h=Math.max(1,Math.round(image.height*scale));
+  const scale=Math.min(1,maxSide/Math.max(image.width,image.height)),w=Math.max(1,Math.round(image.width*scale)),h=Math.max(1,Math.round(image.height*scale));
   const gray=new Uint8Array(w*h),hist=new Uint32Array(256);
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){
     const xx=Math.min(image.width-1,Math.floor((x+.5)/scale)),yy=Math.min(image.height-1,Math.floor((y+.5)/scale)),p=4*(yy*image.width+xx);
     const v=Math.round(.2126*image.data[p]+.7152*image.data[p+1]+.0722*image.data[p+2]);gray[y*w+x]=v;hist[v]++;
   }
-  const threshold=otsu(hist,w*h),binary=gray.map(v=>v<=threshold?1:0),found=[];
+  const threshold=otsu(hist,w*h),binary=thresholdMode==='adaptive'?adaptiveBinary(gray,w,h,adaptiveWindow):gray.map(v=>v<=threshold?1:0),found=[];
   for(let y=0;y<h;y+=Math.max(1,Math.floor(h/650))){
     const runs=[];let begin=0,color=binary[y*w];
     for(let x=1;x<=w;x++)if(x===w||binary[y*w+x]!==color){
@@ -125,20 +140,25 @@ export function findMarkers(image){
   }
   const markers=found.filter(f=>f.hits>=2).sort((a,b)=>b.module*Math.sqrt(b.hits)-a.module*Math.sqrt(a.hits)).slice(0,16).map(f=>refineCenter(f,binary,w,h)).map(f=>{
     const full={...f,x:f.x/scale,y:f.y/scale,module:f.module/scale};
-    if(scale===1)return full;
+    if(scale===1&&thresholdMode==='global')return full;
     // Refine the tiny inner square at original resolution. A subpixel error in
     // the coarse detector becomes several payload cells in a dense matrix.
     const r=Math.ceil(full.module*4),left=Math.max(0,Math.floor(full.x)-r),top=Math.max(0,Math.floor(full.y)-r);
-    const cw=Math.min(image.width-left,2*r+1),ch=Math.min(image.height-top,2*r+1),crop=new Uint8Array(cw*ch);
+    const cw=Math.min(image.width-left,2*r+1),ch=Math.min(image.height-top,2*r+1),crop=new Uint8Array(cw*ch),localHist=thresholdMode==='adaptive'?new Uint32Array(256):null;
     for(let yy=0;yy<ch;yy++)for(let xx=0;xx<cw;xx++){
-      const j=4*((yy+top)*image.width+xx+left);crop[yy*cw+xx]=.2126*image.data[j]+.7152*image.data[j+1]+.0722*image.data[j+2]<=threshold?1:0;
+      const j=4*((yy+top)*image.width+xx+left),value=.2126*image.data[j]+.7152*image.data[j+1]+.0722*image.data[j+2],v=Math.round(value);
+      crop[yy*cw+xx]=localHist?v:value<=threshold?1:0;if(localHist)localHist[v]++;
     }
+    // Refine adaptive candidates using their own full-resolution marker ROI.
+    // A bright reflection over one finder must not set another finder's threshold.
+    if(localHist){const localThreshold=otsu(localHist,crop.length);for(let i=0;i<crop.length;i++)crop[i]=crop[i]<=localThreshold?1:0;}
     const refined=refineCenter({...full,x:full.x-left,y:full.y-top},crop,cw,ch);
     return {...refined,x:refined.x+left,y:refined.y+top};
   });
-  return {markers,threshold};
+  return {markers,threshold,thresholdMode,detectionWidth:w,detectionHeight:h,maxSide};
 }
-export function quadProposals(markers,width,height){
+export function quadProposals(markers,width,height,{minAreaFraction=.012}={}){
+  if(!Number.isFinite(minAreaFraction)||minAreaFraction<0||minAreaFraction>.1)throw Error('Invalid quadrilateral area bound.');
   const proposals=[];
   for(let a=0;a<markers.length-3;a++)for(let b=a+1;b<markers.length-2;b++)for(let c=b+1;c<markers.length-1;c++)for(let d=c+1;d<markers.length;d++){
     const ms=[markers[a],markers[b],markers[c],markers[d]];
@@ -147,7 +167,7 @@ export function quadProposals(markers,width,height){
     const q=ms.map(m=>[m.x,m.y]).sort((a,b)=>Math.atan2(a[1]-cy,a[0]-cx)-Math.atan2(b[1]-cy,b[0]-cx));
     let area=0,convex=true;const lengths=[];
     for(let i=0;i<4;i++){const p=q[i],r=q[(i+1)%4],s=q[(i+2)%4];area+=p[0]*r[1]-p[1]*r[0];lengths.push(Math.hypot(p[0]-r[0],p[1]-r[1]));if((r[0]-p[0])*(s[1]-r[1])-(r[1]-p[1])*(s[0]-r[0])<=0)convex=false;}
-    area=Math.abs(area)/2;if(!convex||area<width*height*.012||Math.min(...lengths)<30||Math.max(...lengths)>4*Math.min(...lengths))continue;
+    area=Math.abs(area)/2;if(!convex||area<width*height*minAreaFraction||Math.min(...lengths)<30||Math.max(...lengths)>4*Math.min(...lengths))continue;
     const expectedModule=Math.sqrt(area)/53,relative=ms.map(m=>m.module/expectedModule);
     if(relative.some(r=>r<.45||r>2.1))continue;
     proposals.push({q,score:area/(1+relative.reduce((s,v)=>s+Math.abs(Math.log(v)),0))});

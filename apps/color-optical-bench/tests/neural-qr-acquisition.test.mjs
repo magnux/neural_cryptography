@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {NQR_LAYOUT,renderNeuralQR} from '../dist/js/neural-qr/layout.js';
-import {extractNeuralQR,GEOMETRY_MAX_AGE_MS} from '../dist/js/neural-qr/vision.js';
+import {extractNeuralQR,geometryHintMaxAgeMs} from '../dist/js/neural-qr/vision.js';
 import {PALETTE,encodeSequence,renderFrame} from '../dist/js/format.js';
 import {simulateCapture} from '../dist/js/vision.js';
 import {gridLayout,paletteMap} from '../dist/js/grid.js';
@@ -145,13 +145,13 @@ test('cached geometry reads fresh phases and expires from full detection, not su
   assert.equal(a.stats.geometrySource,'detected');
   const b=extractNeuralQR(renderNeuralQR(frame(16,1),512),{profile:profile(16),previousGeometry:a.geometry,now:100});
   assert.equal(b.info.phase,1);assert.equal(b.stats.geometrySource,'previous');assert.equal(b.geometry.acquiredAt,10);
-  const c=extractNeuralQR(renderNeuralQR(frame(16,2),512),{profile:profile(16),previousGeometry:b.geometry,now:10+GEOMETRY_MAX_AGE_MS});
+  const c=extractNeuralQR(renderNeuralQR(frame(16,2),512),{profile:profile(16),previousGeometry:b.geometry,now:10+geometryHintMaxAgeMs()});
   assert.equal(c.info.phase,2);assert.equal(c.stats.geometrySource,'detected');
-  const d=extractNeuralQR(transform(renderNeuralQR(frame(16,3),512),1),{profile:profile(16),previousGeometry:c.geometry,now:450});
+  const d=extractNeuralQR(transform(renderNeuralQR(frame(16,3),512),1),{profile:profile(16),previousGeometry:c.geometry,now:220});
   assert.equal(d.ok,true);assert.equal(d.info.phase,3);assert.equal(d.stats.geometrySource,'detected');
   const bad=copy(renderNeuralQR(frame(16,0),512));
   for(const [x,y] of NQR_LAYOUT.phasePairs[0])paint(bad,x-10,y-10,20,20,[128,128,128]);
-  const e=extractNeuralQR(bad,{profile:profile(16),previousGeometry:d.geometry,now:460});
+  const e=extractNeuralQR(bad,{profile:profile(16),previousGeometry:d.geometry,now:230});
   assert.equal(e.ok,false);assert.equal(e.input,undefined);
 });
 
@@ -163,3 +163,82 @@ test('probe skips tensor work; arbitrary old matrices are not accepted through a
   assert.equal(extractNeuralQR(old,{now:0}).ok,false);
 });
 
+
+
+test('local reflection retains acquisition without darkening or modifying the RGB source',()=>{
+  const image=renderNeuralQR(frame(64,0),512),side=image.width;
+  for(let y=Math.floor(200*side/256);y<side;y++)for(let x=Math.floor(200*side/256);x<side;x++)
+    for(let k=0;k<3;k++){const i=4*(y*side+x)+k;image.data[i]=.4*image.data[i]+140;}
+  const original=image.data.slice(),result=extractNeuralQR(image,{now:0,dense:false});
+  assert.equal(result.ok,true,result.error);assert.equal(result.info.size,64);assert.equal(result.info.phase,0);
+  assert.equal(result.stats.detectionMode,'global');assert.ok(result.stats.finderContrasts[2]>80);
+  assert.ok(result.stats.finderContrasts[2]<110);assert.ok(result.stats.orientationMargin>.08);
+  assert.deepEqual(image.data,original);
+  const dense=extractNeuralQR(image,{now:100,previousGeometry:result.geometry});
+  assert.equal(dense.ok,true,dense.error);assert.deepEqual(image.data,original);
+});
+
+test('orientation tolerates one uncertain satellite but rejects ambiguous handedness',()=>{
+  const original=renderNeuralQR(frame(32,0),512),uncertain=copy(original);
+  paint(uncertain,211,231,6,6,[132,132,132]);
+  const useful=extractNeuralQR(uncertain,{now:0,dense:false});
+  assert.equal(useful.ok,true,useful.error);assert.ok(useful.stats.orientationError>0);
+  const ambiguous=copy(uncertain);paint(ambiguous,231,211,6,6,[132,132,132]);
+  const rejected=extractNeuralQR(ambiguous,{now:0,dense:false});
+  assert.equal(rejected.ok,false);assert.equal(rejected.stage,'orientation');assert.match(rejected.error,/ambiguous/);
+  assert.equal(rejected.geometry,undefined);assert.equal(rejected.input,undefined);
+});
+
+test('geometry hints expire at exactly twice the selected reading interval',()=>{
+  const image=renderNeuralQR(frame(32,0),512);
+  for(const captureIntervalMs of [100,500]){
+    const ttl=2*captureIntervalMs;
+    assert.equal(geometryHintMaxAgeMs(captureIntervalMs),ttl);
+    const a=extractNeuralQR(image,{now:0,dense:false,captureIntervalMs});
+    const b=extractNeuralQR(image,{now:ttl-1,dense:false,captureIntervalMs,previousGeometry:a.geometry});
+    assert.equal(b.ok,true);assert.equal(b.stats.geometrySource,'previous');assert.equal(b.geometry.acquiredAt,0);
+    assert.equal(b.stats.geometryMaxAgeMs,ttl);
+    const c=extractNeuralQR(image,{now:ttl,dense:false,captureIntervalMs,previousGeometry:b.geometry});
+    assert.equal(c.ok,true);assert.equal(c.stats.previousGeometryTried,false);assert.equal(c.stats.geometrySource,'detected');
+    assert.equal(c.geometry.acquiredAt,ttl);
+  }
+  for(const value of [0,49,5001,Infinity,NaN,'100'])assert.throws(()=>geometryHintMaxAgeMs(value),/interval/);
+});
+
+test('phase failure preserves only verified geometry and never renews its lifetime',()=>{
+  const image=renderNeuralQR(frame(32,0),512),a=extractNeuralQR(image,{now:0,dense:false}),bad=copy(image);
+  for(const [x,y] of NQR_LAYOUT.phasePairs[0])paint(bad,x-10,y-10,20,20,[128,128,128]);
+  const b=extractNeuralQR(bad,{now:100,dense:false,previousGeometry:a.geometry});
+  assert.equal(b.ok,false);assert.equal(b.stage,'phase');assert.equal(b.stats.geometrySource,'previous');
+  assert.equal(b.geometry.acquiredAt,0);assert.equal(b.tentativeCorners.length,4);
+  for(const field of ['input','samples','info'])assert.equal(b[field],undefined);
+  const c=extractNeuralQR(image,{now:200,dense:false,previousGeometry:b.geometry});
+  assert.equal(c.ok,true);assert.equal(c.stats.previousGeometryTried,false);assert.equal(c.stats.geometrySource,'detected');
+  const first=extractNeuralQR(bad,{now:300,dense:false});
+  assert.equal(first.ok,false);assert.equal(first.stage,'phase');assert.equal(first.geometry.acquiredAt,300);
+  assert.equal(first.info,undefined);assert.equal(first.input,undefined);
+});
+
+test('finder contrast failure is reported distinctly from satellite orientation',()=>{
+  const image=renderNeuralQR(frame(32,0),512),a=extractNeuralQR(image,{now:0,dense:false}),bad=copy(image);
+  paint(bad,220,220,28,28,[248,248,248]);
+  const result=extractNeuralQR(bad,{now:100,dense:false,previousGeometry:a.geometry});
+  assert.equal(result.ok,false);assert.equal(result.stage,'contrast');assert.match(result.error,/Finder contrast/);
+  assert.equal(result.geometry,undefined);assert.equal(result.input,undefined);
+});
+
+test('small phone screens acquire through the relaxed area gate and high-resolution fallback',()=>{
+  const original=renderNeuralQR(frame(16,0),512),width=1920,height=1080;
+  for(const side of [128,160]){
+    const data=new Uint8ClampedArray(4*width*height);
+    for(let at=0;at<data.length;at+=4)data.set([90,90,90,255],at);
+    const x0=Math.floor((width-side)/2),y0=Math.floor((height-side)/2);
+    for(let y=0;y<side;y++)for(let x=0;x<side;x++){
+      const from=4*(Math.floor(y*512/side)*512+Math.floor(x*512/side)),to=4*((y+y0)*width+x+x0);
+      data.set(original.data.subarray(from,from+4),to);
+    }
+    const result=extractNeuralQR({width,height,data},{now:0,dense:false});
+    assert.equal(result.ok,true,result.error);assert.equal(result.info.size,16);assert.equal(result.info.phase,0);
+    assert.equal(result.stats.detectionMode,side===128?'adaptive-hires':'global');
+  }
+});

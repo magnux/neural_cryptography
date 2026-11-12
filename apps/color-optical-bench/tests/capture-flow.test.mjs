@@ -55,7 +55,7 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
       operations.push(operation);
       if(operation==='create'||operation==='render'){const result=operation==='create'?{...sender,manifest:{...sender.manifest,sessionId:options.sessionId}}:renderNeuralQR(sender.frames[0],1024);queueMicrotask(()=>this.onmessage?.({data:{id,type:'result',result}}));return;}
       const info={...record.info,size:grid,phase},key=captureKey(info);
-      if(options.image){cameraInputs.push(options.image.data.slice());acquisitionOptions.push({collectionCode:options.collectionCode,profile:options.profile});}
+      if(options.image){cameraInputs.push(options.image.data.slice());acquisitionOptions.push({collectionCode:options.collectionCode,profile:options.profile,captureIntervalMs:options.captureIntervalMs});}
       if(operation==='select')selectionOptions.push(options);
       const result=operation==='select'?{replaceIndex:replacementChoice,reason:noMajority?'no-majority-cluster':'test selection',...(!options.reference?{reference:frozenReference}:{})}:operation==='compare'?meanCaptureDistance(options.signatures):grid!==options.profile?.size
         ?{ok:false,probe:operation==='probe',stage:'profile',error:'Optical grid disagrees with assignment',stats:{detectedSize:grid,expectedSize:options.profile?.size},tentativeCorners:[[1,1],[30,1],[30,30],[1,30]],timestamp:options.timestamp}
@@ -102,7 +102,7 @@ test('page keeps sampling full pools, applies selection, isolates phases, and pa
     assert.equal(get('mirrorPreview').getAttribute('aria-pressed'),'true');
     await get('receiverRole').fire();await get('startCamera').fire();await flush();
     assert.ok(operations.includes('probe'));assert.ok(filled>0,'matrix overlay fills its area');
-    for(const options of acquisitionOptions){assert.equal(options.collectionCode,sender.manifest.collectionCode);assert.equal(options.profile.size,64);assert.equal(options.profile.colors,16);assert.equal(options.profile.phases,4);assert.equal(options.profile.pixelsPerCell,4);assert.equal(options.profile.payloadBase64,undefined);}
+    for(const options of acquisitionOptions){assert.equal(options.captureIntervalMs,100);assert.equal(options.collectionCode,sender.manifest.collectionCode);assert.equal(options.profile.size,64);assert.equal(options.profile.colors,16);assert.equal(options.profile.phases,4);assert.equal(options.profile.pixelsPerCell,4);assert.equal(options.profile.payloadBase64,undefined);}
     assert.equal(get('sampleCount').textContent,'0 / 128');
     assert.match(get('opticalProfile').textContent,/Optical G64.*rectified 256×256.*camera/);
     assert.equal(get('opticalProfile').getAttribute('data-state'),'accepted');

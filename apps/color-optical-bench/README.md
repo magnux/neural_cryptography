@@ -20,8 +20,11 @@ G before recording. Uploading the receiver finalizes the sender and clears the
 descriptor. No sender labels or clean matrix enter camera processing. Manual
 assignment remains available on static hosts.
 
-Orange fill marks tentative geometry with uncertain orientation, size or phase,
-or a mismatched expected profile. Green means the current optical cues passed.
+Orange fill marks tentative geometry with uncertain finder contrast, orientation,
+size or phase, or a mismatched expected profile. Green means the current optical
+cues passed. Marker search uses local-contrast and bounded higher-resolution
+fallbacks when needed. Geometry hints last twice the selected reading interval
+(100 ms → 200 ms; 500 ms → 1 s) and are revalidated on the current exposure.
 Each phase settles for 500 ms before retention. Full pools favor a robust central
 cluster with controlled variation; the reference survives pause/resume. The
 default **400 MiB** budget permits 32 samples/phase through G64 and 16 at G128.

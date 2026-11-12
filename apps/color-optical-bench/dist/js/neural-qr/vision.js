@@ -1,50 +1,77 @@
 /** Header-free acquisition. Size and phase are measured before raster sampling. */
-import {findMarkers,quadProposals,homography,project,sample,patch,calibrate} from '../vision.js';
+import {homography,project,sample,patch,calibrate} from '../vision.js';
+import {markerPasses} from './markers.js';
 import {normalizeCalibratedRGB} from '../learned-input.js';
 import {NQR_LAYOUT as L,validateNeuralQRProfile} from './layout.js';
 
 const luma=c=>.2126*c[0]+.7152*c[1]+.0722*c[2];
 const corners=h=>[[0,0],[256,0],[256,256],[0,256]].map(p=>project(h,...p));
-export const GEOMETRY_MAX_AGE_MS=400;
+export const DEFAULT_CAPTURE_INTERVAL_MS=100;
+export function geometryHintMaxAgeMs(captureIntervalMs=DEFAULT_CAPTURE_INTERVAL_MS){
+  if(!Number.isFinite(captureIntervalMs)||captureIntervalMs<50||captureIntervalMs>5000)
+    throw Error('Capture interval must be 50–5000 ms.');
+  return 2*captureIntervalMs;
+}
+const median=values=>{const sorted=values.slice().sort((a,b)=>a-b),m=sorted.length>>>1;return sorted.length%2?sorted[m]:(sorted[m-1]+sorted[m])/2;};
+const mean=values=>values.reduce((sum,value)=>sum+value,0)/values.length;
+const clamp=value=>Math.max(0,Math.min(1,value));
+function fail(stage,message,stats={}){const error=Error(message);error.neuralQRStage=stage;error.stats=stats;return error;}
 
 function readOrientation(image,h){
-  // Every reuse is checked against this exposure's localization cores, rings,
-  // exterior and chiral satellites. Old phase or color samples are never reused.
-  const dark=[],light=[];
-  for(const [x,y] of L.centers){
-    dark.push(luma(patch(image,h,x,y,1)));
-    for(const [dx,dy] of [[8,0],[-8,0],[0,8],[0,-8]])light.push(luma(patch(image,h,x+dx,y+dy,.35)));
-    for(const [dx,dy] of [[12,0],[-12,0],[0,12],[0,-12]])dark.push(luma(patch(image,h,x+dx,y+dy,.35)));
-  }
-  const mean=a=>a.reduce((s,v)=>s+v,0)/a.length,d=mean(dark),w=mean(light),contrast=w-d;
-  if(contrast<45||Math.max(...dark)>d+.42*contrast||Math.min(...light)<w-.42*contrast)
-    throw Error('Finder contrast or geometry is uncertain.');
-  const threshold=(d+w)/2;
-  for(const [x,y,bit] of L.orientation){
-    const value=luma(patch(image,h,x,y,1.1));
-    if(bit?value>threshold-.12*contrast:value<threshold+.12*contrast)
-      throw Error('Asymmetric orientation marker is unclear.');
-  }
-  return {dark:d,light:w,contrast};
+  // Normalize each finder locally: a reflection over one corner must not set
+  // the black/white threshold for the other three. Robust medians tolerate an
+  // isolated contaminated ring sample, but every finder still needs a dark
+  // core, contrasting white ring and a majority of dark outer-ring samples.
+  let clipped=0,measurements=0;
+  const measure=(x,y,radius)=>{
+    const rgb=patch(image,h,x,y,radius);clipped+=rgb.filter(v=>v>=254).length;measurements+=3;return luma(rgb);
+  };
+  const refs=L.centers.map(([x,y])=>{
+    const core=measure(x,y,1),dark=[core],light=[];
+    for(const [dx,dy] of [[8,0],[-8,0],[0,8],[0,-8]])light.push(measure(x+dx,y+dy,.35));
+    for(const [dx,dy] of [[12,0],[-12,0],[0,12],[0,-12]])dark.push(measure(x+dx,y+dy,.35));
+    const d=median(dark),w=median(light),contrast=w-d,threshold=(d+w)/2;
+    return {dark:d,light:w,contrast,valid:contrast>=30&&core<threshold-.08*contrast&&
+      dark.filter(v=>v<threshold-.08*contrast).length>=4&&light.filter(v=>v>threshold+.08*contrast).length>=3};
+  });
+  const stats={finderContrasts:refs.map(r=>r.contrast),finderBlackLevels:refs.map(r=>r.dark),
+    finderWhiteLevels:refs.map(r=>r.light),markerClippedFraction:clipped/measurements};
+  if(refs.some(r=>!r.valid))throw fail('contrast','Finder contrast is uncertain; reduce reflections or adjust camera exposure.',stats);
+  const local=refs[2];
+  const values=L.orientation.map(([x,y])=>clamp((measure(x,y,1.1)-local.dark)/local.contrast));
+  const target=L.orientation.map(([, ,bit])=>1-bit),mirrored=[...target.slice(3),...target.slice(0,3)];
+  const error=pattern=>mean(values.map((value,i)=>(value-pattern[i])**2));
+  const score=error(target),mirrorScore=error(mirrored),blankScore=error(values.map(()=>1));
+  const margin=Math.min(mirrorScore,blankScore)-score;
+  Object.assign(stats,{orientationError:score,orientationMargin:margin,markerClippedFraction:clipped/measurements});
+  // Soft whole-pattern matching tolerates an uncertain patch. A contradicted
+  // chirality bit cannot silently choose the mirrored order: it removes the
+  // runner-up margin. Entirely missing/flat satellites also remain ambiguous.
+  if(score>.12||margin<.08)throw fail('orientation','Orientation patches are ambiguous; keep the asymmetric corner clear.',stats);
+  return {...stats,refs};
 }
 
-function readSize(image,h,levels){
-  const threshold=(levels.dark+levels.light)/2;
+function readSize(image,h){
+  // Each balanced copy has four dark and four light patches. Estimate its own
+  // levels without using an expected size or repairing any bit. This keeps a
+  // glare/shade gradient at a finder from imposing the wrong level on a remote
+  // size code. Every measured bit and both complete codewords must still agree.
   const decisions=L.sizeCopies.map(copy=>{
+    const values=copy.map(([x,y])=>luma(patch(image,h,x,y,1.5))),sorted=values.slice().sort((a,b)=>a-b);
+    const dark=median(sorted.slice(0,4)),light=median(sorted.slice(4)),contrast=light-dark,threshold=(dark+light)/2;
+    if(contrast<30)throw fail('size','Grid-size patches have insufficient local contrast.');
     let bits='',margin=Infinity;
-    for(const [x,y] of copy){
-      const value=luma(patch(image,h,x,y,1.5)),confidence=Math.abs(value-threshold)/levels.contrast;
-      // A near-threshold measurement is an erasure, not a freely guessed bit.
-      // No nearest-code fallback or expected-profile hint repairs an exposure.
-      if(confidence<.18)throw Error('Grid-size patches are uncertain; avoid glare or a display transition.');
+    for(const value of values){
+      const confidence=Math.abs(value-threshold)/contrast;
+      if(confidence<.18)throw fail('size','Grid-size patches are uncertain; avoid glare or a display transition.');
       margin=Math.min(margin,confidence);bits+=value<threshold?'1':'0';
     }
     const index=L.sizeCodes.indexOf(bits);
-    if(index<0)throw Error('Grid-size pattern is invalid; keep both binary codes visible.');
-    return {size:L.sizes[index],margin};
+    if(index<0)throw fail('size','Grid-size pattern is invalid; keep both binary codes visible.');
+    return {size:L.sizes[index],margin,contrast};
   });
-  if(decisions[0].size!==decisions[1].size)throw Error('Opposite grid-size codes disagree; skipping a transition exposure.');
-  return {detectedSize:decisions[0].size,sizeMargin:Math.min(...decisions.map(d=>d.margin))};
+  if(decisions[0].size!==decisions[1].size)throw fail('size','Opposite grid-size codes disagree; skipping a transition exposure.');
+  return {detectedSize:decisions[0].size,sizeMargin:Math.min(...decisions.map(d=>d.margin)),sizeContrasts:decisions.map(d=>d.contrast)};
 }
 
 function readReferences(image,h){
@@ -79,52 +106,85 @@ function readPhase(image,h,references){
 }
 
 /** A successful result is optical evidence, not an accepted packet. */
-export function extractNeuralQR(image,{profile,previousGeometry=null,now=Date.now(),dense=true}={}){
+export function extractNeuralQR(image,{profile,previousGeometry=null,now=Date.now(),dense=true,captureIntervalMs=DEFAULT_CAPTURE_INTERVAL_MS}={}){
   const start=performance.now(),result={ok:false,stage:'detect',markers:[],tentativeCorners:[],stats:{geometrySource:'none',previousGeometryTried:false},error:'Find all four Neural-QR markers.'};
-  let expected=null;
-  try{if(profile!=null)expected=validateNeuralQRProfile(profile);}catch(error){return {...result,stage:'profile',error:error.message};}
+  let expected=null,maxAge;
+  try{maxAge=geometryHintMaxAgeMs(captureIntervalMs);if(profile!=null)expected=validateNeuralQRProfile(profile);}
+  catch(error){return {...result,stage:'profile',error:error.message};}
+  Object.assign(result.stats,{captureIntervalMs,geometryMaxAgeMs:maxAge});
   if(expected)result.stats.expectedSize=expected.size;
   if(!Number.isFinite(now)||!image||!Number.isInteger(image.width)||!Number.isInteger(image.height)||image.width<32||image.height<32||image.width*image.height>20_000_000||
     !(image.data instanceof Uint8Array||image.data instanceof Uint8ClampedArray)||image.data.length!==4*image.width*image.height)
     return {...result,error:'Unsupported camera image or timestamp.'};
-  let selected=null,oriented=false,lastError=null,failureStage=null;
-  function inspect(h,source,acquiredAt){
-    const levels=readOrientation(image,h);oriented=true;result.tentativeCorners=corners(h);
-    let size;
-    try{size=readSize(image,h,levels);}catch(error){error.neuralQRStage='size';throw error;}
-    Object.assign(result.stats,size);
-    if(expected&&size.detectedSize!==expected.size){
-      const error=Error(`Optical G${size.detectedSize} does not match collection G${expected.size}.`);
-      error.neuralQRStage='profile';throw error;
+  let selected=null,partial=null,bestFailure=null;
+  const stageRank={detect:0,quad:1,contrast:2,orientation:3,size:4,profile:5,phase:6};
+  function recordFailure(error,h){
+    const stage=error.neuralQRStage??'quad',score=error.stats?.orientationError??Infinity;
+    if(!bestFailure||stageRank[stage]>stageRank[bestFailure.stage]||
+      stageRank[stage]===stageRank[bestFailure.stage]&&score<bestFailure.score){
+      bestFailure={stage,error:error.message,stats:error.stats??{},score,h};
     }
+  }
+  function inspect(h,levels,source,acquiredAt){
+    const size=readSize(image,h);
+    if(expected&&size.detectedSize!==expected.size)
+      throw fail('profile',`Optical G${size.detectedSize} does not match collection G${expected.size}.`,{...levels,...size});
+    const geometry={width:image.width,height:image.height,transform:h.slice(),acquiredAt,size:size.detectedSize};
+    const stats={...levels,...size,geometrySource:source};delete stats.refs;
+    // A transient phase failure may preserve geometry, never RGB, phase or a
+    // successful observation. Its age remains measured from full detection.
+    partial={geometry,stats,h};
     try{
       const references=readReferences(image,h),phase=readPhase(image,h,references);
-      return {h,references,phase,size,source,acquiredAt};
-    }catch(error){error.neuralQRStage='phase';throw error;}
+      return {h,references,phase,size,source,geometry,stats};
+    }catch(error){throw fail('phase',error.message,stats);}
   }
   const previous=previousGeometry;
-  if(previous?.width===image.width&&previous?.height===image.height&&Number.isFinite(previous.acquiredAt)&&now>=previous.acquiredAt&&now-previous.acquiredAt<GEOMETRY_MAX_AGE_MS&&
+  if(previous?.width===image.width&&previous?.height===image.height&&Number.isFinite(previous.acquiredAt)&&now>=previous.acquiredAt&&now-previous.acquiredAt<maxAge&&
     Array.isArray(previous.transform)&&previous.transform.length===9&&previous.transform.every(Number.isFinite)){
     result.stats.previousGeometryTried=true;
-    try{selected=inspect(previous.transform.slice(),'previous',previous.acquiredAt);}catch(error){lastError=error.message;failureStage=error.neuralQRStage??null;}
+    try{const h=previous.transform.slice();selected=inspect(h,readOrientation(image,h),'previous',previous.acquiredAt);}
+    catch(error){recordFailure(error,previous.transform);}
   }
-  if(!selected){
-    const found=findMarkers(image);result.markers=found.markers;
-    const proposals=quadProposals(found.markers,image.width,image.height);
-    if(!result.tentativeCorners.length&&proposals.length){try{result.tentativeCorners=corners(homography(L.centers,proposals[0].q));}catch{}}
-    outer:for(const {q} of proposals)for(const direction of [1,-1])for(let rotation=0;rotation<4;rotation++){
-      try{
-        const ordered=Array.from({length:4},(_,i)=>q[(rotation+direction*i+8)%4]);
-        selected=inspect(homography(L.centers,ordered),'detected',now);break outer;
-      }catch(error){if(error.neuralQRStage){lastError=error.message;failureStage=error.neuralQRStage;}}
+  if(!selected&&!partial){
+    outer:for(const found of markerPasses(image)){
+      result.markers=found.markers;Object.assign(result.stats,found.stats);
+      if(!found.proposals.length){
+        if(found.markers.length>=4)recordFailure(fail('quad','Markers found, but their geometry does not form a usable matrix.'));
+        continue;
+      }
+      for(const {q} of found.proposals){
+        const candidates=[];
+        for(const direction of [1,-1])for(let rotation=0;rotation<4;rotation++){
+          let h;
+          try{
+            const ordered=Array.from({length:4},(_,i)=>q[(rotation+direction*i+8)%4]);
+            h=homography(L.centers,ordered);
+            const levels=readOrientation(image,h);candidates.push({h,levels});
+          }catch(error){recordFailure(error,h);}
+        }
+        candidates.sort((a,b)=>a.levels.orientationError-b.levels.orientationError);
+        if(!candidates.length)continue;
+        if(candidates.length>1&&candidates[1].levels.orientationError-candidates[0].levels.orientationError<.08){
+          recordFailure(fail('orientation','More than one corner order matches; orientation is ambiguous.',candidates[0].levels),candidates[0].h);continue;
+        }
+        const {h,levels}=candidates[0];
+        try{selected=inspect(h,levels,'detected',now);break outer;}
+        catch(error){recordFailure(error,h);if(partial)break outer;}
+      }
     }
   }
   result.stats.markerCount=result.markers.length;
-  if(!selected){result.stage=failureStage??(oriented?'size':result.markers.length>=4?'orientation':'detect');result.error=lastError??(result.stage==='orientation'?'Markers found; asymmetric orientation is unclear.':result.error);result.stats.ms=performance.now()-start;return result;}
-  const {h,references,phase,size,source,acquiredAt}=selected;
+  if(!selected){
+    if(bestFailure){result.stage=bestFailure.stage;result.error=bestFailure.error;Object.assign(result.stats,bestFailure.stats);delete result.stats.refs;
+      if(bestFailure.h)try{result.tentativeCorners=corners(bestFailure.h);}catch{}}
+    if(partial){result.geometry=partial.geometry;Object.assign(result.stats,partial.stats);result.tentativeCorners=corners(partial.h);}
+    result.stats.ms=performance.now()-start;return result;
+  }
+  const {h,references,phase,size,geometry,stats}=selected;
   const info={...validateNeuralQRProfile({size:size.detectedSize,colors:16,phases:4,gridBlock:8,pixelsPerCell:4}),phase:phase.phase};
-  Object.assign(result,{info,transform:h,corners:corners(h),tentativeCorners:[],geometry:{width:image.width,height:image.height,transform:h.slice(),acquiredAt,size:info.size}});
-  Object.assign(result.stats,{geometrySource:source,...phase,...size});
+  Object.assign(result,{info,transform:h,corners:corners(h),tentativeCorners:[],geometry});
+  Object.assign(result.stats,stats,phase);
   try{
     const calibration=calibrate(references,0),p=L.payload,g=info.size,cell=p.side/g,side=4*g;
     const horizontal=Math.hypot(...project(h,p.x+p.side,p.y).map((v,k)=>v-project(h,p.x,p.y)[k]))/g;

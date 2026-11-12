@@ -235,6 +235,11 @@ explicit local setup steps and do not reactivate any hosted test site.
 5. Reverse the devices and repeat. Try cancel/restart, and save both successful
    and failed device reports before leaving the page.
 
+Neural-QR acquisition uses the same local-contrast marker checks as the live
+authentication demo. Geometry hints are bounded by twice the requested reading
+interval: the lab's 100 ms schedule gives a 200 ms hint. Reused geometry is checked
+against the current exposure; phase and RGB measurements are never reused.
+
 W-tube/VW camera probes use header-free Neural-QR acquisition. The phase pairs
 are `P0a,P0b,P1a,P1b,P2a,P2b,P3a,P3b`, with eight binary presence planes. They
 keep at most two captures per phase and require all four phases. Brief detection

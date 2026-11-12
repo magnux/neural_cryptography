@@ -118,7 +118,7 @@ async function run(kind) {
         const context=canvas.getContext('2d',{willReadFrequently:true}); context.drawImage(video,0,0,canvas.width,canvas.height);
         const image=context.getImageData(0,0,canvas.width,canvas.height);
         camera.captureWidth=image.width; camera.captureHeight=image.height;
-        result=await client.call(kind,{...options,runId:token,mediaTime:exposure.mediaTime,presentedFrames:exposure.presentedFrames,
+        result=await client.call(kind,{...options,captureIntervalMs:CAMERA_INTERVAL_MS,runId:token,mediaTime:exposure.mediaTime,presentedFrames:exposure.presentedFrames,
           image:{width:image.width,height:image.height,data:image.data}},[image.data.buffer]);
         if (!validFrameCount(result.framesPerInput)||!validFrameCount(result.requiredCaptures)||result.requiredCaptures>result.framesPerInput) throw Error('Worker returned an invalid camera frame count.');
         maxAttempts=result.phaseGrouped?8*MAX_INPUT_FRAMES:4*result.requiredCaptures;

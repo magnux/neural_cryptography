@@ -1,4 +1,4 @@
-import {extractNeuralQR} from '../neural-qr/vision.js';
+import {extractNeuralQR,geometryHintMaxAgeMs} from '../neural-qr/vision.js';
 
 /** Geometry is only a short-lived hint. Every exposure remeasures orientation,
  * grid-size codes, palette references and both phase-cue pairs. No packet is
@@ -8,13 +8,14 @@ export class TransportCapture {
   constructor(){this.reset();}
   reset(){this.context=null;this.geometry=null;this.lastTime=-Infinity;}
   invalidate(){this.geometry=null;}
-  scan(image,{expected,context,mediaTime}){
+  scan(image,{expected,context,mediaTime,captureIntervalMs=100}){
     if(!['data','ack'].includes(expected)||typeof context!=='string'||!context||!Number.isFinite(mediaTime)||mediaTime<0)
       throw Error('Invalid transport capture context.');
+    geometryHintMaxAgeMs(captureIntervalMs);
     const key=`${context}/${expected}`;
     if(key!==this.context||mediaTime<this.lastTime){this.reset();this.context=key;}
     this.lastTime=mediaTime;
-    const capture=extractNeuralQR(image,{previousGeometry:this.geometry,now:mediaTime*1000});
+    const capture=extractNeuralQR(image,{previousGeometry:this.geometry,now:mediaTime*1000,captureIntervalMs});
     if(capture.geometry)this.geometry=capture.geometry;
     return capture;
   }

@@ -139,11 +139,29 @@ attempt into mutual authentication or persistent enrollment.
 
 ## Correction, packet acceptance and resource bounds
 
-The receiver first tries the recent geometry on the current exposure, then
-searches for markers again if needed. A geometry hint expires after 400 ms;
-successful reuse does not extend that deadline. Orientation, size cues, phase
-cues and palette references are remeasured from every exposure. There is no
-monochrome payload header and no settling delay in this path.
+The receiver first tries recent geometry on the current exposure. Its maximum
+age is **twice the configured camera reading interval**: 100 ms sampling gives
+200 ms hints; 500 ms sampling gives 1,000 ms hints. Age is measured from the last
+full geometric detection, and successful reuse does not extend it. The setting
+uses the requested interval, not time spent waiting for slow inference. Current
+finder positions, orientation, size, phase and color references must still pass
+measurement; a cached transform is never permission to reuse an old phase.
+
+Marker acquisition uses a fast global search first, followed by bounded local
+threshold and higher-resolution searches when needed. Each finder has local
+black/white references, so a reflective corner is not judged against a shaded
+corner's brightness. Orientation is scored against alternative corner orders,
+with confidence required before sampling the payload. Size codes still have to
+agree, and phase cues are read from the current exposure. Verified geometry can
+survive an unreadable phase while its age permits; that exposure contributes no
+neural input. Detector normalization operates on grayscale working buffers;
+color calibration and the corrector continue sampling the original RGB frame.
+There is no monochrome payload header or settling delay in this path.
+
+Acquisition feedback distinguishes missing markers, rejected quadrilaterals,
+insufficient finder contrast, ambiguous orientation, size codes and phase cues.
+Orange is placement feedback; green indicates current acquisition cues passed.
+Neither substitutes for packet RS/CRC and transfer checks.
 
 Rectified inputs use 4×4 pixels per cell: 128×128 at G32, 256×256 at G64, and
 512×512 at G128. The model input has eight RGB slots and eight presence planes
@@ -206,6 +224,29 @@ A message has a ten-minute deadline and an authentication attempt thirty minutes
 Cancel/reset stops workers and camera tracks. Hiding the page stops the attempt;
 keep both pages in the foreground while turning the devices or waiting for proof
 creation.
+
+## Webcam exposure and focus
+
+After the camera starts, expand **Camera exposure & focus** to see the controls exposed
+by that particular camera/browser. Unsupported controls are unavailable. No
+exposure or focus setting changes automatically at startup. Try a small negative
+exposure compensation, or manual exposure if available, when the phone's bright
+patches are clipped in the webcam feed. Focus controls are useful only when the
+camera actually has adjustable focus. The panel and report distinguish requested
+values from the camera's reported settings; rejected changes are shown without
+stopping authentication.
+
+These are camera settings, not a brightness filter over the neural input. Global
+post-capture darkening cannot restore clipped details. Reduce reflections and
+adjust exposure while keeping all four markers visible. Leave the phone phase
+interval slow initially if useful, but the camera reading interval can remain
+100–200 ms. A 500 ms interval is also supported, with a 1,000 ms geometry hint.
+
+For the first retest, keep the trained model and grid unchanged. Compare the
+same position and lighting with automatic camera settings, then one exposure
+change. Save both device reports, including failed attempts. The report records
+acquisition stages, bounded recent diagnostics, geometry reuse and camera
+control settings, without uploading frames or private keys.
 
 ## First device tests and reports
 

@@ -95,6 +95,7 @@ test('five-frame camera model samples distinct exposures at 100 ms start-to-star
   const h=await harness({frames:5,frameInterval:25});await h.lab.run('capture');
   assert.equal(h.calls.length,5);
   assert.deepEqual(h.calls.map(c=>c.captureStartedMs),[25,125,225,325,425]);
+  assert.ok(h.calls.every(c=>c.options.captureIntervalMs===100),'the worker receives the lab reading interval');
   assert.deepEqual(h.calls.map(c=>c.options.presentedFrames),[1,5,9,13,17]);
   assert.equal(h.lab.records[0].inputCaptures,5);
   assert.equal(h.lab.records[0].camera.requestedSampleIntervalMs,100);
