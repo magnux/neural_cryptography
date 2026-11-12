@@ -10,8 +10,18 @@ import {decodePacket} from '../link/protocol.js';
 import {TurnChannel} from './channel.js';
 import {packetFrames,unpackOptical} from './optical.js';
 import {captureFeedback} from './feedback.js';
+import {TurnNotices} from './notices.js';
 
 const $=id=>document.getElementById(id);
+const notices=new TurnNotices({onChange:value=>{
+  const box=$('turnNotice');box.hidden=!value;
+  $('turnNoticeTitle').textContent=value?.title??'';
+  $('turnNoticeMessage').textContent=value?.message??'';
+  if(value){
+    box.dataset.tone=value.tone;
+    $('turnNoticeIcon').textContent=value.tone==='success'?'✓':value.tone==='error'?'!':'↔';
+  }
+}});
 const supported=isSecureContext&&Boolean(globalThis.crypto?.subtle)&&typeof Worker==='function'&&Boolean(navigator.mediaDevices?.getUserMedia);
 let active=false,epoch=0,stream=null,corrector=null,cryptoClient=null,session=null,channel=null,config=null;
 let frameCallback=null,displayTimer=null,heartbeat=null,lastCapture=-Infinity,lastPresented=0,scanning=false,frameWaitStarted=0;
@@ -125,6 +135,7 @@ function update(){
   $('pairingCode').textContent=authState?.pairingCode?.match(/.{1,4}/g).join(' ')??'—';
   $('pairingNote').textContent=authState?.confirmed?'Confirmed on this device. The other device must also confirm.':'Compare both codes before confirming. A mismatch means stop and restart.';
   if(!active)return;
+  notices.update(authState,link);
   $('status').textContent=authState?.status??'Preparing local model and camera…';
   const mode=link?.mode??'receive';
   $('instruction').textContent=mode==='send'
@@ -262,6 +273,7 @@ async function start(){
   if(active)return;error('');
   try{config=settings();}catch(e){error(e.message);return;}
   if(typeof $('video').requestVideoFrameCallback!=='function'){error('This test needs a browser with requestVideoFrameCallback.');return;}
+  notices.reset();
   active=true;const token=++epoch;startedAt=performance.now();events.length=0;transfers.clear();lastIncomingSize=null;authState=null;shown=null;rendered=[];
   channel=null;session=null;cryptoClient=null;corrector=null;
   lastCapture=-Infinity;lastPresented=0;scanning=false;$('result').textContent='';$('receivedCount').textContent='0';$('inferenceMs').textContent='—';$('elapsed').textContent='0 s';$('goodput').textContent='—';$('cameraDensity').textContent='—';
@@ -305,6 +317,7 @@ async function start(){
 }
 function stop(reason='Stopped by the user.'){
   if(!active)return;
+  notices.reset();
   const saved=authState;active=false;epoch++;
   clearTimeout(displayTimer);clearInterval(heartbeat);
   if(frameCallback!==null)$('video').cancelVideoFrameCallback(frameCallback);frameCallback=null;

@@ -127,6 +127,15 @@ does not silently rechunk a partly acknowledged message.
    locally** with result delivery complete, and the key holder **Peer reports
    accepted**. Download a report from both devices.
 
+Prominent **three-second handoff notices** appear in the status area immediately
+above the matrix/camera view. They announce the first ACK, completed rounds,
+queued replies, pairing, proof processing and the final result. They never cover
+or move the optical code, change focus, or advance a turn automatically. New
+events replace old notices; repeated ACKs and progress callbacks do not prolong
+them. The normal status and instructions remain available after each notice
+disappears. A “next turn ready” notice still requires letting the other device
+finish reading the ACK before pressing **Send next turn**.
+
 The five application messages are HELLO, IDENTITY, CHALLENGE, PROOF and RESULT.
 Each message has its own START/ACK and sequential DATA/ACK exchanges. Duplicated
 packets and repeated final ACKs do not create duplicate application deliveries.

@@ -45,7 +45,9 @@
       <span id="cameraStatus">Camera is off</span>
     </div>
     <section class="panel auth-session" aria-labelledby="status">
-      <div class="auth-turn" role="status" aria-live="polite" aria-atomic="true"><span class="auth-state-dot" aria-hidden="true"></span><div><h2 id="status">Ready for a new exchange</h2><p id="instruction">Open this page on both devices, select their roles, and start.</p></div><strong id="result"></strong></div>
+      <div class="auth-turn"><span class="auth-state-dot" aria-hidden="true"></span><div><h2 id="status">Ready for a new exchange</h2><p id="instruction">Open this page on both devices, select their roles, and start.</p></div><strong id="result"></strong>
+        <div class="auth-turn-notice" id="turnNotice" role="status" aria-live="polite" aria-atomic="true" hidden><span id="turnNoticeIcon" aria-hidden="true">↔</span><div><strong id="turnNoticeTitle"></strong><p id="turnNoticeMessage"></p></div></div>
+      </div>
       <div class="auth-stage" id="stage" data-mirror="false" style="--matrix-scale:100%">
         <div class="auth-matrix-panel">
           <div class="auth-matrix-meta"><span id="matrixStatus">Waiting for an outgoing matrix</span><span id="phaseStatus">—</span></div>
