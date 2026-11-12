@@ -3,7 +3,9 @@ export const NOTICE_DURATION_MS=3000;
 const notice=(title,message,tone='action')=>({title,message,tone});
 
 export class TurnNotices {
-  constructor({onChange,setTimer=setTimeout,clearTimer=clearTimeout}={}){
+  // Browser timers require the global receiver; do not store them as bare methods.
+  constructor({onChange,setTimer=(callback,delay)=>globalThis.setTimeout(callback,delay),
+    clearTimer=id=>globalThis.clearTimeout(id)}={}){
     this.onChange=onChange;this.setTimer=setTimer;this.clearTimer=clearTimer;
     this.previous={};this.hasSentRound=false;this.timer=null;this.revision=0;
   }

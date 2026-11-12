@@ -330,7 +330,11 @@ function stop(reason='Stopped by the user.'){
   if(report){report.authentication=saved;report.finished=new Date().toISOString();report.stopReason=reason;report.elapsedMs=performance.now()-startedAt;}
   authState=saved;event(reason);$('status').textContent=reason;$('instruction').textContent='Download the report, or start a fresh exchange on both devices.';update();
 }
-function fail(e){error(e?.message||String(e));stop(e?.message||String(e));}
+function fail(e){
+  // Cancelling the worker during failure cleanup must not hide the session's cause.
+  const reason=session?.snapshot().error||e?.message||String(e);
+  error(reason);stop(reason);
+}
 function download(){
   if(!report)return;
   if(cameraControls)report.cameraControls=cameraControls.snapshot();
