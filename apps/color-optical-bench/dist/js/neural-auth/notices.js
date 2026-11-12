@@ -10,7 +10,10 @@ export class TurnNotices {
     this.previous={};this.hasSentRound=false;this.timer=null;this.revision=0;
   }
   reset(){
-    this.previous={};this.hasSentRound=false;this.revision++;
+    this.previous={};this.hasSentRound=false;this.dismiss();
+  }
+  dismiss(){
+    this.revision++;
     if(this.timer!==null)this.clearTimer(this.timer);this.timer=null;this.onChange(null);
   }
   show(value){

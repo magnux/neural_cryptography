@@ -11,6 +11,7 @@ import {TurnChannel} from './channel.js';
 import {packetFrames,unpackOptical} from './optical.js';
 import {captureFeedback} from './feedback.js';
 import {TurnNotices} from './notices.js';
+import {ReadingCue} from './reading.js';
 
 const $=id=>document.getElementById(id);
 const notices=new TurnNotices({onChange:value=>{
@@ -22,6 +23,9 @@ const notices=new TurnNotices({onChange:value=>{
     $('turnNoticeIcon').textContent=value.tone==='success'?'✓':value.tone==='error'?'!':'↔';
   }
 }});
+const reading=new ReadingCue({onChange:value=>{
+  $('stage').dataset.reading=String(value);$('readProgress').hidden=!value;
+},onReadingStarted:()=>notices.dismiss()});
 const supported=isSecureContext&&Boolean(globalThis.crypto?.subtle)&&typeof Worker==='function'&&Boolean(navigator.mediaDevices?.getUserMedia);
 let active=false,epoch=0,stream=null,corrector=null,cryptoClient=null,session=null,channel=null,config=null;
 let frameCallback=null,displayTimer=null,heartbeat=null,lastCapture=-Infinity,lastPresented=0,scanning=false,frameWaitStarted=0;
@@ -33,12 +37,12 @@ const int=(value,min,max,label)=>{const n=Number(value);if(!Number.isSafeInteger
 function settings(){
   const role=$('role').value,backend=$('backend').value,repetitions=Number($('repetitions').value),resolution=$('resolution').value;
   if(!['verifier','prover'].includes(role)||!['auto','wasm','webgpu'].includes(backend)||![32,64,110,160,219].includes(repetitions)||!['480','720','1080','1440','2160','max'].includes(resolution))throw Error('Unsupported test settings.');
-  return {role,backend,repetitions,resolution,...transportProfile($('deviceProfile').value,$('outgoingSize').value),
+  return {role,backend,repetitions,resolution,...transportProfile($('deviceProfile').value,$('outgoingSize').value,$('g128Test').checked),
     phaseMs:int($('phaseMs').value,50,10000,'Phase interval'),
     captureMs:int($('captureMs').value,50,2000,'Capture interval'),cameraId:$('camera').value};
 }
 function populateProfiles(){
-  const profile=deviceProfile($('deviceProfile').value);
+  const profile=deviceProfile($('deviceProfile').value,$('g128Test').checked);
   for(const id of ['outgoingSize','nextGeometry']){
     $(id).replaceChildren(...profile.outgoingSizes.map(size=>new Option(`G${size}${size===profile.defaultOutgoingSize?' · maximum':''}`,String(size))));
     $(id).value=String(profile.defaultOutgoingSize);
@@ -126,6 +130,8 @@ function update(){
   $('authApp').dataset.mode=active?(link?.mode??'receive'):'idle';
   $('settingsFields').disabled=active;$('start').disabled=active||!supported;$('stop').disabled=!active;
   $('downloadReport').disabled=!report;$('nextTurn').disabled=!active||!link?.canSendNext;
+  $('ackRecovery').hidden=!active||!link?.canRepeatAck;
+  $('repeatAck').textContent=link?.repeatingAck?'Resume message':'Show previous ACK';
   $('nextGeometry').disabled=!active||!channel||!!link?.outgoing||!!link?.preparing;
   if(link)$('nextGeometry').value=String(link.outgoingSize);
   observeTransfers(link);
@@ -137,6 +143,7 @@ function update(){
   if(!active)return;
   notices.update(authState,link);
   $('status').textContent=authState?.status??'Preparing local model and camera…';
+  if(authState?.state==='verified'&&!authState.resultDelivered)$('status').textContent='Proof accepted · result delivery pending';
   const mode=link?.mode??'receive';
   $('instruction').textContent=mode==='send'
     ?'Keep this matrix visible. When the receiver shows ACK, turn the phone so this camera can read it. Each chunk waits for its ACK.'
@@ -147,8 +154,12 @@ function update(){
   if(authState?.resultDelivered)$('instruction').textContent='Authentication and result delivery completed. You can save the report and stop.';
   else if(authState?.peerReported)$('instruction').textContent='The verifier reported its result. Keep this final ACK visible until the verifier confirms result delivery, then save the report and stop.';
   if(authState?.canConfirm)$('instruction').textContent+=' Compare the pairing codes and confirm on both devices.';
+  if(authState?.state==='verified'&&!authState.resultDelivered)$('instruction').textContent=link?.outgoing
+    ?'Send this result message and let the peer acknowledge it to finish both devices.'
+    :'The proof passed here. Let the peer read this final ACK, then choose “Send next turn” to deliver the result.';
+  if(link?.repeatingAck)$('instruction').textContent='The previous final ACK is restored. Let the other device finish its send, then tap “Resume message”.';
   const state=link?.outgoing??link?.incoming;
-  $('transferStatus').textContent=link?.outgoing
+  $('transferStatus').textContent=link?.repeatingAck?'Showing previous ACK · current message is paused':link?.outgoing
     ?`Sending ${state.index<0?'message start':`chunk ${state.index+1}/${state.chunkCount}`} · ${state.ackedBytes.toLocaleString()}/${state.totalBytes.toLocaleString()} B acknowledged`
     :state?.chunkCount?`Received ${state.receivedChunks}/${state.chunkCount} chunks · ${state.receivedBytes.toLocaleString()} B${link?.queued?' · next message ready':''}`:'Waiting for a message';
   if(authState?.result!==null&&authState?.result!==undefined){
@@ -163,12 +174,14 @@ function renderCurrent(){
   if(!bytes){
     if(shown){const canvas=$('matrix');canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);}
     shown=null;rendered=[];phaseIndex=-1;clearTimeout(displayTimer);
+    reading.displayed(null);
     $('matrixStatus').textContent='Waiting for the next message';$('phaseStatus').textContent='';
     return;
   }
   if(shown&&sameBytes(shown,bytes))return;
   shown=bytes.slice();
   const packet=decodePacket(bytes);
+  reading.displayed(`${packet.sessionId}/${packet.messageId}/${packet.kind}/${packet.index??packet.base??''}/${packet.status??''}`);
   const size=packet.kind==='ack'?32:channel.snapshot().outgoingSize;
   rendered=packetFrames(bytes,{size,phaseMs:config.phaseMs}).map(frame=>renderNeuralQR(frame,1024));
   $('matrixStatus').textContent=packet.kind==='ack'?'G32 ACK · keep visible':packet.kind==='start'?`G${size} · message start`:`G${size} · data chunk ${packet.index+1}`;
@@ -231,11 +244,12 @@ async function scan(metadata,token){
   canvas.width=dimensions.width;canvas.height=dimensions.height;
   report.processedCamera={width:canvas.width,height:canvas.height,scale:dimensions.scale};
   const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(video,0,0,canvas.width,canvas.height);
-  const image=ctx.getImageData(0,0,canvas.width,canvas.height),expected=channel?.snapshot().mode==='send'?'ack':'data';
+  const image=ctx.getImageData(0,0,canvas.width,canvas.height),expected=channel?.snapshot().outgoing?'ack':'data';
   report.captureAttempts++;
   const result=await corrector.call('transport-scan',{size:config.incomingMaxSize,backend:config.backend,image,expected,
     captureIntervalMs:config.captureMs,runId:token,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames},[image.data.buffer]);
   if(!active||token!==epoch)return;
+  reading.observe(result);
   const feedback=captureFeedback(result);overlay(feedback,canvas.width,canvas.height);
   $('cameraStatus').textContent=feedback.label;
   const stage=result.ok?'decoded':result.stage??'unknown',counts=report.captureStages[expected];
@@ -278,7 +292,7 @@ async function start(){
   if(active)return;error('');
   try{config=settings();}catch(e){error(e.message);return;}
   if(typeof $('video').requestVideoFrameCallback!=='function'){error('This test needs a browser with requestVideoFrameCallback.');return;}
-  notices.reset();
+  notices.reset();reading.reset();
   active=true;const token=++epoch;startedAt=performance.now();events.length=0;transfers.clear();lastIncomingSize=null;authState=null;shown=null;rendered=[];
   channel=null;session=null;cryptoClient=null;corrector=null;
   lastCapture=-Infinity;lastPresented=0;scanning=false;$('result').textContent='';$('receivedCount').textContent='0';$('inferenceMs').textContent='—';$('elapsed').textContent='0 s';$('goodput').textContent='—';$('cameraDensity').textContent='—';
@@ -322,7 +336,7 @@ async function start(){
 }
 function stop(reason='Stopped by the user.'){
   if(!active)return;
-  notices.reset();
+  notices.reset();reading.reset();
   const saved=authState;active=false;epoch++;
   clearTimeout(displayTimer);clearInterval(heartbeat);
   if(frameCallback!==null)$('video').cancelVideoFrameCallback(frameCallback);frameCallback=null;
@@ -351,8 +365,17 @@ $('start').addEventListener('click',()=>void start());
 $('stop').addEventListener('click',()=>stop());
 $('confirmPairing').addEventListener('click',()=>{if(active)void session?.confirmPairing().catch(fail);});
 $('nextTurn').addEventListener('click',()=>{if(active)void channel?.nextTurn().catch(fail);});
+$('repeatAck').addEventListener('click',()=>{
+  if(!active||!channel)return;
+  const resuming=channel.snapshot().repeatingAck;
+  if(!(resuming?channel.resumeMessage():channel.repeatPreviousAck()))return;
+  notices.show(resuming
+    ?{title:'Message resumed',message:'Show this matrix to the other camera and wait for its ACK.',tone:'info'}
+    :{title:'Previous ACK restored',message:'Let the other device finish sending, then tap “Resume message”.',tone:'action'});
+});
 $('downloadReport').addEventListener('click',download);
 $('deviceProfile').addEventListener('change',populateProfiles);
+$('g128Test').addEventListener('change',populateProfiles);
 $('nextGeometry').addEventListener('change',()=>{
   if(!active||!channel)return;
   try{

@@ -19,3 +19,14 @@ test('profile defaults are immutable and throughput is measured in delivered byt
   assert.equal(transferMetrics(0,0).goodputBytesPerSecond,0);
   assert.throws(()=>transferMetrics(-1,100));assert.throws(()=>transferMetrics(100,NaN));
 });
+
+test('G128 test opt-in enables both directions without changing normal device profiles',()=>{
+  for(const device of ['pc','phone']){
+    assert.deepEqual(transportProfile(device,128,true),{device,outgoingSize:128,incomingMaxSize:128,controlSize:32,g128Test:true});
+    assert.equal(deviceProfile(device,true).defaultOutgoingSize,128);
+    assert.deepEqual(deviceProfile(device,true).outgoingSizes,[32,64,128]);
+  }
+  assert.equal(transportProfile('pc',128).incomingMaxSize,64);
+  assert.throws(()=>transportProfile('phone',128));
+  assert.throws(()=>transportProfile('phone',128,'true'));
+});

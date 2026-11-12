@@ -3,8 +3,9 @@
 `apps/color-optical-bench/dist/neural-zkboo.html` runs the turn-based authentication
 POC using **header-free Neural-QR for both data and acknowledgments**, corrected
 by the trained **VW** or **W-tube** model. The physical directions have independent
-limits: G128 from computer to phone, G64 from phone to computer. Authentication
-roles can be reversed without reversing these limits.
+default limits: G128 from computer to phone, G64 from phone to computer.
+Authentication roles can be reversed without reversing these limits. The optional
+**Test G128 in both directions** setting enables a symmetric G128 experiment.
 
 This iteration integrates the existing trained model and Neural-ZKBoo proof;
 it does not require another training run. It replaces the earlier G64 transport
@@ -69,6 +70,15 @@ The screen preset describes the physical direction, independently of the
 **Authentication role**. A phone acting as verifier still sends at most G64;
 a computer acting as key holder can still send G128.
 
+To test **G128 both ways**, enable **Test G128 in both directions** on both
+devices before starting. It selects G128 outgoing data and raises both receiving
+limits to G128; controls stay G32. The export must include G32, G64 and G128. The
+normal Computer/Phone defaults return when the option is unchecked. Keep 32 proof
+repetitions and the phase/camera intervals that already work, and compare delivered
+proof goodput and inference times in both reports. Four times the cell count can
+increase inference work and recovery retries; greater capacity alone does not
+guarantee faster transfer.
+
 | Shared setting | Default / contract |
 | --- | --- |
 | Circuit | Side 8, 16 circuit rounds |
@@ -127,7 +137,7 @@ does not silently rechunk a partly acknowledged message.
    locally** with result delivery complete, and the key holder **Peer reports
    accepted**. Download a report from both devices.
 
-Prominent **three-second handoff notices** appear in the status area immediately
+Compact **three-second handoff notices** appear in the status area immediately
 above the matrix/camera view. Every matching ACK announces **ACK received** and
 the next data chunk number; every newly accepted data chunk announces its number
 and **ACK ready**. New messages, completed rounds, queued replies, pairing, proof
@@ -144,6 +154,28 @@ chunk replaces the displayed ACK with its new ACK. The final ACK remains visible
 until the explicit handoff; a “next turn ready” notice still requires letting the
 other device finish reading it before pressing **Send next turn**. The normal
 status and instructions remain available after each notice disappears.
+
+From the **first valid sample**, a provisional **Reading incoming matrix · not
+confirmed** cue greys the display labels/frame and dismisses the previous notice
+once for the current outgoing packet. The optical pixels retain their exact colors
+so the other camera can still read them. A sample may belong to a repeated old
+packet; only validated transport progress confirms a new one. Missed acquisition
+clears the cue, and repeated samples do not continually dismiss notifications.
+
+### Recover an early handoff
+
+If both devices appear to be sending, one may have missed the previous message's
+final ACK before the other device pressed **Send next turn**. While the new START
+is unacknowledged, **Show previous ACK** restores the retained final receipt. Let
+the stuck sender read it and leave its last data chunk, then press **Resume
+message**. This resumes the same START and preserves the session, message ID and
+deadline. A matching START ACK removes the recovery option. It never fabricates
+delivery or regenerates the proof.
+
+**Proof accepted · result delivery pending** means the verifier has checked the
+proof, but the result has not yet reached the peer. Finish the RESULT exchange
+and its final ACK before treating both devices as complete; `resultDelivered`
+must be true in the verifier report and `peerReported` true in the prover report.
 
 The five application messages are HELLO, IDENTITY, CHALLENGE, PROOF and RESULT.
 Each message has its own START/ACK and sequential DATA/ACK exchanges. Duplicated

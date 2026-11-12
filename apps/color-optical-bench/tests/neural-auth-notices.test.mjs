@@ -57,3 +57,15 @@ test('new transitions replace stale notices; reset prevents old timers hiding a 
   old();assert.equal(h.last(),current);assert.equal(h.timers.size,1);
   h.notices.reset();assert.equal(h.timers.size,0);assert.equal(h.last(),null);
 });
+test('dismissing a notice retains packet history and completed-round pairing eligibility',()=>{
+  const h=harness(),link={mode:'receive',lastTransfer:{state:'delivered',messageId:'identity'}};
+  h.notices.update({state:'awaiting-identity'},{mode:'send',outgoing:{messageId:'identity'}});
+  h.notices.update({state:'awaiting-identity'},link);const old=[...h.timers.values()][0];
+  h.notices.dismiss();assert.equal(h.last(),null);assert.equal(h.timers.size,0);
+  const changes=h.changes.length;
+  h.notices.update({state:'awaiting-identity'},link);
+  assert.equal(h.changes.length,changes,'the old delivery must not reannounce after dismissal');
+  h.notices.update({state:'pairing',canConfirm:true},link);
+  assert.equal(h.last().title,'Compare the pairing codes');
+  old();assert.equal(h.last().title,'Compare the pairing codes');assert.equal(h.timers.size,1);
+});

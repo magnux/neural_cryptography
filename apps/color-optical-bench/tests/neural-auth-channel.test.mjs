@@ -62,6 +62,48 @@ test('lost final ACK repeats safely; stale ACKs and foreign traffic cannot advan
   a.close();b.close();
 });
 
+test('an early handoff can replay the final ACK without changing the pending message',async t=>{
+  const deliveredA=[],deliveredB=[];
+  const a=new TurnChannel({initiator:true,now:()=>1,onMessage:value=>deliveredA.push(value)});
+  const b=new TurnChannel({now:()=>1,onMessage:value=>deliveredB.push(value)});
+  t.after(()=>{a.close();b.close();});
+  assert.equal(a.repeatPreviousAck(),false);assert.equal(b.resumeMessage(),false);
+  const first=a.enqueue(bytes(12));first.catch(()=>{});await prepared(a);
+  assert.equal(a.snapshot().canRepeatAck,false);
+  await b.receive(a.current());await a.receive(b.current());
+  const lastData=a.current();await b.receive(lastData);const finalAck=b.current();await flush();
+  // Simulate pressing Send next turn before the sender reads this final ACK.
+  const reply=b.enqueue(bytes(40,9));reply.catch(()=>{});await b.nextTurn();
+  const originalStart=b.current(),before=b.snapshot().outgoing;
+  assert.equal((await a.receive(originalStart)).reason,'sending');
+  assert.equal(b.snapshot().canRepeatAck,true);
+  assert.equal(b.repeatPreviousAck(),true);assert.equal(b.snapshot().mode,'ack');
+  assert.equal(b.snapshot().repeatingAck,true);assert.deepEqual(b.current(),finalAck);
+  assert.equal(b.snapshot().outgoing.messageId,before.messageId);
+  assert.equal(b.snapshot().outgoing.deadline,before.deadline);
+  assert.equal((await a.receive(b.current())).delivered,true);await first;
+  assert.equal(b.resumeMessage(),true);assert.deepEqual(b.current(),originalStart);
+  assert.equal((await a.receive(b.current())).accepted,true);const ready=a.current();
+  // A delayed, matching START ACK also ends replay automatically.
+  b.repeatPreviousAck();assert.equal(b.snapshot().repeatingAck,true);
+  assert.equal((await b.receive(ready)).accepted,true);
+  assert.equal(b.snapshot().repeatingAck,false);assert.equal(b.snapshot().canRepeatAck,false);
+  assert.equal(b.repeatPreviousAck(),false);assert.equal(b.resumeMessage(),false);
+  assert.equal(decodePacket(b.current()).kind,'data');
+  await transfer(b,a);await reply;
+  assert.deepEqual(deliveredA,[bytes(40,9)]);assert.deepEqual(deliveredB,[bytes(12)]);
+});
+
+test('stopping an ACK replay clears the retained display and pending sender',async()=>{
+  const a=new TurnChannel({initiator:true,now:()=>1}),b=new TurnChannel({now:()=>1});
+  const first=a.enqueue(bytes(1));await prepared(a);await transfer(a,b);await first;
+  const reply=b.enqueue(bytes(1));const rejected=assert.rejects(reply,/stopped/);await b.nextTurn();
+  assert.equal(b.repeatPreviousAck(),true);b.close();await rejected;
+  assert.equal(b.current(),null);assert.equal(b.snapshot().canRepeatAck,false);
+  assert.equal(b.snapshot().repeatingAck,false);assert.equal(b.snapshot().outgoing,null);
+  assert.equal(b.repeatPreviousAck(),false);assert.equal(b.resumeMessage(),false);a.close();
+});
+
 test('cancel during asynchronous sender preparation rejects work and cannot resurrect a matrix',async()=>{
   const channel=new TurnChannel({initiator:true,now:()=>0});
   const done=channel.enqueue(bytes(1024)),rejected=assert.rejects(done,/stopped/);
