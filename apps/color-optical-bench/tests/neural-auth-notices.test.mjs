@@ -14,7 +14,7 @@ test('round delivery notifies once; duplicate ACKs and progress cannot extend th
   h.notices.update({state:'awaiting-identity'},link);
   assert.match(h.last().title,/Sending/);
   h.notices.update({state:'awaiting-identity'},{mode:'receive',lastTransfer:{state:'delivered',messageId:'identity'}});
-  assert.equal(h.last().title,'Round delivered');
+  assert.equal(h.last().title,'ACK received · round delivered');
   const count=h.changes.length,timer=[...h.timers.values()][0];
   for(let i=0;i<10;i++)h.notices.update({state:'awaiting-identity',progress:i},{mode:'receive',lastTransfer:{state:'delivered',messageId:'identity'}});
   assert.equal(h.changes.length,count);assert.equal(h.timers.size,1);

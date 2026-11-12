@@ -128,13 +128,22 @@ does not silently rechunk a partly acknowledged message.
    accepted**. Download a report from both devices.
 
 Prominent **three-second handoff notices** appear in the status area immediately
-above the matrix/camera view. They announce the first ACK, completed rounds,
-queued replies, pairing, proof processing and the final result. They never cover
-or move the optical code, change focus, or advance a turn automatically. New
-events replace old notices; repeated ACKs and progress callbacks do not prolong
-them. The normal status and instructions remain available after each notice
-disappears. A “next turn ready” notice still requires letting the other device
-finish reading the ACK before pressing **Send next turn**.
+above the matrix/camera view. Every matching ACK announces **ACK received** and
+the next data chunk number; every newly accepted data chunk announces its number
+and **ACK ready**. New messages, completed rounds, queued replies, pairing, proof
+processing and the final result also have notices. Fresh packet progress replaces
+the previous notice immediately, even within the same message. Repeated captures,
+duplicate packets and unrelated traffic do not restart the three-second timer.
+Only transport-accepted progress counts; detecting markers or a phase alone does
+not establish that a new packet arrived.
+
+Notices never cover or move the optical code, change focus, or advance a turn
+automatically. A newly accepted ACK replaces the old outgoing matrix with the
+next chunk, or clears it when that message has finished. A newly accepted data
+chunk replaces the displayed ACK with its new ACK. The final ACK remains visible
+until the explicit handoff; a “next turn ready” notice still requires letting the
+other device finish reading it before pressing **Send next turn**. The normal
+status and instructions remain available after each notice disappears.
 
 The five application messages are HELLO, IDENTITY, CHALLENGE, PROOF and RESULT.
 Each message has its own START/ACK and sequential DATA/ACK exchanges. Duplicated

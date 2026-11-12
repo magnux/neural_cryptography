@@ -160,7 +160,12 @@ function update(){
 function renderCurrent(){
   if(!active||!channel)return;
   const bytes=channel.current();
-  if(!bytes){shown=null;rendered=[];phaseIndex=-1;clearTimeout(displayTimer);return;}
+  if(!bytes){
+    if(shown){const canvas=$('matrix');canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);}
+    shown=null;rendered=[];phaseIndex=-1;clearTimeout(displayTimer);
+    $('matrixStatus').textContent='Waiting for the next message';$('phaseStatus').textContent='';
+    return;
+  }
   if(shown&&sameBytes(shown,bytes))return;
   shown=bytes.slice();
   const packet=decodePacket(bytes);

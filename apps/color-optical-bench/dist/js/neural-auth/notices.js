@@ -25,12 +25,21 @@ export class TurnNotices {
     auth??={};link??={};
     const prior=this.previous,current={state:auth.state,result:auth.result,peerReported:auth.peerReported,
       resultDelivered:auth.resultDelivered,mode:link.mode,outgoing:link.outgoing?.messageId,
+      outgoingIndex:link.outgoing?.index,incoming:link.incoming?.messageId,
+      incomingChunks:link.incoming?.receivedChunks??0,
       received:link.receivedMessages??0,canSend:link.canSendNext,preparing:link.preparing};
     const delivered=Boolean(prior.outgoing&&!current.outgoing&&link.lastTransfer?.state==='delivered'&&
       link.lastTransfer.messageId===prior.outgoing);
     if(delivered)this.hasSentRound=true;
     current.pairing=Boolean(auth.canConfirm&&this.hasSentRound&&!current.outgoing&&!current.canSend&&!current.preparing);
     this.previous=current;
+    // Only transport progress identifies fresh traffic. Repeated captures and
+    // duplicate packets must not replace a notice or extend its lifetime.
+    const ackAdvanced=Boolean(current.outgoing&&current.outgoing===prior.outgoing&&
+      Number.isInteger(prior.outgoingIndex)&&current.outgoingIndex>prior.outgoingIndex);
+    const incomingStarted=Boolean(current.incoming&&current.incoming!==prior.incoming);
+    const chunkReceived=Boolean(current.incoming&&current.incoming===prior.incoming&&
+      current.incomingChunks>prior.incomingChunks);
     let value;
     if(current.resultDelivered&&!prior.resultDelivered){
       value=notice(auth.result?'Authentication complete':'Rejection delivered',
@@ -43,15 +52,24 @@ export class TurnNotices {
         ?'Keep this ACK visible until the other device advances, then tap “Send next turn”.'
         :'Tap “Send next turn” and show this screen to the other camera.');
     }else if(current.outgoing&&current.outgoing!==prior.outgoing){
-      value=notice('Sending this round','Keep this matrix visible. Watch the other device for its ACK.','info');
+      value=notice('Sending this round','A new message-start matrix is displayed. Show it to the other camera and wait for its ACK.','info');
+    }else if(ackAdvanced){
+      value=notice(`ACK received · sending chunk ${current.outgoingIndex+1}/${link.outgoing.chunkCount}`,
+        'The next data matrix is displayed. Aim the other camera at this screen.','success');
     }else if(current.pairing&&!prior.pairing){
       value=notice('Compare the pairing codes',current.mode==='ack'
         ?'Let the other device read this ACK, then compare and confirm the codes on both screens.'
-        :'Check both screens. Confirm on each device only if the codes match.');
+        :`${delivered?'ACK received; this round is delivered. ':''}Check both codes and confirm only if they match.`);
     }else if(delivered){
-      value=notice('Round delivered','Look at the other device for its next action. This camera is ready for the reply.','success');
+      value=notice('ACK received · round delivered','Look at the other device for its next action. This camera is ready for the reply.','success');
     }else if(current.received>(prior.received??0)){
-      value=notice('Round received · show this ACK','Let the other camera read this screen before switching turns.');
+      value=notice('Round received · show this ACK',
+        `${link.incoming?.chunkCount?`Chunk ${current.incomingChunks}/${link.incoming.chunkCount} received. `:''}Let the other camera read this final ACK before switching turns.`);
+    }else if(incomingStarted){
+      value=notice('Message start received · ACK ready','Show this ACK to the sender, then aim back at its first data matrix.');
+    }else if(chunkReceived){
+      value=notice(`Chunk ${current.incomingChunks}/${link.incoming.chunkCount} received · ACK ready`,
+        'A new ACK is displayed. Show it to the sender, then aim back at its next data matrix.');
     }else if(current.mode==='ack'&&prior.mode!=='ack'){
       value=notice('ACK ready · show this screen','Turn the phone so the sender’s camera can read this ACK.');
     }else if(current.state!==prior.state){
