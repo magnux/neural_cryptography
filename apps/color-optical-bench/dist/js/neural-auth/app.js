@@ -12,6 +12,8 @@ import {packetFrames,unpackOptical} from './optical.js';
 import {captureFeedback} from './feedback.js';
 import {TurnNotices} from './notices.js';
 import {ReadingCue} from './reading.js';
+import {POCAutoPairing} from './poc-pairing.js';
+import {PacketTelemetry} from './telemetry.js';
 
 const $=id=>document.getElementById(id);
 const notices=new TurnNotices({onChange:value=>{
@@ -28,6 +30,7 @@ const reading=new ReadingCue({onChange:state=>{
 }});
 const supported=isSecureContext&&Boolean(globalThis.crypto?.subtle)&&typeof Worker==='function'&&Boolean(navigator.mediaDevices?.getUserMedia);
 let active=false,epoch=0,stream=null,corrector=null,cryptoClient=null,session=null,channel=null,config=null;
+let autoPairing=null,packetTelemetry=null;
 let frameCallback=null,displayTimer=null,heartbeat=null,lastCapture=-Infinity,lastPresented=0,scanning=false,frameWaitStarted=0;
 let shown=null,rendered=[],phaseStarted=0,phaseIndex=-1,authState=null,report=null,startedAt=0;
 const events=[],transfers=new Map();
@@ -37,8 +40,9 @@ const int=(value,min,max,label)=>{const n=Number(value);if(!Number.isSafeInteger
 function settings(){
   const role=$('role').value,backend=$('backend').value,repetitions=Number($('repetitions').value),resolution=$('resolution').value;
   if(!['verifier','prover'].includes(role)||!['auto','wasm','webgpu'].includes(backend)||![32,64,110,160,219].includes(repetitions)||!['480','720','1080','1440','2160','max'].includes(resolution))throw Error('Unsupported test settings.');
+  const phaseMs=int($('phaseMs').value,50,10000,'Phase interval');
   return {role,backend,repetitions,resolution,...transportProfile($('deviceProfile').value,$('outgoingSize').value),
-    phaseMs:int($('phaseMs').value,50,10000,'Phase interval'),
+    phaseMs,automaticTurns:true,pairingConfirmation:'automatic-poc-unchecked',handoffHoldMs:Math.max(3000,8*phaseMs),
     captureMs:int($('captureMs').value,50,2000,'Capture interval'),cameraId:$('camera').value};
 }
 function populateProfiles(){
@@ -129,43 +133,44 @@ function update(){
   const link=channel?.snapshot();
   $('authApp').dataset.mode=active?(link?.mode??'receive'):'idle';
   $('settingsFields').disabled=active;$('start').disabled=active||!supported;$('stop').disabled=!active;
-  $('downloadReport').disabled=!report;$('nextTurn').disabled=!active||!link?.canSendNext;
-  $('ackRecovery').hidden=!active||!link?.canRepeatAck;
-  $('repeatAck').textContent=link?.repeatingAck?'Resume message':'Show previous ACK';
+  $('downloadReport').disabled=!report;
   $('nextGeometry').disabled=!active||!channel||!!link?.outgoing||!!link?.preparing;
   if(link)$('nextGeometry').value=String(link.outgoingSize);
   observeTransfers(link);
-  $('confirmPairing').disabled=!active||!authState?.canConfirm;
   $('proofBytes').textContent=authState?.proofBytes?`${authState.proofBytes.toLocaleString()} B`:'—';
   $('pairingPanel').hidden=!authState?.pairingCode;
   $('pairingCode').textContent=authState?.pairingCode?.match(/.{1,4}/g).join(' ')??'—';
-  $('pairingNote').textContent=authState?.confirmed?'Confirmed on this device. The other device must also confirm.':'Compare both codes before confirming. A mismatch means stop and restart.';
+  $('pairingNote').textContent='POC: pairing is confirmed automatically. Codes are displayed, not visually checked.';
   if(!active)return;
   notices.update(authState,link);
   $('status').textContent=authState?.status??'Preparing local model and camera…';
+  if(authState?.state==='pairing')$('status').textContent='Pairing code ready · continuing automatically';
   if(authState?.state==='verified'&&!authState.resultDelivered)$('status').textContent='Proof accepted · result delivery pending';
   const mode=link?.mode??'receive';
   $('instruction').textContent=mode==='send'
     ?'Keep this matrix visible. When the receiver shows ACK, turn the phone so this camera can read it. Each chunk waits for its ACK.'
     :mode==='ack'
-      ?link?.canSendNext?'ACK ready. Let the other device read it and confirm delivery, then choose “Send next turn”.'
+      ?link?.canSendNext?'ACK ready. Show it to the other camera; the reply starts automatically.'
         :'ACK ready. Turn the phone to show this ACK to the sender, then aim back at its next matrix. Keep this page open.'
       :'Aim the camera at the other screen. All four corners and the complete matrix must be visible.';
   if(authState?.resultDelivered)$('instruction').textContent='Authentication and result delivery completed. You can save the report and stop.';
   else if(authState?.peerReported)$('instruction').textContent='The verifier reported its result. Keep this final ACK visible until the verifier confirms result delivery, then save the report and stop.';
-  if(authState?.canConfirm)$('instruction').textContent+=' Compare the pairing codes and confirm on both devices.';
   if(authState?.state==='verified'&&!authState.resultDelivered)$('instruction').textContent=link?.outgoing
     ?'Send this result message and let the peer acknowledge it to finish both devices.'
-    :'The proof passed here. Let the peer read this final ACK, then choose “Send next turn” to deliver the result.';
-  if(link?.repeatingAck)$('instruction').textContent='The previous final ACK is restored. Let the other device finish its send, then tap “Resume message”.';
+    :'The proof passed here. Show this final ACK to the peer; the result follows automatically.';
+  if(link?.repeatingAck)$('instruction').textContent='Finishing the previous ACK. Keep it facing the other camera; the reply appears automatically.';
   const state=link?.outgoing??link?.incoming;
-  $('transferStatus').textContent=link?.repeatingAck?'Showing previous ACK · current message is paused':link?.outgoing
+  $('transferStatus').textContent=link?.repeatingAck?'Previous ACK · automatic handoff in progress':link?.outgoing
     ?`Sending ${state.index<0?'message start':`chunk ${state.index+1}/${state.chunkCount}`} · ${state.ackedBytes.toLocaleString()}/${state.totalBytes.toLocaleString()} B acknowledged`
     :state?.chunkCount?`Received ${state.receivedChunks}/${state.chunkCount} chunks · ${state.receivedBytes.toLocaleString()} B${link?.queued?' · next message ready':''}`:'Waiting for a message';
   if(authState?.result!==null&&authState?.result!==undefined){
     $('result').textContent=authState.peerReported?(authState.result?'Peer reports accepted':'Peer reports rejected'):(authState.result?'Verified locally':'Rejected locally');
   }
-  if(report){report.authentication=authState;report.transport=link;}
+  if(report){
+    report.authentication=authState;report.transport=link;
+    if(!report.completion&&(authState?.resultDelivered||authState?.peerReported))report.completion={
+      afterMs:performance.now()-startedAt,kind:authState.resultDelivered?'result-acknowledged':'peer-result-received'};
+  }
   renderCurrent();
 }
 function renderCurrent(){
@@ -185,7 +190,9 @@ function renderCurrent(){
   const size=packet.kind==='ack'?32:channel.snapshot().outgoingSize;
   rendered=packetFrames(bytes,{size,phaseMs:config.phaseMs}).map(frame=>renderNeuralQR(frame,1024));
   $('matrixStatus').textContent=packet.kind==='ack'?'G32 ACK · keep visible':packet.kind==='start'?`G${size} · message start`:`G${size} · data chunk ${packet.index+1}`;
-  phaseStarted=performance.now();phaseIndex=-1;paintPhase();schedulePhase(epoch);
+  phaseStarted=performance.now();phaseIndex=-1;paintPhase();
+  packetTelemetry?.displayed(bytes,{grid:size,atMs:performance.now()});
+  schedulePhase(epoch);
 }
 function paintPhase(){
   if(!active||!rendered.length)return;
@@ -273,8 +280,9 @@ async function scan(metadata,token){
   if(!result.ok){report.captureMisses++;return;}
   let bytes;try{bytes=unpackOptical(result.chunk,expected);}catch{report.rejectedContainers++;$('cameraStatus').textContent='Code read · packet rejected';return;}
   report.crcAcceptedMatrices++;$('receivedCount').textContent=String(report.crcAcceptedMatrices);
-  const accepted=await channel.receive(bytes);
+  const receivedAt=performance.now(),accepted=await channel.receive(bytes);
   if(!active||token!==epoch)return;
+  packetTelemetry?.accepted(bytes,accepted,{grid,atMs:receivedAt});
   if(accepted.accepted){report.transportAcceptedMatrices++;if(grid)report.geometries[String(grid)].transportAccepted++;$('cameraStatus').textContent=expected==='ack'?'Neural-QR ACK matched · continuing':`G${grid} data packet accepted`;if(accepted.delivered)event('Outgoing message fully acknowledged.');}
   else {report.transportRejectedMatrices++;$('cameraStatus').textContent='Code read · waiting for the matching transfer packet';}
 }
@@ -295,8 +303,10 @@ async function start(){
   notices.reset();reading.reset();
   active=true;const token=++epoch;startedAt=performance.now();events.length=0;transfers.clear();lastIncomingSize=null;authState=null;shown=null;rendered=[];
   channel=null;session=null;cryptoClient=null;corrector=null;
+  packetTelemetry=new PacketTelemetry({originMs:startedAt});
+  autoPairing=new POCAutoPairing({isActive:()=>active&&token===epoch,onError:fail});
   lastCapture=-Infinity;lastPresented=0;scanning=false;$('result').textContent='';$('receivedCount').textContent='0';$('inferenceMs').textContent='—';$('elapsed').textContent='0 s';$('goodput').textContent='—';$('cameraDensity').textContent='—';
-  report={format:'neural-zkboo-auth-report',version:2,started:new Date().toISOString(),settings:{...config,cameraId:undefined},
+  report={format:'neural-zkboo-auth-report',version:3,started:new Date().toISOString(),settings:{...config,cameraId:undefined},completion:null,
     captureAttempts:0,captureMisses:0,crcAcceptedMatrices:0,transportAcceptedMatrices:0,transportRejectedMatrices:0,
     rejectedContainers:0,inferenceCount:0,inferenceMs:[],geometries:{},transfers:[],captureStages:{data:{},ack:{}},geometryReuses:0,model:null,camera:null,cameraControls:null,lastAcquisition:null,lastAcquisitionFailure:null,authentication:null,transport:null};
   corrector=new CorrectorClient({onProgress:text=>{if(active&&token===epoch)$('modelStatus').textContent=text;}});
@@ -317,7 +327,8 @@ async function start(){
     $('cameraStatus').textContent=`${report.camera.width} × ${report.camera.height} · ${Math.round(report.camera.frameRate??0)} fps`;
     await populateCameras();if(!active||token!==epoch)return;
     const deviceId=crypto.randomUUID();
-    channel=new TurnChannel({initiator:config.role==='verifier',outgoingSize:config.outgoingSize,onChange:update,
+    channel=new TurnChannel({initiator:config.role==='verifier',outgoingSize:config.outgoingSize,
+      automaticTurns:true,handoffHoldMs:config.handoffHoldMs,onChange:update,
       onMessage:async bytes=>{
         const result=await session.receive(bytes);
         if(token!==epoch)return;
@@ -326,7 +337,9 @@ async function start(){
     session=new AuthSession({role:config.role,deviceId,cryptoClient,send:bytes=>channel.enqueue(bytes),
       repetitions:config.repetitions,timeoutMs:30*60*1000,onChange:state=>{
         if(token!==epoch)return;
-        const previous=authState?.state;authState=state;if(previous!==state.state)event(state.status);
+        const previous=authState?.state;authState=state;
+        if(previous!==state.state)event(state.state==='pairing'?'Pairing code displayed · automatic POC confirmation':state.status);
+        autoPairing.update(session,state);
         update();
       }});
     $('settings').open=false;event('Camera and trained model ready.');startLoops(token);update();
@@ -338,6 +351,7 @@ function stop(reason='Stopped by the user.'){
   if(!active)return;
   notices.reset();reading.reset();
   const saved=authState;active=false;epoch++;
+  autoPairing?.close();
   clearTimeout(displayTimer);clearInterval(heartbeat);
   if(frameCallback!==null)$('video').cancelVideoFrameCallback(frameCallback);frameCallback=null;
   channel?.close();session?.close(reason);cryptoClient?.destroy();corrector?.cancel();
@@ -346,7 +360,7 @@ function stop(reason='Stopped by the user.'){
   stream?.getTracks().forEach(track=>track.stop());stream=null;$('video').srcObject=null;
   $('cameraPlaceholder').hidden=false;$('cameraStatus').textContent='Camera is off';
   shown=null;rendered=[];scanning=false;
-  if(report){report.authentication=saved;report.finished=new Date().toISOString();report.stopReason=reason;report.elapsedMs=performance.now()-startedAt;}
+  if(report){report.authentication=saved;report.packetTimings=packetTelemetry?.snapshot();report.finished=new Date().toISOString();report.stopReason=reason;report.elapsedMs=performance.now()-startedAt;}
   authState=saved;event(reason);$('status').textContent=reason;$('instruction').textContent='Download the report, or start a fresh exchange on both devices.';update();
 }
 function fail(e){
@@ -357,22 +371,12 @@ function fail(e){
 function download(){
   if(!report)return;
   if(cameraControls)report.cameraControls=cameraControls.snapshot();
-  const value={...report,elapsedMs:report.elapsedMs??performance.now()-startedAt,notes:$('reportNotes').value.slice(0,1000),events:[...events]};
+  const value={...report,packetTimings:packetTelemetry?.snapshot(),elapsedMs:report.elapsedMs??performance.now()-startedAt,notes:$('reportNotes').value.slice(0,1000),events:[...events]};
   const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'})),a=document.createElement('a');
   a.href=url;a.download=`neural-zkboo-${config.role}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 $('start').addEventListener('click',()=>void start());
 $('stop').addEventListener('click',()=>stop());
-$('confirmPairing').addEventListener('click',()=>{if(active)void session?.confirmPairing().catch(fail);});
-$('nextTurn').addEventListener('click',()=>{if(active)void channel?.nextTurn().catch(fail);});
-$('repeatAck').addEventListener('click',()=>{
-  if(!active||!channel)return;
-  const resuming=channel.snapshot().repeatingAck;
-  if(!(resuming?channel.resumeMessage():channel.repeatPreviousAck()))return;
-  notices.show(resuming
-    ?{title:'Message resumed',message:'Show this matrix to the other camera and wait for its ACK.',tone:'info'}
-    :{title:'Previous ACK restored',message:'Let the other device finish sending, then tap “Resume message”.',tone:'action'});
-});
 $('downloadReport').addEventListener('click',download);
 $('deviceProfile').addEventListener('change',populateProfiles);
 $('nextGeometry').addEventListener('change',()=>{

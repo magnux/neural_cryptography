@@ -5,6 +5,10 @@ POC using **header-free Neural-QR for both data and acknowledgments**, corrected
 by the trained **VW** or **W-tube** model. Both devices can send and receive
 G32, G64 and G128. Choose each outgoing grid independently of the authentication
 role; the initial selections are G128 on computers and G64 on phones.
+This POC automatically confirms pairing and advances turns. Pairing codes remain
+visible, but are **not manually compared**; this demo policy is recorded in the
+report. The shared authentication implementation retains its explicit pairing
+confirmation API for other callers.
 
 This iteration integrates the existing trained model and Neural-ZKBoo proof;
 it does not require another training run. It replaces the earlier G64 transport
@@ -123,12 +127,13 @@ does not silently rechunk a partly acknowledged message.
    four phases. Keep it visible until the sender advances. Aim back at the next
    packet. Repeat for START and each DATA packet; simultaneous alignment is not
    required.
-4. The final ACK of a message stays visible. Wait until the sender confirms full
-   delivery. If the other device has a reply queued, press **Send next turn**
-   there. This manual handoff replaces the ACK with the next message.
-5. Compare the pairing codes on both screens and press **Codes match · confirm**
-   on both only if they match. Stop and restart if they differ. Continue the
-   same handoff for challenge, proof and result.
+4. Replies start automatically. At a message boundary, the previous final ACK
+   appears first, then alternates with the next message's START until the peer
+   acknowledges that START. Aim the cameras according to the notices; no turn
+   button is needed. Individual data chunks still advance on their matching ACK.
+5. Pairing codes stay visible and confirmation happens automatically for this
+   POC. No click or visual comparison is required. Challenge, proof and result
+   continue through the same automatic exchange.
 6. Deliver the result's final ACK too. The verifier should show **Verified
    locally** with result delivery complete, and the key holder **Peer reports
    accepted**. Download a report from both devices.
@@ -146,10 +151,9 @@ not establish that a new packet arrived.
 Notices never cover or move the optical code, change focus, or advance a turn
 automatically. A newly accepted ACK replaces the old outgoing matrix with the
 next chunk, or clears it when that message has finished. A newly accepted data
-chunk replaces the displayed ACK with its new ACK. The final ACK remains visible
-until the explicit handoff; a “next turn ready” notice still requires letting the
-other device finish reading it before pressing **Send next turn**. The normal
-status and instructions remain available after each notice disappears.
+chunk replaces the displayed ACK with its new ACK. At message boundaries, notices
+distinguish the retained final ACK from the automatically displayed START. The
+normal status and instructions remain available after each notice disappears.
 
 From the **first valid sample**, a provisional **Reading incoming matrix · not
 confirmed** cue puts a translucent grey overlay in front of the currently
@@ -161,15 +165,17 @@ repeated old packet; only validated transport progress confirms a new one.
 Reading and fading never dismiss or restart handoff notices: those retain their
 own three-second lifetime and can be replaced by the next actual protocol event.
 
-### Recover an early handoff
+### Automatic handoff recovery
 
-If both devices appear to be sending, one may have missed the previous message's
-final ACK before the other device pressed **Send next turn**. While the new START
-is unacknowledged, **Show previous ACK** restores the retained final receipt. Let
-the stuck sender read it and leave its last data chunk, then press **Resume
-message**. This resumes the same START and preserves the session, message ID and
-deadline. A matching START ACK removes the recovery option. It never fabricates
-delivery or regenerates the proof.
+A queued reply retains the previous final ACK and displays it first. It then
+alternates that ACK and the new START in slots of `max(3000, 8 × phaseMs)`
+milliseconds: at least three seconds and two full palette cycles per slot.
+The heartbeat advances slots, so actual boundaries can be up to one second later.
+This gives a peer that missed the final ACK repeated chances to finish its send.
+A matching START ACK immediately ends alternation and begins ordinary data/ACK
+transfer. Until then, retries preserve the same message ID and deadline. The
+last RESULT ACK remains visible because there is no subsequent reply. Automatic
+handoff never assumes delivery or regenerates a proof.
 
 **Proof accepted · result delivery pending** means the verifier has checked the
 proof, but the result has not yet reached the peer. Finish the RESULT exchange
@@ -182,7 +188,9 @@ packets and repeated final ACKs do not create duplicate application deliveries.
 
 This is one-way proof of the key holder's secret, using fresh ephemeral keys and
 a fresh, pairing-bound challenge. Both public identities are exchanged and
-compared, but the result message is not a second proof of the verifier's secret.
+bound into the transcript. This POC skips human verification of the displayed
+pairing code; it therefore does not establish peer identity through visual code
+comparison. The result message is not a second proof of the verifier's secret.
 Swapping roles in a new attempt tests the other direction; it does not turn one
 attempt into mutual authentication or persistent enrollment.
 
@@ -320,7 +328,7 @@ Run these short checks before increasing proof repetitions:
    pages open. Check a permitted smaller outgoing geometry at a message boundary
    as well if the exchange needs fallback.
 
-Download both **version 2** JSON reports, including failures. Add the device and
+Download both **version 3** JSON reports, including failures. Add the device and
 camera models, brightness, approximate distance/angle, lighting, and what stalled.
 Useful comparisons are:
 
@@ -337,6 +345,36 @@ the first valid START and ends at message assembly. Compare sent-message metrics
 when assessing throughput. Reports are bounded and contain no camera images or
 private keys.
 
+### Per-matrix timings
+
+`packetTimings.packets` records each sent or received START/DATA packet, keyed by
+session, message, kind and chunk index. Sent rows contain the first canvas-display
+timestamp, redisplay count and matching accepted ACK timestamp; `roundTripMs` is
+their difference. Repeated phases and duplicate/stale/foreign ACKs do not restart
+or complete that timing. An unfinished packet has a null RTT. Received rows
+contain recovery and ACK-display timestamps plus `ackDisplayDelayMs`; this is
+local response preparation time, **not** the remote sender's RTT. Callback order
+is handled even when the ACK is painted before the receive handler returns.
+
+All timestamps are monotonic milliseconds relative to that device's attempt
+start. The received-packet timestamp is captured before transport processing;
+it is retained only if transport accepts the packet. No phone/PC clock subtraction
+is used. RTT includes acquisition, neural inference, alignment, retries and turn
+changes, so it measures the optical interaction rather than network latency.
+
+`packetTimings.roundTrips.overall` and `byGridAndKind` report count, minimum,
+median, nearest-rank p95, mean and maximum. Use the **minimum for the same grid,
+packet kind and direction** as the observed best-case target, and compare median
+and p95 against it. A fast G32 control packet is not a G128 data target. The minimum
+is an observation, not a guaranteed physical lower bound. Rows are bounded to
+4,096, with explicit truncation/drop counts; no per-camera-frame trace is stored.
+
+`completion.afterMs` stops at the local completion milestone, excluding time spent
+idle before downloading: `result-acknowledged` on the verifier or
+`peer-result-received` on the prover. `elapsedMs` still records the full time until
+stop/download. Settings explicitly mark automatic turns and
+`pairingConfirmation: automatic-poc-unchecked`.
+
 Automated tests run actual 32-repetition cryptography through clean rendered
 Neural-QR acquisition, phase packing, a deterministic test-only classifier, and
 RS/CRC recovery in both directions. They check G32 ACKs, G128/G64 chunks, lost
@@ -351,6 +389,8 @@ Run `npm run test:neural-zkboo` for the focused suite.
 | UI, camera loop and reports | `apps/color-optical-bench/dist/js/neural-auth/app.js` |
 | Physical device direction limits | `neural-auth/profiles.js` |
 | Turns and sticky final ACK | `neural-auth/channel.js` |
+| POC-only automatic pairing | `neural-auth/poc-pairing.js` |
+| Per-matrix optical timings | `neural-auth/telemetry.js` |
 | Stop-and-wait multipart messages | `neural-auth/transport.js` |
 | DATA/ACK optical adapter | `neural-auth/optical.js` |
 | Header-free drawing and acquisition | `neural-qr/layout.js`, `neural-qr/vision.js` |

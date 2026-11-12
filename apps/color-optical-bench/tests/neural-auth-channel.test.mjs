@@ -62,6 +62,63 @@ test('lost final ACK repeats safely; stale ACKs and foreign traffic cannot advan
   a.close();b.close();
 });
 
+test('automatic handoff recovers a lost final ACK and completes the reply without manual actions',async t=>{
+  let now=0,reply;
+  const deliveredA=[],deliveredB=[];
+  const a=new TurnChannel({initiator:true,automaticTurns:true,outgoingSize:32,now:()=>now,onMessage:value=>deliveredA.push(value)});
+  const b=new TurnChannel({automaticTurns:true,outgoingSize:32,now:()=>now,onMessage:value=>{
+    deliveredB.push(value);reply=b.enqueue(bytes(600,9));reply.catch(()=>{});
+  }});
+  t.after(()=>{a.close();b.close();});
+  const first=a.enqueue(bytes(12));first.catch(()=>{});await prepared(a);
+  await b.receive(a.current());await a.receive(b.current());
+  const finalData=a.current();await b.receive(finalData);
+  const finalAck=b.current();
+  // The application queues its next message; its first display is still this
+  // final ACK. Neither endpoint invokes nextTurn/repeatPreviousAck/resumeMessage.
+  const until=performance.now()+5000;
+  while((!b.snapshot().outgoing||b.snapshot().preparing)&&performance.now()<until)await new Promise(resolve=>setTimeout(resolve,1));
+  const original=b.snapshot().outgoing;
+  assert.ok(original);assert.equal(b.snapshot().mode,'ack');
+  assert.equal(b.snapshot().automaticTurns,true);assert.equal(b.snapshot().handoffAuto,true);
+  assert.equal(b.snapshot().handoffSwitchAt,3000);assert.deepEqual(b.current(),finalAck);
+
+  const earlyReady=encodePacket({kind:'ack',sessionId:original.sessionId,messageId:original.messageId,
+    messageType:original.messageType,base:0,bitmap:0,status:'ready',digest:original.digest});
+  assert.equal((await b.receive(earlyReady)).reason,'unsent-ack','unseen START cannot be acknowledged');
+  now=2999;b.tick();assert.deepEqual(b.current(),finalAck);
+  now=3000;b.tick();const start=b.current();assert.equal(decodePacket(start).kind,'start');
+  assert.equal((await a.receive(start)).reason,'sending','the first final ACK was deliberately missed');
+  now=6000;b.tick();assert.deepEqual(b.current(),finalAck,'automatic retry restores the missed ACK');
+  assert.equal((await a.receive(b.current())).delivered,true);await first;
+  now=9000;b.tick();assert.deepEqual(b.current(),start,'retry keeps the exact same START');
+  assert.equal(b.snapshot().outgoing.deadline,original.deadline,'handoff retries cannot extend the transfer deadline');
+  await a.receive(b.current());const ready=a.current();
+  assert.equal((await b.receive(ready)).accepted,true);
+  assert.equal(b.snapshot().repeatingAck,false);assert.equal(b.snapshot().handoffAuto,false);
+  assert.equal(b.snapshot().handoffSwitchAt,null);
+  assert.equal((await b.receive(ready)).reason,'unsent-ack');
+  await transfer(b,a);await reply;
+  assert.deepEqual(deliveredA,[bytes(600,9)]);assert.deepEqual(deliveredB,[bytes(12)]);
+  const lastAck=a.current();assert.equal(decodePacket(lastAck).status,'complete');
+  now+=3000;a.tick();assert.deepEqual(a.current(),lastAck,'final result ACK remains visible when no reply is queued');
+});
+
+test('automatic handoff timeout and close cannot resurrect a retained ACK or queued message',async()=>{
+  let now=0;const errors=[];
+  const a=new TurnChannel({initiator:true,automaticTurns:true,now:()=>now});
+  const b=new TurnChannel({automaticTurns:true,now:()=>now,onError:error=>errors.push(error.message)});
+  const first=a.enqueue(bytes(1));await prepared(a);await transfer(a,b);await first;
+  const reply=b.enqueue(bytes(1)),rejected=assert.rejects(reply,/deadline/);
+  const until=performance.now()+5000;
+  while(b.snapshot().preparing&&performance.now()<until)await new Promise(resolve=>setTimeout(resolve,1));
+  assert.equal(b.snapshot().repeatingAck,true);
+  now=TURN_LIMITS.timeoutMs+1;b.tick();await rejected;
+  assert.equal(b.snapshot().closed,true);assert.equal(b.snapshot().handoffSwitchAt,null);
+  assert.equal(b.snapshot().handoffAuto,false);assert.equal(b.current(),null);
+  now+=30000;b.tick();assert.equal(b.current(),null);assert.equal(errors.length,1);a.close();
+});
+
 test('an early handoff can replay the final ACK without changing the pending message',async t=>{
   const deliveredA=[],deliveredB=[];
   const a=new TurnChannel({initiator:true,now:()=>1,onMessage:value=>deliveredA.push(value)});

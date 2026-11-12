@@ -8,14 +8,15 @@ test('separate Neural-ZKBoo page binds every control and local asset',()=>{
   for(const [,id] of app.matchAll(/\$\('([^']+)'\)/g))assert.ok(ids.includes(id),`missing ${id}`);
   for(const [,url] of html.matchAll(/(?:href|src)="(\.\/[^"#]+)"/g))assert.ok(existsSync(new URL(url,root)),`missing ${url}`);
   assert.match(html,/id="phaseMs"[^>]+value="150"/);assert.match(html,/id="captureMs"[^>]+value="100"/);
-  assert.match(html,/id="nextTurn"/);assert.match(html,/32 · quick test/);
+  assert.doesNotMatch(html,/id="(?:nextTurn|confirmPairing|repeatAck)"/);assert.match(html,/32 · quick test/);
+  assert.match(html,/Turns advance automatically/);assert.match(html,/Codes are displayed, not visually checked/);
   assert.ok(!/https?:\/\//.test(html));assert.ok(!/qr-client|qr-worker/.test(app));
 });
 
 
 test('Neural-QR UI separates screen geometry from proof role and retains full camera frames',()=>{
   assert.match(html,/id="deviceProfile"/);assert.match(html,/id="outgoingSize"/);assert.match(html,/id="role"/);
-  assert.match(html,/id="nextGeometry"/);assert.match(html,/between outgoing messages/);
+  assert.match(html,/id="nextGeometry"/);assert.match(html,/before the next outgoing message starts automatically/);
   assert.match(html,/value="1440"/);assert.match(html,/value="2160"/);assert.match(html,/value="max"/);
   assert.match(app,/openCaptureCamera/);assert.match(app,/captureDimensions/);
   assert.match(app,/size:config.incomingMaxSize/);assert.match(app,/outgoingSize:config.outgoingSize/);

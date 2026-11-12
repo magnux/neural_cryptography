@@ -26,7 +26,6 @@
 .neural-auth .auth-next-grid{display:flex;align-items:center;gap:.75rem;margin:.7rem 0;font-size:.85rem;font-weight:600}
 .neural-auth .auth-next-grid select{max-width:11rem;min-height:2.5rem;padding:.35rem .6rem;border:1px solid var(--line,#d8ddd4);border-radius:8px;background:#fff;color:inherit}
 .neural-auth .auth-next-turn>div{min-width:0}
-.auth-ack-recovery{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;background:#fff5df;border-bottom:1px solid #e3d8ba}.auth-ack-recovery[hidden]{display:none}.auth-ack-recovery p{margin:0;font-size:11px;line-height:1.4;color:#71552e}.auth-ack-recovery button{flex:none;padding:9px 12px;font-size:11px}
 /* The provisional overlay is independent of handoff notices. It is anchored to
    the actual code surface at every display scale, and cannot intercept input. */
 .auth-matrix-meta{position:relative}
@@ -35,7 +34,6 @@
 .auth-reading-overlay{position:absolute;inset:0;z-index:1;pointer-events:none;background:#808080;opacity:0;transition:none}
 .auth-stage[data-reading=reading] .auth-reading-overlay{opacity:.28;transition:opacity .1s linear}
 .auth-stage[data-reading=decaying] .auth-reading-overlay{opacity:0;transition:opacity 3s linear}
-@media(max-width:580px){.auth-ack-recovery{padding:8px 12px;flex-wrap:wrap}.auth-ack-recovery p{flex:1;min-width:140px}.auth-ack-recovery button{min-height:38px}}
 .neural-auth .auth-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
 @media(max-width:600px){.neural-auth .auth-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.neural-auth .auth-next-grid{justify-content:space-between}}
 .auth-camera-controls{border-bottom:1px solid #e3e9dc;padding:0 20px 12px;background:#fafbf7}.auth-camera-controls summary{padding:12px 0;color:#46624d;font-size:12px;font-weight:600;cursor:pointer}.auth-camera-controls:not([open]){padding-bottom:0}.auth-camera-control-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.auth-camera-control-fields label{display:grid;gap:6px;align-content:start;min-width:0;font-size:11px;color:#5c7161}.auth-camera-control-fields label span{font-weight:600}.auth-camera-control-fields select{width:100%;min-height:38px}.auth-camera-control-fields input{width:100%;accent-color:var(--green);padding:0}.auth-camera-control-fields output{font:10px/1.5 var(--mono);overflow-wrap:anywhere}.auth-camera-control-fields input:disabled{opacity:.5}.auth-camera-controls>p{font-size:10px;line-height:1.6;color:#687d61;margin:10px 0 0}.auth-camera-controls[hidden]{display:none}@media(max-width:600px){.auth-camera-controls{padding-inline:14px}.auth-camera-control-fields{grid-template-columns:1fr 1fr;gap:12px}.auth-camera-control-fields select{font-size:16px}.auth-camera-control-fields input{min-height:26px}}

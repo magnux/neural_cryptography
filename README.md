@@ -119,6 +119,14 @@ authentication page requires the trained corrector for both Neural-QR DATA and G
 
 ## Status and scope
 
+On **12 November 2026**, the owner completed all five Neural-ZKBoo messages using
+the trained VW corrector with header-free Neural-QR data and ACKs. The paired
+reports confirm verifier `resultDelivered` and prover `peerReported`, using G128
+computer→phone and G64 phone→computer. The 17,731-byte proof message (including its
+17,474-byte proof) took about **268 seconds / 66 B/s** through its final ACK;
+local proof verification took **41.5 ms**. The app now automates POC pairing and
+recoverable turn handoffs and records individual packet/ACK round-trip timings.
+
 On **4 November 2026**, the owner completed a 32-repetition Neural-ZKBoo exchange
 using the earlier learned G64 transport and static QR ACKs. This historical result
 predates the current Neural-QR integration. Verification and final result
