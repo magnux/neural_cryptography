@@ -40,6 +40,8 @@ Transport CRCs and digests detect damage; they are not authentication.
 The secret remains inside the crypto worker. **Reset / discard key** or reloading
 discards it. Backgrounding the page also cancels the attempt and stops its camera;
 return to the foreground and explicitly restart.
+HELLO and IDENTITY include the normalized device display name. Interfaces without
+a name input use a default label derived from the local device UUID.
 The browser may retain a device UUID; this identifies an installation for the
 experiment and is not a credential. Proof bytes travel directly in binary QR
 packets rather than as Base64 text. Dependencies are bundled locally.
@@ -49,7 +51,7 @@ The transport-independent session and envelope live in
 interface and the separate color-matrix Neural-ZKBoo interface use the same
 implementation; each retains its own transport and screen/camera controller.
 
-The single application format is `neural-zkboo-auth-v1`: an `NZA1` prefix, a bounded
+The single application format is `neural-zkboo-auth-v2`: an `NZA2` prefix, a bounded
 canonical JSON header, and a raw body only for PROOF messages. Headers are limited
 to 4,096 bytes and complete envelopes to 512 KiB. The underlying `QRT` packet
 format now includes an explicit RESTART packet for reducing DATA chunks during
@@ -67,8 +69,9 @@ readers or migrations.
 | 5 | Key holder → verifier: PROOF | The worker creates a compact proof; QR multipart transfer carries its raw bytes. |
 | 6 | Verifier → key holder: RESULT | The verifier checks against its saved challenge and pinned public identity, then reports success or failure. |
 
-The pairing binding includes the session, both public identities, and their
-ordered roles. It is included in the proof challenge. The verifier keeps its own
+The pairing binding includes the session, both public identities (UUID, normalized
+display name and key fingerprint), and their ordered roles. Names are self-selected
+labels; they do not independently establish identity. It is included in the proof challenge. The verifier keeps its own
 expected challenge and repetition policy; received proof data cannot replace
 them. A challenge is consumed before verification begins, so the same attempt
 cannot accept it twice. Deadlines and cancellation also invalidate late results.

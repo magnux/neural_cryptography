@@ -8,9 +8,10 @@ live in `shared/fixtures/zk/`. The NumPy proof core and CLI are in
 `experiments/python-zkboo/`; PyTorch dynamics are in `experiments/neural-dynamics/`.
 Both Python experiments use `shared/python/neural_optical.py`.
 
-The two browser apps remain distinct: the color optical bench and QR transport
-have different channel implementations and experiments. Neither is an archived
-version of the other. Their authored HTML/CSS/JS remains under `apps/*/dist/`.
+The color optical bench and QR transport have different channel implementations
+and experiments. The third browser app, `neural-auth-demo`, provides a separate
+mobile UI over canonical Neural-QR/authentication components. Their authored
+HTML/CSS/JS remains under `apps/*/dist/`; the demo's `dist/js/` is generated.
 
 ## Prepare and test
 
@@ -32,6 +33,10 @@ ignored app-local directories. It replaces stale generated files so each `dist/`
 can be served independently. Edit canonical shared source, then prepare again;
 never edit the generated copies. App npm tests/benchmarks automatically prepare
 before execution. The generated directories are not committed.
+The demo's transitive bench dependencies are also copied into its local `js/`
+tree. Use `--app neural-auth-demo` to prepare it alone, `npm run test:demo` for
+focused tests, and `npm run benchmark:demo` for its explicitly assumed-correct
+output simulation after model setup in [the demo guide](NEURAL_AUTH_DEMO.md).
 
 For the dynamics experiment and its tests:
 
@@ -62,6 +67,10 @@ Python and browser-runtime dependencies, export the untrained model, and run
 transport/crypto workspaces keep their lightweight setup. Model export and asset
 preparation are local build steps, not a Python inference service. Generated
 assets and datasets are ignored by Git.
+`prepare:corrector` targets both the color bench and mobile demo by default;
+`--app color-optical-bench` or `--app neural-auth-demo` selects one. Live neural
+authentication needs a trained export. `--simulation-artifacts` instead prepares
+the demo's distinct untrained VW diagnostic bundle without replacing live models.
 
 ### Serve a prepared app
 
@@ -72,6 +81,8 @@ npm run prepare:apps
 python apps/color-optical-bench/serve.py --port 8000
 # In another terminal, or instead of the color server:
 python -m http.server 8001 --bind 127.0.0.1 --directory apps/qr-neural-key/dist
+# Or the standalone mobile demo:
+python apps/neural-auth-demo/serve.py --port 8002
 ```
 
 | URL on the serving computer | Workspace |
@@ -83,6 +94,7 @@ python -m http.server 8001 --bind 127.0.0.1 --directory apps/qr-neural-key/dist
 | `http://localhost:8000/capture.html` | M2 dataset sender/receiver; model assets not required |
 | `http://localhost:8001/` | QR transport, scan check, and simulation |
 | `http://localhost:8001/auth.html` | QR neural-key authentication |
+| `http://localhost:8002/` | Standalone mobile neural authentication and simulation |
 
 A phone requires trusted HTTPS. For the color app, use a certificate already
 issued for and trusted by the test devices:
@@ -93,10 +105,13 @@ python apps/color-optical-bench/serve.py --host 0.0.0.0 --port 8443 \
 ```
 
 Use the hostname/IP covered by the certificate. Ordinary `http://LAN-IP` is not
-the localhost camera exception. Either prepared `dist/` can be served by a
+the localhost camera exception. Any prepared `dist/` can be served by a
 trusted HTTPS static host. Keep tests, fixtures, and private results outside the
 served directory. No enrollment backend, server-side inference, or upload is
 required. The hosted test sites remain blank; repository work does not deploy.
+The demo's smaller optional static helper accepts the same `--host`, `--port`,
+`--https`, `--cert` and `--key` flags; see its exact command in
+[the demo guide](NEURAL_AUTH_DEMO.md). It provides no recording or upload API.
 
 To enable automatic sender staging, receiver discovery and capture uploads in **Capture Dataset**, add
 `--recordings-dir local-data/recordings` to the color server command. The directory

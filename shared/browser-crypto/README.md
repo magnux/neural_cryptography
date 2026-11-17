@@ -26,14 +26,17 @@ See [the circuit and proof API](../../apps/color-optical-bench/CRYPTO_PARITY.md)
 and [format boundaries](../../docs/FORMATS.md). Native Web Crypto supplies live
 randomness; no deterministic RNG option is exposed to browser users.
 
-Both app test commands prepare their generated files automatically. Run root
+All app test commands prepare their generated files automatically. Run root
 `npm test` for JavaScript regression tests and `npm run test:parity` for the
 NumPy reference cross-check. `npm --prefix apps/color-optical-bench run
 fixtures:zk` regenerates the canonical fixtures and refreshes that app's copies;
-run `npm run prepare:apps` before serving the other app after regeneration.
+run `npm run prepare:apps` before serving the other apps after regeneration.
 
-The application envelope uses `neural-zkboo-auth-v1` / `NZA1`. This name does
-not change the circuit or compact proof format. QR and color apps have independent
-transport interfaces and reuse this same authentication implementation. Rebuild
+The application envelope uses `neural-zkboo-auth-v2` / `NZA2`. This name does
+not change the circuit or compact proof format. HELLO/IDENTITY include normalized
+display names bound with UUIDs and key
+fingerprints into pairing and the proof challenge. Names remain self-selected
+labels. QR, color bench and standalone demo apps have independent
+interfaces and reuse this same authentication implementation. Rebuild
 both endpoints together after an application format change.
 

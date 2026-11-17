@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f8fa">
+  <meta name="description" content="A browser-local Neural-ZKBoo optical authentication experiment.">
+  <title>Neural Key — Optical authentication</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body data-device="desktop">
+  <div class="desktop-caption" aria-hidden="true"><span class="brand-mark">N</span> NEURAL KEY <span>Two screens. One connection.</span></div>
+  <main id="app" class="phone" data-state="idle">
+    <header class="app-header">
+      <a class="brand" href="./" aria-label="Neural Key home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M8 16V8l8 8V8"/></svg><span>Neural Key</span></a>
+      <span class="local-badge"><i></i> <span id="deviceName">This device</span></span>
+    </header>
+    <div class="app-content">
+      <nav class="mode-tabs" aria-label="Demo mode">
+        <button id="cameraTab" class="tab" aria-pressed="true" type="button">Camera exchange</button>
+        <button id="simulationTab" class="tab" aria-pressed="false" type="button">Simulation</button>
+      </nav>
+      <section class="intro" aria-labelledby="title">
+        <span id="stepLabel" class="eyebrow">NEURAL-ZKBOO · NEURAL-QR</span>
+        <h1 id="title">Connect with a look.</h1>
+        <p id="peerName" class="peer-name" hidden></p>
+        <p id="instruction">Open this page on both devices. Choose one verifier and one key holder in Settings, then start.</p>
+      </section>
+      <div id="error" class="error" role="alert" hidden></div>
+      <section id="cameraPanel" aria-label="Optical exchange">
+        <div class="optical-stage">
+          <div id="matrixZone" class="matrix-zone" data-visible="false">
+            <canvas id="matrix" width="1024" height="1024" aria-label="Outgoing Neural-QR optical matrix"></canvas>
+            <div id="matrixPlaceholder" class="matrix-placeholder">
+              <svg viewBox="0 0 100 100" aria-hidden="true"><path d="M32 12H12v20m56-20h20v20M12 68v20h20m56-20v20H68"/><rect x="38" y="38" width="24" height="24" rx="7"/></svg>
+              <span>Your connection appears here</span>
+            </div>
+          </div>
+          <div class="stage-footer">
+            <div class="stage-status"><span id="statusDot" class="status-dot"></span><div><strong id="matrixLabel">Ready when you are</strong><p id="cameraStatus">Front camera · G64</p></div></div>
+            <div class="camera-preview" aria-label="Camera alignment preview">
+              <video id="video" autoplay muted playsinline></video><canvas id="overlay" aria-hidden="true"></canvas>
+              <div id="cameraPlaceholder" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5l1-2h6l1 2h4v15H4V5z"/><circle cx="12" cy="12" r="4"/></svg></div>
+            </div>
+          </div>
+        </div>
+        <div id="transfer" class="transfer" hidden><div><span id="transferLabel">Waiting for a connection</span><span id="transferPercent"></span></div><progress id="transferProgress" max="1" value="0" aria-label="Current message transfer"></progress></div>
+        <p id="result" class="result" role="status" aria-live="polite" hidden></p>
+      </section>
+      <section id="simulationPanel" class="simulation-panel" aria-labelledby="simulationTitle" hidden>
+        <div class="simulation-symbol" aria-hidden="true">↔</div>
+        <h2 id="simulationTitle">Two devices, right here.</h2>
+        <p>Compare regular and efficient receiving through a real proof and optical packet exchange, using synthetic captures. No camera needed.</p>
+        <p class="subtle">Simulation runs an untrained VW model, then substitutes assumed-correct decoder output. It checks the handshake and measures computation, not model accuracy or camera reliability.</p>
+        <p id="simulationStatus" class="simulation-status" role="status" aria-live="polite">Ready to run</p>
+        <table id="simulationComparison" class="simulation-comparison" hidden><caption>Local comparison</caption><thead><tr><th scope="col">Measure</th><th scope="col">Regular</th><th scope="col">Efficient</th></tr></thead><tbody><tr><th scope="row">Run time</th><td id="baselineTime">—</td><td id="optimizedTime">—</td></tr><tr><th scope="row">Inferences</th><td id="baselineInferences">—</td><td id="optimizedInferences">—</td></tr></tbody></table>
+      </section>
+      <div class="actions"><button id="start" class="primary" type="button">Start authentication <span aria-hidden="true">↗</span></button><button id="stop" class="secondary" type="button" hidden>Cancel exchange</button></div>
+      <div id="liveStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+      <details id="settings" class="settings">
+        <summary><span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/><circle cx="7" cy="5" r="2"/><circle cx="13" cy="10" r="2"/><circle cx="7" cy="15" r="2"/></svg>Settings</span><span class="settings-hint" id="settingsHint">Verifier · G64 <b aria-hidden="true">⌄</b></span></summary>
+        <fieldset id="settingsFields">
+          <legend class="sr-only">Connection settings</legend>
+          <label class="wide" for="displayName">This device’s name<input id="displayName" maxlength="48" autocomplete="off" placeholder="My phone" value="My phone"></label>
+          <label for="role">This device’s role<select id="role"><option value="verifier">Verifier · starts first</option><option value="prover">Key holder · responds</option></select></label>
+          <label for="repetitions">Proof repetitions<select id="repetitions"><option value="32">32 · quick test</option><option value="64">64</option><option value="110">110</option><option value="160">160</option><option value="219">219</option></select></label>
+          <label for="outgoingSize">Send data grid<select id="outgoingSize"><option value="64">G64 · default</option><option value="128">G128</option></select></label>
+          <label for="incomingSize">Receive up to<select id="incomingSize"><option value="64">G64 · default</option><option value="128">G128</option></select></label>
+          <label class="wide" for="camera">Camera<select id="camera"><option value="">Front camera · default</option></select></label>
+          <label for="resolution">Camera resolution<select id="resolution"><option value="480">480p</option><option value="720">720p</option><option value="1080" selected>1080p</option><option value="1440">1440p</option><option value="2160">4K</option><option value="max">Maximum available</option></select></label>
+          <label for="backend">Corrector backend<select id="backend"><option value="auto">Auto · GPU / CPU</option><option value="wasm">WASM · CPU</option><option value="webgpu">WebGPU</option></select></label>
+          <label for="phaseMs">Phase interval (ms)<input id="phaseMs" type="number" min="50" max="10000" step="1" value="250" inputmode="numeric"></label>
+          <label for="captureMs">Capture interval (ms)<input id="captureMs" type="number" min="50" max="2000" step="1" value="100" inputmode="numeric"></label>
+          <label class="toggle wide" for="optimized"><span>Efficient camera scanning<small>Skip redundant work while holding steady</small></span><input id="optimized" type="checkbox" checked></label>
+          <label class="toggle wide" for="statistics"><span>Collect statistics<small>Local timings and a downloadable report</small></span><input id="statistics" type="checkbox" checked></label>
+          <p class="settings-note wide">Both devices use G32 acknowledgments. Device names are self-declared. Pairing proceeds automatically for this research demo. Only the verifier checks the proof locally; the key holder receives an unauthenticated result report.</p>
+        </fieldset>
+      </details>
+      <details id="statisticsPanel" class="statistics" hidden>
+        <summary><span>Session statistics</span><span id="elapsed">0s</span></summary>
+        <dl><div><dt>Accepted packets</dt><dd id="acceptedPackets">0</dd></div><div><dt id="inferenceLabel">Latest inference</dt><dd id="inferenceMs">—</dd></div><div><dt>Proof size</dt><dd id="proofBytes">—</dd></div><div><dt>Scan attempts</dt><dd id="scanAttempts">0</dd></div></dl>
+        <p id="modelStatus" class="subtle">The trained corrector loads when you start.</p>
+        <button id="downloadReport" class="download" disabled type="button">Download JSON report <span aria-hidden="true">↓</span></button>
+      </details>
+      <footer class="app-footer"><span>Browser-local. No account needed.</span><span>Research prototype · automatic POC pairing</span></footer>
+    </div>
+    <div class="home-indicator" aria-hidden="true"></div>
+    <canvas id="captureCanvas" hidden></canvas><canvas id="gateCanvas" width="32" height="32" hidden></canvas>
+    <noscript><p class="error">Enable JavaScript to use Neural Key.</p></noscript>
+  </main>
+  <p class="desktop-note">Made for two screens. Open this page on your other device to connect.</p>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

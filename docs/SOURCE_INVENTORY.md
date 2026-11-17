@@ -13,15 +13,19 @@ in the working tree; prior repository states remain in Git history.
 | `shared/python/neural_optical.py` | Shared Python palette, packing, and simulated-camera utilities. |
 | `shared/browser-crypto/crypto/` | Single browser binary circuit, compact prover/verifier, byte helpers, and licensed SHAKE dependency. |
 | `shared/browser-crypto/worker/` | Single reusable crypto worker/client/operations and public reference fixture. |
+| `shared/browser-crypto/auth/` | Current NZA2 named identities, pairing/challenge binding and authentication session reused by all apps. |
 | `shared/fixtures/zk/` | Current deterministic Python↔JavaScript proof fixtures. |
 | `apps/color-optical-bench/` | Current OBM5 optical/image bench, Crypto Lab, color multipart transport, and separate M1 Corrector Lab. |
 | `apps/qr-neural-key/` | Current QR transport and authentication, including independent outgoing settings and adaptive fallback. |
+| `apps/neural-auth-demo/` | Standalone mobile UI and explicit ideal-output simulation. Its generated `dist/js/` mirrors transitive canonical bench/shared dependencies. |
 | `tests/python/` | Python experiment tests. |
 | `notebooks/README.md` | Link to the existing Colab notebook; no duplicate `.ipynb`. |
 
 Run `npm run prepare:apps` to materialize ignored shared-code copies in each
 app's served/test directories. Those files are build output, not separately
 maintained implementations. Neither preparation nor tests deploy a site.
+`prepare:corrector` prepares optional trained assets for the bench and demo;
+`--simulation-artifacts` writes a separate untrained bundle only for the demo.
 
 ## Source selection
 

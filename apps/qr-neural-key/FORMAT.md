@@ -9,7 +9,7 @@ authentication. See [AUTHENTICATION.md](AUTHENTICATION.md) for the trust model a
 | Layer / use case | Identifier | Source |
 | --- | --- | --- |
 | Arbitrary-byte multipart optical transfer | `QRT` | [protocol.js](dist/js/protocol.js), [session.js](dist/js/session.js) |
-| Paired neural-key authentication messages | `neural-zkboo-auth-v1`, binary prefix `NZA1` | [envelope.js](dist/js/auth/envelope.js), [session.js](dist/js/auth/session.js) |
+| Paired neural-key authentication messages | `neural-zkboo-auth-v2`, binary prefix `NZA2` | [envelope.js](dist/js/auth/envelope.js), [session.js](dist/js/auth/session.js) |
 | Public identities, challenges, and compact proofs | `NeuralPicnic-POC-MPC3-v2`, proof magic `NPZK0002` | [proof.js](../../shared/browser-crypto/crypto/proof.js), [circuit.js](../../shared/browser-crypto/crypto/circuit.js), [bytes.js](../../shared/browser-crypto/crypto/bytes.js) |
 | Live QR transport / scan diagnostics | `schema: "qr-optical-report-v1"` | [app.js](dist/js/app.js) |
 | Synthetic QR transport experiment | `schema: "qr-link-report-v1"` | [simulation.js](dist/js/simulation.js) |
@@ -60,7 +60,7 @@ of QRT, so other experiments can transmit their own byte formats.
 
 ## Authentication envelopes
 
-An envelope is `NZA1` (4 bytes), canonical JSON header length (`u32`, big-endian),
+An envelope is `NZA2` (4 bytes), canonical JSON header length (`u32`, big-endian),
 header bytes, then body bytes. The header is limited to 4,096 bytes and the whole
 envelope to 524,288 bytes. JSON must be the exact canonical serialization from
 `crypto/bytes.js`: sorted keys, compact separators, ASCII escapes, integer numbers
@@ -68,20 +68,25 @@ only. Noncanonical whitespace, duplicate keys, unknown fields, and invalid UTF-8
 are rejected.
 
 Every header has `protocol`, `type`, and `sessionId`; protocol is
-`neural-zkboo-auth-v1`, and the session ID is 16 bytes as lowercase hexadecimal.
+`neural-zkboo-auth-v2`, and the session ID is 16 bytes as lowercase hexadecimal.
 
 | Type | Additional exact header fields | Body |
 | --- | --- | --- |
-| HELLO | `deviceId`, `publicKey` | Empty |
-| IDENTITY | `deviceId`, `publicKey` | Empty |
+| HELLO | `deviceId`, `displayName`, `publicKey` | Empty |
+| IDENTITY | `deviceId`, `displayName`, `publicKey` | Empty |
 | CHALLENGE | `binding`, `challenge` | Empty |
 | PROOF | `binding`, `nonce` | Nonempty raw compact proof |
 | RESULT | `binding`, `nonce`, `proofDigest`, `accepted` | Empty |
 
-`deviceId` is a lowercase UUID string. `binding`, `nonce`, and `proofDigest` each
+`deviceId` is a lowercase UUID string. `displayName` is NFC-normalized, with
+whitespace collapsed and trimmed, 1–64 Unicode code points and at most 256 UTF-8
+bytes. Controls, unsafe hidden formatting and unpaired surrogates are rejected.
+Names are self-selected labels; they are not independent identity evidence.
+`binding`, `nonce`, and `proofDigest` each
 encode 32 bytes as lowercase hex; `accepted` is a Boolean. The pairing binding is
-derived from the session, both identities, and their ordered roles. The displayed
-pairing code is its first 24 hex characters. The authentication view currently
+derived from the session, both identities (UUID, display name and key
+fingerprint), and their ordered roles. The displayed pairing code is its first
+24 hex characters. The authentication view currently
 accepts only the 8×8, 16-round, 256-key-bit circuit.
 
 A public document has exactly `protocol`, `circuit`, `minimum_repetitions`, and

@@ -24,7 +24,7 @@ has a compatibility fallback to the other format.
 | Multipart color message | `OLM1` | [Link transport](../apps/color-optical-bench/LINK_TRANSPORT.md), `dist/js/link/protocol.js` |
 | QR byte transport | `QRT` | [QR formats](../apps/qr-neural-key/FORMAT.md), `dist/js/protocol.js` |
 | Neural-ZKBoo color packet container | `NZM1` | [Turn demo](NEURAL_ZKBOO_DEMO.md), `dist/js/neural-auth/optical.js`; length-delimited OLM1 packet plus random fill, inside OBM5 |
-| Neural-ZKBoo authentication envelope | `NZA1`, `neural-zkboo-auth-v1` | [Authentication protocol](../apps/qr-neural-key/AUTHENTICATION.md), [QR formats](../apps/qr-neural-key/FORMAT.md) |
+| Neural-ZKBoo authentication envelope | `NZA2`, `neural-zkboo-auth-v2` | [Authentication protocol](../apps/qr-neural-key/AUTHENTICATION.md), [QR formats](../apps/qr-neural-key/FORMAT.md) |
 | Optical model bundle | `neural-corrector`, version 1 | [Model/export contract](../experiments/neural-corrector/README.md); untrained or trained status, hashed graphs and fixtures |
 | Neural-corrector checkpoint | `optical-decoder-checkpoint`, version 1 | [`checkpoint.py`](../experiments/neural-corrector/checkpoint.py); local state dict and training/split provenance |
 | Neural-QR acquisition layout | `neural-qr`, version 2 | [`layout.js`](../apps/color-optical-bench/dist/js/neural-qr/layout.js), [`vision.js`](../apps/color-optical-bench/dist/js/neural-qr/vision.js); optical G16/G32/G64/G128 size codes, 16 colors, four phases, grid-8 references, 4×4 pixels/cell |

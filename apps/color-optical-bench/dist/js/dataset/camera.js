@@ -14,19 +14,20 @@ export function captureDimensions(width,height){
   return {width:Math.max(1,Math.floor(width*scale)),height:Math.max(1,Math.floor(height*scale)),scale};
 }
 
-function constraints(request,deviceId,dimensions=true){
+function constraints(request,deviceId,facingMode,dimensions=true){
   return {audio:false,video:{...(dimensions?{width:{ideal:request.requestedWidth},height:{ideal:request.requestedHeight},resizeMode:{ideal:'none'}}:{}),
-    ...(deviceId?{deviceId:{exact:deviceId}}:{facingMode:{ideal:'environment'}})}};
+    ...(deviceId?{deviceId:{exact:deviceId}}:{facingMode:{ideal:facingMode}})}};
 }
 
-export async function openCaptureCamera(mediaDevices,{resolution,deviceId=''}={}){
+export async function openCaptureCamera(mediaDevices,{resolution,deviceId='',facingMode='environment'}={}){
   if(!mediaDevices?.getUserMedia)throw Error('Camera access requires trusted HTTPS or localhost.');
+  if(!['user','environment'].includes(facingMode))throw Error('Choose the front or rear camera.');
   const request=cameraRequest(resolution);let stream;
-  try{stream=await mediaDevices.getUserMedia(constraints(request,deviceId));}
+  try{stream=await mediaDevices.getUserMedia(constraints(request,deviceId,facingMode));}
   catch(error){
     // Permissions and a missing selected device must never switch cameras.
     if(error.name!=='OverconstrainedError'||error.constraint==='deviceId'||error.constraint==='facingMode')throw error;
-    stream=await mediaDevices.getUserMedia(constraints(request,deviceId,false));
+    stream=await mediaDevices.getUserMedia(constraints(request,deviceId,facingMode,false));
     request.resolutionFallback='Resolution constraints rejected; using this camera’s negotiated default.';
   }
   const track=stream.getVideoTracks()[0];

@@ -44,6 +44,20 @@ test('resolution fallback keeps the selected camera and records its reason',asyn
   assert.match(result.request.resolutionFallback,/constraints rejected/);
 });
 
+test('front camera preference survives resolution fallback and rear remains the default',async()=>{
+  const calls=[],stream={getVideoTracks:()=>[{}]},media={getUserMedia:async options=>{
+    calls.push(options);if(calls.length===1)throw Object.assign(Error('Dimensions unsupported'),{name:'OverconstrainedError',constraint:'width'});return stream;
+  }};
+  await openCaptureCamera(media,{resolution:'2160',facingMode:'user'});
+  assert.deepEqual(calls.map(call=>call.video.facingMode),[{ideal:'user'},{ideal:'user'}]);
+  await openCaptureCamera(media,{resolution:'720'});
+  assert.deepEqual(calls.at(-1).video.facingMode,{ideal:'environment'});
+  await openCaptureCamera(media,{resolution:'720',deviceId:'selected',facingMode:'user'});
+  assert.deepEqual(calls.at(-1).video.deviceId,{exact:'selected'});
+  assert.equal(calls.at(-1).video.facingMode,undefined);
+  await assert.rejects(openCaptureCamera(media,{resolution:'720',facingMode:'unsupported'}),/front or rear/);
+});
+
 test('permission errors and unavailable camera selection never trigger fallback',async()=>{
   for(const error of [Object.assign(Error('denied'),{name:'NotAllowedError'}),Object.assign(Error('device gone'),{name:'OverconstrainedError',constraint:'deviceId'})]){
     let calls=0;

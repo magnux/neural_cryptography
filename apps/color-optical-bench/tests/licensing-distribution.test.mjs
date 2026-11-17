@@ -69,6 +69,33 @@ test('model preparation carries project and runtime notices separately without a
   for(const file of ['LICENSE.onnxruntime','ThirdPartyNotices.onnxruntime.txt'])assert.equal(
     await readFile(join(served,'vendor/onnxruntime',file),'utf8'),`third-party ${file}`);
   assert.deepEqual(JSON.parse(await readFile(join(served,'models/neural-corrector/manifest.json'),'utf8')),manifest);
+  const demo=join(base,'apps/neural-auth-demo/dist');
+  assert.deepEqual(JSON.parse(await readFile(join(demo,'models/neural-corrector/manifest.json'),'utf8')),manifest);
+  assert.deepEqual(await readFile(join(demo,'vendor/onnxruntime/LICENSE.onnxruntime')),await readFile(join(served,'vendor/onnxruntime/LICENSE.onnxruntime')));
+
+  // A different valid untrained VW bundle is reserved for simulation. The
+  // opaque ONNX bytes exercise packaging only, never fabricated inference.
+  const simulation={...manifest,modelProfile:'VW',parameterCount:696400,datasetFormat:'neural-qr-dataset',datasetVersion:2,
+    anchor:{representation:'dct-low-frequency',maxModes:16,normalization:'ortho',spatialScale:'grid-over-modes'},
+    anchorDeployment:'baked-selected-spatial-grid',bottleneck:{stages:3,blocks:['conv','attention'],layersPerBlock:2,scales:[4,2,1,2,4],fusion:'normalized-residual'},cases:[]};
+  for(const size of [32,64])simulation.cases.push({size,framesAvailable:4,inputShape:[1,32,4*size,4*size],outputShape:[1,16,size,size],
+    model:await artifact(`sim-model-${size}.onnx`,Buffer.from(`simulation fixture ${size}`)),
+    input:await artifact(`sim-input-${size}.f32`,Buffer.alloc(32*16*size*size*4)),
+    expected:await artifact(`sim-expected-${size}.f32`,Buffer.alloc(16*size*size*4))});
+  await put(base,'artifacts/manifest.json',JSON.stringify(simulation));
+  const simulate=spawnSync(process.execPath,[join(base,'scripts/prepare-corrector.mjs'),'--simulation-artifacts',join(base,'artifacts')],{encoding:'utf8'});
+  assert.equal(simulate.status,0,simulate.stderr);
+  assert.deepEqual(JSON.parse(await readFile(join(demo,'models/simulation-corrector/manifest.json'),'utf8')),simulation);
+  for(const directory of [demo,served])assert.deepEqual(JSON.parse(await readFile(join(directory,'models/neural-corrector/manifest.json'),'utf8')),manifest);
+  await assert.rejects(stat(join(served,'models/simulation-corrector')),{code:'ENOENT'});
+  await put(base,'artifacts/manifest.json',JSON.stringify(manifest));
+
+  // --app limits writes, even when both apps already contain prepared assets.
+  await writeFile(join(served,'models/neural-corrector/NOTICE'),'bench unchanged');
+  const selected=spawnSync(process.execPath,[join(base,'scripts/prepare-corrector.mjs'),'--app','neural-auth-demo','--artifacts',join(base,'artifacts')],{encoding:'utf8'});
+  assert.equal(selected.status,0,selected.stderr);
+  assert.equal(await readFile(join(served,'models/neural-corrector/NOTICE'),'utf8'),'bench unchanged');
+  await writeFile(join(served,'models/neural-corrector/NOTICE'),await readFile(join(root,'NOTICE')));
   await rm(join(base,'NOTICE'));
   const rejected=run();assert.notEqual(rejected.status,0);assert.match(rejected.stderr,/Missing project NOTICE/);
   assert.deepEqual(await readFile(join(served,'models/neural-corrector/NOTICE')),await readFile(join(root,'NOTICE')));

@@ -50,3 +50,7 @@ neural_zkboo_results/
 /experiments/neural-corrector/artifacts/
 /apps/color-optical-bench/dist/models/neural-corrector/
 /apps/color-optical-bench/dist/vendor/onnxruntime/
+/apps/neural-auth-demo/dist/js/
+/apps/neural-auth-demo/dist/dependency-manifest.json
+/apps/neural-auth-demo/dist/models/
+/apps/neural-auth-demo/dist/vendor/onnxruntime/

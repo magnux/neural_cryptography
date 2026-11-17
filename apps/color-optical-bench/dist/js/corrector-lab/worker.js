@@ -2,7 +2,8 @@ import {validateManifest, validateOptions, verifyArtifact, decodeFloat32, compar
 import {extractLearnedInput} from '../learned-input.js';
 import {CameraBurst} from './burst.js';
 import {TransportCapture} from '../neural-auth/capture.js';
-import {LivePhaseBurst,requireTransportModel,isTransportData,recoverCorrectedPayload} from './live-burst.js';
+import {ReceivePipeline} from '../neural-auth/receive-pipeline.js';
+import {LivePhaseBurst,requireTransportModel} from './live-burst.js';
 import {CONTROL_SIZE} from '../neural-qr/packet.js';
 import {geometryHintMaxAgeMs} from '../neural-qr/vision.js';
 
@@ -14,9 +15,13 @@ let ort, busy = false, cameraBurst=null;
 // including offline fallback after transport initialization.
 const sessions=new Map(),assets=new Map();
 const MAX_SESSIONS=2,MAX_ASSET_SETS=3;
-let transportContext=null,transportMode=null;
-const liveBurst=new LivePhaseBurst();
-const transportCapture=new TransportCapture(),labCapture=new TransportCapture();
+let transportContext=null;
+const labCapture=new TransportCapture();
+let transportProgress=()=>{};
+const receivePipeline=new ReceivePipeline({
+  loadContext:(size,{statistics}={})=>load({size,backend:transportContext.backend,statistics},transportProgress,{transport:true,manifest:transportContext.manifest}),
+  infer:inference,
+});
 
 async function fetchBounded(url, maximum) {
   const response = await fetch(url, {cache: 'no-cache'});
@@ -50,7 +55,7 @@ async function runtime() {
   return ort;
 }
 async function load(options, progress, {transport=false, manifest:providedManifest=null}={}) {
-  const started=performance.now();
+  const timed=options.statistics!==false,started=timed?performance.now():0;
   const manifest=providedManifest??validateManifest(JSON.parse(new TextDecoder().decode(
     await fetchBounded(new URL('manifest.json',assetRoot),65536))));
   if(transport)requireTransportModel(manifest);
@@ -60,7 +65,7 @@ async function load(options, progress, {transport=false, manifest:providedManife
   const key=`${artifactKey}/${options.backend}`;
   if(sessions.has(key)) {
     const context=sessions.get(key);sessions.delete(key);sessions.set(key,context);
-    Object.assign(context,{manifest,loadMs:performance.now()-started,initMs:0,cacheReused:true});
+    Object.assign(context,{manifest,loadMs:timed?performance.now()-started:0,initMs:0,cacheReused:true});
     if(transport)await verifyContextParity(context,options,progress);
     return context;
   }
@@ -84,7 +89,7 @@ async function load(options, progress, {transport=false, manifest:providedManife
   while(sessions.size>=MAX_SESSIONS){const first=sessions.keys().next().value;await sessions.get(first).session.release();sessions.delete(first);}
   let effectiveBackend=options.backend==='auto'?(navigator.gpu?'webgpu':'wasm'):options.backend;
   let fallbackReason=options.backend==='auto'&&!navigator.gpu?'WebGPU is unavailable in this worker.':null;
-  const initialized=performance.now();
+  const initialized=timed?performance.now():0;
   progress(`Initializing G${entry.size} ${effectiveBackend.toUpperCase()}…`);
   let session;
   try{session=await ort.InferenceSession.create(bytes.model,{executionProviders:[effectiveBackend],graphOptimizationLevel:'all'});}
@@ -96,7 +101,7 @@ async function load(options, progress, {transport=false, manifest:providedManife
   }
   try{validateTensorNames(session,manifest);}catch(error){await session.release();throw error;}
   const context={key,artifactKey,session,manifest,entry,...bytes,effectiveBackend,fallbackReason,
-    loadMs:performance.now()-started,initMs:performance.now()-initialized,cacheReused:false,parity:null};
+    loadMs:timed?performance.now()-started:0,initMs:timed?performance.now()-initialized:0,cacheReused:false,parity:null};
   sessions.set(key,context);
   if(transport)await verifyContextParity(context,options,progress);
   return context;
@@ -109,7 +114,7 @@ function validateTensorNames(session,manifest){
 async function verifyContextParity(context,options,progress){
   if(context.parity?.passed)return context.parity;
   const check=async()=>{
-    const result=await inference(context,context.input),parity=compareLogits(result.values,context.expected);
+    const result=await inference(context,context.input,{statistics:options.statistics!==false}),parity=compareLogits(result.values,context.expected);
     if(!parity.passed)throw Error(`G${context.entry.size} numerical parity failed (${parity.failures}/${parity.checked} values).`);
     context.parity={...parity,inferenceMs:result.ms};return context.parity;
   };
@@ -131,9 +136,9 @@ async function verifyContextParity(context,options,progress){
   }
 }
 
-async function inference(context, pixels) {
+async function inference(context, pixels, {statistics=true}={}) {
   inputPresence(pixels,context.manifest,context.entry.size);
-  const tensor = new ort.Tensor('float32', pixels, context.entry.inputShape), started = performance.now();
+  const tensor = new ort.Tensor('float32', pixels, context.entry.inputShape), started = statistics?performance.now():0;
   let outputs;
   try {
     outputs = await context.session.run({[context.manifest.inputName]: tensor});
@@ -141,7 +146,7 @@ async function inference(context, pixels) {
     if (!result || result.type !== 'float32' || result.dims.length !== 4 ||
         result.dims.some((n, i) => n !== context.entry.outputShape[i])) throw new Error('Unexpected inference output shape or type.');
     const values = result.data;
-    return {values: new Float32Array(values), ms: performance.now()-started};
+    return {values: new Float32Array(values),...(statistics?{ms:performance.now()-started}:{})};
   } finally {
     tensor.dispose?.();
     for (const output of Object.values(outputs || {})) output.dispose?.();
@@ -163,7 +168,7 @@ function describe(context, options) {
       note: 'Known buffer sizes only; runtime working memory and GPU allocations are not measured.'}};
 }
 async function benchmark(options, progress) {
-  transportContext=null;transportMode=null;liveBurst.reset();transportCapture.reset();
+  transportContext=null;receivePipeline.reset();
   cameraBurst=null;
   const context = await load(options, progress);
   progress('Warming up the model (2 runs)…');
@@ -181,7 +186,7 @@ async function benchmark(options, progress) {
 }
 async function capture(options, progress, image, runId, mediaTime, presentedFrames, captureIntervalMs=100) {
   geometryHintMaxAgeMs(captureIntervalMs);
-  transportContext=null;transportMode=null;liveBurst.reset();
+  transportContext=null;receivePipeline.reset();
   if (!Number.isSafeInteger(runId)||runId<1||!Number.isFinite(mediaTime)||mediaTime<0||!Number.isSafeInteger(presentedFrames)||presentedFrames<1) throw Error('Capture needs a fresh run and video frame identity.');
   const context = await load(options, progress), frames=options.captureFrames||context.manifest.framesPerInput;
   if(!context.manifest.frameCounts.includes(frames))throw Error(`The prepared model supports ${context.manifest.frameCounts.join('/')} captures; choose model default or a supported count.`);
@@ -253,7 +258,7 @@ async function captureNeuralQR(options,progress,context,image,identity,frames){
 }
 
 async function initializeTransport(options,progress) {
-  cameraBurst=null;liveBurst.reset();transportCapture.reset();labCapture.reset();transportMode=null;transportContext=null;
+  cameraBurst=null;labCapture.reset();receivePipeline.reset();transportContext=null;
   if(![32,64,128].includes(options.size))throw Error('Neural-QR transport reception requires a G32, G64 or G128 cap.');
   const manifest=validateManifest(JSON.parse(new TextDecoder().decode(await fetchBounded(new URL('manifest.json',assetRoot),65536))));
   requireTransportModel(manifest);
@@ -290,41 +295,8 @@ async function scanTransport(options,progress,raw) {
   const settings=transportContext;
   if(!settings||settings.maxSize!==options.size||settings.backend!==options.backend)
     throw Error('Initialize the trained corrector before starting the camera receiver.');
-  const {image,runId,mediaTime,presentedFrames,expected,captureIntervalMs=100}=raw;
-  geometryHintMaxAgeMs(captureIntervalMs);
-  if(!['data','ack'].includes(expected)||!Number.isSafeInteger(runId)||runId<1)throw Error('Invalid Neural-ZKBoo capture request.');
-  const identity={context:`${runId}/${expected}`,mediaTime,presentedFrames};
-  if(transportMode!==expected){liveBurst.reset();transportCapture.reset();transportMode=expected;}
-  const before=liveBurst.status();
-  const capture=transportCapture.scan(image,{expected,context:identity.context,mediaTime,captureIntervalMs});
-  const base={operation:'transport-scan',transport:'neural-qr',expected,info:capture.info??null,
-    corners:capture.corners??[],tentativeCorners:capture.tentativeCorners??[],markers:capture.markers??[],
-    phaseCounts:before.phaseCounts,collected:before.collected,stats:capture.stats??{},method:'neural-corrector'};
-  if(!capture.ok)return {...base,...liveBurst.miss(identity),ok:false,waiting:true,stage:capture.stage,error:capture.error};
-  const size=capture.info.size;
-  if(!isTransportData(capture.info)||size<CONTROL_SIZE||size>settings.maxSize||expected==='ack'&&size!==CONTROL_SIZE){
-    liveBurst.reset();
-    return {...base,...liveBurst.miss(identity),ok:false,waiting:true,stage:'profile',
-      error:expected==='ack'?`Waiting for a G${CONTROL_SIZE} Neural-QR ACK.`:`G${size} exceeds the receiving profile; maximum is G${settings.maxSize}.`};
-  }
-  const state=liveBurst.add(capture,identity);
-  if(!state.ready||state.duplicateExposure)return {...base,...state,ok:false,waiting:true,stage:'collect',error:null};
-  const burst=liveBurst.nextTransportSnapshot();
-  if(!burst)return {...base,...state,ok:false,waiting:true,stage:'collect',error:null};
-  const context=await load({...options,size},progress,{transport:true,manifest:settings.manifest});
-  progress(`Correcting G${size}, ${burst.inputCaptures} captures (${burst.phaseCounts.join('/')})…`);
-  const packed=packFrameStack(burst.input,context.manifest,size,{phases:burst.phases,slots:burst.slots});
-  const result=await inference(context,packed);
-  const decoded=recoverCorrectedPayload(result.values,burst.info);
-  const response={...base,...decoded,waiting:!decoded.ok,info:burst.info,inputCaptures:burst.inputCaptures,
-    phaseCounts:burst.phaseCounts,collected:state.collected,replacements:state.replacements,
-    bufferBytes:state.bufferBytes,inferenceMs:result.ms,preprocessMs:capture.stats.ms,
-    effectiveBackend:context.effectiveBackend,stats:{...base.stats,...decoded.stats}};
-  // Packet identity and expected kind are enforced by unpackOptical/TurnChannel.
-  // Old/new captures can coexist across a transition; CRC failure never counts
-  // as a received packet and newer captures continue replacing old samples.
-  if(decoded.ok)liveBurst.reset();
-  return response;
+  transportProgress=progress;
+  return receivePipeline.scan({...raw,maxSize:settings.maxSize});
 }
 
 self.onmessage = async event => {
@@ -337,11 +309,13 @@ self.onmessage = async event => {
     let result;
     if (operation === 'benchmark') result = await benchmark(validated, progress);
     else if (operation === 'capture') result = await capture(validated, progress, options.image, options.runId, options.mediaTime, options.presentedFrames, options.captureIntervalMs);
-    else if (operation === 'transport-init') result = await initializeTransport(validated,progress);
+    else if (operation === 'transport-init') result = await initializeTransport({...validated,statistics:options.statistics},progress);
     else if (operation === 'transport-scan') result = await scanTransport(validated,progress,options);
-    else if (operation === 'transport-reset') {liveBurst.reset();transportCapture.reset();transportMode=null;result={operation,ready:Boolean(transportContext)};}
+    else if (operation === 'transport-accept') result=receivePipeline.accept(options);
+    else if (operation === 'transport-stats') result={operation,...receivePipeline.snapshot()};
+    else if (operation === 'transport-reset') {receivePipeline.reset();result={operation,ready:Boolean(transportContext)};}
     else throw new Error('Unknown corrector operation.');
     self.postMessage({id, type: 'result', result});
-  } catch (error) { cameraBurst=null;liveBurst.reset();transportCapture.reset();labCapture.reset(); self.postMessage({id, type: 'error', error: error.message || String(error)}); }
+  } catch (error) { cameraBurst=null;labCapture.reset();receivePipeline.reset(); self.postMessage({id, type: 'error', error: error.message || String(error)}); }
   finally { busy = false; }
 };

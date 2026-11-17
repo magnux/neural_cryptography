@@ -14,7 +14,7 @@ Run npm run prepare:apps to materialize ignored app-local copies before serving.
 Edit shared source, never generated copies. The two distinct optical transports
 remain separate experiments; neither is a historical version of the other.
 
-Run the affected existing tests. Root `npm test` runs both apps; root
+Run the affected existing tests. Root `npm test` runs all three apps; root
 `npm run test:parity` requires Python with NumPy. Run npm run test:python for
 the Python experiments; neural-dynamics checks additionally require PyTorch.
 Do not deploy or reactivate

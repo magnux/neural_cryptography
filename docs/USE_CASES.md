@@ -99,7 +99,7 @@ they do not require a different cryptographic circuit.
 | Multipart color transport | [Link transport](../apps/color-optical-bench/LINK_TRANSPORT.md) |
 | Binary proof and public context | [Compact v2 proof format](../apps/color-optical-bench/CRYPTO_PARITY.md) |
 | QR packets and transport configuration | [QR transport lab](../apps/qr-neural-key/README.md) |
-| Authentication envelope | [`neural-zkboo-auth-v1` / `NZA1`](../apps/qr-neural-key/AUTHENTICATION.md) |
+| Authentication envelope | [`neural-zkboo-auth-v2` / `NZA2`](../apps/qr-neural-key/AUTHENTICATION.md) |
 
 The experiments accept their current formats only. Older encodings are not
 supported through compatibility readers or migrations. See the

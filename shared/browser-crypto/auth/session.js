@@ -1,7 +1,7 @@
 /** Neural-ZKBoo ephemeral, one-direction authentication. Optical delivery is not authentication. */
 import { canonicalJSON, hex } from '../crypto/bytes.js';
 import { randomBytes, sha256 } from '../crypto/hashes.js';
-import { AUTH_PROTOCOL, decodeEnvelope, encodeEnvelope, validDeviceId, validateAuthPublic } from './envelope.js';
+import { AUTH_PROTOCOL, decodeEnvelope, encodeEnvelope, normalizeDisplayName, validDeviceId, validateAuthPublic } from './envelope.js';
 
 const TERMINAL = new Set(['verified', 'rejected', 'peer-accepted', 'peer-rejected', 'failed', 'timed-out', 'closed']);
 const copy = value => structuredClone(value);
@@ -20,20 +20,21 @@ const STATUS = {
 };
 
 export class AuthSession {
-  #role; #deviceId; #crypto; #send; #now; #onChange; #timeout; #repetitions;
+  #role; #deviceId; #displayName; #crypto; #send; #now; #onChange; #timeout; #repetitions;
   #epoch = 0; #state = 'idle'; #deadline = null; #error = null; #progress = null;
   #startedAt = null; #finishedAt = null; #timings = { keygenMs: null, proveMs: null, verifyMs: null };
-  #local = null; #peer = null; #localKeyId = null; #peerKeyId = null; #peerDeviceId = null;
+  #local = null; #peer = null; #localKeyId = null; #peerKeyId = null; #peerDeviceId = null; #peerDisplayName = null;
   #sessionId = null; #binding = null; #confirmed = false; #challenge = null; #challengeConsumed = false;
   #proofBytes = 0; #proofDigest = null; #result = null; #resultDelivered = false; #deferredHello = null;
   #receiving = false;
 
-  constructor({ role, deviceId, cryptoClient, send, now = () => performance.now(), onChange = () => {}, timeoutMs = 600000, repetitions = 219 }) {
+  constructor({ role, deviceId, displayName, cryptoClient, send, now = () => performance.now(), onChange = () => {}, timeoutMs = 600000, repetitions = 219 }) {
     if (!['verifier', 'prover'].includes(role) || !validDeviceId(deviceId) || typeof cryptoClient?.request !== 'function' ||
         typeof send !== 'function' || typeof now !== 'function' || typeof onChange !== 'function' ||
         !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 3600000 ||
         !Number.isInteger(repetitions) || repetitions < 1 || repetitions > 512) throw new TypeError('Invalid authentication session options');
     this.#role = role; this.#deviceId = deviceId; this.#crypto = cryptoClient; this.#send = send;
+    this.#displayName = normalizeDisplayName(displayName === undefined ? `Device ${deviceId.slice(-8)}` : displayName);
     this.#now = now; this.#onChange = onChange; this.#timeout = timeoutMs; this.#repetitions = repetitions;
   }
 
@@ -41,6 +42,7 @@ export class AuthSession {
     return {
       role: this.#role, state: this.#state, status: STATUS[this.#state], pairingCode: this.#binding?.slice(0, 24) ?? null,
       localKeyId: this.#localKeyId, peerKeyId: this.#peerKeyId, confirmed: this.#confirmed,
+      localDisplayName: this.#displayName, peerDisplayName: this.#peerDisplayName,
       proofBytes: this.#proofBytes, result: this.#result, deadline: this.#deadline, error: this.#error,
       progress: this.#progress ? copy(this.#progress) : null, canConfirm: this.#state === 'pairing' && !!this.#binding && !this.#confirmed,
       challengeReceived: !!this.#challenge, repetitions: this.#challenge?.required_repetitions ?? this.#repetitions,
@@ -109,7 +111,7 @@ export class AuthSession {
       if (!this.#active(epoch)) return;
       if (this.#role === 'verifier') {
         this.#sessionId = hex(randomBytes(16)); this.#set('awaiting-identity');
-        this.#transmit('HELLO', { deviceId: this.#deviceId, publicKey: this.#local });
+        this.#transmit('HELLO', { deviceId: this.#deviceId, displayName: this.#displayName, publicKey: this.#local });
       } else {
         this.#set('awaiting-hello');
         if (this.#deferredHello) { const pending = this.#deferredHello; this.#deferredHello = null; await this.receive(pending); }
@@ -121,12 +123,14 @@ export class AuthSession {
     const peer = copy(header.publicKey);
     const peerKeyId = await hashDocument(peer);
     if (!this.#active(epoch)) return;
-    const verifier = this.#role === 'verifier' ? { deviceId: this.#deviceId, keyId: this.#localKeyId } : { deviceId: header.deviceId, keyId: peerKeyId };
-    const prover = this.#role === 'prover' ? { deviceId: this.#deviceId, keyId: this.#localKeyId } : { deviceId: header.deviceId, keyId: peerKeyId };
+    const localIdentity = { deviceId: this.#deviceId, displayName: this.#displayName, keyId: this.#localKeyId };
+    const peerIdentity = { deviceId: header.deviceId, displayName: header.displayName, keyId: peerKeyId };
+    const verifier = this.#role === 'verifier' ? localIdentity : peerIdentity;
+    const prover = this.#role === 'prover' ? localIdentity : peerIdentity;
     const binding = await hashDocument({ protocol: AUTH_PROTOCOL, sessionId: header.sessionId, verifier, prover });
     if (!this.#active(epoch)) return;
     this.#sessionId = header.sessionId; this.#peer = peer; this.#peerKeyId = peerKeyId;
-    this.#peerDeviceId = header.deviceId; this.#binding = binding; this.#set('pairing');
+    this.#peerDeviceId = header.deviceId; this.#peerDisplayName = header.displayName; this.#binding = binding; this.#set('pairing');
   }
 
   async confirmPairing() {
@@ -173,7 +177,7 @@ export class AuthSession {
       if (header.type === 'HELLO' && this.#role === 'prover' && this.#state === 'awaiting-hello') {
         await this.#pair(header, epoch);
         if (!this.#active(epoch)) return { accepted: false, reason: 'Attempt ended' };
-        this.#transmit('IDENTITY', { deviceId: this.#deviceId, publicKey: this.#local });
+        this.#transmit('IDENTITY', { deviceId: this.#deviceId, displayName: this.#displayName, publicKey: this.#local });
         return { accepted: true };
       }
       if (header.sessionId !== this.#sessionId) return { accepted: false, reason: 'Session ID mismatch' };

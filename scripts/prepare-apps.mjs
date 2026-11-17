@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /** Copy canonical crypto and authentication into independently servable apps. */
-import { cp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
+import { cp, mkdir, readFile, writeFile, rm, stat, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { join, dirname, resolve, relative, isAbsolute } from 'node:path';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const shared = join(root, 'shared', 'browser-crypto');
@@ -12,7 +12,51 @@ const workers = ['client.js', 'operations.js', 'reference-fixture.js', 'worker.j
 const applications = {
   'color-optical-bench': 'crypto-lab',
   'qr-neural-key': 'crypto-worker',
+  'neural-auth-demo': 'crypto-lab',
 };
+
+/** Follow the demo's static imports and worker URLs back to canonical sources.
+ * The mirrored JS tree is generated in full; it never imports a sibling app.
+ * Runtime/model directories are optional and prepared by prepare-corrector.mjs.
+ */
+async function demoDependencies() {
+  const dist = join(root, 'apps/neural-auth-demo/dist');
+  const bench = join(root, 'apps/color-optical-bench/dist');
+  const pending = (await readdir(dist)).filter(file => /\.m?js$/.test(file));
+  if (!pending.includes('app.js')) throw Error('The demo must contain dist/app.js.');
+  const visited = new Set(), generated = new Map();
+  while (pending.length) {
+    const local = pending.pop();
+    if (visited.has(local)) continue;
+    visited.add(local);
+    let source = join(dist, local);
+    if (local.startsWith('js/')) {
+      if (local.startsWith('js/crypto/')) source = join(shared, 'crypto', local.slice('js/crypto/'.length));
+      else if (local.startsWith('js/auth-core/')) source = join(shared, 'auth', local.slice('js/auth-core/'.length));
+      else if (local.startsWith('js/crypto-lab/') && workers.includes(local.slice('js/crypto-lab/'.length))) {
+        source = join(shared, 'worker', local.slice('js/crypto-lab/'.length));
+      } else source = join(bench, local);
+      generated.set(local, source);
+    }
+    await requirePath(source);
+    const code = await readFile(source, 'utf8');
+    const specs = [
+      ...code.matchAll(/^[ \t]*(?:import|export)\s+(?:[^;'"`]*?\s+from\s*)?['"]([^'"]+)['"]/gm),
+      ...code.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g),
+      ...code.matchAll(/\bnew\s+URL\s*\(\s*['"]([^'"]+)['"]\s*,\s*import\.meta\.url\s*\)/g),
+    ];
+    for (const [, spec] of specs) {
+      if (!spec.startsWith('./') && !spec.startsWith('../')) throw Error(`Nonlocal demo dependency in ${source}: ${spec}`);
+      const dependency = relative(dist, resolve(dist, dirname(local), spec));
+      if (dependency.startsWith('../') || isAbsolute(dependency)) throw Error(`Demo dependency escapes dist: ${local} → ${spec}`);
+      // Model/runtime directory URLs are fetched only after explicit preparation.
+      if (dependency.startsWith('models/') || dependency==='vendor/onnxruntime' || dependency.startsWith('vendor/onnxruntime/')) continue;
+      if (/\.m?js$/.test(dependency)) pending.push(dependency);
+      else throw Error(`Unrecognized demo module dependency: ${local} → ${spec}`);
+    }
+  }
+  return generated;
+}
 
 async function requirePath(path, directory = false) {
   const info = await stat(path).catch(() => null);
@@ -26,7 +70,7 @@ async function prepare() {
   let names = Object.keys(applications);
   if (args.length) {
     if (args.length !== 2 || args[0] !== '--app' || !Object.hasOwn(applications, args[1])) {
-      throw new Error('Usage: node scripts/prepare-apps.mjs [--app color-optical-bench|qr-neural-key]');
+      throw new Error(`Usage: node scripts/prepare-apps.mjs [--app ${Object.keys(applications).join('|')}]`);
     }
     names = [args[1]];
   }
@@ -57,10 +101,22 @@ async function prepare() {
   }
   for (const name of workers) await requirePath(join(shared, 'worker', name));
   for (const name of ['envelope.js', 'session.js']) await requirePath(join(shared, 'auth', name));
+  const demoFiles = names.includes('neural-auth-demo') ? await demoDependencies() : null;
 
   for (const name of names) {
     const app = join(root, 'apps', name);
     await requirePath(join(app, 'dist', 'index.html'));
+    if (name === 'neural-auth-demo') {
+      await rm(join(app, 'dist/js'), {recursive:true, force:true});
+      for (const [local, source] of demoFiles) {
+        await mkdir(dirname(join(app, 'dist', local)), {recursive:true});
+        await cp(source, join(app, 'dist', local));
+      }
+      await writeFile(join(app, 'dist/dependency-manifest.json'), JSON.stringify({
+        generatedBy:'scripts/prepare-apps.mjs',
+        files:[...demoFiles].sort(([a], [b]) => a.localeCompare(b)).map(([file, source]) => ({file, source:relative(root, source)})),
+      }, null, 2)+'\n');
+    }
     for (const [file, bytes] of notices) await writeFile(join(app, 'dist', file), bytes);
     const crypto = join(app, 'dist', 'js', 'crypto');
     const localFixtures = join(app, 'tests', 'fixtures', 'zk');

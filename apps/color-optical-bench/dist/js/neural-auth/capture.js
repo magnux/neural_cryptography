@@ -8,14 +8,14 @@ export class TransportCapture {
   constructor(){this.reset();}
   reset(){this.context=null;this.geometry=null;this.lastTime=-Infinity;}
   invalidate(){this.geometry=null;}
-  scan(image,{expected,context,mediaTime,captureIntervalMs=100}){
+  scan(image,{expected,context,mediaTime,captureIntervalMs=100,profiler=null,beforeRaster=null,collectTimings=true,includeSamples=true}){
     if(!['data','ack'].includes(expected)||typeof context!=='string'||!context||!Number.isFinite(mediaTime)||mediaTime<0)
       throw Error('Invalid transport capture context.');
     geometryHintMaxAgeMs(captureIntervalMs);
     const key=`${context}/${expected}`;
     if(key!==this.context||mediaTime<this.lastTime){this.reset();this.context=key;}
     this.lastTime=mediaTime;
-    const capture=extractNeuralQR(image,{previousGeometry:this.geometry,now:mediaTime*1000,captureIntervalMs});
+    const capture=extractNeuralQR(image,{previousGeometry:this.geometry,now:mediaTime*1000,captureIntervalMs,profiler,beforeRaster,collectTimings,includeSamples});
     if(capture.geometry)this.geometry=capture.geometry;
     return capture;
   }

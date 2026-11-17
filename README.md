@@ -46,6 +46,7 @@ for the original dynamical-systems exploration.
 | Neural-QR transport research | [Design](docs/NEURAL_QR.md), [current Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Custom neural-readable matrices. Header-free acquisition runs in `capture.html`; Neural-ZKBoo uses the trained corrector and in-band RS+CRC packets. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
 | Neural-ZKBoo authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | Header-free Neural-QR DATA and G32 ACKs with trained VW/W-tube inference and independent directional geometry limits. |
+| Mobile neural authentication demo | [Standalone app](apps/neural-auth-demo/README.md), [setup and simulation](docs/NEURAL_AUTH_DEMO.md) | Front camera and outgoing matrix together, named device sessions, optional timing statistics, and a separate ideal-output simulation. |
 | Neural corrector | [Model and training](experiments/neural-corrector/README.md), [collection guide](docs/MULTIRES_COLLECTION.md), `corrector.html` and `capture.html` | W-tube and VW training, evaluation and static ONNX export on version-2 G16–G128 four-pixel data; U-tube and two-pixel multires remain separate experiments. |
 
 Read [use cases](docs/USE_CASES.md), [format boundaries](docs/FORMATS.md), and
@@ -74,7 +75,8 @@ parameters: transport carries the serialized proof bytes.
 
 Use Node.js 22+ for preparation/tests and Python 3.10+ for the reference/optional
 static server. Preparation copies shared source and bundled dependencies into
-the two apps; it needs no npm install or network access.
+the three apps; it needs no npm install or network access. The new mobile demo
+is an independent `dist/` directory and does not change the bench's entry points.
 
 ```sh
 # From the repository root:
@@ -91,12 +93,15 @@ python apps/color-optical-bench/serve.py --port 8000
 
 # Or serve the QR app for a same-computer check:
 python -m http.server 8001 --bind 127.0.0.1 --directory apps/qr-neural-key/dist
+
+# Or serve the standalone mobile demo (prepare trained models for live use):
+python apps/neural-auth-demo/serve.py --port 8002
 ```
 
 Open `http://localhost:8000/crypto.html` for Crypto Lab or
 `http://localhost:8001/auth.html` for QR authentication. A phone accessing another
 computer requires **trusted HTTPS** for camera/Web Crypto access; ordinary LAN
-HTTP is not equivalent to localhost. Serve either app's `dist/` directory through
+HTTP is not equivalent to localhost. Serve an app's `dist/` directory through
 a trusted HTTPS static host. The color app's optional server also accepts a
 trusted certificate and key; see [development instructions](docs/DEVELOPMENT.md).
 

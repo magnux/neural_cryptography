@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { AuthSession } from '../dist/js/auth/session.js';
-import { AUTH_PROTOCOL, MAX_AUTH_BYTES, decodeEnvelope, encodeEnvelope } from '../dist/js/auth/envelope.js';
+import { AUTH_PROTOCOL, MAX_AUTH_BYTES, MAX_DISPLAY_NAME_CHARACTERS, MAX_DISPLAY_NAME_BYTES, decodeEnvelope, encodeEnvelope, normalizeDisplayName } from '../dist/js/auth/envelope.js';
 import { CryptoOperations } from '../dist/js/crypto-worker/operations.js';
 import { canonicalJSON } from '../dist/js/crypto/bytes.js';
 
@@ -16,10 +16,12 @@ function client(overrides = {}) {
     return overrides[type] ? overrides[type](payload, onProgress, ops) : ops.run(type, payload, onProgress);
   } };
 }
-async function pair({ verifierRepetitions = 2, proverRepetitions = 2, verifierClient, proverClient, timeoutMs = 600000 } = {}) {
+async function pair({ verifierRepetitions = 2, proverRepetitions = 2, verifierClient, proverClient, timeoutMs = 600000,
+  displayNames = [], editHello = value => value, editIdentity = value => value, matchingNames = true } = {}) {
   const queues = [[], []], clients = [verifierClient ?? client(), proverClient ?? client()];
   const state = { time: 0 }, sessions = ['verifier', 'prover'].map((role, index) => new AuthSession({
     role, deviceId: DEVICES[index], cryptoClient: clients[index], now: () => state.time, timeoutMs,
+    displayName: displayNames[index],
     repetitions: index ? proverRepetitions : verifierRepetitions,
     send: bytes => { queues[1 - index].push(bytes.slice()); return Promise.resolve(); },
   }));
@@ -29,8 +31,8 @@ async function pair({ verifierRepetitions = 2, proverRepetitions = 2, verifierCl
     const bytes = edit(queues[index].shift()); const result = await sessions[index].receive(bytes); await settle();
     return { bytes, result };
   }
-  await deliver(1); await deliver(0);
-  assert.equal(sessions[0].snapshot().pairingCode, sessions[1].snapshot().pairingCode);
+  await deliver(1, editHello); await deliver(0, editIdentity);
+  if (matchingNames) assert.equal(sessions[0].snapshot().pairingCode, sessions[1].snapshot().pairingCode);
   return { sessions, clients, queues, state, deliver };
 }
 async function pendingProof(options) {
@@ -44,7 +46,11 @@ async function pendingProof(options) {
 function editHeader(bytes, transform) { const { header, body } = decodeEnvelope(bytes); return encodeEnvelope(transform(header), body); }
 
 test('one local proof authenticates the pinned peer; result on prover remains a peer report', async () => {
-  const { sessions, deliver, clients } = await pendingProof();
+  const { sessions, deliver, clients } = await pendingProof({ displayNames: ['  Mari\u0301a  desktop ', '電話 📱'] });
+  assert.equal(sessions[0].snapshot().localDisplayName, 'María desktop');
+  assert.equal(sessions[0].snapshot().peerDisplayName, '電話 📱');
+  assert.equal(sessions[1].snapshot().localDisplayName, '電話 📱');
+  assert.equal(sessions[1].snapshot().peerDisplayName, 'María desktop');
   const { bytes, result } = await deliver(0);
   assert.deepEqual(result, { accepted: true, verified: true });
   assert.equal(sessions[0].snapshot().state, 'verified');
@@ -54,10 +60,90 @@ test('one local proof authenticates the pinned peer; result on prover remains a 
   await deliver(1);
   assert.equal(sessions[1].snapshot().state, 'peer-accepted');
   assert.equal(sessions[1].snapshot().peerReported, true);
+  assert.equal(sessions[0].snapshot().peerDisplayName, '電話 📱');
+  assert.equal(sessions[1].snapshot().peerDisplayName, 'María desktop');
   assert.equal(sessions[0].snapshot().resultDelivered, true);
   assert.ok(Number.isFinite(sessions[0].snapshot().timings.keygenMs));
   assert.ok(Number.isFinite(sessions[0].snapshot().timings.verifyMs));
   assert.ok(Number.isFinite(sessions[1].snapshot().timings.proveMs));
+});
+
+test('display names normalize Unicode and spaces with bounded, printable values', () => {
+  assert.equal(normalizeDisplayName('  Mari\u0301a\u00a0  👩🏽‍💻  '), 'María 👩🏽‍💻');
+  assert.equal(normalizeDisplayName('📱'.repeat(MAX_DISPLAY_NAME_CHARACTERS)), '📱'.repeat(64));
+  assert.equal(new TextEncoder().encode(normalizeDisplayName('📱'.repeat(64))).length, MAX_DISPLAY_NAME_BYTES);
+  // Markup is a label, never HTML; UI consumers must insert it with textContent.
+  assert.equal(normalizeDisplayName('<b>My phone</b>'), '<b>My phone</b>');
+  for (const value of [null, 1, '', '   ', 'A'.repeat(65), '📱'.repeat(65), 'x'.repeat(257),
+    'line\nbreak', 'tab\tname', 'null\0name', '\u202ephone', '\u2066phone\u2069', 'phone\u200b', '\ufeffphone', '\ud800']) {
+    assert.throws(() => normalizeDisplayName(value), /display name/);
+  }
+});
+
+test('existing callers get stable device names and names are pinned for an attempt', async () => {
+  const { sessions } = await pair();
+  assert.equal(sessions[0].snapshot().localDisplayName, 'Device 00000001');
+  assert.equal(sessions[0].snapshot().peerDisplayName, 'Device 00000002');
+  assert.equal(sessions[1].snapshot().peerDisplayName, 'Device 00000001');
+  const before = sessions[0].snapshot();
+  const changed = sessions[0].snapshot();
+  changed.localDisplayName = 'Another desktop'; changed.peerDisplayName = 'Another phone';
+  assert.equal(sessions[0].snapshot().localDisplayName, before.localDisplayName);
+  assert.equal(sessions[0].snapshot().peerDisplayName, before.peerDisplayName);
+  assert.throws(() => new AuthSession({ role: 'verifier', deviceId: DEVICES[0], displayName: '',
+    cryptoClient: client(), send: () => {} }), /display name/);
+});
+
+test('relabeling either exchanged name changes pairing and cannot trigger a proof', async () => {
+  for (const message of ['editHello', 'editIdentity']) {
+    const { sessions, clients, deliver } = await pair({ displayNames: ['Desktop', 'Phone'], matchingNames: false,
+      [message]: bytes => editHeader(bytes, header => ({ ...header, displayName: 'Relabeled device' })) });
+    assert.notEqual(sessions[0].snapshot().pairingCode, sessions[1].snapshot().pairingCode);
+    assert.notEqual(sessions[0].snapshot().binding, sessions[1].snapshot().binding);
+    await sessions[0].confirmPairing(); await sessions[1].confirmPairing();
+    const { result } = await deliver(1);
+    assert.equal(result.accepted, false);
+    assert.match(result.reason, /Pairing binding mismatch/);
+    assert.equal(clients[1].calls.some(call => call.type === 'prove'), false);
+    assert.equal(sessions[0].snapshot().result, null);
+  }
+});
+
+test('rewriting transport bindings cannot authenticate a proof under a relabeled identity', async () => {
+  const { sessions, deliver } = await pair({ verifierRepetitions: 32, proverRepetitions: 32,
+    displayNames: ['Desktop', 'Phone'], matchingNames: false,
+    editIdentity: bytes => editHeader(bytes, header => ({ ...header, displayName: 'Relabeled phone' })) });
+  await sessions[0].confirmPairing(); await sessions[1].confirmPairing();
+  const verifierBinding = sessions[0].snapshot().binding, proverBinding = sessions[1].snapshot().binding;
+  // An active relay can rewrite unauthenticated envelope fields and challenges.
+  // The resulting proof must still fail against the verifier's saved challenge.
+  const challenge = await deliver(1, bytes => editHeader(bytes, header => ({ ...header, binding: proverBinding,
+    challenge: { ...header.challenge, lock_id: `neural-zkboo:${proverBinding}` } })));
+  assert.equal(challenge.result.accepted, true);
+  const proof = await deliver(0, bytes => editHeader(bytes, header => ({ ...header, binding: verifierBinding })));
+  assert.deepEqual(proof.result, { accepted: true, verified: false });
+  assert.equal(sessions[0].snapshot().state, 'rejected');
+  assert.equal(sessions[0].snapshot().peerDisplayName, 'Relabeled phone');
+});
+
+test('identity envelopes require canonical names and reject the previous schema', async () => {
+  const outgoing = [], session = new AuthSession({ role: 'verifier', deviceId: DEVICES[0], displayName: 'María',
+    repetitions: 2, cryptoClient: client(), send: bytes => { outgoing.push(bytes); } });
+  await session.start(); await settle();
+  const { header } = decodeEnvelope(outgoing[0]);
+  assert.equal(header.displayName, 'María');
+  for (const type of ['HELLO', 'IDENTITY']) {
+    for (const displayName of [undefined, '', '  Phone ', 'Mari\u0301a', 'A'.repeat(65), '\u202ePhone', '\ud800']) {
+      const malformed = { ...header, type, displayName };
+      if (displayName === undefined) delete malformed.displayName;
+      assert.throws(() => encodeEnvelope(malformed));
+      const encoded = canonicalJSON(malformed), bytes = new Uint8Array(8 + encoded.length);
+      bytes.set(outgoing[0].subarray(0, 4)); new DataView(bytes.buffer).setUint32(4, encoded.length);
+      bytes.set(encoded, 8);
+      assert.throws(() => decodeEnvelope(bytes));
+    }
+  }
+  assert.throws(() => encodeEnvelope({ ...header, protocol: 'neural-zkboo-auth-v1' }));
 });
 
 test('both pairing confirmations are required and challenge can wait for prover confirmation', async () => {
@@ -199,12 +285,14 @@ test('an identity cannot be replaced after pairing, and snapshot mutation does n
   const { sessions } = await pair();
   const outsider = client(), created = await outsider.request('createKey', { profile: { side: 8, rounds: 16, repetitions: 2 } });
   const before = sessions[0].snapshot();
-  const forged = encodeEnvelope({ protocol: AUTH_PROTOCOL, type: 'IDENTITY', sessionId: before.sessionId, deviceId: DEVICES[1], publicKey: created.publicKey });
+  const forged = encodeEnvelope({ protocol: AUTH_PROTOCOL, type: 'IDENTITY', sessionId: before.sessionId,
+    deviceId: DEVICES[1], displayName: 'Forged replacement', publicKey: created.publicKey });
   assert.equal((await sessions[0].receive(forged)).accepted, false);
   const snapshot = sessions[0].snapshot(); snapshot.binding = '00'.repeat(32); snapshot.localKeyId = '00'.repeat(32);
   assert.equal(sessions[0].snapshot().peerKeyId, before.peerKeyId);
   assert.equal(sessions[0].snapshot().binding, before.binding);
   assert.equal(sessions[0].snapshot().localKeyId, before.localKeyId);
+  assert.equal(sessions[0].snapshot().peerDisplayName, before.peerDisplayName);
 });
 
 test('outbound transport failure fails the active attempt without accepting a late operation', async () => {
@@ -227,7 +315,7 @@ test('envelope carries raw proof bytes and rejects malformed, noncanonical and o
   assert.throws(() => decodeEnvelope(new Uint8Array(MAX_AUTH_BYTES + 1)));
   assert.throws(() => decodeEnvelope(bytes.slice(0, 7)));
   const badLength = bytes.slice(); new DataView(badLength.buffer).setUint32(4, 4097); assert.throws(() => decodeEnvelope(badLength));
-  const oldMagic = bytes.slice(); oldMagic[3] = 48; assert.throws(() => decodeEnvelope(oldMagic));
+  const oldMagic = bytes.slice(); oldMagic[3] = 49; assert.throws(() => decodeEnvelope(oldMagic));
   const text = new TextDecoder().decode(canonicalJSON(header)), noncanonical = new TextEncoder().encode(` ${text}`);
   const spaced = new Uint8Array(8 + noncanonical.length + body.length); spaced.set(bytes.subarray(0, 4));
   new DataView(spaced.buffer).setUint32(4, noncanonical.length); spaced.set(noncanonical, 8); spaced.set(body, 8 + noncanonical.length);
@@ -237,6 +325,6 @@ test('envelope carries raw proof bytes and rejects malformed, noncanonical and o
   new DataView(duplicated.buffer).setUint32(4, duplicate.length); duplicated.set(duplicate, 8); duplicated.set(body, 8 + duplicate.length);
   assert.throws(() => decodeEnvelope(duplicated), /Noncanonical/);
   assert.equal(header.protocol, AUTH_PROTOCOL);
-  assert.equal(AUTH_PROTOCOL, 'neural-zkboo-auth-v1');
-  assert.equal(new TextDecoder().decode(bytes.subarray(0, 4)), 'NZA1');
+  assert.equal(AUTH_PROTOCOL, 'neural-zkboo-auth-v2');
+  assert.equal(new TextDecoder().decode(bytes.subarray(0, 4)), 'NZA2');
 });

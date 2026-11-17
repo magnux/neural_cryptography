@@ -2,16 +2,33 @@
 import { PROTOCOL, canonicalJSON, exactKeys, fromHex, sameBytes } from '../crypto/bytes.js';
 import { validateChallenge } from '../crypto/proof.js';
 
-const MAGIC = Uint8Array.of(78, 90, 65, 49); // NZA1
+const MAGIC = Uint8Array.of(78, 90, 65, 50); // NZA2
 const PREFIX_BYTES = 8;
 export const MAX_AUTH_BYTES = 524288;
 export const MAX_AUTH_HEADER_BYTES = 4096;
-export const AUTH_PROTOCOL = 'neural-zkboo-auth-v1';
+export const AUTH_PROTOCOL = 'neural-zkboo-auth-v2';
+export const MAX_DISPLAY_NAME_CHARACTERS = 64;
+export const MAX_DISPLAY_NAME_BYTES = 256;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const EMPTY = new Uint8Array();
 const decoder = new TextDecoder('utf-8', { fatal: true });
+const encoder = new TextEncoder();
+// Keep ordinary international names and emoji, including their joiners, while
+// rejecting controls that can conceal or reorder the displayed identity.
+const NAME_CONTROLS = /[\p{Cc}\p{Cs}\u061c\u200b\u200e\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u;
 
 export function validDeviceId(value) { return typeof value === 'string' && UUID.test(value); }
+
+export function normalizeDisplayName(value) {
+  if (typeof value !== 'string' || value.length > MAX_DISPLAY_NAME_BYTES || NAME_CONTROLS.test(value)) {
+    throw new TypeError('Invalid device display name');
+  }
+  const normalized = value.normalize('NFC').replace(/\s+/gu, ' ').trim();
+  if (!normalized || [...normalized].length > MAX_DISPLAY_NAME_CHARACTERS || encoder.encode(normalized).length > MAX_DISPLAY_NAME_BYTES) {
+    throw new TypeError(`Device display name must contain 1–${MAX_DISPLAY_NAME_CHARACTERS} characters`);
+  }
+  return normalized;
+}
 
 export function validateAuthPublic(document) {
   if (!exactKeys(document, ['protocol', 'circuit', 'minimum_repetitions', 'anchor_outputs']) || document.protocol !== PROTOCOL ||
@@ -26,8 +43,8 @@ export function validateAuthPublic(document) {
 
 function validateHeader(header, bodyLength) {
   const fields = {
-    HELLO: ['protocol', 'type', 'sessionId', 'deviceId', 'publicKey'],
-    IDENTITY: ['protocol', 'type', 'sessionId', 'deviceId', 'publicKey'],
+    HELLO: ['protocol', 'type', 'sessionId', 'deviceId', 'displayName', 'publicKey'],
+    IDENTITY: ['protocol', 'type', 'sessionId', 'deviceId', 'displayName', 'publicKey'],
     CHALLENGE: ['protocol', 'type', 'sessionId', 'binding', 'challenge'],
     PROOF: ['protocol', 'type', 'sessionId', 'binding', 'nonce'],
     RESULT: ['protocol', 'type', 'sessionId', 'binding', 'nonce', 'proofDigest', 'accepted'],
@@ -38,6 +55,7 @@ function validateHeader(header, bodyLength) {
   fromHex(header.sessionId, 16, 'session ID');
   if (header.type === 'HELLO' || header.type === 'IDENTITY') {
     if (!validDeviceId(header.deviceId)) throw new TypeError('Invalid device UUID');
+    if (normalizeDisplayName(header.displayName) !== header.displayName) throw new TypeError('Noncanonical device display name');
     validateAuthPublic(header.publicKey);
   } else fromHex(header.binding, 32, 'pairing binding');
   if (header.type === 'CHALLENGE') validateChallenge(header.challenge);
