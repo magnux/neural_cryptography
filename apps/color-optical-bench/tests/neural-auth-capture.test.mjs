@@ -81,16 +81,18 @@ test('disagreeing phase cues give orange feedback; acquired phases provide green
   assert.doesNotMatch(accepted.label,/RS\+CRC passed/);
 });
 
-test('ACK feedback distinguishes acquisition, neural recovery and final packet validation',()=>{
-  const miss=captureFeedback({expected:'ack',ok:false,stage:'detect',phaseCounts:[0,0,0,0]});
-  assert.match(miss.label,/Neural-QR ACK/);assert.equal(miss.validated,false);
-  const info={size:32},corners=[[0,0],[1,0],[1,1],[0,1]];
-  const acquired=captureFeedback({expected:'ack',ok:false,info,corners,phaseCounts:[1,0,1,0],collected:2});
-  assert.equal(acquired.validated,true);assert.match(acquired.label,/G32.*1 \/ 0 \/ 1 \/ 0/);
-  const correcting=captureFeedback({expected:'ack',ok:false,info,corners,method:'neural-corrector'});
-  assert.match(correcting.label,/collecting more samples/);assert.doesNotMatch(correcting.label,/passed/);
-  const decoded=captureFeedback({expected:'ack',ok:true,info,corners});
-  assert.equal(decoded.validated,true);assert.match(decoded.label,/ACK RS\+CRC passed.*checking transfer/);
+test('ACK and REQUEST feedback distinguish acquisition, neural recovery and final packet validation',()=>{
+  for(const expected of ['ack','request']){
+    const kind=expected.toUpperCase(),miss=captureFeedback({expected,ok:false,stage:'detect',phaseCounts:[0,0,0,0]});
+    assert.ok(miss.label.includes(`Neural-QR ${kind}`));assert.equal(miss.validated,false);
+    const info={size:32},corners=[[0,0],[1,0],[1,1],[0,1]];
+    const acquired=captureFeedback({expected,ok:false,info,corners,phaseCounts:[1,0,1,0],collected:2});
+    assert.equal(acquired.validated,true);assert.match(acquired.label,/G32.*1 \/ 0 \/ 1 \/ 0/);
+    const correcting=captureFeedback({expected,ok:false,info,corners,method:'neural-corrector'});
+    assert.match(correcting.label,/collecting more samples/);assert.doesNotMatch(correcting.label,/passed/);
+    const decoded=captureFeedback({expected,ok:true,info,corners});
+    assert.equal(decoded.validated,true);assert.ok(decoded.label.includes(`${kind} RS+CRC passed`));assert.match(decoded.label,/checking transfer/);
+  }
 });
 
 test('capture context validation rejects invalid expected kinds and timestamps',()=>{

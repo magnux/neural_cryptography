@@ -80,6 +80,25 @@ the same directory instead. Plain LAN HTTP does not provide camera/Web Crypto
 access. A phone's front camera is the initial preference; explicit camera selection
 takes precedence when available.
 
+## Screen layout and alignment
+
+With Settings closed, the exchange fits one viewport: the outgoing matrix stays
+square, the camera preview and controls remain visible, and the page does not
+scroll. The initial matrix position is at the bottom, which helps align it with
+the other device's front camera. **QR: bottom / top** changes its position; on a
+wide landscape screen, the matrix uses a separate column and aligns to the
+selected edge. A desktop browser presents the same interface inside a bounded
+phone frame.
+
+The preview starts **Mirrored**. Its toggle reflects the visible video and
+alignment overlay together; camera samples sent to acquisition/inference and
+the outgoing matrix are unchanged. The mirror and matrix-position preferences
+are saved in this browser. They can be changed during an exchange.
+
+Open **Settings** to scroll through setup, statistics, simulation comparisons
+and report controls. Closing it restores the fixed exchange view. Keep Settings
+closed while aligning the devices so the complete matrix remains visible.
+
 ## Names, roles and completion
 
 Choose a readable local name before starting. The shared current envelope is
@@ -94,8 +113,8 @@ formatting characters are rejected. The internal UUID and key fingerprint still
 identify the cryptographic session; a friendly name does not replace them.
 
 One device acts as verifier and the other as key holder. The five application
-messages are HELLO, IDENTITY, CHALLENGE, PROOF and RESULT, with optical START/DATA
-and G32 ACK exchanges. This POC advances turns and confirms pairing automatically;
+messages are HELLO, IDENTITY, CHALLENGE, PROOF and RESULT, with optical START/DATA,
+G32 ACK and G32 REQUEST exchanges. This POC advances turns and confirms pairing automatically;
 it does not establish identity through manual code comparison. A verified proof
 on the verifier authenticates possession of the pinned key for this attempt.
 The key holder's success text is a peer-reported result, not a second proof.
@@ -104,6 +123,29 @@ Wait for final result delivery: verifier `resultDelivered` and key holder
 `peerReported` must be true. A locally accepted proof with its result still in
 transit is incomplete. Keep both pages visible; cancel, hiding the page, or
 restarting stops the active attempt and releases camera/worker resources.
+
+## Request-driven handoff
+
+Each START or DATA packet stays displayed until its matching ACK arrives. At a
+message boundary, the receiver keeps the final ACK visible while preparing its
+reply. The sender must read that ACK before it displays a **G32 REQUEST** asking
+for the next message. Only a matching REQUEST releases the held ACK and permits
+the reply's START. A request received before proof work finishes remains granted;
+the prepared reply starts when it is ready.
+
+The REQUEST is one fixed 44-byte OLM1 `poll` packet per handoff, bound to the
+completed message's session ID, message ID, message type and final chunk index
+(`base = chunkCount - 1`). It has no changing nonce or sequence counter. It stays
+visible until the reply's START is accepted. Lost ACKs and REQUESTs are recovered
+by continuing to display the same control packet; elapsed time never switches
+between a final ACK and START. Duplicate or unrelated controls cannot advance a
+different transfer.
+
+All four palette-phase images are rendered once and cached for each displayed
+packet, including its random padding. Cycling phases reuses those images instead
+of generating new pixels for an unchanged packet. New logical packets get their
+own phase images. RESULT is the final application message and does not request
+another reply; its receiver keeps the final ACK visible for delivery confirmation.
 
 ## Optional timing statistics
 
@@ -114,10 +156,16 @@ report construction; functional completion and necessary protocol state remain.
 Compare the same grid, role, browser backend and physical arrangement. A minimum
 is the best observed sample, not a guaranteed speed or a timing security claim.
 
+START/DATA round trips end at their matching accepted ACK. REQUEST controls have
+separate bounded records for display and acceptance, linked to the preceding
+message; they do not contribute to START/DATA RTT summaries. Statistics and
+report controls are available inside Settings.
+
 Efficient scanning is on initially. Capture scheduling skips work when the
 worker is busy. Small frame/ROI checks may avoid repeated acquisition only after
-RS+CRC recovery and transport acceptance of a burst; each observed phase has its
-own template. A one-second refresh checks current geometry/orientation/phase,
+RS+CRC recovery and transport acceptance of a burst; all four phase templates
+from that accepted packet are retained, including phases collected before the
+successful inference. A one-second refresh checks current geometry/orientation/phase,
 and a four-second acceptance expiry forces full capture/inference even if an
 image fingerprint collides. New attempts, mode changes and clock rollback reset
 the gate. Packet identity, protected payload recovery and session checks remain
@@ -166,19 +214,31 @@ npm run benchmark:demo -- --optimized-only --no-statistics
 ```
 
 The baseline and optimized runs use the same scan schedule and independent fresh
-keys/challenges/proofs. Both use the live automatic pairing and retained-ACK/START
-handoff logic, including the three-second turn timer. Compare completed outcomes, scan and accepted packet
+keys/challenges/proofs. Both use the live automatic pairing and request-driven
+handoff. Each completed nonterminal message has a final ACK followed by a stable
+G32 REQUEST and the next START. Compare completed outcomes, scan and accepted packet
 counts, inference counts, stage totals and whole-run wall time. Wall time also
 includes rendering, scheduling and cryptography; stage times can overlap.
 `--protocol-only` skips image acquisition and inference and is labeled accordingly;
 it cannot substitute for the full benchmark. Missing models/runtime cause an
 explicit error instead of silently falling back to fabricated inference timing.
 
+The simulator runs cryptography and inference on one event loop; live operation
+uses separate workers. After REQUEST is accepted, if both senders are idle and
+real cryptographic work is still pending, the simulator pauses virtual camera
+time until that work finishes. This prevents repeated WASM scans of an unchanged
+REQUEST from starving sequential WebCrypto operations. It never skips an unread
+ACK/REQUEST or an outgoing packet. Reports expose these pauses as
+`cryptoIdleWaits`; they are a simulation scheduling assumption, not a measured
+camera delay. Repeated display windows reuse a bounded cache of each endpoint's
+four phase images and random padding.
+
 ## Device and packaging test plan
 
 The initial settings are verifier role, G64 outgoing and incoming maximum, G32
 controls, 32 proof repetitions, front camera, requested 1080p, 250 ms phases,
 100 ms captures, Auto backend, efficient scanning enabled and statistics enabled.
+The initial display preferences are a mirrored preview and the matrix at the bottom.
 Choose an incoming maximum of G128 to preload/test that larger receiving grid.
 
 1. Prepare and copy **only** `dist/` to an empty static serving directory. Load
@@ -187,8 +247,11 @@ Choose an incoming maximum of G128 to preload/test that larger receiving grid.
    files produce an actionable failure. `npm run test:demo` checks the standalone
    dependency graph and required static assets without needing model downloads.
 2. On two phones or a computer/phone pair over trusted HTTPS, select names and
-   roles. Confirm the front camera is usable, preview orientation is clear, and
-   the outgoing matrix remains fully visible in portrait and landscape. Permission
+   roles. Confirm the front camera is usable, the preview and overlay mirror
+   together, and both matrix positions remain fully visible in portrait and
+   landscape. Check short phone and desktop viewports with Settings closed: the
+   matrix stays square and the page does not scroll. Open Settings to inspect
+   statistics, then close it and confirm the fixed view returns. Permission
    denial or an unavailable selected camera must not silently select another.
 3. Start with G64 in both directions, 32 repetitions, and statistics disabled.
    Confirm trained parity for the selected incoming grids, complete all five messages and final ACK,
@@ -198,8 +261,10 @@ Choose an incoming maximum of G128 to preload/test that larger receiving grid.
    attempt and confirm its detailed counters/report are absent. Do not infer
    performance differences from a single run.
 5. Hold a matrix steady, briefly obstruct a camera, then restore it. Confirm
-   periodic acquisition recovers, repeated ACKs remain usable, no duplicate
-   application delivery occurs, and changing a phase or packet resumes work.
+   periodic acquisition recovers, all four accepted phase templates remain
+   usable, and a new packet resumes work. Miss a final ACK and then a REQUEST:
+   each must remain visible until its peer advances, with no duplicate application
+   delivery and no timed ACK/START alternation.
 6. Test G128 in one direction, name edits before a fresh attempt, a role swap,
    cancellation, page backgrounding, and restarting. Active workers and camera
    tracks must stop; stale callbacks must not resume the prior attempt.
@@ -220,42 +285,19 @@ or certificate access:
 python3 -m unittest discover -s tests/python -p test_demo_server.py -v
 ```
 
-## Local validation record · 17 November 2026
+## Local validation scope · 17 November 2026
 
-One sequential baseline/optimized run used Node.js 24.22.1 on Linux 6.18.57
-x86_64, ONNX Runtime Web 1.23.2, single-thread WASM, and an untrained 696,400-
-parameter VW model. The CPU model was not exposed. Both runs used G64 data,
-G32 controls, 32 proof repetitions, two held phase cycles, automatic pairing,
-and the live three-second retained-ACK/START handoff.
+Automated integration checks exercise the actual authentication session and
+32-repetition proof engine through request-driven turns. The manual scheduler
+check completes HELLO, IDENTITY, CHALLENGE, PROOF and RESULT after dropping the
+first final ACK for all five messages and the first REQUEST for all four reply
+handoffs. It confirms that a queued reply cannot start before the matching
+REQUEST, and that final RESULT delivery creates no further request.
 
-Both runs completed all five messages, verified the 17,474-byte proof, exchanged
-the readable names, and reached `resultDelivered`, `peerReported` and
-`finalResultAckAccepted`. Each processed 368 scans and 46 displayed packet
-windows, including four retained-ACK windows, with no manual handoff.
-
-| Measured work | Baseline | Efficient scanning |
-| --- | ---: | ---: |
-| Complete run wall time | 132.427 s | 68.007 s |
-| Actual ONNX inference calls | 92 | 51 |
-| Actual ONNX inference total | 123.031 s | 63.342 s |
-| Marker detection calls / total | 183 / 2.715 s | 102 / 1.353 s |
-| Rectification calls / total | 368 / 2.382 s | 204 / 1.200 s |
-| RS+CRC calls / total | 92 / 154.497 ms | 51 / 71.922 ms |
-| Skipped scans | 0 | 164 |
-
-Actual inference minimum/mean/maximum was 491.005/1337.296/2501.193 ms for the
-baseline and 486.893/1241.993/2373.652 ms for the optimized run, pooled across
-G32 and G64. Initialization took a separate 4.147 s, including G32/G64 parity
-warmups of 648.321/2166.415 ms. Both numerical comparisons passed at absolute
-`1e-4` and relative `1e-3` tolerance. The exported model SHA-256 values were:
-
-- G32: `7f425b64b61439ed2a46328e7872c80d15f65f9de8a5239ac4ef640646725b56`
-- G64: `701bbf7bf656440974a25655b0402237e6e310d1e57bf253a2493dc920edb594`
-
-The optimized run made 44.6% fewer inference calls under this synthetic scan
-schedule. Actual untrained inference was followed by the explicit assumed-correct
-logit substitution in both runs. These are local computation measurements from
-one comparison, not trained accuracy, camera throughput, phone performance or
-cryptographic security evidence. Per-stage timings can overlap and should not
-be summed as independent elapsed time. Raw local reports and model files are
-not part of the tracked validation record.
+Capture tests retain every phase of an accepted packet, detect changed packets,
+and exercise periodic geometry refresh and acceptance expiry. Separate telemetry
+checks keep REQUEST records bounded and outside START/DATA round-trip summaries.
+These checks do not establish live camera recovery, physical-device layout,
+trained accuracy, throughput or cryptographic security. The current handoff and
+layout still need the device checks above; no current benchmark timings are
+reported here.

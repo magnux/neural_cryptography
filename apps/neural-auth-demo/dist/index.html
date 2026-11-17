@@ -10,7 +10,7 @@
 </head>
 <body data-device="desktop">
   <div class="desktop-caption" aria-hidden="true"><span class="brand-mark">N</span> NEURAL KEY <span>Two screens. One connection.</span></div>
-  <main id="app" class="phone" data-state="idle">
+  <main id="app" class="phone" data-state="idle" data-mode="camera" data-qr-position="bottom" data-preview-mirrored="true">
     <header class="app-header">
       <a class="brand" href="./" aria-label="Neural Key home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M8 16V8l8 8V8"/></svg><span>Neural Key</span></a>
       <span class="local-badge"><i></i> <span id="deviceName">This device</span></span>
@@ -29,6 +29,7 @@
       <div id="error" class="error" role="alert" hidden></div>
       <section id="cameraPanel" aria-label="Optical exchange">
         <div class="optical-stage">
+          <div id="matrixSlot" class="matrix-slot">
           <div id="matrixZone" class="matrix-zone" data-visible="false">
             <canvas id="matrix" width="1024" height="1024" aria-label="Outgoing Neural-QR optical matrix"></canvas>
             <div id="matrixPlaceholder" class="matrix-placeholder">
@@ -36,8 +37,13 @@
               <span>Your connection appears here</span>
             </div>
           </div>
+          </div>
           <div class="stage-footer">
             <div class="stage-status"><span id="statusDot" class="status-dot"></span><div><strong id="matrixLabel">Ready when you are</strong><p id="cameraStatus">Front camera · G64</p></div></div>
+            <div class="view-controls" role="group" aria-label="Display options">
+              <button id="mirrorPreview" class="view-toggle" type="button" aria-pressed="true" title="Mirror the camera preview only. Camera processing is unchanged.">Mirrored</button>
+              <button id="qrPosition" class="view-toggle" type="button" aria-pressed="false" title="Move the outgoing matrix to the top of the screen.">QR: bottom</button>
+            </div>
             <div class="camera-preview" aria-label="Camera alignment preview">
               <video id="video" autoplay muted playsinline></video><canvas id="overlay" aria-hidden="true"></canvas>
               <div id="cameraPlaceholder" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5l1-2h6l1 2h4v15H4V5z"/><circle cx="12" cy="12" r="4"/></svg></div>
@@ -53,7 +59,7 @@
         <p>Compare regular and efficient receiving through a real proof and optical packet exchange, using synthetic captures. No camera needed.</p>
         <p class="subtle">Simulation runs an untrained VW model, then substitutes assumed-correct decoder output. It checks the handshake and measures computation, not model accuracy or camera reliability.</p>
         <p id="simulationStatus" class="simulation-status" role="status" aria-live="polite">Ready to run</p>
-        <table id="simulationComparison" class="simulation-comparison" hidden><caption>Local comparison</caption><thead><tr><th scope="col">Measure</th><th scope="col">Regular</th><th scope="col">Efficient</th></tr></thead><tbody><tr><th scope="row">Run time</th><td id="baselineTime">—</td><td id="optimizedTime">—</td></tr><tr><th scope="row">Inferences</th><td id="baselineInferences">—</td><td id="optimizedInferences">—</td></tr></tbody></table>
+
       </section>
       <div class="actions"><button id="start" class="primary" type="button">Start authentication <span aria-hidden="true">↗</span></button><button id="stop" class="secondary" type="button" hidden>Cancel exchange</button></div>
       <div id="liveStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -73,14 +79,15 @@
           <label for="captureMs">Capture interval (ms)<input id="captureMs" type="number" min="50" max="2000" step="1" value="100" inputmode="numeric"></label>
           <label class="toggle wide" for="optimized"><span>Efficient camera scanning<small>Skip redundant work while holding steady</small></span><input id="optimized" type="checkbox" checked></label>
           <label class="toggle wide" for="statistics"><span>Collect statistics<small>Local timings and a downloadable report</small></span><input id="statistics" type="checkbox" checked></label>
-          <p class="settings-note wide">Both devices use G32 acknowledgments. Device names are self-declared. Pairing proceeds automatically for this research demo. Only the verifier checks the proof locally; the key holder receives an unauthenticated result report.</p>
+          <p class="settings-note wide">Both devices use G32 acknowledgments and turn requests. Device names are self-declared. Pairing proceeds automatically for this research demo. Only the verifier checks the proof locally; the key holder receives an unauthenticated result report.</p>
         </fieldset>
-      </details>
-      <details id="statisticsPanel" class="statistics" hidden>
+        <details id="statisticsPanel" class="statistics" hidden>
         <summary><span>Session statistics</span><span id="elapsed">0s</span></summary>
         <dl><div><dt>Accepted packets</dt><dd id="acceptedPackets">0</dd></div><div><dt id="inferenceLabel">Latest inference</dt><dd id="inferenceMs">—</dd></div><div><dt>Proof size</dt><dd id="proofBytes">—</dd></div><div><dt>Scan attempts</dt><dd id="scanAttempts">0</dd></div></dl>
+        <table id="simulationComparison" class="simulation-comparison" hidden><caption>Local comparison</caption><thead><tr><th scope="col">Measure</th><th scope="col">Regular</th><th scope="col">Efficient</th></tr></thead><tbody><tr><th scope="row">Run time</th><td id="baselineTime">—</td><td id="optimizedTime">—</td></tr><tr><th scope="row">Inferences</th><td id="baselineInferences">—</td><td id="optimizedInferences">—</td></tr></tbody></table>
         <p id="modelStatus" class="subtle">The trained corrector loads when you start.</p>
         <button id="downloadReport" class="download" disabled type="button">Download JSON report <span aria-hidden="true">↓</span></button>
+        </details>
       </details>
       <footer class="app-footer"><span>Browser-local. No account needed.</span><span>Research prototype · automatic POC pairing</span></footer>
     </div>

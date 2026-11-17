@@ -1,6 +1,6 @@
 /** Acquisition feedback is distinct from packet integrity and peer acceptance. */
 export function captureFeedback(result){
-  const acknowledged=result.expected==='ack',kind=acknowledged?'ACK':'Data';
+  const kind=result.expected==='ack'?'ACK':result.expected==='request'?'REQUEST':'Data';
   const candidates=result.markers?.length??0;
   let label;
   if(result.ok)label=`${kind} RS+CRC passed · checking transfer`;
@@ -10,7 +10,7 @@ export function captureFeedback(result){
       orientation:'Orientation uncertain',size:'Grid-size cues uncertain',phase:'Phase cues uncertain'};
     const reason=typeof result.error==='string'?result.error.slice(0,240):'';
     label=stages[result.stage]?`${stages[result.stage]}${reason?` · ${reason}`:''}`:
-      `Looking for Neural-QR ${acknowledged?'ACK':''} · ${candidates} marker candidates${reason?` · ${reason}`:''}`;
+      `Looking for Neural-QR ${kind} · ${candidates} marker candidates${reason?` · ${reason}`:''}`;
   }else if(result.error&&result.method!=='neural-corrector')label=`G${result.info.size} acquired · ${result.error}`;
   else if(result.method==='neural-corrector')label=`G${result.info.size} acquired · collecting more samples for packet recovery`;
   else label=`G${result.info.size} · phases ${(result.phaseCounts??[0,0,0,0]).join(' / ')} · ${result.collected??0} captures`;

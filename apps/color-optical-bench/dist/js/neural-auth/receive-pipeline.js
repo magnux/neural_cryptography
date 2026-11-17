@@ -31,7 +31,7 @@ export class ReceivePipeline {
   async scan(raw) {
     const {image,runId,mediaTime,presentedFrames,expected,captureIntervalMs=100,maxSize,optimized=false,statistics=false,probe,forceFullScan=false,forceAcquisition=false}=raw;
     geometryHintMaxAgeMs(captureIntervalMs);
-    if(!['data','ack'].includes(expected)||!Number.isSafeInteger(runId)||runId<1||!Number.isFinite(mediaTime)||mediaTime<0||
+    if(!['data','ack','request'].includes(expected)||!Number.isSafeInteger(runId)||runId<1||!Number.isFinite(mediaTime)||mediaTime<0||
       !Number.isSafeInteger(presentedFrames)||presentedFrames<1||![32,64,128].includes(maxSize))throw Error('Invalid Neural-ZKBoo capture request.');
     const key=`${runId}/${expected}`;
     if(this.runId!==runId||mediaTime<this.lastTime){this.reset();this.runId=runId;}
@@ -50,18 +50,26 @@ export class ReceivePipeline {
     };
     if(optimized&&!forceFullScan&&timing.measure('frame-gate',()=>this.gate.check(image,identity,{forceFullScan:forceAcquisition})))return unchanged();
     const before=this.burst.status();
+    const profileAllowed=info=>isTransportData(info)&&info.size>=CONTROL_SIZE&&info.size<=maxSize&&
+      (expected==='data'||info.size===CONTROL_SIZE);
+    let rejectedProfile=false;
     const capture=this.capture.scan(image,{expected,context:key,mediaTime,captureIntervalMs,profiler:timing,collectTimings:raw.statistics!==false,includeSamples:!optimized,
-      beforeRaster:optimized&&!forceFullScan?current=>!timing.measure('rectified-gate',()=>this.gate.matchesCapture(image,current,identity)):null});
-    if(capture.skippedRaster)return unchanged(capture);
+      beforeRaster:current=>{
+        // A held DATA image cannot be the G32 control we are waiting for. Its
+        // size cues suffice; do not allocate a crop or run the neural corrector.
+        if(!profileAllowed(current.info)){rejectedProfile=true;return false;}
+        return !optimized||forceFullScan||!timing.measure('rectified-gate',()=>this.gate.matchesCapture(image,current,identity));
+      }});
+    if(capture.skippedRaster&&!rejectedProfile)return unchanged(capture);
     const base={operation:'transport-scan',transport:'neural-qr',expected,info:capture.info??null,
       corners:capture.corners??[],tentativeCorners:capture.tentativeCorners??[],markers:capture.markers??[],
       phaseCounts:before.phaseCounts,collected:before.collected,stats:capture.stats??{},method:'neural-corrector'};
     if(!capture.ok)return finish({...base,...this.burst.miss(identity),ok:false,waiting:true,stage:capture.stage,error:capture.error});
     const size=capture.info.size;
-    if(!isTransportData(capture.info)||size<CONTROL_SIZE||size>maxSize||expected==='ack'&&size!==CONTROL_SIZE){
+    if(rejectedProfile||!profileAllowed(capture.info)){
       this.burst.reset();this.records=[];
       return finish({...base,...this.burst.miss(identity),ok:false,waiting:true,stage:'profile',
-        error:expected==='ack'?`Waiting for a G${CONTROL_SIZE} Neural-QR ACK.`:`G${size} exceeds the receiving profile; maximum is G${maxSize}.`});
+        error:expected!=='data'?`Waiting for a G${CONTROL_SIZE} Neural-QR ${expected==='ack'?'ACK':'REQUEST'}.`:`G${size} exceeds the receiving profile; maximum is G${maxSize}.`});
     }
     const state=timing.measure('burst-collection',()=>this.burst.add(capture,identity));
     if(optimized&&state.updated){

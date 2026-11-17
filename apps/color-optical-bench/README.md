@@ -61,7 +61,9 @@ color transport experiments remain available without a new deployment.
 
 The new [Neural-ZKBoo interface](../../docs/NEURAL_ZKBOO_DEMO.md) uses the shared
 authentication session through a dedicated Neural-QR stop-and-wait channel.
-Both data and G32 ACKs use the trained W-tube/VW corrector. Physical-device
+Data, G32 ACKs and G32 REQUEST controls use the trained W-tube/VW corrector.
+A final ACK stays visible until the sender requests the reply; there is no timed
+ACK/START alternation. Physical-device
 profiles allow G128 computer→phone and G64 phone→computer, independently of
 cryptographic roles; smaller grids can be selected between messages. The
 [neural corrector](../../docs/NEURAL_CORRECTOR.md) completed phase-grouped

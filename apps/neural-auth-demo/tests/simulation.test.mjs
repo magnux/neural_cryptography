@@ -10,7 +10,7 @@ test('the runnable protocol benchmark performs the complete fresh-key handshake 
   assert.equal(result.verifier.peerDisplayName,'Simulated phone');assert.equal(result.prover.peerDisplayName,'Simulated computer');
   assert.deepEqual(result.messages.map(item=>item.type),['HELLO','IDENTITY','CHALLENGE','PROOF','RESULT']);
   assert.deepEqual(result.cryptoCounts,{createKey:2,newChallenge:1,prove:1,verify:1});
-  assert.equal(result.inferenceCalls,0);
+  assert.equal(result.inferenceCalls,0);assert.ok(result.cryptoIdleWaits>=1);
   for(const stage of ['crypto.createKey','crypto.prove','crypto.verify','transport.receive']){
     const row=result.stages.find(item=>item.stage===stage);assert.ok(row?.count>0);assert.ok(row.minMs>=0);assert.ok(row.maxMs>=row.avgMs);assert.ok(row.avgMs>=row.minMs);
   }
@@ -40,11 +40,11 @@ test('simulation checks cancellation before performing a handshake',async()=>{
 });
 
 
-test('automatic handoffs retain and redisplay final ACKs through lost windows without manual coordination',async()=>{
-  const result=await runFullHandshake({optical:false,dropFinalAckWindows:true});
+test('request handoffs survive lost final ACKs and requests without manual coordination',async()=>{
+  const result=await runFullHandshake({optical:false,dropFinalAckWindows:true,dropRequestWindows:true});
   assert.equal(result.success,true);assert.equal(result.finalResultAckAccepted,true);
   assert.equal(result.automaticTurns,true);assert.equal(result.manualHandoffs,0);
-  assert.equal(result.droppedFinalAckWindows,5);assert.ok(result.retainedAckWindows>=4);
+  assert.equal(result.droppedFinalAckWindows,5);assert.equal(result.requestWindows,4);assert.equal(result.droppedRequestWindows,4);assert.equal(result.handoff,'request');
   assert.equal(result.messages.length,5);assert.equal(result.cryptoCounts.prove,1);assert.equal(result.cryptoCounts.verify,1);
 });
 

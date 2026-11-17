@@ -9,10 +9,10 @@ does not add old-format parsing to the browser or demo server.
 [layout](NEURAL_QR.md) uses asymmetric geometric markers, repeated phase-color
 cues, repeated optical size codes and no dense monochrome byte header. Current
 collection covers G16/G32/G64/G128 at four rectified pixels per cell.
-The collector records random training symbols; the in-band packet codec and
-QR-free authentication integration remain pending. The separate runnable
-Neural-ZKBoo demo still uses OBM5 data and standard QR ACKs. Neither receiver
-has a compatibility fallback to the other format.
+The collector records random training symbols. The Neural-ZKBoo demos use the
+in-band Neural-QR packet codec for START/DATA, G32 ACK and G32 REQUEST, with
+trained W-tube/VW correction. The separate Optical Bench transport still uses
+OBM5. Neither receiver has a compatibility fallback to the other format.
 
 | Layer | Current identifier | Canonical documentation / source |
 | --- | --- | --- |
@@ -23,7 +23,7 @@ has a compatibility fallback to the other format.
 | Optical content descriptor | Eight bytes, `OC`, version 1, type, length | [OBM5 header](../apps/color-optical-bench/FORMAT.md); descriptor is in the monochrome header |
 | Multipart color message | `OLM1` | [Link transport](../apps/color-optical-bench/LINK_TRANSPORT.md), `dist/js/link/protocol.js` |
 | QR byte transport | `QRT` | [QR formats](../apps/qr-neural-key/FORMAT.md), `dist/js/protocol.js` |
-| Neural-ZKBoo color packet container | `NZM1` | [Turn demo](NEURAL_ZKBOO_DEMO.md), `dist/js/neural-auth/optical.js`; length-delimited OLM1 packet plus random fill, inside OBM5 |
+| Neural-QR protected packet envelope | `NQP1` | [Turn demo](NEURAL_ZKBOO_DEMO.md), `dist/js/neural-qr/packet.js`; in-band geometry/type/length, OLM1 bytes and random padding protected by RS32 + CRC |
 | Neural-ZKBoo authentication envelope | `NZA2`, `neural-zkboo-auth-v2` | [Authentication protocol](../apps/qr-neural-key/AUTHENTICATION.md), [QR formats](../apps/qr-neural-key/FORMAT.md) |
 | Optical model bundle | `neural-corrector`, version 1 | [Model/export contract](../experiments/neural-corrector/README.md); untrained or trained status, hashed graphs and fixtures |
 | Neural-corrector checkpoint | `optical-decoder-checkpoint`, version 1 | [`checkpoint.py`](../experiments/neural-corrector/checkpoint.py); local state dict and training/split provenance |
@@ -66,8 +66,9 @@ camera at the selected size. Joined labels are physical
 palette indices; the known phase map relates them to logical symbols. Reference
 cells have a separate loss mask. Current training matrices contain random
 logical symbols and fixed reference cells; no packet framing, ECC or payload CRC
-is implied. The future Neural-QR packet layer must add those checks before
-accepting bytes or advancing authentication. The present Python `multires`
+is implied. Live Neural-QR packets instead use the separate NQP1 envelope,
+RS32 and CRC before transport can accept bytes or advance authentication.
+The present Python `multires`
 model uses the separate earlier 2×2-cell contract. **W-tube** consumes version-2
 four-pixel datasets and predicts logical matrix symbols. The offline data pipeline
 combines native, resampled and original G64

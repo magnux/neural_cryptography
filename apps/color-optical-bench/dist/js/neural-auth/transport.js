@@ -77,8 +77,8 @@ class TurnSender {
 }
 
 /** One in-flight message and a bounded receipt cache. Call reset for a fresh
- * authentication run. Successful final ACKs remain visible until the UI changes
- * turns; duplicate packets can reconstruct the same ACK without redelivery.
+ * authentication run. The channel retains final ACKs until a matching REQUEST;
+ * duplicate packets reconstruct their receipt without regressing the current ACK.
  */
 export class TurnReceiver {
   constructor(options={}) {
@@ -112,8 +112,8 @@ export class TurnReceiver {
       if(p.kind==='start'&&!metadataEqual(previous.meta,p))return {accepted:false,reason:'conflicting-start',ack:null};
       if(previous.state!=='delivered')return {accepted:false,reason:'terminal',ack:null};
       if(p.kind==='data'&&(p.index>=previous.meta.chunkCount||p.data.length!==expectedBytes(previous.meta,p.index)))return {accepted:false,reason:'invalid-chunk',ack:null};
-      this.currentAck=previous.ack;
-      return {accepted:true,reason:'already-delivered',ack:this.ack()};
+      // Answer from the receipt without replacing the newest displayed ACK.
+      return {accepted:true,reason:'already-delivered',ack:previous.ack.slice()};
     }
     if(p.kind==='start') {
       if(p.windowSize!==1||p.chunkBytes>TURN_LIMITS.chunkBytes||p.totalBytes>this.maxMessageBytes||p.messageType!=='raw')return {accepted:false,reason:'unsupported-message',ack:null};

@@ -13,7 +13,7 @@ export const DATA_SIZES=Object.freeze([32,64,128]);
 export const NQR_PARITY=32;
 export const NQR_PACKET_HEADER_BYTES=8;
 const MAGIC=Uint8Array.of(78,81,80,1); // NQP1: one current in-band envelope.
-const KINDS=Object.freeze({start:1,data:2,ack:3});
+const KINDS=Object.freeze({start:1,data:2,ack:3,poll:4});
 
 export function neuralQRPacketProfile(size){
   const geometry=validateNeuralQRProfile({size,colors:16,phases:4,gridBlock:8});
@@ -29,16 +29,17 @@ export function chunkBytesForSize(size){
   return packetCapacity(size)-DATA_OVERHEAD;
 }
 
-function messagePacket(bytes){
+function messagePacket(bytes,size){
   const packet=decodeMessagePacket(bytes);
   if(!Object.hasOwn(KINDS,packet.kind)||packet.messageType!=='raw')throw Error('Unsupported Neural-QR turn packet.');
+  if(['ack','poll'].includes(packet.kind)&&size!==CONTROL_SIZE)throw Error('Neural-QR ACK and REQUEST controls require G32.');
   return packet;
 }
 
 /** Four physical phase matrices from one logical RS codeword and padding draw. */
 export function encodeNeuralQR(bytes,{size=64,phaseMs=150}={}){
   if(!Number.isInteger(phaseMs)||phaseMs<50||phaseMs>10000)throw Error('Phase time must be 50–10000 ms.');
-  const packet=messagePacket(bytes),profile=neuralQRPacketProfile(size);
+  const packet=messagePacket(bytes,size),profile=neuralQRPacketProfile(size);
   if(bytes.length>profile.packetBytes)throw Error(`Turn packet does not fit G${size}: ${bytes.length} > ${profile.packetBytes} bytes.`);
   const padded=randomBytes(profile.payloadBytes);
   padded.set(MAGIC);padded[4]=NQR_LAYOUT.sizes.indexOf(size);padded[5]=KINDS[packet.kind];
@@ -71,7 +72,7 @@ export function decodeNeuralQRSymbols(symbols,size){
     if(MAGIC.some((value,i)=>padded[i]!==value)||padded[4]!==NQR_LAYOUT.sizes.indexOf(size))throw Error('Unexpected Neural-QR envelope or geometry.');
     const length=new DataView(padded.buffer,padded.byteOffset,padded.byteLength).getUint16(6,false);
     if(length<40||length>profile.packetBytes)throw Error('Invalid protected packet length.');
-    const chunk=padded.slice(NQR_PACKET_HEADER_BYTES,NQR_PACKET_HEADER_BYTES+length),packet=messagePacket(chunk);
+    const chunk=padded.slice(NQR_PACKET_HEADER_BYTES,NQR_PACKET_HEADER_BYTES+length),packet=messagePacket(chunk,size);
     if(padded[5]!==KINDS[packet.kind])throw Error('Protected packet kind disagrees with its message.');
     return {ok:true,stage:'decoded',error:null,chunk,kind:packet.kind,stats};
   }catch(error){return {ok:false,stage:'packet',error:error.message,stats};}

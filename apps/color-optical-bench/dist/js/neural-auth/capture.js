@@ -9,7 +9,7 @@ export class TransportCapture {
   reset(){this.context=null;this.geometry=null;this.lastTime=-Infinity;}
   invalidate(){this.geometry=null;}
   scan(image,{expected,context,mediaTime,captureIntervalMs=100,profiler=null,beforeRaster=null,collectTimings=true,includeSamples=true}){
-    if(!['data','ack'].includes(expected)||typeof context!=='string'||!context||!Number.isFinite(mediaTime)||mediaTime<0)
+    if(!['data','ack','request'].includes(expected)||typeof context!=='string'||!context||!Number.isFinite(mediaTime)||mediaTime<0)
       throw Error('Invalid transport capture context.');
     geometryHintMaxAgeMs(captureIntervalMs);
     const key=`${context}/${expected}`;

@@ -1,17 +1,17 @@
 # Neural-QR: optical transport designed for a neural corrector
 
-**Status: version-2 acquisition and collection implemented, 6 November 2026.**
+**Status: version-2 acquisition, collection and packet integration implemented.**
 `capture.html` renders and acquires Neural-QR without an OBM5 header. It uses
 asymmetric orientation markers, repeated optical size codes and phase cues.
 The supported grids are G16/G32/G64/G128, rectified directly from the camera
 to four pixels per cell along each axis. Neural-QR is the project's custom optical
 format, not a standards-compatible QR code.
 
-This milestone collects training evidence. It does not yet deliver Neural-QR
-packets or perform QR-free authentication. The working
-[Neural-ZKBoo demo](NEURAL_ZKBOO_DEMO.md) still uses its OBM5 color DATA and
-standard QR ACKs while W-tube is trained and its browser/packet integration is built.
-The collector accepts only the new acquisition layout; it has no OBM5 fallback.
+The collector records training evidence; the separate
+[Neural-ZKBoo demo](NEURAL_ZKBOO_DEMO.md) carries START/DATA, G32 ACK and G32
+REQUEST through the in-band Neural-QR packet codec and trained W-tube/VW
+corrector. Neither path has an OBM5 fallback. The current request-driven handoff
+still requires physical-device validation.
 
 The goal is fast, reliable optical authentication, with Neural-QR carrying both
 data and control messages, the **neural-corrector** recovering logical matrix
@@ -231,8 +231,8 @@ acquisition. See [the collection workflow](MULTIRES_COLLECTION.md).
 Typing a valid code while photographing another matrix can mislabel a recording;
 phase agreement and image similarity cannot prove otherwise. Keep one static
 logical matrix assigned for all four phases, save the batch before changing it,
-and review suspect recordings offline. Full packet identity will move in-band
-when the trained receiver and codec are integrated.
+and review suspect recordings offline. Live packet identity is carried in-band
+by the separate protected packet codec.
 
 Admission requires clear geometric orientation, agreeing size and phase cues,
 and agreement with the assigned collection profile. The
@@ -245,23 +245,30 @@ packet CRC. Similarity selection uses only captured pixels and does not consult
 sender truth. See [collection and retention](MULTIRES_COLLECTION.md) for the
 centered sample distribution and exact workflow.
 
-## Packet boundaries and metadata — next integration
+## Packet boundaries and metadata
 
-Place packet type, full session/message identifiers, sequence, length and packet
-integrity checks **inside the ECC-protected color payload**. Fixed profile
+The current codec places packet type, full session/message identifiers, sequence,
+length and packet integrity checks **inside the ECC-protected color payload**. Fixed profile
 geometry defines symbol packing and the ECC block layout before those fields are
-read. Decode the complete fixed-size body, then validate its encoded length and
-packet schema. Pad unused cells as in the current dense training distribution.
-Keep full-message digest checks and current transfer matching above this layer.
+read. It decodes the complete fixed-size body, then validates its encoded length
+and packet schema. Random padding fills unused cells as in the dense training
+distribution. Full-message digest checks and current transfer matching remain
+above this layer.
+
+The `NQP1` envelope accepts OLM1 START/DATA and G32 ACK/REQUEST controls. A REQUEST
+is an OLM1 `poll` bound to the preceding completed session/message and final chunk
+index. The final ACK is held until this request arrives; REQUEST is held until
+the reply's START. Each packet cycles the same four cached palette-phase images,
+with no timed ACK/START alternation. See the [turn sequence](NEURAL_ZKBOO_DEMO.md#request-driven-handoff-recovery).
 
 The collection code solves offline labeling for a manually held training matrix.
 It is not the live protocol's packet-membership mechanism. Phase labels alone do
-not identify a logical packet, so the live receiver still needs the following
+not identify a logical packet, so the live receiver uses the following
 in-band checks and bounded transition behavior.
 
-For the first implementation, retain **strict stop-and-wait** and a bounded pool
-of the latest one or two distinct captures per phase. Reset after an accepted
-packet and on run/geometry discontinuities; reject stale observations by age.
+The implementation uses **strict stop-and-wait** and a bounded pool
+of the latest one or two distinct captures per phase. Pools reset after an accepted
+packet and on run/geometry discontinuities; stale observations are rejected by age.
 Old/new packet mixtures can occur during a transition, so failed recovery must
 allow fresh observations to replace them. A repeated accepted packet can reproduce
 its ACK but must not be delivered to the application twice. Only an ECC/CRC-valid

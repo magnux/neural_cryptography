@@ -30,7 +30,7 @@ export class TurnNotices {
       resultDelivered:auth.resultDelivered,mode:link.mode,outgoing:link.outgoing?.messageId,
       outgoingIndex:link.outgoing?.index,incoming:link.incoming?.messageId,
       incomingChunks:link.incoming?.receivedChunks??0,
-      automatic:Boolean(link.automaticTurns),repeatingAck:Boolean(link.repeatingAck),
+      automatic:Boolean(link.automaticTurns),waitingForRequest:Boolean(link.waitingForRequest),queued:Boolean(link.queued),
       received:link.receivedMessages??0,canSend:link.canSendNext,preparing:link.preparing};
     const delivered=Boolean(prior.outgoing&&!current.outgoing&&link.lastTransfer?.state==='delivered'&&
       link.lastTransfer.messageId===prior.outgoing);
@@ -53,23 +53,16 @@ export class TurnNotices {
         'Keep this final ACK visible until the verifier confirms delivery.',auth.result?'success':'error');
     }else if(current.canSend&&!prior.canSend){
       value=current.automatic
-        ?notice('Reply queued',current.mode==='ack'
-          ?'Keep this ACK visible. The next message follows automatically.'
-          :'The next message will start automatically. Show this screen to the other camera.','info')
-        :notice('Your next turn is ready',current.mode==='ack'
-        ?'Keep this ACK visible until the other device advances, then tap “Send next turn”.'
-        :'Tap “Send next turn” and show this screen to the other camera.');
+        ?notice('Reply requested','The other device requested the reply. The next message will start automatically.','info')
+        :notice('Your next turn is ready','The other device requested the reply. Tap “Send next turn” and show this screen to its camera.');
     }else if(current.outgoing&&current.outgoing!==prior.outgoing){
-      value=current.automatic&&current.repeatingAck
-        ?notice('Finishing previous ACK','Let the other camera read this ACK. The reply follows automatically.','info')
-        :notice('Sending this round','A new message-start matrix is displayed. Show it to the other camera and wait for its ACK.','info');
+      value=notice('Sending this round','A new message-start matrix is displayed. Show it to the other camera and wait for its ACK.','info');
     }else if(ackAdvanced){
       value=notice(`ACK received · sending chunk ${current.outgoingIndex+1}/${link.outgoing.chunkCount}`,
         'The next data matrix is displayed. Aim the other camera at this screen.','success');
-    }else if(current.automatic&&current.repeatingAck&&!prior.repeatingAck){
-      value=notice('Repeating final ACK','Let the other camera finish the previous message. The reply will return automatically.','info');
-    }else if(current.automatic&&current.outgoing&&!current.repeatingAck&&prior.repeatingAck){
-      value=notice('Sending this round','The message-start matrix is displayed again. Aim the other camera at this screen.','info');
+    }else if(current.queued&&!prior.queued&&current.waitingForRequest){
+      value=notice('Reply queued · waiting for REQUEST',
+        'Keep this final ACK visible. The reply waits until this camera reads the other device’s REQUEST.','info');
     }else if(current.pairing&&!prior.pairing){
       value=current.automatic
         ?notice('Pairing continues automatically','The codes stay on screen; this POC accepts pairing without a manual comparison.','info')
@@ -77,10 +70,14 @@ export class TurnNotices {
         ?'Let the other device read this ACK, then compare and confirm the codes on both screens.'
         :`${delivered?'ACK received; this round is delivered. ':''}Check both codes and confirm only if they match.`);
     }else if(delivered){
-      value=notice('ACK received · round delivered','Look at the other device for its next action. This camera is ready for the reply.','success');
+      value=notice('ACK received · round delivered',current.mode==='request'
+        ?'Show this G32 REQUEST to the other camera. Keep it visible until the reply starts.'
+        :'Look at the other device for its next action. This camera is ready for the reply.','success');
+    }else if(current.mode==='request'&&prior.mode!=='request'){
+      value=notice('Reply requested · show this screen','Keep this G32 REQUEST visible until the other device starts its reply.','info');
     }else if(current.received>(prior.received??0)){
       value=notice('Round received · show this ACK',
-        `${link.incoming?.chunkCount?`Chunk ${current.incomingChunks}/${link.incoming.chunkCount} received. `:''}${current.automatic?'Let the other camera read this final ACK. Any reply starts automatically.':'Let the other camera read this final ACK before switching turns.'}`);
+        `${link.incoming?.chunkCount?`Chunk ${current.incomingChunks}/${link.incoming.chunkCount} received. `:''}Let the other camera read this final ACK. Keep it visible while waiting for its REQUEST.`);
     }else if(incomingStarted){
       value=notice('Message start received · ACK ready','Show this ACK to the sender, then aim back at its first data matrix.');
     }else if(chunkReceived){

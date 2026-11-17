@@ -137,3 +137,19 @@ for(const size of [32,64,128])test(`G${size} negotiated chunks transfer exactly 
   }
   assert.deepEqual(delivered,payload(chunkBytes*2+1));assert.equal(s.snapshot().ackedChunks,3);
 });
+
+test('completed receipt replay returns its ACK without replacing the latest receipt',async()=>{
+  const r=new TurnReceiver(),messages=[];
+  for(let index=0;index<2;index++){
+    const s=await sender(1,{messageId:index.toString(16).padStart(16,'0')});
+    const startBytes=s.next(1),ready=await r.receive(startBytes,1);s.receive(ready.ack,1);
+    const data=s.next(2),done=await r.receive(data,2);s.receive(done.ack,2);
+    messages.push({start:startBytes,data,ack:done.ack});
+  }
+  const latest=r.ack();assert.deepEqual(latest,messages[1].ack);
+  for(const wire of [messages[0].start,messages[0].data]){
+    const repeated=await r.receive(wire,3);
+    assert.equal(repeated.reason,'already-delivered');assert.deepEqual(repeated.ack,messages[0].ack);
+    assert.deepEqual(r.ack(),latest,'an old completed message cannot regress the displayed receipt');
+  }
+});

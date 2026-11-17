@@ -8,6 +8,7 @@ const meta={sessionId:'11'.repeat(16),messageId:'22'.repeat(8),messageType:'raw'
 const start=(overrides={})=>encodePacket({...meta,kind:'start',...overrides});
 const data=(index,overrides={})=>encodePacket({...meta,kind:'data',index,data:Uint8Array.of(4,5,6),...overrides});
 const ack=(index,status,overrides={})=>encodePacket({...meta,kind:'ack',base:index,bitmap:status==='ready'?0:1,status,...overrides});
+const request=(overrides={})=>encodePacket({...meta,kind:'poll',base:meta.chunkCount-1,...overrides});
 
 test('actual redisplays preserve START/DATA RTT origins and summaries separate grid and kind',()=>{
   const t=new PacketTelemetry({originMs:1000});
@@ -71,4 +72,37 @@ test('bounded telemetry reports omitted observations and never retains packet pa
   assert.ok(report.packets.every(row=>!('data'in row)&&!('digest'in row)));
   report.packets[0].ack.receivedMs=99;assert.equal(t.snapshot().packets[0].ack.receivedMs,null,'report mutation cannot alter tracking');
   assert.throws(()=>new PacketTelemetry({maxRows:0}));
+});
+
+test('REQUEST controls retain predecessor and local display/acceptance times separately from packet RTT',()=>{
+  const t=new PacketTelemetry({originMs:1000});
+  t.displayed(start(),{grid:64,atMs:1100});
+  t.accepted(ack(0,'ready'),{accepted:true},{grid:32,atMs:1200});
+  assert.equal(t.displayed(request(),{grid:32,atMs:1300}),true);
+  assert.equal(t.displayed(request(),{grid:32,atMs:1400}),true);
+  assert.equal(t.accepted(request(),{accepted:false,reason:'foreign-request'},{grid:32,atMs:1450}),false);
+  assert.equal(t.accepted(request(),{accepted:true},{grid:32,atMs:1500}),true);
+  assert.equal(t.accepted(request(),{accepted:true},{grid:32,atMs:1600}),false);
+  assert.equal(t.accepted(request({messageId:'aa'.repeat(8)}),{accepted:true,reason:'duplicate-request'},{grid:32,atMs:1700}),false);
+  assert.equal(t.displayed(request({messageId:'bb'.repeat(8)}),{grid:64,atMs:1800}),false,'REQUEST uses the G32 control profile');
+  const report=t.snapshot();
+  assert.deepEqual(report.requestCounts,{sent:1,received:1});
+  assert.deepEqual(report.requests.map(row=>[row.direction,row.previousMessageId,row.previousFinalIndex,row.displayedMs,row.lastDisplayedMs,row.displayCount,row.receivedMs]),
+    [['sent',meta.messageId,1,300,400,2,null],['received',meta.messageId,1,null,null,0,500]]);
+  assert.equal(report.requests[0].packetBytes,44);
+  assert.equal(report.packets.length,1);
+  assert.equal(report.roundTrips.overall.count,1);assert.equal(t.minimumRoundTripMs,100);
+  assert.equal(report.receiveToAckDisplay.count,0,'REQUEST has no ACK and is not a DATA round trip');
+  report.requests[0].displayCount=99;assert.equal(t.snapshot().requests[0].displayCount,2);
+});
+
+test('REQUEST control records share the bounded telemetry row budget',()=>{
+  const t=new PacketTelemetry({originMs:0,maxRows:2});
+  t.displayed(request(),{grid:32,atMs:10});
+  t.accepted(request(),{accepted:true},{grid:32,atMs:20});
+  assert.equal(t.displayed(start(),{grid:64,atMs:30}),false);
+  assert.equal(t.displayed(request(),{grid:32,atMs:40}),true,'retained controls still update at capacity');
+  const report=t.snapshot();
+  assert.equal(report.requests.length+report.packets.length,2);
+  assert.equal(report.droppedEvents,1);assert.equal(report.truncated,true);
 });

@@ -190,10 +190,10 @@ test('a tampered proof passes multipart transport integrity but fails Neural-ZKB
   assert.equal(pair.calls.filter(c=>c.type==='verify').length,1);
 });
 
-test('the actual turn scheduler keeps final ACKs visible until the next manual handoff',async t=>{
+test('the actual turn scheduler keeps final ACKs visible until a matching REQUEST enables the next manual handoff',async t=>{
   const {TurnChannel}=await import('../dist/js/neural-auth/channel.js');
   let clock=0,busy=0,manualHandoffs=0,heldReply=false;
-  const sessions={},channels={},delivered=[],failures=[],dropped=new Set();
+  const sessions={},channels={},delivered=[],failures=[],dropped=new Set(),droppedRequests=new Set();
   for(const [index,role] of roles.entries()){
     const operations=new CryptoOperations();
     channels[role]=new TurnChannel({initiator:role==='verifier',outgoingSize:role==='verifier'?128:64,now:()=>clock,
@@ -201,7 +201,8 @@ test('the actual turn scheduler keeps final ACKs visible until the next manual h
         delivered.push(decodeEnvelope(bytes).header.type);
         const result=await sessions[role].receive(bytes);assert.equal(result.accepted,true,result.reason);
       }});
-    sessions[role]=new AuthSession({role,deviceId:ids[index],repetitions:32,now:()=>clock,send:bytes=>channels[role].enqueue(bytes),
+    sessions[role]=new AuthSession({role,deviceId:ids[index],repetitions:32,now:()=>clock,
+      send:bytes=>channels[role].enqueue(bytes,{expectReply:decodeEnvelope(bytes).header.type!=='RESULT'}),
       cryptoClient:{cancel:()=>operations.clear(),request:async(type,payload,options={})=>{
         busy++;try{return await operations.run(type,payload,options.onProgress);}finally{busy--;}
       }}});
@@ -216,12 +217,16 @@ test('the actual turn scheduler keeps final ACKs visible until the next manual h
     }
     for(const role of roles){
       const local=channels[role].snapshot(),peer=channels[opposite(role)].snapshot();
-      if(local.canSendNext&&peer.outgoing){assert.equal(local.mode,'ack');heldReply=true;}
-      if(local.canSendNext&&!peer.outgoing){assert.equal(await channels[role].nextTurn(),true);manualHandoffs++;}
+      if(local.queued&&local.waitingForRequest){
+        assert.equal(local.mode,'ack');assert.equal(await channels[role].nextTurn(),false);
+        if(peer.outgoing)heldReply=true;
+      }
+      if(local.canSendNext){assert.equal(peer.outgoing,null);assert.equal(await channels[role].nextTurn(),true);manualHandoffs++;}
     }
     for(const role of roles){
       const wire=channels[role].current();if(!wire)continue;
       const packet=decodePacket(wire);
+      if(packet.kind==='poll'&&!droppedRequests.has(packet.messageId)){droppedRequests.add(packet.messageId);continue;}
       if(packet.kind==='ack'&&packet.status==='complete'){
         if(!dropped.has(packet.messageId)){dropped.add(packet.messageId);continue;}
         // Hold the acknowledgment while the peer prepares its response, as a
@@ -240,6 +245,8 @@ test('the actual turn scheduler keeps final ACKs visible until the next manual h
   assert.equal(sessions.prover.snapshot().proofBytes,17474);
   assert.equal(heldReply,true,'A queued response waits while the peer still needs the final ACK.');
   assert.equal(manualHandoffs,4);assert.equal(dropped.size,5);
+  assert.equal(droppedRequests.size,4,'each reply request survives an initial lost control');
+  assert.equal(channels.verifier.current(),null,'the final RESULT does not request another message');
   assert.deepEqual(delivered,['HELLO','IDENTITY','CHALLENGE','PROOF','RESULT']);
 });
 

@@ -15,14 +15,13 @@ const roles=['verifier','prover'];
 const peer=role=>role==='verifier'?'prover':'verifier';
 const ids=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222'];
 
-test('automatic POC completes all five crypto messages despite lost final ACK windows',async t=>{
-  let clock=0,busy=0,active=true,duplicates=0,repeatedHandoffs=0;
+test('automatic POC completes all five crypto messages despite lost ACKs, REQUESTs and STARTs',async t=>{
+  let clock=0,busy=0,active=true,duplicates=0,repeatedRequests=0;
   const sessions={},channels={},pairing={},calls=[],deliveries=[],failures=[],dropUntil=new Map(),delayed=[];
-  const holdMs=3000;
   for(const [index,role] of roles.entries()){
     const operations=new CryptoOperations();
     pairing[role]=new POCAutoPairing({isActive:()=>active,onError:error=>failures.push(error.message)});
-    channels[role]=new TurnChannel({initiator:role==='verifier',automaticTurns:true,handoffHoldMs:holdMs,
+    channels[role]=new TurnChannel({initiator:role==='verifier',automaticTurns:true,
       outgoingSize:role==='verifier'?128:64,now:()=>clock,
       onError:error=>failures.push(error.message),onMessage:async bytes=>{
         deliveries.push({role,type:decodeEnvelope(bytes).header.type});
@@ -30,7 +29,7 @@ test('automatic POC completes all five crypto messages despite lost final ACK wi
         assert.equal(result.accepted,true,result.reason);
       }});
     sessions[role]=new AuthSession({role,deviceId:ids[index],repetitions:32,now:()=>clock,
-      send:bytes=>channels[role].enqueue(bytes),
+      send:bytes=>channels[role].enqueue(bytes,{expectReply:decodeEnvelope(bytes).header.type!=='RESULT'}),
       onChange:snapshot=>pairing[role].update(sessions[role],snapshot),
       cryptoClient:{cancel:()=>operations.clear(),request:async(type,payload,options={})=>{
         busy++;calls.push({role,type});
@@ -47,16 +46,20 @@ test('automatic POC completes all five crypto messages despite lost final ACK wi
     for(const role of roles){
       const wire=channels[role].current();if(!wire)continue;
       const packet=decodePacket(wire),other=peer(role);
-      if(packet.kind==='ack'&&packet.status==='complete'){
-        if(!dropUntil.has(packet.messageId))dropUntil.set(packet.messageId,clock+2*holdMs+1000);
-        if(clock<dropUntil.get(packet.messageId))continue;
+      const lossMs=packet.kind==='ack'&&packet.status==='complete'?7000:packet.kind==='poll'?4000:packet.kind==='start'?2000:0;
+      if(lossMs){
+        const key=`${packet.kind}:${packet.messageId}`;
+        if(!dropUntil.has(key))dropUntil.set(key,clock+lossMs);
+        if(clock<dropUntil.get(key)){
+          if(packet.kind==='poll')repeatedRequests++;
+          continue;
+        }
       }
-      if(channels[role].snapshot().repeatingAck)repeatedHandoffs++;
       // Delivery and a later stale copy model repeated captures and delayed work.
       const result=await channels[other].receive(wire);
       if(result.accepted){
         const repeated=await channels[other].receive(wire);
-        if(repeated.reason==='duplicate'||repeated.reason==='duplicate-start'||repeated.reason==='already-delivered')duplicates++;
+        if(repeated.reason==='duplicate'||repeated.reason==='duplicate-start'||repeated.reason==='already-delivered'||repeated.reason==='duplicate-request')duplicates++;
         if(step%7===0)delayed.push({to:other,wire:wire.slice(),due:clock+500});
       }
     }
@@ -79,8 +82,11 @@ test('automatic POC completes all five crypto messages despite lost final ACK wi
   assert.deepEqual(deliveries.map(row=>row.type),['HELLO','IDENTITY','CHALLENGE','PROOF','RESULT']);
   assert.equal(calls.filter(row=>row.type==='prove').length,1);
   assert.equal(calls.filter(row=>row.type==='verify').length,1);
-  assert.equal(dropUntil.size,5,'every final ACK was initially unavailable');
-  assert.ok(repeatedHandoffs>0,'final ACKs return automatically after a START display window');
+  assert.equal([...dropUntil.keys()].filter(key=>key.startsWith('ack:')).length,5,'every final ACK was initially unavailable');
+  assert.equal([...dropUntil.keys()].filter(key=>key.startsWith('poll:')).length,4,'each non-final message requests its reply');
+  assert.equal([...dropUntil.keys()].filter(key=>key.startsWith('start:')).length,5,'every START was initially unavailable');
+  assert.ok(repeatedRequests>0,'REQUEST stays current throughout loss');
+  assert.equal(channels.verifier.snapshot().requestedReply,false,'final RESULT requests no next turn');
   assert.ok(duplicates>0,'duplicate camera deliveries do not duplicate auth messages');
   assert.equal(channels.prover.snapshot().mode,'ack','the final result receipt remains displayed');
 });

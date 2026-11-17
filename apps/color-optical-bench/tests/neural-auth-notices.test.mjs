@@ -22,13 +22,15 @@ test('round delivery notifies once; duplicate ACKs and progress cannot extend th
 });
 test('received rounds and queued replies preserve the final ACK instruction',()=>{
   const h=harness();h.notices.update({}, {mode:'receive',receivedMessages:0});
-  h.notices.update({}, {mode:'ack',receivedMessages:1});
+  h.notices.update({}, {mode:'ack',receivedMessages:1,waitingForRequest:true});
   assert.match(h.last().title,/Round received/);assert.match(h.last().message,/other camera/);
-  h.notices.update({}, {mode:'ack',receivedMessages:1,canSendNext:true});
-  assert.match(h.last().title,/next turn/);assert.match(h.last().message,/until the other device advances/);
+  h.notices.update({}, {mode:'ack',receivedMessages:1,waitingForRequest:true,queued:true,canSendNext:false});
+  assert.equal(h.last().title,'Reply queued · waiting for REQUEST');assert.match(h.last().message,/final ACK.*REQUEST/);
   const count=h.changes.length;
-  h.notices.update({}, {mode:'ack',receivedMessages:1,canSendNext:true});
+  h.notices.update({}, {mode:'ack',receivedMessages:1,waitingForRequest:true,queued:true,canSendNext:false});
   assert.equal(h.changes.length,count);
+  h.notices.update({}, {mode:'ack',receivedMessages:1,waitingForRequest:false,queued:true,canSendNext:true});
+  assert.match(h.last().title,/next turn/);assert.match(h.last().message,/requested the reply.*Send next turn/);
 });
 test('pairing notice waits for local identity delivery; processing progress is quiet',()=>{
   const h=harness(),auth={state:'pairing',canConfirm:true};
@@ -70,23 +72,33 @@ test('dismissing a notice retains packet history and completed-round pairing eli
   old();assert.equal(h.last().title,'Compare the pairing codes');assert.equal(h.timers.size,1);
 });
 
-test('automatic handoffs announce the packet actually displayed and keep repeated updates quiet',()=>{
+test('automatic handoffs wait for REQUEST and keep repeated updates quiet',()=>{
   const h=harness(),base={automaticTurns:true,receivedMessages:1};
-  h.notices.update({}, {...base,mode:'ack',canSendNext:true});
-  assert.equal(h.last().title,'Reply queued');assert.match(h.last().message,/automatically/);
-  const outgoing={messageId:'reply',index:-1,chunkCount:2};
-  h.notices.update({}, {...base,mode:'ack',outgoing,repeatingAck:true});
-  assert.equal(h.last().title,'Finishing previous ACK');assert.doesNotMatch(h.last().message,/new message-start matrix is displayed/);
+  h.notices.update({}, {...base,mode:'ack',waitingForRequest:true,queued:true,canSendNext:false});
+  assert.equal(h.last().title,'Reply queued · waiting for REQUEST');assert.match(h.last().message,/final ACK/);
   const count=h.changes.length,timer=[...h.timers.values()][0];
-  for(let i=0;i<3;i++)h.notices.update({}, {...base,mode:'ack',outgoing,repeatingAck:true});
+  for(let i=0;i<3;i++)h.notices.update({}, {...base,mode:'ack',waitingForRequest:true,queued:true,canSendNext:false});
   assert.equal(h.changes.length,count);assert.equal([...h.timers.values()][0],timer);
-  h.notices.update({}, {...base,mode:'send',outgoing,repeatingAck:false});
+  h.notices.update({}, {...base,mode:'ack',waitingForRequest:false,queued:true,canSendNext:true});
+  assert.equal(h.last().title,'Reply requested');assert.match(h.last().message,/automatically/);
+  const outgoing={messageId:'reply',index:-1,chunkCount:2};
+  h.notices.update({}, {...base,mode:'send',outgoing});
   assert.equal(h.last().title,'Sending this round');
-  h.notices.update({}, {...base,mode:'ack',outgoing,repeatingAck:true});
-  assert.equal(h.last().title,'Repeating final ACK');
-  h.notices.update({}, {...base,mode:'send',outgoing:{...outgoing,index:0},repeatingAck:false});
+  h.notices.update({}, {...base,mode:'send',outgoing:{...outgoing,index:0}});
   assert.equal(h.last().title,'ACK received · sending chunk 1/2');
   for(const value of h.changes.filter(Boolean))assert.doesNotMatch(`${value.title} ${value.message}`,/tap|click|Send next turn/i);
+});
+
+test('a delivered outgoing round shows REQUEST and repeated REQUEST snapshots stay quiet',()=>{
+  const h=harness(),base={automaticTurns:true,receivedMessages:1};
+  h.notices.update({}, {...base,mode:'send',outgoing:{messageId:'proof',index:1,chunkCount:2}});
+  const requesting={...base,mode:'request',requestedReply:true,lastTransfer:{state:'delivered',messageId:'proof'}};
+  h.notices.update({},requesting);
+  assert.equal(h.last().title,'ACK received · round delivered');assert.match(h.last().message,/G32 REQUEST/);
+  const count=h.changes.length,timer=[...h.timers.values()][0];
+  h.notices.update({},requesting);assert.equal(h.changes.length,count);assert.equal([...h.timers.values()][0],timer);
+  h.notices.reset();h.notices.update({},requesting);
+  assert.equal(h.last().title,'Reply requested · show this screen');assert.match(h.last().message,/until.*reply/);
 });
 
 test('automatic pairing displays its POC policy without manual confirmation prompts',()=>{

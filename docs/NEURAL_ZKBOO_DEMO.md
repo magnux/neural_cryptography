@@ -127,10 +127,11 @@ does not silently rechunk a partly acknowledged message.
    four phases. Keep it visible until the sender advances. Aim back at the next
    packet. Repeat for START and each DATA packet; simultaneous alignment is not
    required.
-4. Replies start automatically. At a message boundary, the previous final ACK
-   appears first, then alternates with the next message's START until the peer
-   acknowledges that START. Aim the cameras according to the notices; no turn
-   button is needed. Individual data chunks still advance on their matching ACK.
+4. Replies start automatically after an explicit request. At a message boundary,
+   keep the final ACK visible until the sender reads it and displays **G32 REQUEST**.
+   Reading that matching request permits the reply's START. Keep each control
+   visible until the other device advances; no turn button is needed. Individual
+   data chunks still advance on their matching ACK.
 5. Pairing codes stay visible and confirmation happens automatically for this
    POC. No click or visual comparison is required. Challenge, proof and result
    continue through the same automatic exchange.
@@ -150,9 +151,9 @@ not establish that a new packet arrived.
 
 Notices never cover or move the optical code, change focus, or advance a turn
 automatically. A newly accepted ACK replaces the old outgoing matrix with the
-next chunk, or clears it when that message has finished. A newly accepted data
-chunk replaces the displayed ACK with its new ACK. At message boundaries, notices
-distinguish the retained final ACK from the automatically displayed START. The
+next chunk, or a REQUEST when the message has finished and a reply is expected.
+A newly accepted data chunk replaces the displayed ACK with its new ACK. At
+message boundaries, notices distinguish the held final ACK, REQUEST and reply START. The
 normal status and instructions remain available after each notice disappears.
 
 From the **first valid sample**, a provisional **Reading incoming matrix · not
@@ -165,17 +166,26 @@ repeated old packet; only validated transport progress confirms a new one.
 Reading and fading never dismiss or restart handoff notices: those retain their
 own three-second lifetime and can be replaced by the next actual protocol event.
 
-### Automatic handoff recovery
+### Request-driven handoff recovery
 
-A queued reply retains the previous final ACK and displays it first. It then
-alternates that ACK and the new START in slots of `max(3000, 8 × phaseMs)`
-milliseconds: at least three seconds and two full palette cycles per slot.
-The heartbeat advances slots, so actual boundaries can be up to one second later.
-This gives a peer that missed the final ACK repeated chances to finish its send.
-A matching START ACK immediately ends alternation and begins ordinary data/ACK
-transfer. Until then, retries preserve the same message ID and deadline. The
-last RESULT ACK remains visible because there is no subsequent reply. Automatic
-handoff never assumes delivery or regenerates a proof.
+A queued reply retains the previous final ACK until a matching G32 REQUEST
+arrives. The sender creates that request only after accepting the final ACK.
+The request is a fixed 44-byte OLM1 `poll` tied to the completed session ID,
+message ID, message type and final chunk index (`base = chunkCount - 1`). It has
+no changing nonce or counter. It remains visible until the reply's START is
+accepted. If proof computation is still running when REQUEST arrives, the grant
+is retained and the reply starts when ready.
+
+Lost final ACKs and requests are recovered by continuing to display the same
+packet. Timeouts can fail a stalled attempt, but elapsed time never alternates
+the final ACK with START. Once permitted, START remains current until its ready
+ACK. Duplicates cannot grant a different turn or duplicate an authentication
+message. The final RESULT requests no reply, so its final ACK remains visible.
+
+All four rendered palette phases of the current packet are retained and reused,
+including their padding. Phase refreshes do not regenerate packet pixels. The
+three-second notice and reading-overlay timers only affect feedback; they do
+not change which packet is displayed or advance the handoff.
 
 **Proof accepted · result delivery pending** means the verifier has checked the
 proof, but the result has not yet reached the peer. Finish the RESULT exchange
@@ -336,7 +346,7 @@ Useful comparisons are:
 - Actual and processed camera resolution, observed pixels per cell, missing phases
   or orange acquisition feedback.
 - Per-grid capture attempts, inference count/time, CRC-accepted matrices and
-  transport-accepted matrices, with separate DATA/ACK failure stages.
+  transport-accepted matrices, with separate DATA/ACK/REQUEST failure stages.
 - Per-message bytes, elapsed time and goodput in **bytes/second**, proof creation
   and verification times, and final outcome on each device.
 
@@ -359,15 +369,21 @@ is handled even when the ACK is painted before the receive handler returns.
 All timestamps are monotonic milliseconds relative to that device's attempt
 start. The received-packet timestamp is captured before transport processing;
 it is retained only if transport accepts the packet. No phone/PC clock subtraction
-is used. RTT includes acquisition, neural inference, alignment, retries and turn
-changes, so it measures the optical interaction rather than network latency.
+is used. RTT includes acquisition, neural inference, alignment and retries,
+so it measures the optical interaction rather than network latency.
+
+`packetTimings.requests` separately records sent and received REQUEST controls,
+with local display/acceptance timestamps, redisplay counts, predecessor message
+IDs and final chunk indices. `requestCounts` gives sent/received control counts.
+These records do not create ACK rows or contribute to START/DATA RTT summaries.
 
 `packetTimings.roundTrips.overall` and `byGridAndKind` report count, minimum,
 median, nearest-rank p95, mean and maximum. Use the **minimum for the same grid,
 packet kind and direction** as the observed best-case target, and compare median
 and p95 against it. A fast G32 control packet is not a G128 data target. The minimum
-is an observation, not a guaranteed physical lower bound. Rows are bounded to
-4,096, with explicit truncation/drop counts; no per-camera-frame trace is stored.
+is an observation, not a guaranteed physical lower bound. Packet and REQUEST
+records share a limit of 4,096 rows, with explicit truncation/drop counts;
+no per-camera-frame trace is stored.
 
 `completion.afterMs` stops at the local completion milestone, excluding time spent
 idle before downloading: `result-acknowledged` on the verifier or
@@ -377,8 +393,8 @@ stop/download. Settings explicitly mark automatic turns and
 
 Automated tests run actual 32-repetition cryptography through clean rendered
 Neural-QR acquisition, phase packing, a deterministic test-only classifier, and
-RS/CRC recovery in both directions. They check G32 ACKs, G128/G64 chunks, lost
-final ACKs, duplicates, tampered proofs and challenge/session binding. They do
+RS/CRC recovery in both directions. They check G32 ACKs and REQUESTs, G128/G64
+chunks, lost final ACKs and requests, duplicates, tampered proofs and challenge/session binding. They do
 not substitute for the trained checkpoint's browser parity or live-camera tests.
 Run `npm run test:neural-zkboo` for the focused suite.
 

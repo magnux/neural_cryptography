@@ -4,6 +4,13 @@ A separate mobile-first, static application for Neural-QR authentication.
 The front camera and outgoing matrix share the screen. Human-readable device
 names travel with the authenticated session; cryptographic identifiers remain
 internal. Statistics are optional and include per-stage and per-matrix timings.
+The preview is mirrored initially, the outgoing matrix starts at the bottom,
+and both have display toggles. The exchange fits one viewport; Settings opens
+the scrolling setup and statistics view. Mirroring changes only the preview.
+
+Turns use stable G32 REQUEST controls: the final ACK stays visible until the
+sender acknowledges receipt by requesting the reply. Each packet reuses its
+four cached palette-phase images; no timer alternates final ACK and START.
 
 From the repository root:
 

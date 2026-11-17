@@ -1,5 +1,5 @@
 import {AuthSession} from './js/auth-core/session.js';
-import {normalizeDisplayName,validDeviceId} from './js/auth-core/envelope.js';
+import {decodeEnvelope,normalizeDisplayName,validDeviceId} from './js/auth-core/envelope.js';
 import {CryptoClient} from './js/crypto-lab/client.js';
 import {CorrectorClient} from './js/corrector-lab/client.js';
 import {sameBytes} from './js/format.js';
@@ -16,6 +16,16 @@ import {AcceptedProbeGate} from './js/neural-auth/frame-gate.js';
 // a desktop user agent, so touch-enabled MacIntel is also treated as mobile.
 export function detectDevice({userAgent='',platform='',maxTouchPoints=0,userAgentData}={}) {
   return userAgentData?.mobile===true||/Android|iPhone|iPad|iPod|Mobile/i.test(userAgent)||platform==='MacIntel'&&maxTouchPoints>1?'mobile':'desktop';
+}
+
+// Display preferences never enter camera capture or the transport configuration.
+export function displayPreferences(saved) {
+  let value;try{value=typeof saved==='string'&&saved.length<512?JSON.parse(saved):null;}catch{/* Use the safe display defaults. */}
+  return {mirrored:value?.mirrored!==false,qrPosition:value?.qrPosition==='top'?'top':'bottom'};
+}
+
+export function matrixEdge(width,height) {
+  return Number.isFinite(width)&&Number.isFinite(height)?Math.max(0,Math.floor(Math.min(width,height))):0;
 }
 
 export function sessionMessage(state,link) {
@@ -57,6 +67,34 @@ if(typeof document!=='undefined')initialize();
 function initialize() {
   const $=id=>document.getElementById(id),setText=(id,text)=>{if($(id).textContent!==text)$(id).textContent=text;};
   const device=detectDevice(navigator);document.body.dataset.device=device;
+  let display=displayPreferences();
+  try{display=displayPreferences(localStorage.getItem('neural-key-display'));}catch{/* Storage is optional. */}
+  function applyDisplayPreferences() {
+    $('app').dataset.previewMirrored=String(display.mirrored);$('app').dataset.qrPosition=display.qrPosition;
+    $('mirrorPreview').setAttribute('aria-pressed',String(display.mirrored));setText('mirrorPreview',display.mirrored?'Mirrored':'Normal');
+    $('mirrorPreview').setAttribute('aria-label',`Camera preview: ${display.mirrored?'mirrored':'normal'}. Switch to ${display.mirrored?'normal':'mirrored'}.`);
+    $('qrPosition').setAttribute('aria-pressed',String(display.qrPosition==='top'));setText('qrPosition',`QR: ${display.qrPosition}`);
+    $('qrPosition').title=`Move the outgoing matrix to the ${display.qrPosition==='top'?'bottom':'top'} of the screen.`;
+    try{localStorage.setItem('neural-key-display',JSON.stringify(display));}catch{/* Preferences still last for this page. */}
+  }
+  function sizeMatrix() {
+    const slot=$('matrixSlot'),edge=matrixEdge(slot.clientWidth,slot.clientHeight);
+    if(slot.style.getPropertyValue('--matrix-edge')!==`${edge}px`)slot.style.setProperty('--matrix-edge',`${edge}px`);
+  }
+  function resizeViewport() {
+    // visualViewport shrinks with the on-screen keyboard; Settings remains the
+    // only scroll surface, and closing it restores the complete exchange view.
+    const height=Math.min(window.innerHeight,window.visualViewport?.height??window.innerHeight);
+    if(Number.isFinite(height)&&height>0)document.documentElement.style.setProperty('--viewport-height',`${height}px`);
+    sizeMatrix();
+  }
+  applyDisplayPreferences();
+  if(typeof ResizeObserver==='function')new ResizeObserver(sizeMatrix).observe($('matrixSlot'));
+  window.addEventListener('resize',resizeViewport);window.visualViewport?.addEventListener('resize',resizeViewport);
+  $('mirrorPreview').addEventListener('click',()=>{display.mirrored=!display.mirrored;applyDisplayPreferences();});
+  $('qrPosition').addEventListener('click',()=>{display.qrPosition=display.qrPosition==='top'?'bottom':'top';applyDisplayPreferences();sizeMatrix();});
+  $('settings').addEventListener('toggle',()=>{if(!$('settings').open)$('app').scrollTop=0;resizeViewport();});
+  resizeViewport();
   let localIdentity={deviceId:null,displayName:device==='mobile'?'My phone':'My computer'};
   try{
     const saved=localStorage.getItem('neural-key-device');
@@ -87,7 +125,7 @@ function initialize() {
     const phaseMs=integer($('phaseMs').value,50,10000,'Phase interval');
     return {displayName:normalizeDisplayName($('displayName').value),role,backend,repetitions,resolution,outgoingSize,incomingMaxSize,controlSize:32,
       phaseMs,captureMs:integer($('captureMs').value,50,2000,'Capture interval'),cameraId:$('camera').value,facingMode:'user',
-      statistics:$('statistics').checked,optimized:$('optimized').checked,automaticTurns:true,handoffHoldMs:Math.max(3000,phaseMs*8),pairingConfirmation:'automatic-poc-unchecked'};
+      statistics:$('statistics').checked,optimized:$('optimized').checked,automaticTurns:true,handoff:'request',pairingConfirmation:'automatic-poc-unchecked'};
   }
 
   function buttons() {
@@ -110,7 +148,7 @@ function initialize() {
     buttons();if(!active||mode!=='camera')return;
     const link=channel?.snapshot(),message=sessionMessage(authState,link);
     setText('title',message.title);setText('instruction',message.instruction);
-    $('peerName').hidden=!message.complete||!authState?.peerDisplayName;setText('peerName',authState?.peerDisplayName??'');
+    $('peerName').hidden=!message.complete||!authState?.peerDisplayName;setText('peerName',authState?.peerDisplayName??'');$('peerName').title=authState?.peerDisplayName??'';
     $('app').dataset.state=message.complete?'complete':'active';
     setText('stepLabel',message.complete?'EXCHANGE COMPLETE':authState?.peerDisplayName?`CONNECTED TO ${authState.peerDisplayName}`:'BROWSER-LOCAL EXCHANGE');
     $('result').hidden=!message.result;setText('result',message.result);$('result').dataset.accepted=String(authState?.result!==false);
@@ -137,9 +175,9 @@ function initialize() {
       setText('matrixLabel','Looking for the other device');return;
     }
     if(shown&&sameBytes(shown,bytes))return;
-    const began=config.statistics?performance.now():0,packet=decodePacket(bytes),size=packet.kind==='ack'?32:config.outgoingSize;
+    const began=config.statistics?performance.now():0,packet=decodePacket(bytes),size=['ack','poll'].includes(packet.kind)?32:config.outgoingSize;
     // Rendering adds secure random padding. Cache the exact first four phases
-    // for retained ACK/START alternation instead of generating new pixels.
+    // for repeated display of the same packet instead of generating new pixels.
     let cached=renderCache.find(item=>item.size===size&&sameBytes(item.bytes,bytes));
     if(!cached){
       cached={bytes:bytes.slice(),size,frames:packetFrames(bytes,{size,phaseMs:config.phaseMs}).map(frame=>renderNeuralQR(frame,size*8))};
@@ -147,7 +185,7 @@ function initialize() {
     }
     shown=bytes.slice();rendered=cached.frames;phaseStart=performance.now();phaseIndex=-1;
     $('matrixZone').dataset.visible='true';$('matrixPlaceholder').hidden=true;
-    setText('matrixLabel',packet.kind==='ack'?'Acknowledgment · keep visible':`G${size} · ${packet.kind==='start'?'starting message':'sending data'}`);
+    setText('matrixLabel',packet.kind==='ack'?'Acknowledgment · keep visible':packet.kind==='poll'?'Requesting next message · keep visible':`G${size} · ${packet.kind==='start'?'starting message':'sending data'}`);
     paintPhase();packetTelemetry?.displayed(bytes,{grid:size,atMs:performance.now()});
     if(config.statistics)timing('packetRender',performance.now()-began);
     schedulePhase(epoch);
@@ -191,7 +229,7 @@ function initialize() {
 
   async function scan(metadata,token) {
     const camera=$('video'),canvas=$('captureCanvas'),dimensions=captureDimensions(camera.videoWidth,camera.videoHeight);
-    const expected=channel?.snapshot().outgoing?'ack':'data';
+    const expected=channel?.snapshot().expected??'data';
     const began=config.statistics?performance.now():0;
     if(config.statistics)scanCount++;
     let probe;
@@ -236,7 +274,7 @@ function initialize() {
         if(isCurrent(token)&&config.optimized)probeGate.accept(accepted.probeGate);
       }
       if(!isCurrent(token))return;
-      setText('cameraStatus',expected==='ack'?'Acknowledgment received · continuing':'Packet received · hold steady');
+      setText('cameraStatus',expected==='ack'?'Acknowledgment received · continuing':expected==='request'?'Request received · continuing':'Packet received · hold steady');
     }
   }
 
@@ -274,10 +312,10 @@ function initialize() {
     $('cameraPlaceholder').hidden=true;
     if(config.statistics){const camera=stream.getVideoTracks()[0]?.getSettings()??{};report.camera={width:camera.width,height:camera.height,frameRate:camera.frameRate,facingMode:camera.facingMode,...opened.request};}
     await populateCameras(token);if(!isCurrent(token))return;
-    channel=new TurnChannel({initiator:config.role==='verifier',outgoingSize:config.outgoingSize,automaticTurns:true,handoffHoldMs:config.handoffHoldMs,
+    channel=new TurnChannel({initiator:config.role==='verifier',outgoingSize:config.outgoingSize,automaticTurns:true,
       onChange:()=>{if(isCurrent(token))update();},onMessage:async bytes=>{if(!isCurrent(token))return;const result=await session.receive(bytes);if(isCurrent(token))event(result.accepted?'Authentication message received.':`Authentication message ignored: ${result.reason}`);},onError:e=>fail(e,token)});
     session=new AuthSession({role:config.role,deviceId:localIdentity.deviceId,displayName:config.displayName,cryptoClient,repetitions:config.repetitions,timeoutMs:60*60*1000,
-      send:bytes=>channel.enqueue(bytes),onChange:state=>{if(!isCurrent(token))return;const previous=authState?.state;authState=state;if(previous!==state.state)event(state.status);autoPairing.update(session,state);update();}});
+      send:bytes=>channel.enqueue(bytes,{expectReply:decodeEnvelope(bytes).header.type!=='RESULT'}),onChange:state=>{if(!isCurrent(token))return;const previous=authState?.state;authState=state;if(previous!==state.state)event(state.status);autoPairing.update(session,state);update();}});
     heartbeat=setInterval(()=>{
       if(!isCurrent(token))return;
       if(captureCallback!==null&&!scanning&&performance.now()-frameWaitAt>15000){fail(Error('The camera stopped producing frames. Start again on both devices.'),token);return;}
@@ -356,7 +394,7 @@ function initialize() {
   function setMode(next) {
     if(active||next===mode)return;mode=next;report=null;config=null;authState=null;error();
     $('cameraTab').setAttribute('aria-pressed',String(next==='camera'));$('simulationTab').setAttribute('aria-pressed',String(next==='simulation'));
-    $('cameraPanel').hidden=next!=='camera';$('simulationPanel').hidden=next!=='simulation';showIdle();
+    $('cameraPanel').hidden=next!=='camera';$('simulationPanel').hidden=next!=='simulation';$('app').dataset.mode=next;showIdle();sizeMatrix();
   }
 
   $('cameraTab').addEventListener('click',()=>setMode('camera'));$('simulationTab').addEventListener('click',()=>setMode('simulation'));

@@ -64,14 +64,21 @@ test('multipart packet progress replaces notices while repeats stay quiet and fi
     else assert.equal(a.last().title,'ACK received · round delivered');
   }
   await done;
-  assert.equal(a.channel.current(),null,'the sender has no stale outgoing packet after final ACK');
+  const request=a.channel.current();assert.equal(decodePacket(request).kind,'poll','the delivered sender requests the next turn');
+  assert.equal(a.channel.snapshot().expected,'data');
+  assert.match(a.last().message,/G32 REQUEST/);
   const finalAck=b.channel.current();assert.equal(decodePacket(finalAck).status,'complete');
   const repeated=await quiet(a,()=>a.channel.receive(finalAck));assert.equal(repeated.accepted,false);
   assert.deepEqual(b.channel.current(),finalAck);
 
   const reply=b.channel.enqueue(Uint8Array.of(7));reply.catch(()=>{});
-  assert.equal(b.last().title,'Your next turn is ready');
+  assert.equal(b.last().title,'Reply queued · waiting for REQUEST');
   assert.deepEqual(b.channel.current(),finalAck,'queueing a reply must retain the final ACK for the other camera');
+  assert.equal(b.channel.snapshot().expected,'request');
+  assert.equal(await b.channel.nextTurn(),false,'a manual action cannot bypass the peer request');
+  assert.equal((await b.channel.receive(request)).accepted,true);
+  assert.equal(b.last().title,'Your next turn is ready');
+  await quiet(b,()=>b.channel.receive(request));
   assert.equal(await b.channel.nextTurn(),true);
   assert.equal(b.last().title,'Sending this round');
   assert.equal(decodePacket(b.channel.current()).kind,'start');

@@ -4,11 +4,13 @@ import {encodePacket as messagePacket,DATA_OVERHEAD} from '../dist/js/link/proto
 import {gridLayout,paletteMap} from '../dist/js/grid.js';
 import {encodeNeuralQR,decodeNeuralQR,decodeNeuralQRSymbols,neuralQRPacketProfile,packetCapacity,chunkBytesForSize} from '../dist/js/neural-qr/packet.js';
 import {encodePacket as encodeFEC,decodePacket as decodeFEC} from '../dist/js/neural-qr/fec-packet.js';
+import {packetFrames,unpackOptical} from '../dist/js/neural-auth/optical.js';
 
 const ids={sessionId:'12'.repeat(16),messageId:'34'.repeat(8),messageType:'raw'};
 const bytes=n=>Uint8Array.from({length:n},(_,i)=>(i*17+(i>>8))&255);
 const data=(n,index=0)=>messagePacket({...ids,kind:'data',index,data:bytes(n)});
 const ack=()=>messagePacket({...ids,kind:'ack',base:17,bitmap:1,status:'progress',digest:'56'.repeat(32)});
+const request=()=>messagePacket({...ids,kind:'poll',base:17});
 
 function canonical(frame){
   const symbols=frame.symbols.slice();
@@ -37,7 +39,7 @@ test('packet capacities account for pilots, outer CRC, RS, envelope and message 
     assert.equal(packetCapacity(size),capacity);assert.equal(chunkBytesForSize(size),chunk);
     assert.equal(capacity-DATA_OVERHEAD,chunk);
   }
-  assert.throws(()=>encodeNeuralQR(ack(),{size:16}),/does not fit/);
+  assert.throws(()=>encodeNeuralQR(ack(),{size:16}),/G32/);
   assert.throws(()=>chunkBytesForSize(16),/G32/);
 });
 
@@ -59,6 +61,35 @@ test('short control packets retain dense random padding shared across phases',()
   assert.notDeepEqual(first[0].symbols,second[0].symbols);
   for(const frame of first)assert.deepEqual(canonical(frame),first[0].symbols);
   assert.deepEqual(decodeNeuralQRSymbols(first[0].symbols,32).chunk,packet);
+});
+
+test('REQUEST uses protected kind 4 and four G32 phases regardless of the outgoing data grid',()=>{
+  const packet=request();assert.equal(packet.length,44);
+  const frames=packetFrames(packet,{size:128});
+  assert.equal(frames.length,4);
+  for(const frame of frames){
+    assert.equal(frame.size,32);
+    const logical=canonical(frame),decoded=decodeNeuralQRSymbols(logical,32);
+    assert.equal(decoded.ok,true,decoded.error);assert.equal(decoded.kind,'poll');
+    assert.deepEqual(unpackOptical(decoded.chunk,'request'),packet);
+    assert.equal(decodeFEC(wireOf(logical,32)).payload[5],4);
+  }
+  assert.throws(()=>unpackOptical(packet,'data'),/kind/);
+  assert.throws(()=>unpackOptical(packet,'ack'),/kind/);
+  assert.throws(()=>unpackOptical(ack(),'request'),/kind/);
+  for(const size of [16,64,128])for(const control of [ack(),request()])
+    assert.throws(()=>encodeNeuralQR(control,{size}),/G32/);
+});
+
+test('CRC-valid G64 envelopes containing ACK or REQUEST are rejected as invalid control geometry',()=>{
+  const size=64,profile=neuralQRPacketProfile(size);
+  for(const [packet,kind] of [[ack(),3],[request(),4]]){
+    const padded=new Uint8Array(profile.payloadBytes);
+    padded.set([78,81,80,1,2,kind]);new DataView(padded.buffer).setUint16(6,packet.length,false);padded.set(packet,8);
+    const decoded=decodeNeuralQRSymbols(symbolsOf(encodeFEC(padded,profile.wireBytes),size),size);
+    assert.equal(decoded.ok,false);assert.equal(decoded.stage,'packet');assert.match(decoded.error,/G32/);
+    assert.equal(decoded.stats.crcAccepted,1);
+  }
 });
 
 for(const size of [32,64,128])test(`G${size}: RS32 recovers 16 unknown byte errors in every interleaved block`,()=>{
@@ -95,5 +126,5 @@ test('shape, palette, finite values and unsupported message kinds are rejected',
   assert.throws(()=>decodeNeuralQR(new Float32Array(1),32),/logits/);
   const bad=new Float32Array(16*32*32);bad[100]=NaN;assert.throws(()=>decodeNeuralQR(bad,32),/logits/);
   const symbols=new Uint8Array(32*32);symbols[0]=16;assert.throws(()=>decodeNeuralQRSymbols(symbols,32),/logical/);
-  assert.throws(()=>encodeNeuralQR(messagePacket({...ids,kind:'poll',base:0}),{size:32}),/Unsupported/);
+  assert.throws(()=>encodeNeuralQR(messagePacket({...ids,kind:'cancel',reason:1}),{size:32}),/Unsupported/);
 });

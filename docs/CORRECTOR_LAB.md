@@ -3,7 +3,7 @@
 The Neural Corrector Lab runs U-tube, W-tube and VW models locally in a browser
 worker. It measures PyTorch-to-browser numerical agreement, model loading,
 inference time, and camera-burst preparation. The current Neural-ZKBoo demo uses
-a trained W-tube/VW checkpoint with header-free Neural-QR data and G32 ACKs.
+a trained W-tube/VW checkpoint with header-free Neural-QR data and G32 ACK/REQUEST controls.
 
 The serving path already exists. The Python `.pt` file is the training
 checkpoint; the browser loads its **ONNX export**, a small manifest and the
@@ -283,9 +283,9 @@ cover every phase; the pool replaces the oldest sample of each observed phase.
 Missed detections and duplicate exposures do not count. These retries remain
 within bounded retention and timeout limits.
 
-The demo cycles DATA and G32 ACK phases at 150 ms and targets distinct camera
-samples every 100 ms, with both intervals configurable. Both packet types use
-Neural-QR and the trained corrector. Explicit turns let the user rotate the phone
+The demo cycles DATA and G32 ACK/REQUEST phases at 150 ms and targets distinct
+camera samples every 100 ms, with both intervals configurable. All packet types
+use Neural-QR and the trained corrector. Request-driven turns let the user rotate the phone
 between receiving and displaying. Computer data can use G128 and phone data G64;
 physical device limits are independent of authentication roles.
 See the [complete setup and device sequence](NEURAL_ZKBOO_DEMO.md) for the initial

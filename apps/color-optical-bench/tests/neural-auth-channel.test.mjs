@@ -26,139 +26,159 @@ async function transfer(sender,receiver) {
   await flush();return packets;
 }
 
-test('manual reply retains the final ACK until explicit turn handoff, then completes both directions',async()=>{
+test('manual reply requires the predecessor REQUEST before explicit turn promotion',async t=>{
   let now=0,replyDone;const receivedA=[],receivedB=[];
   const a=new TurnChannel({initiator:true,now:()=>++now,onMessage:value=>receivedA.push(value)});
-  const b=new TurnChannel({now:()=>++now,onMessage:value=>{receivedB.push(value);replyDone=b.enqueue(bytes(1700,9));}});
+  const b=new TurnChannel({now:()=>++now,onMessage:value=>{receivedB.push(value);replyDone=b.enqueue(bytes(1700,9),{expectReply:false});}});
+  t.after(()=>{a.close();b.close();});
   const firstDone=a.enqueue(bytes(2600));await prepared(a);
   const packets=await transfer(a,b);await firstDone;
-  assert.equal(a.snapshot().mode,'receive');assert.equal(b.snapshot().mode,'ack');
-  assert.equal(b.snapshot().canSendNext,true);assert.equal(b.snapshot().queued,true);
+  assert.equal(a.snapshot().mode,'request');assert.equal(a.snapshot().expected,'data');
+  assert.equal(a.snapshot().requestedReply,true);assert.equal(b.snapshot().mode,'ack');
+  assert.equal(b.snapshot().expected,'request');assert.equal(b.snapshot().waitingForRequest,true);
+  assert.equal(b.snapshot().canSendNext,false);assert.equal(b.snapshot().queued,true);
+  assert.equal(await b.nextTurn(),false,'manual action cannot bypass the request');
   const finalAck=b.current();assert.equal(decodePacket(finalAck).status,'complete');
   for(let i=0;i<5;i++){b.tick();assert.deepEqual(b.current(),finalAck);}
-  const duplicate=await b.receive(packets.at(-1));assert.equal(duplicate.reason,'already-delivered');
-  await flush();assert.equal(receivedB.length,1);assert.equal(b.snapshot().receivedMessages,1);
+  assert.equal((await b.receive(packets.at(-1))).reason,'already-delivered');
+  const request=a.current(),p=decodePacket(request);
+  assert.equal(request.length,44);assert.equal(p.kind,'poll');
+  assert.equal(p.messageId,decodePacket(finalAck).messageId);assert.equal(p.base,decodePacket(finalAck).base);
+  assert.equal((await b.receive(request)).reason,'requested');
+  assert.equal(b.snapshot().canSendNext,true);assert.equal(b.snapshot().waitingForRequest,false);
   assert.equal(await b.nextTurn(),true);assert.equal(b.snapshot().mode,'send');
   await transfer(b,a);await replyDone;
   assert.deepEqual(receivedA,[bytes(1700,9)]);assert.deepEqual(receivedB,[bytes(2600)]);
+  assert.equal(b.snapshot().mode,'receive');assert.equal(b.current(),null,'final RESULT requests no next turn');
   assert.equal(a.snapshot().sessionId,b.snapshot().sessionId);
-  a.close();b.close();
 });
 
-test('lost final ACK repeats safely; stale ACKs and foreign traffic cannot advance the current turn',async()=>{
-  let now=0,deliveries=0;
-  const a=new TurnChannel({initiator:true,now:()=>++now});
-  const b=new TurnChannel({now:()=>++now,onMessage:()=>{deliveries++;}});
-  const done=a.enqueue(bytes(12));await prepared(a);
-  const start=a.current();await b.receive(start);const ready=b.current();await a.receive(ready);
-  const data=a.current();await b.receive(data);const finalAck=b.current();
-  assert.equal((await a.receive(ready)).reason,'stale-ack');
-  assert.equal((await b.receive(data)).reason,'already-delivered');
-  assert.deepEqual(b.current(),finalAck);
-  const altered=encodePacket({...decodePacket(finalAck),sessionId:'aa'.repeat(16)});
-  assert.equal((await a.receive(altered)).accepted,false);
-  assert.equal(a.snapshot().outgoing.ackedChunks,0);
-  await a.receive(finalAck);await done;await flush();assert.equal(deliveries,1);
-  a.close();b.close();
-});
-
-test('automatic handoff recovers a lost final ACK and completes the reply without manual actions',async t=>{
+test('automatic handoff holds ACK, REQUEST and START through losses without elapsed-time alternation',async t=>{
   let now=0,reply;
   const deliveredA=[],deliveredB=[];
   const a=new TurnChannel({initiator:true,automaticTurns:true,outgoingSize:32,now:()=>now,onMessage:value=>deliveredA.push(value)});
   const b=new TurnChannel({automaticTurns:true,outgoingSize:32,now:()=>now,onMessage:value=>{
-    deliveredB.push(value);reply=b.enqueue(bytes(600,9));reply.catch(()=>{});
+    deliveredB.push(value);reply=b.enqueue(bytes(600,9),{expectReply:false});reply.catch(()=>{});
   }});
   t.after(()=>{a.close();b.close();});
   const first=a.enqueue(bytes(12));first.catch(()=>{});await prepared(a);
-  await b.receive(a.current());await a.receive(b.current());
-  const finalData=a.current();await b.receive(finalData);
-  const finalAck=b.current();
-  // The application queues its next message; its first display is still this
-  // final ACK. Neither endpoint invokes nextTurn/repeatPreviousAck/resumeMessage.
-  const until=performance.now()+5000;
-  while((!b.snapshot().outgoing||b.snapshot().preparing)&&performance.now()<until)await new Promise(resolve=>setTimeout(resolve,1));
-  const original=b.snapshot().outgoing;
-  assert.ok(original);assert.equal(b.snapshot().mode,'ack');
-  assert.equal(b.snapshot().automaticTurns,true);assert.equal(b.snapshot().handoffAuto,true);
-  assert.equal(b.snapshot().handoffSwitchAt,3000);assert.deepEqual(b.current(),finalAck);
-
-  const earlyReady=encodePacket({kind:'ack',sessionId:original.sessionId,messageId:original.messageId,
-    messageType:original.messageType,base:0,bitmap:0,status:'ready',digest:original.digest});
-  assert.equal((await b.receive(earlyReady)).reason,'unsent-ack','unseen START cannot be acknowledged');
-  now=2999;b.tick();assert.deepEqual(b.current(),finalAck);
-  now=3000;b.tick();const start=b.current();assert.equal(decodePacket(start).kind,'start');
-  assert.equal((await a.receive(start)).reason,'sending','the first final ACK was deliberately missed');
-  now=6000;b.tick();assert.deepEqual(b.current(),finalAck,'automatic retry restores the missed ACK');
-  assert.equal((await a.receive(b.current())).delivered,true);await first;
-  now=9000;b.tick();assert.deepEqual(b.current(),start,'retry keeps the exact same START');
-  assert.equal(b.snapshot().outgoing.deadline,original.deadline,'handoff retries cannot extend the transfer deadline');
-  await a.receive(b.current());const ready=a.current();
-  assert.equal((await b.receive(ready)).accepted,true);
-  assert.equal(b.snapshot().repeatingAck,false);assert.equal(b.snapshot().handoffAuto,false);
-  assert.equal(b.snapshot().handoffSwitchAt,null);
-  assert.equal((await b.receive(ready)).reason,'unsent-ack');
+  await b.receive(a.current());const ready=b.current();await a.receive(ready);
+  const finalData=a.current();await b.receive(finalData);const finalAck=b.current();await flush();
+  assert.equal(b.snapshot().queued,true);assert.equal(b.snapshot().outgoing,null);
+  for(const time of [3000,9000,30000]){
+    now=time;a.tick();b.tick();
+    assert.deepEqual(a.current(),finalData,'lost final ACK keeps DATA displayed');
+    assert.deepEqual(b.current(),finalAck,'queued reply cannot displace its predecessor final ACK');
+  }
+  assert.equal((await a.receive(ready)).reason,'stale-ack');
+  assert.equal((await b.receive(finalData)).reason,'already-delivered');
+  assert.equal((await a.receive(finalAck)).delivered,true);await first;
+  const request=a.current();assert.equal(decodePacket(request).kind,'poll');
+  for(const time of [33000,39000,60000]){
+    now=time;a.tick();b.tick();
+    assert.deepEqual(a.current(),request,'lost REQUEST is redisplayed unchanged');
+    assert.deepEqual(b.current(),finalAck);
+  }
+  assert.equal((await b.receive(request)).reason,'requested');await prepared(b);
+  const before=b.snapshot().outgoing;
+  const earlyReady=encodePacket({kind:'ack',sessionId:before.sessionId,messageId:before.messageId,
+    messageType:before.messageType,base:0,bitmap:0,status:'ready',digest:before.digest});
+  assert.equal((await b.receive(earlyReady)).reason,'unsent-ack');
+  const start=b.current();assert.equal(decodePacket(start).kind,'start');
+  for(const time of [63000,69000,90000]){
+    now=time;a.tick();b.tick();
+    assert.deepEqual(a.current(),request,'the requester waits for a fresh START');
+    assert.deepEqual(b.current(),start,'lost START stays displayed without an ACK slot');
+    assert.equal((await b.receive(request)).reason,'duplicate-request');
+    assert.equal(b.snapshot().outgoing.deadline,before.deadline);
+  }
   await transfer(b,a);await reply;
   assert.deepEqual(deliveredA,[bytes(600,9)]);assert.deepEqual(deliveredB,[bytes(12)]);
+  assert.equal(a.snapshot().requestedReply,false);
   const lastAck=a.current();assert.equal(decodePacket(lastAck).status,'complete');
-  now+=3000;a.tick();assert.deepEqual(a.current(),lastAck,'final result ACK remains visible when no reply is queued');
+  now+=3000;a.tick();assert.deepEqual(a.current(),lastAck);
 });
 
-test('automatic handoff timeout and close cannot resurrect a retained ACK or queued message',async()=>{
-  let now=0;const errors=[];
+test('a matching REQUEST is remembered until slow proof computation queues its reply',async t=>{
+  let now=0;
   const a=new TurnChannel({initiator:true,automaticTurns:true,now:()=>now});
-  const b=new TurnChannel({automaticTurns:true,now:()=>now,onError:error=>errors.push(error.message)});
-  const first=a.enqueue(bytes(1));await prepared(a);await transfer(a,b);await first;
-  const reply=b.enqueue(bytes(1)),rejected=assert.rejects(reply,/deadline/);
-  const until=performance.now()+5000;
-  while(b.snapshot().preparing&&performance.now()<until)await new Promise(resolve=>setTimeout(resolve,1));
-  assert.equal(b.snapshot().repeatingAck,true);
-  now=TURN_LIMITS.timeoutMs+1;b.tick();await rejected;
-  assert.equal(b.snapshot().closed,true);assert.equal(b.snapshot().handoffSwitchAt,null);
-  assert.equal(b.snapshot().handoffAuto,false);assert.equal(b.current(),null);
-  now+=30000;b.tick();assert.equal(b.current(),null);assert.equal(errors.length,1);a.close();
-});
-
-test('an early handoff can replay the final ACK without changing the pending message',async t=>{
-  const deliveredA=[],deliveredB=[];
-  const a=new TurnChannel({initiator:true,now:()=>1,onMessage:value=>deliveredA.push(value)});
-  const b=new TurnChannel({now:()=>1,onMessage:value=>deliveredB.push(value)});
+  const b=new TurnChannel({automaticTurns:true,now:()=>now});
   t.after(()=>{a.close();b.close();});
-  assert.equal(a.repeatPreviousAck(),false);assert.equal(b.resumeMessage(),false);
-  const first=a.enqueue(bytes(12));first.catch(()=>{});await prepared(a);
-  assert.equal(a.snapshot().canRepeatAck,false);
-  await b.receive(a.current());await a.receive(b.current());
-  const lastData=a.current();await b.receive(lastData);const finalAck=b.current();await flush();
-  // Simulate pressing Send next turn before the sender reads this final ACK.
-  const reply=b.enqueue(bytes(40,9));reply.catch(()=>{});await b.nextTurn();
-  const originalStart=b.current(),before=b.snapshot().outgoing;
-  assert.equal((await a.receive(originalStart)).reason,'sending');
-  assert.equal(b.snapshot().canRepeatAck,true);
-  assert.equal(b.repeatPreviousAck(),true);assert.equal(b.snapshot().mode,'ack');
-  assert.equal(b.snapshot().repeatingAck,true);assert.deepEqual(b.current(),finalAck);
-  assert.equal(b.snapshot().outgoing.messageId,before.messageId);
-  assert.equal(b.snapshot().outgoing.deadline,before.deadline);
-  assert.equal((await a.receive(b.current())).delivered,true);await first;
-  assert.equal(b.resumeMessage(),true);assert.deepEqual(b.current(),originalStart);
-  assert.equal((await a.receive(b.current())).accepted,true);const ready=a.current();
-  // A delayed, matching START ACK also ends replay automatically.
-  b.repeatPreviousAck();assert.equal(b.snapshot().repeatingAck,true);
-  assert.equal((await b.receive(ready)).accepted,true);
-  assert.equal(b.snapshot().repeatingAck,false);assert.equal(b.snapshot().canRepeatAck,false);
-  assert.equal(b.repeatPreviousAck(),false);assert.equal(b.resumeMessage(),false);
-  assert.equal(decodePacket(b.current()).kind,'data');
-  await transfer(b,a);await reply;
-  assert.deepEqual(deliveredA,[bytes(40,9)]);assert.deepEqual(deliveredB,[bytes(12)]);
+  const first=a.enqueue(bytes(1));await prepared(a);await transfer(a,b);await first;
+  const request=a.current();assert.equal((await b.receive(request)).reason,'requested');
+  assert.equal(b.snapshot().waitingForRequest,false);assert.equal(b.snapshot().expected,'request');
+  assert.equal(b.current(),null);
+  now=45000;b.tick();assert.equal((await b.receive(request)).reason,'duplicate-request');
+  const reply=b.enqueue(bytes(20),{expectReply:false});await prepared(b);
+  await transfer(b,a);await reply;assert.equal(b.current(),null);
 });
 
-test('stopping an ACK replay clears the retained display and pending sender',async()=>{
-  const a=new TurnChannel({initiator:true,now:()=>1}),b=new TurnChannel({now:()=>1});
-  const first=a.enqueue(bytes(1));await prepared(a);await transfer(a,b);await first;
-  const reply=b.enqueue(bytes(1));const rejected=assert.rejects(reply,/stopped/);await b.nextTurn();
-  assert.equal(b.repeatPreviousAck(),true);b.close();await rejected;
-  assert.equal(b.current(),null);assert.equal(b.snapshot().canRepeatAck,false);
-  assert.equal(b.snapshot().repeatingAck,false);assert.equal(b.snapshot().outgoing,null);
-  assert.equal(b.repeatPreviousAck(),false);assert.equal(b.resumeMessage(),false);a.close();
+test('foreign and stale REQUESTs cannot release a final ACK or authorize another turn',async t=>{
+  const a=new TurnChannel({initiator:true,automaticTurns:true,now:()=>1});
+  const b=new TurnChannel({automaticTurns:true,now:()=>1});
+  t.after(()=>{a.close();b.close();});
+  const first=a.enqueue(bytes(20));await prepared(a);await transfer(a,b);await first;
+  const request=a.current(),p=decodePacket(request),ack=b.current();
+  const reply=b.enqueue(bytes(30));
+  for(const patch of [{sessionId:'ab'.repeat(16)},{messageId:'cd'.repeat(8)},{base:p.base+1},{messageType:'hello'}]){
+    assert.equal((await b.receive(encodePacket({...p,...patch}))).accepted,false);
+    assert.deepEqual(b.current(),ack);assert.equal(b.snapshot().outgoing,null);
+  }
+  await b.receive(request);await prepared(b);await transfer(b,a);await reply;
+  const second=a.enqueue(bytes(10),{expectReply:false});
+  await a.receive(b.current());await prepared(a);await transfer(a,b);await second;
+  const latestAck=b.current();assert.notEqual(decodePacket(latestAck).messageId,p.messageId);
+  assert.equal((await b.receive(request)).reason,'stale-request');assert.deepEqual(b.current(),latestAck);
+  assert.equal(b.snapshot().waitingForRequest,true);
+});
+
+test('completed START and DATA duplicates cannot replace a pending REQUEST or newer final ACK',async t=>{
+  const a=new TurnChannel({initiator:true,automaticTurns:true,now:()=>1});
+  const b=new TurnChannel({automaticTurns:true,now:()=>1});
+  t.after(()=>{a.close();b.close();});
+  const first=a.enqueue(bytes(20));await prepared(a);const oldA=await transfer(a,b);await first;
+  const reply=b.enqueue(bytes(20));await b.receive(a.current());await prepared(b);
+  const oldB=await transfer(b,a);await reply;
+  const second=a.enqueue(bytes(20));await a.receive(b.current());await prepared(a);await transfer(a,b);await second;
+  const request=a.current(),ack=b.current();
+  for(const wire of oldB){assert.equal((await a.receive(wire)).reason,'already-delivered');assert.deepEqual(a.current(),request);}
+  for(const wire of oldA){
+    await b.receive(wire);assert.deepEqual(b.current(),ack);
+  }
+  assert.equal(a.snapshot().requestedReply,true);assert.equal(b.snapshot().waitingForRequest,true);
+});
+
+test('delayed duplicate DATA cannot regress the currently displayed progress ACK',async t=>{
+  const a=new TurnChannel({initiator:true,outgoingSize:32,now:()=>1}),b=new TurnChannel({now:()=>1});
+  t.after(()=>{a.close();b.close();});
+  const done=a.enqueue(bytes(900));done.catch(()=>{});await prepared(a);
+  await b.receive(a.current());await a.receive(b.current());
+  const old=a.current();await b.receive(old);await a.receive(b.current());
+  await b.receive(a.current());const latest=b.current();assert.equal(decodePacket(latest).base,1);
+  assert.equal((await b.receive(old)).reason,'duplicate');assert.deepEqual(b.current(),latest);
+});
+
+test('handoff deadlines bound lost requests and slow proof queues; duplicates cannot extend them',async()=>{
+  for(const requested of [false,true]){
+    let now=0;const errors=[];
+    const a=new TurnChannel({initiator:true,automaticTurns:true,now:()=>now});
+    const b=new TurnChannel({automaticTurns:true,now:()=>now,onError:error=>errors.push(error.message)});
+    const first=a.enqueue(bytes(1));await prepared(a);await transfer(a,b);await first;
+    const request=a.current();if(requested)await b.receive(request);
+    const reply=requested?null:b.enqueue(bytes(1));
+    const rejected=reply?assert.rejects(reply,/deadline/):Promise.resolve();
+    now=TURN_LIMITS.timeoutMs-1;if(requested)await b.receive(request);b.tick();assert.equal(b.snapshot().closed,false);
+    now++;b.tick();a.tick();await rejected;
+    assert.equal(b.snapshot().closed,true);assert.equal(b.current(),null);assert.equal(a.snapshot().closed,true);
+    assert.equal(errors.length,1);now+=30000;b.tick();assert.equal(errors.length,1);
+  }
+});
+
+test('the total session deadline is bounded even before the initial message',()=>{
+  let now=0,error;
+  const channel=new TurnChannel({now:()=>now,onError:value=>{error=value;}});
+  now=TURN_LIMITS.maxTimeoutMs;channel.tick();
+  assert.equal(channel.snapshot().closed,true);assert.match(error.message,/Session deadline/);
 });
 
 test('cancel during asynchronous sender preparation rejects work and cannot resurrect a matrix',async()=>{
@@ -242,7 +262,7 @@ test('outgoing geometry is independent per device and changes only between messa
   await transfer(pc,phone);await done;
   pc.setOutgoingSize(64);assert.equal(pc.snapshot().outgoingSize,64);
   phone.setOutgoingSize(32);assert.equal(phone.snapshot().outgoingSize,32);
-  const reply=phone.enqueue(bytes(500));await phone.nextTurn();
+  const reply=phone.enqueue(bytes(500));await phone.receive(pc.current());await phone.nextTurn();
   assert.equal(phone.snapshot().outgoing.chunkBytes,chunkBytesForSize(32));
   await transfer(phone,pc);await reply;
   assert.throws(()=>phone.setOutgoingSize(16),/G32/);

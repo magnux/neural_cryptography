@@ -1,4 +1,5 @@
 import {AuthSession} from '../auth-core/session.js';
+import {decodeEnvelope} from '../auth-core/envelope.js';
 import {CryptoClient} from '../crypto-lab/client.js';
 import {CorrectorClient} from '../corrector-lab/client.js';
 import {sameBytes} from '../format.js';
@@ -42,7 +43,7 @@ function settings(){
   if(!['verifier','prover'].includes(role)||!['auto','wasm','webgpu'].includes(backend)||![32,64,110,160,219].includes(repetitions)||!['480','720','1080','1440','2160','max'].includes(resolution))throw Error('Unsupported test settings.');
   const phaseMs=int($('phaseMs').value,50,10000,'Phase interval');
   return {role,backend,repetitions,resolution,...transportProfile($('deviceProfile').value,$('outgoingSize').value),
-    phaseMs,automaticTurns:true,pairingConfirmation:'automatic-poc-unchecked',handoffHoldMs:Math.max(3000,8*phaseMs),
+    phaseMs,automaticTurns:true,pairingConfirmation:'automatic-poc-unchecked',
     captureMs:int($('captureMs').value,50,2000,'Capture interval'),cameraId:$('camera').value};
 }
 function populateProfiles(){
@@ -149,20 +150,22 @@ function update(){
   const mode=link?.mode??'receive';
   $('instruction').textContent=mode==='send'
     ?'Keep this matrix visible. When the receiver shows ACK, turn the phone so this camera can read it. Each chunk waits for its ACK.'
+    :mode==='request'
+      ?'G32 REQUEST ready. Show it to the other camera and keep this camera aimed at the reply.'
     :mode==='ack'
-      ?link?.canSendNext?'ACK ready. Show it to the other camera; the reply starts automatically.'
+      ?link?.waitingForRequest?'Final ACK ready. Keep it visible until this camera reads the other device’s G32 REQUEST.'
         :'ACK ready. Turn the phone to show this ACK to the sender, then aim back at its next matrix. Keep this page open.'
       :'Aim the camera at the other screen. All four corners and the complete matrix must be visible.';
   if(authState?.resultDelivered)$('instruction').textContent='Authentication and result delivery completed. You can save the report and stop.';
   else if(authState?.peerReported)$('instruction').textContent='The verifier reported its result. Keep this final ACK visible until the verifier confirms result delivery, then save the report and stop.';
   if(authState?.state==='verified'&&!authState.resultDelivered)$('instruction').textContent=link?.outgoing
     ?'Send this result message and let the peer acknowledge it to finish both devices.'
-    :'The proof passed here. Show this final ACK to the peer; the result follows automatically.';
-  if(link?.repeatingAck)$('instruction').textContent='Finishing the previous ACK. Keep it facing the other camera; the reply appears automatically.';
+    :link?.waitingForRequest?'The proof passed here. Keep this final ACK visible until the peer requests the result.'
+      :'The proof passed here. The result message is being prepared for the peer.';
   const state=link?.outgoing??link?.incoming;
-  $('transferStatus').textContent=link?.repeatingAck?'Previous ACK · automatic handoff in progress':link?.outgoing
+  $('transferStatus').textContent=mode==='request'?'Requesting the next message · waiting for START':link?.outgoing
     ?`Sending ${state.index<0?'message start':`chunk ${state.index+1}/${state.chunkCount}`} · ${state.ackedBytes.toLocaleString()}/${state.totalBytes.toLocaleString()} B acknowledged`
-    :state?.chunkCount?`Received ${state.receivedChunks}/${state.chunkCount} chunks · ${state.receivedBytes.toLocaleString()} B${link?.queued?' · next message ready':''}`:'Waiting for a message';
+    :state?.chunkCount?`Received ${state.receivedChunks}/${state.chunkCount} chunks · ${state.receivedBytes.toLocaleString()} B${link?.waitingForRequest?' · waiting for REQUEST':link?.queued?' · next message ready':''}`:'Waiting for a message';
   if(authState?.result!==null&&authState?.result!==undefined){
     $('result').textContent=authState.peerReported?(authState.result?'Peer reports accepted':'Peer reports rejected'):(authState.result?'Verified locally':'Rejected locally');
   }
@@ -187,9 +190,9 @@ function renderCurrent(){
   shown=bytes.slice();
   const packet=decodePacket(bytes);
   reading.displayed(`${packet.sessionId}/${packet.messageId}/${packet.kind}/${packet.index??packet.base??''}/${packet.status??''}`);
-  const size=packet.kind==='ack'?32:channel.snapshot().outgoingSize;
+  const size=['ack','poll'].includes(packet.kind)?32:channel.snapshot().outgoingSize;
   rendered=packetFrames(bytes,{size,phaseMs:config.phaseMs}).map(frame=>renderNeuralQR(frame,1024));
-  $('matrixStatus').textContent=packet.kind==='ack'?'G32 ACK · keep visible':packet.kind==='start'?`G${size} · message start`:`G${size} · data chunk ${packet.index+1}`;
+  $('matrixStatus').textContent=packet.kind==='ack'?'G32 ACK · keep visible':packet.kind==='poll'?'G32 REQUEST · waiting for reply':packet.kind==='start'?`G${size} · message start`:`G${size} · data chunk ${packet.index+1}`;
   phaseStarted=performance.now();phaseIndex=-1;paintPhase();
   packetTelemetry?.displayed(bytes,{grid:size,atMs:performance.now()});
   schedulePhase(epoch);
@@ -251,7 +254,7 @@ async function scan(metadata,token){
   canvas.width=dimensions.width;canvas.height=dimensions.height;
   report.processedCamera={width:canvas.width,height:canvas.height,scale:dimensions.scale};
   const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(video,0,0,canvas.width,canvas.height);
-  const image=ctx.getImageData(0,0,canvas.width,canvas.height),expected=channel?.snapshot().outgoing?'ack':'data';
+  const image=ctx.getImageData(0,0,canvas.width,canvas.height),expected=channel?.snapshot().expected??'data';
   report.captureAttempts++;
   const result=await corrector.call('transport-scan',{size:config.incomingMaxSize,backend:config.backend,image,expected,
     captureIntervalMs:config.captureMs,runId:token,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames},[image.data.buffer]);
@@ -283,7 +286,7 @@ async function scan(metadata,token){
   const receivedAt=performance.now(),accepted=await channel.receive(bytes);
   if(!active||token!==epoch)return;
   packetTelemetry?.accepted(bytes,accepted,{grid,atMs:receivedAt});
-  if(accepted.accepted){report.transportAcceptedMatrices++;if(grid)report.geometries[String(grid)].transportAccepted++;$('cameraStatus').textContent=expected==='ack'?'Neural-QR ACK matched · continuing':`G${grid} data packet accepted`;if(accepted.delivered)event('Outgoing message fully acknowledged.');}
+  if(accepted.accepted){report.transportAcceptedMatrices++;if(grid)report.geometries[String(grid)].transportAccepted++;$('cameraStatus').textContent=expected==='ack'?'Neural-QR ACK matched · continuing':expected==='request'?'G32 REQUEST matched · preparing reply':`G${grid} data packet accepted`;if(accepted.delivered)event('Outgoing message fully acknowledged.');}
   else {report.transportRejectedMatrices++;$('cameraStatus').textContent='Code read · waiting for the matching transfer packet';}
 }
 function startLoops(token){
@@ -308,7 +311,7 @@ async function start(){
   lastCapture=-Infinity;lastPresented=0;scanning=false;$('result').textContent='';$('receivedCount').textContent='0';$('inferenceMs').textContent='—';$('elapsed').textContent='0 s';$('goodput').textContent='—';$('cameraDensity').textContent='—';
   report={format:'neural-zkboo-auth-report',version:3,started:new Date().toISOString(),settings:{...config,cameraId:undefined},completion:null,
     captureAttempts:0,captureMisses:0,crcAcceptedMatrices:0,transportAcceptedMatrices:0,transportRejectedMatrices:0,
-    rejectedContainers:0,inferenceCount:0,inferenceMs:[],geometries:{},transfers:[],captureStages:{data:{},ack:{}},geometryReuses:0,model:null,camera:null,cameraControls:null,lastAcquisition:null,lastAcquisitionFailure:null,authentication:null,transport:null};
+    rejectedContainers:0,inferenceCount:0,inferenceMs:[],geometries:{},transfers:[],captureStages:{data:{},ack:{},request:{}},geometryReuses:0,model:null,camera:null,cameraControls:null,lastAcquisition:null,lastAcquisitionFailure:null,authentication:null,transport:null};
   corrector=new CorrectorClient({onProgress:text=>{if(active&&token===epoch)$('modelStatus').textContent=text;}});
   cryptoClient=new CryptoClient({onInvalidate:e=>{if(active&&token===epoch)fail(e);}});
   update();
@@ -328,13 +331,14 @@ async function start(){
     await populateCameras();if(!active||token!==epoch)return;
     const deviceId=crypto.randomUUID();
     channel=new TurnChannel({initiator:config.role==='verifier',outgoingSize:config.outgoingSize,
-      automaticTurns:true,handoffHoldMs:config.handoffHoldMs,onChange:update,
+      automaticTurns:true,onChange:update,
       onMessage:async bytes=>{
         const result=await session.receive(bytes);
         if(token!==epoch)return;
         event(result.accepted?'Authentication message received.':`Message not used: ${result.reason}`);
       },onError:fail});
-    session=new AuthSession({role:config.role,deviceId,cryptoClient,send:bytes=>channel.enqueue(bytes),
+    session=new AuthSession({role:config.role,deviceId,cryptoClient,
+      send:bytes=>channel.enqueue(bytes,{expectReply:decodeEnvelope(bytes).header.type!=='RESULT'}),
       repetitions:config.repetitions,timeoutMs:30*60*1000,onChange:state=>{
         if(token!==epoch)return;
         const previous=authState?.state;authState=state;

@@ -44,3 +44,52 @@ test('invalid and absent timings do not create misleading measurements',()=>{
   mergeTimings(operations,undefined);
   assert.deepEqual(timingSummary(operations),{});
 });
+
+test('display defaults and saved preferences cannot change captured or transmitted pixels',async()=>{
+  const {displayPreferences,matrixEdge}=await import('../dist/app.js');
+  assert.deepEqual(displayPreferences(),{mirrored:true,qrPosition:'bottom'});
+  assert.deepEqual(displayPreferences('{bad json'),{mirrored:true,qrPosition:'bottom'});
+  assert.deepEqual(displayPreferences('{"mirrored":false,"qrPosition":"top"}'),{mirrored:false,qrPosition:'top'});
+  assert.deepEqual(displayPreferences('{"mirrored":0,"qrPosition":"left","outgoingSize":128}'),{mirrored:true,qrPosition:'bottom'});
+  for(const [width,height,edge] of [[360,520,360],[360,233.9,233],[540,297,297],[0,250,0],[300,-10,0],[NaN,300,0]])assert.equal(matrixEdge(width,height),edge);
+});
+
+test('preview and placement toggles persist independently, size the remaining slot, and leave pixel canvases untouched',async t=>{
+  const previous=new Map(['document','window','navigator','localStorage','ResizeObserver'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
+  t.after(()=>{for(const [key,descriptor] of previous){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];}});
+  const elements=new Map(),saved=new Map(),windowListeners=new Map();let matrixObserver;
+  function element(id){
+    if(!elements.has(id)){
+      const attrs=new Map(),styles=new Map(),listeners=new Map();
+      elements.set(id,{id,dataset:{},textContent:'',hidden:false,disabled:false,open:false,scrollTop:0,
+        clientWidth:id==='matrixSlot'?340:0,clientHeight:id==='matrixSlot'?270:0,
+        style:{setProperty:(name,value)=>styles.set(name,value),getPropertyValue:name=>styles.get(name)||''},
+        setAttribute:(name,value)=>attrs.set(name,value),getAttribute:name=>attrs.get(name),
+        addEventListener:(name,callback)=>listeners.set(name,callback),dispatch:name=>listeners.get(name)?.(),
+        // No view preference may call a 2D context or touch camera pixels.
+        getContext:()=>{throw Error(`Unexpected pixel access: ${id}`);}});
+    }
+    return elements.get(id);
+  }
+  const root=element('root');
+  Object.defineProperty(globalThis,'document',{configurable:true,value:{body:element('body'),documentElement:root,getElementById:element,addEventListener(){}}});
+  Object.defineProperty(globalThis,'window',{configurable:true,value:{innerHeight:844,visualViewport:{height:844,addEventListener(){}},addEventListener:(name,callback)=>windowListeners.set(name,callback)}});
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{userAgent:'iPhone',mediaDevices:{}}});
+  Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,value)}});
+  Object.defineProperty(globalThis,'ResizeObserver',{configurable:true,value:class{constructor(callback){matrixObserver=callback;}observe(){}}});
+  await import(`../dist/app.js?display-ui-test=${Date.now()}`);
+  assert.equal(element('app').dataset.previewMirrored,'true');assert.equal(element('app').dataset.qrPosition,'bottom');
+  assert.equal(element('matrixSlot').style.getPropertyValue('--matrix-edge'),'270px');
+  element('mirrorPreview').dispatch('click');
+  assert.equal(element('app').dataset.previewMirrored,'false');assert.equal(element('mirrorPreview').textContent,'Normal');
+  assert.equal(element('mirrorPreview').getAttribute('aria-pressed'),'false');
+  element('qrPosition').dispatch('click');
+  assert.equal(element('app').dataset.qrPosition,'top');assert.equal(element('qrPosition').getAttribute('aria-pressed'),'true');
+  assert.deepEqual(JSON.parse(saved.get('neural-key-display')),{mirrored:false,qrPosition:'top'});
+  element('matrixSlot').clientWidth=510;element('matrixSlot').clientHeight=290;matrixObserver();
+  assert.equal(element('matrixSlot').style.getPropertyValue('--matrix-edge'),'290px');
+  window.visualViewport.height=390;windowListeners.get('resize')();
+  assert.equal(root.style.getPropertyValue('--viewport-height'),'390px');
+  element('app').scrollTop=450;element('settings').dispatch('toggle');assert.equal(element('app').scrollTop,0);
+  assert.equal(elements.has('captureCanvas'),false);assert.equal(elements.has('gateCanvas'),false);assert.equal(elements.has('matrix'),false);
+});

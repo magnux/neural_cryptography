@@ -329,7 +329,7 @@ latency or live goodput is inferred from offline recovery percentages.
 
 The standalone Corrector Lab supports numerical parity and camera crop inference.
 The current Neural-ZKBoo demo uses W-tube/VW for header-free Neural-QR data
-and G32 ACKs, allowing G128 computer-to-phone and G64 phone-to-computer. The
+and G32 ACK/REQUEST controls, allowing G128 computer-to-phone and G64 phone-to-computer. The
 earlier G64/QR-ACK physical exchange is a historical result; the current
 integration needs fresh device tests. Model verification, byte acceptance and
 cryptographic authentication remain distinct checks.

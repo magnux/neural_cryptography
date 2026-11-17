@@ -14,6 +14,7 @@ import {StageProfiler} from './js/neural-auth/timing.js';
 import {decodePacket} from './js/link/protocol.js';
 import {renderNeuralQR} from './js/neural-qr/layout.js';
 import {paletteMap} from './js/grid.js';
+import {sameBytes} from './js/format.js';
 
 const ROLES=['verifier','prover'];
 const DEVICE_NAMES={verifier:'Simulated computer',prover:'Simulated phone'};
@@ -38,21 +39,23 @@ function combineStages(...snapshots) {
 }
 
 export async function runFullHandshake({corrector,optimized=true,statistics=true,optical=true,
-  repetitions=32,heldCycles=2,onProgress=()=>{},signal,tamperProof=false,dropFinalAckWindows=false}={}) {
+  repetitions=32,heldCycles=2,onProgress=()=>{},signal,tamperProof=false,dropFinalAckWindows=false,dropRequestWindows=false}={}) {
   cancelled(signal);
   if(optical&&(!corrector?.infer||!corrector?.loadContext))throw Error('Actual simulation inference must be initialized before the optical handshake.');
   if(!Number.isInteger(repetitions)||repetitions<1||repetitions>219||!Number.isInteger(heldCycles)||heldCycles<1||heldCycles>4)
     throw Error('Invalid bounded simulation settings.');
   const started=performance.now(),profiler=new StageProfiler(statistics),sessions={},channels={},pipelines={},operations={},pairing={};
+  const cryptoJobs=new Set();
   const messages=[],errors=[],cryptoCounts={},modelSizes=new Set(),scanFrames={verifier:0,prover:0};
-  const retainedAckWindows=new Set(),droppedAckWindows=new Map(),handoffHoldMs=3000;let active=true;
-  let clock=0,busy=0,scans=0,inferenceCalls=0,skippedScans=0,packets=0,acceptedPackets=0,duplicatePackets=0,wrongTurnScans=0,waitingPacketWindows=0,containerRejectedScans=0;
+  const displayedFrames={verifier:[],prover:[]};
+  const requestWindows=new Set(),droppedAckWindows=new Map(),droppedRequests=new Map();let active=true;
+  let clock=0,busy=0,cryptoIdleWaits=0,scans=0,inferenceCalls=0,skippedScans=0,packets=0,acceptedPackets=0,duplicatePackets=0,wrongTurnScans=0,waitingPacketWindows=0,containerRejectedScans=0;
   let targetFrame=null,finalResultAckAccepted=false;
   const reportProgress=message=>onProgress(`${optimized?'Optimized':'Baseline'}: ${message}`);
   for(const role of ROLES){
     operations[role]=new CryptoOperations();
     pairing[role]=new POCAutoPairing({isActive:()=>active,onError:error=>errors.push(error.message)});
-    channels[role]=new TurnChannel({initiator:role==='verifier',outgoingSize:64,automaticTurns:true,handoffHoldMs,now:()=>clock,
+    channels[role]=new TurnChannel({initiator:role==='verifier',outgoingSize:64,automaticTurns:true,now:()=>clock,
       onError:error=>errors.push(error.message),onMessage:async bytes=>{
         const envelope=decodeEnvelope(bytes);messages.push({type:envelope.header.type,to:role,bytes:bytes.length,atVirtualMs:clock});
         reportProgress(`${envelope.header.type} delivered (${messages.length}/5)…`);
@@ -63,12 +66,13 @@ export async function runFullHandshake({corrector,optimized=true,statistics=true
       onChange:snapshot=>pairing[role].update(sessions[role],snapshot),
       send:bytes=>{
         if(tamperProof){const envelope=decodeEnvelope(bytes);if(envelope.header.type==='PROOF'){const body=envelope.body.slice();body[body.length-1]^=1;bytes=encodeEnvelope(envelope.header,body);}}
-        return channels[role].enqueue(bytes);
+        return channels[role].enqueue(bytes,{expectReply:decodeEnvelope(bytes).header.type!=='RESULT'});
       },
       cryptoClient:{cancel:()=>operations[role].clear(),request:async(type,payload,options={})=>{
         busy++;cryptoCounts[type]=(cryptoCounts[type]??0)+1;
-        try{return await profiler.measure(`crypto.${type}`,()=>operations[role].run(type,payload,options.onProgress));}
-        finally{busy--;}
+        const job=Promise.resolve().then(()=>profiler.measure(`crypto.${type}`,()=>operations[role].run(type,payload,options.onProgress)));
+        cryptoJobs.add(job);
+        try{return await job;}finally{busy--;cryptoJobs.delete(job);}
       }}});
     if(optical)pipelines[role]=new ReceivePipeline({loadContext:corrector.loadContext,infer:async(context,packed)=>{
       cancelled(signal);const current=targetFrame;
@@ -91,7 +95,14 @@ export async function runFullHandshake({corrector,optimized=true,statistics=true
       if(to==='verifier'&&packet.kind==='ack'&&packet.status==='complete'&&result.delivered&&messages.at(-1)?.type==='RESULT')finalResultAckAccepted=true;
       return;
     }
-    const frames=profiler.measure('render.packet-framing',()=>packetFrames(wire,{size:64}));
+    // Match the live renderer: a held packet retains its random padding and
+    // all four phase images across scans, including duplicate REQUEST windows.
+    let cached=displayedFrames[role].find(item=>sameBytes(item.wire,wire));
+    if(!cached){
+      cached={wire:wire.slice(),frames:profiler.measure('render.packet-framing',()=>packetFrames(wire,{size:64}))};
+      displayedFrames[role].push(cached);if(displayedFrames[role].length>4)displayedFrames[role].shift();
+    }
+    const frames=cached.frames;
     let delivered=false;
     // Repeated cycles deliberately model the sender leaving a packet visible
     // while the receiver is still looking at it. Both modes get equal scans.
@@ -101,8 +112,8 @@ export async function runFullHandshake({corrector,optimized=true,statistics=true
       scans++;scanFrames[to]++;clock+=150;
       // Use the receiving device's current turn, exactly as the camera UI does.
       // A response may begin while the previous display is still being held.
-      const expected=channels[to].snapshot().outgoing?'ack':'data';
-      if(expected!==(packet.kind==='ack'?'ack':'data'))wrongTurnScans++;
+      const expected=channels[to].snapshot().expected;
+      if(expected!==(packet.kind==='ack'?'ack':packet.kind==='poll'?'request':'data'))wrongTurnScans++;
       const result=await pipelines[to].scan({image,runId:1,mediaTime:clock/1000,presentedFrames:scanFrames[to],
         expected,captureIntervalMs:150,maxSize:64,optimized,statistics});
       if(result.skipped)skippedScans++;
@@ -137,21 +148,37 @@ export async function runFullHandshake({corrector,optimized=true,statistics=true
       const states=ROLES.map(role=>sessions[role].snapshot());
       const failure=states.find(state=>['failed','timed-out'].includes(state.state));
       if(failure)throw Error(`${failure.role}: ${failure.error}`);
+      // Live cryptography and inference run in separate workers. Here they share
+      // one thread: repeated WASM calls would starve the sequential WebCrypto
+      // commitments while no new screen is possible. Once the REQUEST has been
+      // read, finish the pending real computation before resuming camera time.
+      // Do not use this pause to skip an unread ACK/REQUEST or an outgoing packet.
+      const idle=ROLES.every(role=>!channels[role].snapshot().outgoing&&!channels[role].snapshot().preparing);
+      const requested=ROLES.some(role=>channels[role].snapshot().requestedReply);
+      const ungranted=ROLES.some(role=>channels[role].snapshot().waitingForRequest);
+      if(busy&&idle&&requested&&!ungranted){
+        cryptoIdleWaits++;reportProgress('request accepted; completing pending cryptography before the next screen…');
+        await Promise.all([...cryptoJobs]);cancelled(signal);continue;
+      }
       let scanned=false;
       for(const role of ROLES){
         const wire=channels[role].current();if(!wire)continue;
         const packet=decodePacket(wire);
-        if(channels[role].snapshot().repeatingAck)retainedAckWindows.add(packet.messageId);
+        if(packet.kind==='poll')requestWindows.add(packet.messageId);
         if(dropFinalAckWindows&&packet.kind==='ack'&&packet.status==='complete'){
-          if(!droppedAckWindows.has(packet.messageId))droppedAckWindows.set(packet.messageId,clock+2*handoffHoldMs+1000);
+          if(!droppedAckWindows.has(packet.messageId))droppedAckWindows.set(packet.messageId,clock+7000);
           if(clock<droppedAckWindows.get(packet.messageId))continue;
+        }
+        if(dropRequestWindows&&packet.kind==='poll'){
+          if(!droppedRequests.has(packet.messageId))droppedRequests.set(packet.messageId,clock+2000);
+          if(clock<droppedRequests.get(packet.messageId))continue;
         }
         // A held final ACK with an idle peer has no camera work to perform.
         if(decodePacket(wire).kind==='ack'&&!channels[opposite(role)].snapshot().outgoing)continue;
         scanned=true;await deliver(role,wire);
       }
-      // Idle time advances the real channel's retained-ACK/START timer without
-      // sleeping for virtual display seconds. Busy protocol work is not expired.
+      // Advance bounded transfer deadlines without sleeping for virtual display
+      // seconds. Busy cryptographic work is not expired.
       if(!busy&&!ROLES.some(role=>channels[role].snapshot().preparing))clock+=scanned?20:100;
       for(const role of ROLES){channels[role].tick();sessions[role].tick();}
       const verifier=sessions.verifier.snapshot(),prover=sessions.prover.snapshot();
@@ -166,8 +193,8 @@ export async function runFullHandshake({corrector,optimized=true,statistics=true
         if(!success&&!tamperProof)throw Error('Real Neural-ZKBoo proof verification or result delivery failed.');
         return {mode:optimized?'optimized':'baseline',success,proofVerified:verifier.result===true,resultDelivered:verifier.resultDelivered,
           peerReported:prover.peerReported,finalResultAckAccepted,proofBytes:verifier.proofBytes,messages,wallMs:performance.now()-started,virtualOpticalMs:clock,
-          scans,inferenceCalls,skippedScans,wrongTurnScans,waitingPacketWindows,containerRejectedScans,packets,acceptedPackets,duplicatePackets,automaticTurns:true,handoffHoldMs,manualHandoffs:0,
-          retainedAckWindows:retainedAckWindows.size,droppedFinalAckWindows:droppedAckWindows.size,cryptoCounts,
+          scans,inferenceCalls,skippedScans,wrongTurnScans,waitingPacketWindows,containerRejectedScans,packets,acceptedPackets,duplicatePackets,automaticTurns:true,handoff:'request',manualHandoffs:0,cryptoIdleWaits,
+          requestWindows:requestWindows.size,droppedRequestWindows:droppedRequests.size,droppedFinalAckWindows:droppedAckWindows.size,cryptoCounts,
           modelSizes:[...modelSizes].sort((a,b)=>a-b),statisticsEnabled:statistics,
           stages:statistics?combineStages(profiler.snapshot(),...ROLES.map(role=>pipelines[role]?.snapshot?.().timings??pipelines[role]?.profiler?.snapshot?.())):[],
           verifier:{localDisplayName:verifier.localDisplayName,peerDisplayName:verifier.peerDisplayName,state:verifier.state,result:verifier.result,resultDelivered:verifier.resultDelivered,timings:verifier.timings},
@@ -181,12 +208,13 @@ export async function runFullHandshake({corrector,optimized=true,statistics=true
 export async function runSimulationComparison({corrector,statistics=true,optimized=true,compare=true,onProgress=()=>{},signal}={}) {
   const report={format:'neural-auth-demo-simulation',version:1,kind:'target-assisted-simulation',timestamp:new Date().toISOString(),
     assumedOutput:true,modelAccuracyValidated:false,physicalCameraTest:false,
-    inference:corrector?.description,configuration:{repetitions:32,outgoingGrid:64,ackGrid:32,heldCycles:2,automaticTurns:true,handoffHoldMs:3000,statisticsEnabled:statistics},
+    inference:corrector?.description,configuration:{repetitions:32,outgoingGrid:64,ackGrid:32,heldCycles:2,automaticTurns:true,handoff:'request',statisticsEnabled:statistics},
     recoveryOutput:'assumed-correct target logits after actual untrained inference',
     warnings:[
       `Simulation only: real untrained VW inference is ${statistics?'timed':'executed without detailed timing'}, then target logits replace its output to assume successful correction.`,
       'Authentication, framing, acquisition, RS+CRC recovery, and verification execute real code. Corrector accuracy is not measured.',
       'Clean synthetic images and virtual display time do not measure camera reliability or phone-to-computer throughput.',
+      'The simulator waits for pending cryptography after an accepted request when neither side has outgoing data; live cryptography and inference use separate workers.',
       'Baseline and optimized use the same scan schedule with independent fresh keys, challenges and proofs. Wall times include rendering; stage timings may overlap.',
     ]};
   if(compare||!optimized)report.baseline=await runFullHandshake({corrector,statistics,optimized:false,onProgress,signal});
