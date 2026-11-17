@@ -8,7 +8,7 @@ store recording JSONs explicitly uploaded from the data collector.
 The goal is **fast, reliable and secure optical authentication between a phone
 and computer**. The current Neural-ZKBoo demo carries both data and acknowledgments
 using **Neural-QR**, our header-free optical format read by the trained neural
-corrector. Both devices can send and receive through G128, with G32 controls and
+corrector. Stable G32 REQUEST controls coordinate each reply. Both devices can send and receive through G128, with G32 controls and
 independently selectable outgoing grids. The initial selections are G128 on
 computers and G64 on phones. The separate standard-QR experiment remains available
 for comparison.
@@ -45,7 +45,7 @@ for the original dynamical-systems exploration.
 | Browser Crypto Lab | [Color app](apps/color-optical-bench/README.md), `crypto.html` | Generate keys, prove, verify, reject tampering, and measure local performance in a worker. |
 | Neural-QR transport research | [Design](docs/NEURAL_QR.md), [current Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Custom neural-readable matrices. Header-free acquisition runs in `capture.html`; Neural-ZKBoo uses the trained corrector and in-band RS+CRC packets. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
-| Neural-ZKBoo authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | Header-free Neural-QR DATA and G32 ACKs with trained VW/W-tube inference and independent directional geometry limits. |
+| Neural-ZKBoo authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | Header-free Neural-QR DATA and G32 ACK/REQUEST controls with trained VW/W-tube inference and independent directional geometry limits. |
 | Mobile neural authentication demo | [Standalone app](apps/neural-auth-demo/README.md), [setup and simulation](docs/NEURAL_AUTH_DEMO.md) | Front camera and outgoing matrix together, named device sessions, optional timing statistics, and a separate ideal-output simulation. |
 | Neural corrector | [Model and training](experiments/neural-corrector/README.md), [collection guide](docs/MULTIRES_COLLECTION.md), `corrector.html` and `capture.html` | W-tube and VW training, evaluation and static ONNX export on version-2 G16–G128 four-pixel data; U-tube and two-pixel multires remain separate experiments. |
 
@@ -120,7 +120,7 @@ the capture page itself needs only the existing static app. To test the whole
 stack, export and prepare the trained checkpoint, then open **Neural-ZKBoo** on
 both devices using [the setup and turn sequence](docs/NEURAL_ZKBOO_DEMO.md).
 The original Optical Bench/Live Demo retain their classical receiver; the new
-authentication page requires the trained corrector for both Neural-QR DATA and G32 ACKs.
+authentication page requires the trained corrector for Neural-QR DATA and G32 ACK/REQUEST controls.
 
 ## Status and scope
 
@@ -129,8 +129,9 @@ the trained VW corrector with header-free Neural-QR data and ACKs. The paired
 reports confirm verifier `resultDelivered` and prover `peerReported`, using G128
 computer→phone and G64 phone→computer. The 17,731-byte proof message (including its
 17,474-byte proof) took about **268 seconds / 66 B/s** through its final ACK;
-local proof verification took **41.5 ms**. The app now automates POC pairing and
-recoverable turn handoffs and records individual packet/ACK round-trip timings.
+local proof verification took **41.5 ms**. The current app automates POC pairing and uses explicit G32 REQUEST controls
+for recoverable turn handoffs. It records individual packet/ACK round trips and
+separate REQUEST events; this handoff change still needs device testing.
 
 On **4 November 2026**, the owner completed a 32-repetition Neural-ZKBoo exchange
 using the earlier learned G64 transport and static QR ACKs. This historical result
