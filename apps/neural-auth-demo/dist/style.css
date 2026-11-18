@@ -1,4 +1,4 @@
-:root{color-scheme:light;font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172338;background:#e9edf2;font-synthesis:none;--blue:#285ff3;--muted:#7a8394;--line:#e9ecf2;--surface:#f7f8fa;--viewport-height:100svh;--matrix-gutter:clamp(10px,3cqi,16px);--viewfinder-trim:conic-gradient(from -45deg,#1860f0 0 16.666%,#60f018 16.666% 33.333%,#f01860 33.333% 50%,#18f0a8 50% 66.666%,#a818f0 66.666% 83.333%,#f0a818 83.333% 100%)}
+:root{color-scheme:light;font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172338;background:#e9edf2;font-synthesis:none;--blue:#285ff3;--muted:#7a8394;--line:#e9ecf2;--surface:#f7f8fa;--viewport-height:100svh;--matrix-gutter:clamp(10px,3cqi,16px)}
 @supports(height:100dvh){:root{--viewport-height:100dvh}}
 *{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden}button,input,select{font:inherit}button,a,input,select,summary{-webkit-tap-highlight-color:transparent}button,summary{touch-action:manipulation}button{cursor:pointer}button:disabled{cursor:default;opacity:.48}a{color:inherit;text-decoration:none}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid #a3baff;outline-offset:2px}[hidden]{display:none!important}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 body[data-device="desktop"]{height:var(--viewport-height);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;background:radial-gradient(ellipse at 50% 38%,#fafcff 0,#e9edf2 65%)}.desktop-caption{display:flex;flex:none;align-items:center;gap:10px;font-size:10px;font-weight:750;letter-spacing:1.6px;margin-bottom:14px;color:#3f4b60}.brand-mark{display:grid;place-items:center;font-size:14px;width:25px;height:25px;background:#24334b;color:white;border-radius:8px;letter-spacing:0}.desktop-caption>span:last-child{font-size:11px;font-weight:400;letter-spacing:0;color:#7a8394;margin-left:8px}.phone{position:relative;display:flex;flex:none;flex-direction:column;width:100%;max-width:430px;height:var(--viewport-height);min-height:0;background:#fff;overflow:hidden;container-type:size}.desktop-note{flex:none;font-size:10px;color:#7b8494;text-align:center;max-width:340px;line-height:1.5;margin:12px 0 0}body[data-device="desktop"] .phone{height:min(900px,calc(var(--viewport-height) - 98px));border:8px solid #263044;border-radius:38px;box-shadow:0 30px 80px #23314f20,0 4px 12px #23314f16}body[data-device="desktop"] .phone:before{content:"";position:absolute;top:7px;left:calc(50% - 22px);width:44px;height:4px;border-radius:10px;background:#d9dde5;z-index:5;pointer-events:none}
@@ -24,12 +24,11 @@ body[data-device="mobile"]{height:var(--viewport-height);background:#fff}body[da
 @container(min-aspect-ratio:6/5){.app-header{min-height:37px;padding-top:8px;padding-bottom:5px}.app-content,.phone[data-qr-position="top"] .app-content{grid-template-columns:minmax(225px,.85fr) minmax(0,1fr);grid-template-rows:auto auto auto minmax(0,1fr) auto auto auto auto;grid-template-areas:"tabs matrix" "intro matrix" "error matrix" "status matrix" "result matrix" "transfer matrix" "actions matrix" "settings footer";column-gap:18px;padding-bottom:5px}.mode-tabs{margin-bottom:5px}.tab{min-height:29px}.intro{padding-bottom:5px}h1{font-size:21px;margin:4px 0}.eyebrow{display:none}.intro p{font-size:10px;line-height:1.35}.stage-footer{align-self:center;margin-bottom:5px}.actions{margin-bottom:4px}.primary,.secondary,.settings>summary{min-height:34px}.settings{margin-bottom:0}.settings>summary{border:0;padding:0 3px}.settings:not([open]) .settings-hint{font-size:9px}.matrix-slot{align-self:stretch}.app-footer{padding-top:3px}.phone:has(#settings[open]) .app-content,.phone[data-qr-position="top"]:has(#settings[open]) .app-content{grid-template-columns:minmax(225px,.85fr) minmax(0,1fr);grid-template-rows:auto auto auto auto auto auto auto auto;grid-template-areas:"tabs matrix" "intro matrix" "error matrix" "status matrix" "result matrix" "transfer matrix" "actions footer" "settings settings"}.phone:has(#settings[open]) .matrix-slot{height:min(310px,65vw)}.phone[data-mode="simulation"] .app-content{grid-template-columns:minmax(225px,.85fr) minmax(0,1fr);grid-template-rows:auto auto auto minmax(0,1fr) auto;grid-template-areas:"tabs matrix" "intro matrix" "error matrix" "actions matrix" "settings footer"}.phone[data-mode="simulation"] .actions{align-self:end;margin-top:5px;margin-bottom:4px}.phone[data-mode="simulation"] .settings{margin-top:0}.phone[data-mode="simulation"]:has(#settings[open]) .app-content{grid-template-rows:auto auto auto auto auto;grid-template-areas:"tabs matrix" "intro matrix" "error matrix" "actions footer" "settings settings"}.simulation-panel{padding:10px}.simulation-panel .subtle{font-size:9px!important}}
 @media(prefers-reduced-motion:no-preference){.primary,.tab,.view-toggle{transition:background .16s,color .16s}.phone[data-state="active"] .status-dot{animation:pulse 2s ease-in-out infinite}@keyframes pulse{50%{opacity:.4}}}
 
-/* This display-only trim sits outside the preview content box. The outer
-   outline repeats acquisition feedback without tinting the live video. */
-.viewfinder-rim{border:3px solid transparent;background:var(--viewfinder-trim) border-box;outline:2px solid #e3e7ed;outline-offset:1px}
-.phone[data-lock="tentative"] .camera-preview,.viewfinder-rim[data-lock="tentative"]{outline-color:#e58b32}
-.phone[data-lock="acquired"] .camera-preview,.viewfinder-rim[data-lock="acquired"]{outline-color:#8babff}
-.phone[data-lock="read"] .camera-preview,.viewfinder-rim[data-lock="read"]{outline-color:#6be2a3}
+/* Keep the letterbox neutral; the fixed-width border reports a lock before
+   payload recovery and never takes space away as the lock state changes. */
+.viewfinder-rim{border:3px solid #c8ced6;background:#202938}
+.phone[data-lock="tentative"] .camera-preview,.viewfinder-rim[data-lock="tentative"]{border-color:#d3964d}
+.phone:is([data-lock="acquired"],[data-lock="read"]) .camera-preview,.viewfinder-rim:is([data-lock="acquired"],[data-lock="read"]){border-color:#32b77b}
 .exchange-step{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;margin-bottom:3px;font-size:10px;font-weight:650;font-variant-numeric:tabular-nums;line-height:1.3;color:#345eaf}
 .exchange-step progress{display:block;flex:none;width:45px;height:4px;appearance:none;border:0;border-radius:2px;overflow:hidden;background:#e3eafa;color:var(--blue)}
 .exchange-step progress::-webkit-progress-bar{background:#e3eafa}
@@ -39,3 +38,25 @@ body[data-device="mobile"]{height:var(--viewport-height);background:#fff}body[da
 #roundtripPanel{grid-area:roundtrip;min-height:0;min-width:0}
 .phone[data-mode="roundtrip"] .app-content,.phone[data-mode="roundtrip"]:has(#settings[open]) .app-content{flex:1;min-height:0;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto;grid-template-areas:"tabs" "roundtrip" "footer"}
 .phone[data-mode="roundtrip"] .app-content>:is(.intro,.actions,#error,#settings){display:none}
+
+/* The result replaces the optical surface only after the user finishes.
+   On short screens, scroll its body independently so the download stays in reach. */
+.matrix-slot:has(.exchange-summary:not([hidden])){place-items:stretch;margin:4px 0 0}
+.matrix-slot:has(.exchange-summary:not([hidden])) .matrix-zone,
+#cameraPanel:has(.exchange-summary:not([hidden])) :is(.stage-footer,.transfer,.result){display:none}
+.exchange-summary{display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0;min-height:0;overflow:hidden;background:#f8faff;border:1px solid #dce4ef;border-radius:14px;color:#27384e}
+.summary-header{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:4px 10px;padding:12px 14px 8px}
+.summary-header h2{font-size:16px;line-height:1.22;margin:0;letter-spacing:-.35px}
+.summary-duration{font-size:14px;color:#305899;font-variant-numeric:tabular-nums}
+.summary-duration:has(#summaryDuration:empty),.exchange-summary :is(ol,dl,p):empty{display:none}
+.summary-body{overflow-y:auto;overscroll-behavior:contain;min-height:0;padding:0 14px 8px;font-size:12px;line-height:1.4;scrollbar-width:thin;overflow-wrap:anywhere}
+.summary-body p{margin:0 0 7px}
+.summary-body ol{margin:0;padding:0;list-style:none;counter-reset:summary-step}
+.summary-body li{display:flex;align-items:baseline;gap:7px;padding:3px 0;border-bottom:1px solid #e1e7f0;counter-increment:summary-step}
+.summary-body li:before{content:counter(summary-step,decimal-leading-zero);color:#65758b;font-size:10px;font-variant-numeric:tabular-nums}
+.summary-body li strong{margin-inline-start:auto;font-weight:650;font-variant-numeric:tabular-nums}
+.summary-body dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(105px,100%),1fr));gap:5px 10px;margin:8px 0}
+.summary-body dt,.summary-note{font-size:11px;color:#54657a}
+.summary-body dd{margin:0;font-variant-numeric:tabular-nums;font-weight:650}
+.summary-link{display:flex;align-items:center;justify-content:space-between;gap:8px;border-top:1px solid #dce4ef;padding:8px 14px;min-height:40px;color:#274fa2;background:#eff4ff;font-size:12px;font-weight:650}
+.summary-link:hover{text-decoration:underline}.summary-link:focus-visible{outline-offset:-3px}

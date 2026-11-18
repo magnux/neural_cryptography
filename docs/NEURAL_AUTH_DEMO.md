@@ -89,9 +89,10 @@ the other device's front camera. **QR: bottom / top** changes its position; on a
 wide landscape screen, the matrix uses a separate column and aligns to the
 selected edge. A desktop browser presents the same interface inside a bounded
 phone frame. The outgoing square has an extra 10–16 CSS pixels of clearance
-on every side. The palette rim around the viewfinder is outside the camera image;
-its outline turns amber for a candidate, blue for a geometry/phase lock and green
-for a read. Neither the clearance nor the rim changes the transmitted pixels.
+on every side. The viewfinder has a neutral background. Look for a green outline
+when a matrix is detected; this is alignment feedback, not confirmation that
+the packet passed its checks. Neither the clearance nor the outline changes
+the transmitted pixels.
 
 The preview starts **Mirrored**. Its toggle reflects the visible video and
 alignment overlay together; camera samples sent to acquisition/inference and
@@ -134,6 +135,26 @@ Wait for final result delivery: verifier `resultDelivered` and key holder
 `peerReported` must be true. A locally accepted proof with its result still in
 transit is incomplete. Keep both pages visible; cancel, hiding the page, or
 restarting stops the active attempt and releases camera/worker resources.
+
+## Finish and share an exchange
+
+Leave the key holder's final ACK on screen until the verifier confirms delivery.
+Then tap **Finish exchange** on each device. A summary replaces the outgoing
+matrix. With statistics enabled it shows **Setup** (Start through model and
+camera readiness) separately from the five authentication steps. The total
+runs from Start until that device's completion signal: result ACK received on
+the verifier, result received on the key holder. Download the short JSON report
+from that panel; the detailed report remains available in Settings. With
+statistics off, the short report still records the outcome and configuration,
+without timings or packet statistics. For a timing comparison, save the short
+report from **both** devices with statistics enabled.
+
+Each device uses its own clock and sees the handoffs at slightly different
+times. For example, the sender must read the last ACK before the receiver can
+see the next REQUEST. Compare the two **Proof** rows to see how long that step
+occupied each device; adding their durations would count the same optical
+exchange twice. Waiting to press **Finish exchange** after local completion
+does not increase the recorded exchange time.
 
 ## Request-driven handoff
 
@@ -203,6 +224,8 @@ The ID areas and fixed grid references are excluded from the error rate.
 
 1. On both devices select **Matrix timing** and the same grid. A good starting
    point for two front cameras is G64, 100 ms capture, no dummy inference.
+   The timing lab's capture setting is independent of the live exchange's
+   250 ms capture setting.
    Start **Receiver** first, align the cameras, then start **Sender**.
 2. Begin with **Probe exposure = 0**. The sender holds one phase until it
    gets the matching echo or times out. Each new trial advances to the next
@@ -296,9 +319,10 @@ four phase images and random padding.
 
 ## Device and packaging test plan
 
-The initial settings are verifier role, G64 outgoing and incoming maximum, G32
-controls, 32 proof repetitions, front camera, requested 1080p, 250 ms phases,
-100 ms captures, Auto backend, efficient scanning enabled and statistics enabled.
+The initial settings for **Camera exchange** are verifier role, G64 outgoing
+and incoming maximum, G32 controls, 32 proof repetitions, front camera,
+requested 1080p, **350 ms per displayed phase** and **250 ms between capture
+attempts**, Auto backend, efficient scanning enabled and statistics enabled.
 The initial display preferences are a mirrored preview and the matrix at the bottom.
 Choose an incoming maximum of G128 to preload/test that larger receiving grid.
 
@@ -317,10 +341,12 @@ Choose an incoming maximum of G128 to preload/test that larger receiving grid.
 3. Start with G64 in both directions, 32 repetitions, and statistics disabled.
    Confirm trained parity for the selected incoming grids, complete all five messages and final ACK,
    and check the displayed peer name and role-specific completion wording.
-4. Repeat with statistics enabled in the same arrangement. Check finite stage
-   min/mean/max and packet timing values, then disable statistics for a new
-   attempt and confirm its detailed counters/report are absent. Do not infer
-   performance differences from a single run.
+4. Repeat with statistics enabled in the same arrangement. Wait a few seconds
+   after confirmation, then finish on both devices and save their short reports.
+   Check the five local step durations, compare the reported roles and optical
+   settings, and check the separate detailed packet timings in Settings. Start
+   a new attempt and confirm the matrix returns. Do not infer performance
+   differences from a single run.
 5. Hold a matrix steady, briefly obstruct a camera, then restore it. Confirm
    periodic acquisition recovers, all four accepted phase templates remain
    usable, and a new packet resumes work. Miss a final ACK and then a REQUEST:

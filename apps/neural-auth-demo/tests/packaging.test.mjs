@@ -55,7 +55,7 @@ test('prepared dependency closure matches canonical sources and carries notices'
 
 test('isolated dist resolves fetches for every page, imported module and worker without sibling routes',async t=>{
   const base=await isolated(t),files=await crawl(base);
-  for(const file of ['app.js','auth-progress.js','roundtrip-ui.js','roundtrip-core.js','roundtrip-worker.js','roundtrip.css','simulation.js','simulation-worker.js','simulation-core.js','simulation-runtime.js',
+  for(const file of ['app.js','auth-progress.js','finish-card.js','exchange-summary.js','roundtrip-ui.js','roundtrip-core.js','roundtrip-worker.js','roundtrip.css','simulation.js','simulation-worker.js','simulation-core.js','simulation-runtime.js',
     'js/crypto-lab/worker.js','js/corrector-lab/worker.js','js/auth-core/session.js','js/neural-auth/receive-pipeline.js'])assert.ok(files.has(file),file);
   const requested=[];
   // Exercise Request/Response routing without a network dependency or browser.

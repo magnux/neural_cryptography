@@ -1,6 +1,6 @@
 // Logical messages in optical order; ACKs, REQUESTs, chunks and palette phases
 // are part of delivering a message, never extra authentication steps.
-const STEPS = Object.freeze(['Hello', 'Identity', 'Challenge', 'Proof', 'Result']);
+export const STEPS = Object.freeze(['Hello', 'Identity', 'Challenge', 'Proof', 'Result']);
 
 export function exchangeStep(role, link) {
   if (!['verifier', 'prover'].includes(role)) throw Error('Unknown authentication role.');

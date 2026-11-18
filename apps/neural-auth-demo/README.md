@@ -12,7 +12,11 @@ Turns use stable G32 REQUEST controls: the final ACK stays visible until the
 sender acknowledges receipt by requesting the reply. Each packet reuses its
 four cached palette-phase images; no timer alternates final ACK and START.
 Both screens show the same five named exchange steps, with a separate packet
-counter during each transfer.
+counter during each transfer. Camera exchange starts at **350 ms per displayed
+phase** and **250 ms between capture attempts**. After final delivery, select
+**Finish exchange** to replace the matrix with a summary. Keep statistics on
+to compare step timings in the short reports
+[downloaded from the two devices](../../docs/NEURAL_AUTH_DEMO.md#finish-and-share-an-exchange).
 
 The **Matrix timing** tab uses two cameras and needs no trained model. Start
 the receiver first: it echoes the colors it actually read from one phase, so

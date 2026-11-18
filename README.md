@@ -124,6 +124,13 @@ authentication page requires the trained corrector for Neural-QR DATA and G32 AC
 
 ## Status and scope
 
+In a November 2026 device test of the [standalone mobile demo](docs/NEURAL_AUTH_DEMO.md),
+the owner reported around **two minutes for an end-to-end exchange** and about
+**600 ms for a single-phase echo** in the separate timing lab. The live settings
+that worked well in that setup, **350 ms per phase and 250 ms between capture
+attempts**, are now the standalone app defaults. The echo measures both camera
+legs. The proof repetition count for this test was not reported.
+
 On **12 November 2026**, the owner completed all five Neural-ZKBoo messages using
 the trained VW corrector with header-free Neural-QR data and ACKs. The paired
 reports confirm verifier `resultDelivered` and prover `peerReported`, using G128
@@ -131,7 +138,7 @@ computer→phone and G64 phone→computer. The 17,731-byte proof message (includ
 17,474-byte proof) took about **268 seconds / 66 B/s** through its final ACK;
 local proof verification took **41.5 ms**. The current app automates POC pairing and uses explicit G32 REQUEST controls
 for recoverable turn handoffs. It records individual packet/ACK round trips and
-separate REQUEST events; this handoff change still needs device testing.
+separate REQUEST events. The November 12 reports predate that handoff change.
 
 On **4 November 2026**, the owner completed a 32-repetition Neural-ZKBoo exchange
 using the earlier learned G64 transport and static QR ACKs. This historical result

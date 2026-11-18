@@ -32,13 +32,26 @@
       <section id="cameraPanel" aria-label="Optical exchange">
         <div class="optical-stage">
           <div id="matrixSlot" class="matrix-slot">
-          <div id="matrixZone" class="matrix-zone" data-visible="false">
-            <canvas id="matrix" width="1024" height="1024" aria-label="Outgoing Neural-QR optical matrix"></canvas>
-            <div id="matrixPlaceholder" class="matrix-placeholder">
-              <svg viewBox="0 0 100 100" aria-hidden="true"><path d="M32 12H12v20m56-20h20v20M12 68v20h20m56-20v20H68"/><rect x="38" y="38" width="24" height="24" rx="7"/></svg>
-              <span>Your connection appears here</span>
+            <div id="matrixZone" class="matrix-zone" data-visible="false">
+              <canvas id="matrix" width="1024" height="1024" aria-label="Outgoing Neural-QR optical matrix"></canvas>
+              <div id="matrixPlaceholder" class="matrix-placeholder">
+                <svg viewBox="0 0 100 100" aria-hidden="true"><path d="M32 12H12v20m56-20h20v20M12 68v20h20m56-20v20H68"/><rect x="38" y="38" width="24" height="24" rx="7"/></svg>
+                <span>Your connection appears here</span>
+              </div>
             </div>
-          </div>
+            <section id="exchangeSummary" class="exchange-summary" aria-labelledby="summaryTitle" hidden>
+              <header class="summary-header">
+                <h2 id="summaryTitle" tabindex="-1">Exchange summary</h2>
+                <span class="summary-duration"><span class="sr-only">Exchange duration: </span><strong id="summaryDuration"></strong></span>
+              </header>
+              <div class="summary-body">
+                <p id="summaryOutcome"></p>
+                <ol id="summarySteps" aria-label="Step timings on this device"></ol>
+                <dl id="summaryMetrics" aria-label="Exchange statistics"></dl>
+                <p id="summaryNote" class="summary-note" hidden></p>
+              </div>
+              <a id="downloadSummary" class="summary-link" download hidden>Download short report (JSON) <span aria-hidden="true">↓</span></a>
+            </section>
           </div>
           <div class="stage-footer">
             <div class="stage-status">
@@ -88,8 +101,8 @@
           <label class="wide" for="camera">Camera<select id="camera"><option value="">Front camera · default</option></select></label>
           <label for="resolution">Camera resolution<select id="resolution"><option value="480">480p</option><option value="720">720p</option><option value="1080" selected>1080p</option><option value="1440">1440p</option><option value="2160">4K</option><option value="max">Maximum available</option></select></label>
           <label for="backend">Corrector backend<select id="backend"><option value="auto">Auto · GPU / CPU</option><option value="wasm">WASM · CPU</option><option value="webgpu">WebGPU</option></select></label>
-          <label for="phaseMs">Phase interval (ms)<input id="phaseMs" type="number" min="50" max="10000" step="1" value="250" inputmode="numeric"></label>
-          <label for="captureMs">Capture interval (ms)<input id="captureMs" type="number" min="50" max="2000" step="1" value="100" inputmode="numeric"></label>
+          <label for="phaseMs">Phase interval (ms)<input id="phaseMs" type="number" min="50" max="10000" step="1" value="350" inputmode="numeric"></label>
+          <label for="captureMs">Capture interval (ms)<input id="captureMs" type="number" min="50" max="2000" step="1" value="250" inputmode="numeric"></label>
           <label class="toggle wide" for="optimized"><span>Efficient camera scanning<small>Skip redundant work while holding steady</small></span><input id="optimized" type="checkbox" checked></label>
           <label class="toggle wide" for="statistics"><span>Collect statistics<small>Local timings and a downloadable report</small></span><input id="statistics" type="checkbox" checked></label>
           <p class="settings-note wide">Both devices use G32 acknowledgments and turn requests. Device names are self-declared. Pairing proceeds automatically for this research demo. Only the verifier checks the proof locally; the key holder receives an unauthenticated result report.</p>

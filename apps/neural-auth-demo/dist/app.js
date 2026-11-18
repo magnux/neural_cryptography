@@ -1,6 +1,8 @@
 import {initRoundtrip} from './roundtrip-ui.js';
 import {AuthSession} from './js/auth-core/session.js';
 import {exchangeStep} from './auth-progress.js';
+import {ExchangeStepClock,buildExchangeSummary} from './exchange-summary.js';
+import {createFinishCard} from './finish-card.js';
 import {decodeEnvelope,normalizeDisplayName,validDeviceId} from './js/auth-core/envelope.js';
 import {CryptoClient} from './js/crypto-lab/client.js';
 import {CorrectorClient} from './js/corrector-lab/client.js';
@@ -68,6 +70,7 @@ if(typeof document!=='undefined')initialize();
 
 function initialize() {
   const $=id=>document.getElementById(id),setText=(id,text)=>{if($(id).textContent!==text)$(id).textContent=text;};
+  const finishCard=createFinishCard({byId:$,createElement:tag=>document.createElement(tag)});
   const device=detectDevice(navigator);document.body.dataset.device=device;
   let display=displayPreferences();
   try{display=displayPreferences(localStorage.getItem('neural-key-display'));}catch{/* Storage is optional. */}
@@ -110,6 +113,7 @@ function initialize() {
   $('displayName').value=localIdentity.displayName;showLocalName();saveIdentity();
   const supported=globalThis.isSecureContext&&Boolean(globalThis.crypto?.subtle)&&typeof Worker==='function'&&Boolean(navigator.mediaDevices?.getUserMedia);
   let roundtrip=null,roundtripActive=false;
+  let stepClock=null,shortReport=null;
   let mode='camera',active=false,epoch=0,stream=null,corrector=null,cryptoClient=null,session=null,channel=null;
   let config=null,authState=null,report=null,startedAt=0,packetTelemetry=null,autoPairing=null,simulationAbort=null;
   let captureCallback=null,displayTimer=null,heartbeat=null,lastCapture=-Infinity,lastPresented=0,frameWaitAt=0,scanning=false;
@@ -147,6 +151,7 @@ function initialize() {
     $('exchangeStep').hidden=false;
     setText('exchangeStepLabel',`Step ${number}/${total} · ${label}`);
     $('exchangeStepProgress').value=number;
+    stepClock?.observe(number,performance.now());
   }
 
   function showIdle() {
@@ -176,9 +181,23 @@ function initialize() {
     }
     if(report){
       report.authentication=authState;report.transport=link;
-      if(!report.completion&&message.complete)report.completion={afterMs:performance.now()-startedAt,kind:authState.resultDelivered?'result-acknowledged':'peer-result-received'};
+      if(!report.completion&&message.complete){
+        const now=performance.now();stepClock?.finish(now);
+        report.completion={afterMs:now-startedAt,kind:authState.resultDelivered?'result-acknowledged':'peer-result-received'};
+      }
     }
     renderCurrent();
+    // A receive can notify the session before the final ACK is recorded.
+    // Let that scan close the counters; later scans while holding the ACK
+    // and the human delay before Finish do not change the short report.
+    if(report?.completion&&!scanning)freezeShortReport();
+  }
+
+  function freezeShortReport(){
+    if(shortReport||mode!=='camera'||!report?.completion)return;
+    shortReport=buildExchangeSummary({settings:config,auth:authState,started:report.started,clock:stepClock,
+      packetRtt:packetTelemetry?.snapshot().roundTrips.overall,acceptedMatrices:acceptedCount,
+      captureAttempts:scanCount,inference:config.statistics?timingSummary(operations).inference:null,model:report.model,camera:report.camera});
   }
 
   function renderCurrent() {
@@ -238,7 +257,7 @@ function initialize() {
       if(!Number.isFinite(metadata.mediaTime)||!Number.isSafeInteger(metadata.presentedFrames)){fail(Error('This camera does not provide distinct frame timestamps. Try a current browser.'),token);return;}
       if(now-lastCapture<config.captureMs||metadata.presentedFrames<=lastPresented||!$('video').videoWidth||$('video').readyState<2){scheduleCapture(token);return;}
       lastCapture=now;lastPresented=metadata.presentedFrames;scanning=true;
-      void scan(metadata,token).catch(e=>{if(isCurrent(token))fail(e,token);}).finally(()=>{if(isCurrent(token)){scanning=false;scheduleCapture(token);}});
+      void scan(metadata,token).catch(e=>{if(isCurrent(token))fail(e,token);}).finally(()=>{if(isCurrent(token)){scanning=false;if(report?.completion)freezeShortReport();scheduleCapture(token);}});
     });
   }
 
@@ -282,6 +301,7 @@ function initialize() {
     if(config.statistics)timing('transportReceive',performance.now()-receivedAt);
     if(acceptance.accepted){
       if(config.statistics)acceptedCount++;
+      if(report?.completion)freezeShortReport();
       // Only an accepted transport packet may suppress its repeated pixels.
       // This serial call finishes before another scan can use the worker.
       if(result.acceptToken!==undefined){
@@ -337,7 +357,7 @@ function initialize() {
       channel.tick();session.tick();statisticsView();
       if(['failed','timed-out'].includes(authState?.state))fail(Error(authState.error||'The exchange expired.'),token);
     },1000);
-    scheduleCapture(token);update();await session.start();
+    scheduleCapture(token);update();stepClock?.ready(performance.now());await session.start();
   }
 
   async function startSimulation(token) {
@@ -368,8 +388,10 @@ function initialize() {
   async function start() {
     if(active||mode==='roundtrip')return;error();$('app').dataset.lock='none';try{config=readSettings();}catch(e){error(e.message);$('settings').open=true;return;}
     localIdentity.displayName=config.displayName;saveIdentity();showLocalName();$('peerName').hidden=true;$('simulationComparison').hidden=true;setText('inferenceLabel','Latest inference');
-    if(mode==='camera')showExchangeStep(null);
     active=true;const token=++epoch;startedAt=performance.now();authState=null;session=null;channel=null;corrector=null;cryptoClient=null;
+    finishCard.reset();shortReport=null;
+    stepClock=mode==='camera'&&config.statistics?new ExchangeStepClock(startedAt):null;
+    if(mode==='camera')showExchangeStep(null);
     events=[];operations=Object.create(null);renderCache=[];shown=null;rendered=[];lastInference=null;acceptedCount=0;scanCount=0;mainThreadSkipped=0;probeGate.reset();
     lastCapture=-Infinity;lastPresented=0;lastFeedbackAt=-Infinity;scanning=false;packetTelemetry=null;lastAnnouncement='';
     report={format:'neural-auth-demo-report',version:1,kind:mode,started:new Date().toISOString(),settings:{...config,cameraId:undefined},completion:null};
@@ -381,6 +403,7 @@ function initialize() {
   function finish(reason='Finished by the user.') {
     if(!active)return;
     const savedAuth=authState,savedTransport=channel?.snapshot(),wasComplete=authState?.resultDelivered||authState?.peerReported;
+    if(wasComplete)freezeShortReport();
     // Invalidate callbacks before closing workers, channels or camera tracks.
     active=false;$('app').dataset.lock='none';epoch++;simulationAbort?.abort();simulationAbort=null;autoPairing?.close();autoPairing=null;
     clearTimeout(displayTimer);clearInterval(heartbeat);
@@ -393,6 +416,10 @@ function initialize() {
     $('matrixZone').dataset.visible='false';$('matrixPlaceholder').hidden=false;setText('matrixLabel','Exchange finished');setText('cameraStatus','Camera is off');
     if(!wasComplete){setText('title',mode==='camera'?'Exchange stopped.':'Simulation stopped.');setText('instruction','You can start a fresh exchange when you are ready.');setText('simulationStatus',reason);}
     $('app').dataset.state=wasComplete?'complete':'idle';buttons();
+    if(mode==='camera'&&wasComplete&&shortReport){
+      setText('instruction','Review this device’s result or download the short report.');
+      finishCard.show(shortReport);
+    }
   }
 
   function fail(cause,token=epoch) {
@@ -410,6 +437,7 @@ function initialize() {
   function setMode(next) {
     if(active||roundtripActive||next===mode)return;
     if(mode==='roundtrip')roundtrip?.stop();
+    finishCard.reset();shortReport=null;stepClock=null;
     mode=next;report=null;config=null;authState=null;error();
     $('settings').open=false;
     $('roundtripTab').setAttribute('aria-pressed',String(next==='roundtrip'));
