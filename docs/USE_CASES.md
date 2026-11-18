@@ -6,13 +6,12 @@ changing the camera transport does not require changing the proof relation.
 These experiments do not establish a production cryptographic construction or
 a claimed post-quantum security level.
 
-The integrated Neural-ZKBoo exchange has completed on the phone and PC using
-learned color DATA and QR ACKs. The [roadmap](ROADMAP.md) now targets fast, reliable
-optical authentication through [Neural-QR](NEURAL_QR.md), a custom format built
-for the [neural corrector](NEURAL_CORRECTOR.md). The next format replaces the
-dense header and standard QR ACK path; the current apps remain the working
-baseline until that implementation is ready. [Cryptanalytic comparisons](RESEARCH_CONNECTIONS.md)
-remain future research; functional success is not security validation.
+The [mobile demo](NEURAL_AUTH_DEMO.md) exchanges Neural-ZKBoo messages over
+[Neural-QR](NEURAL_QR.md). The [neural corrector](NEURAL_CORRECTOR.md) reads both
+DATA and small control matrices from camera images. The standard-QR app provides
+a separate transport comparison. For the historical distinction between
+learning a shared key, proving possession of one, and learning to read symbols,
+see the [research background](RESEARCH_CONNECTIONS.md).
 
 ## Choose an experiment
 
@@ -24,14 +23,14 @@ remain future research; functional success is not security validation.
 | Can colored matrices carry arbitrary bytes between cameras and screens? | [Optical Bench](../apps/color-optical-bench/README.md), page `index.html` | Rendering, capture, rectification, palette phases, temporal sampling, recovery, and synthetic image tests. |
 | Can color matrices carry a complete multipart message? | [Color multipart transport](../apps/color-optical-bench/LINK_TRANSPORT.md), page `link.html` | Local fault simulation and bidirectional camera transfer. This page does not perform authentication. |
 | How much data can standard QR codes carry reliably on these devices? | [QR transport lab](../apps/qr-neural-key/README.md), page `index.html` | Multipart bytes, outgoing profiles, pacing, acknowledgments, retries, and measurements. |
-| Can a device authenticate over an optical link? | [QR authentication](../apps/qr-neural-key/AUTHENTICATION.md), page `auth.html` | Local ephemeral keys, human pairing confirmation, a fresh challenge, optical proof transfer, and local verification. |
-| Can the decoder run on these devices? | [Corrector Lab](CORRECTOR_LAB.md), page `corrector.html` | Untrained or trained checkpoint, full-logit Python parity, worker latency/UI reports, and validated camera crop inference. |
+| Can two devices complete the authentication exchange? | [Neural-QR mobile demo](NEURAL_AUTH_DEMO.md) or [standard-QR authentication](../apps/qr-neural-key/AUTHENTICATION.md) | Local ephemeral keys, a fresh challenge, optical proof transfer and verification. The standard-QR app uses manual pairing confirmation; the mobile POC pairs automatically. |
+| Can the neural corrector run on these devices? | [Corrector Lab](CORRECTOR_LAB.md), page `corrector.html` | Untrained or trained checkpoint, full-logit Python parity, worker latency/UI reports, and validated camera crop inference. |
 | Can learned color decoding improve recovery? | [Capture/training guide](NEURAL_CORRECTOR_TRAINING.md), page `capture.html` | Recorded evaluation and a completed device authentication establish feasibility. Matched throughput comparisons remain to be measured. |
-| How will matrices designed for neural correction work? | [Neural-QR design](NEURAL_QR.md) | Planned asymmetric markers, repeated phase cues, neural payload recovery and QR-free control messages. |
+| How does the receiver distinguish matrix sizes and phases? | [Neural-QR design](NEURAL_QR.md) | Asymmetric markers and border cues guide acquisition; the corrector estimates the payload symbols. |
 
-Paths to HTML pages are relative to the selected app's `dist/` directory. Both
-apps can be served as static files after `npm run prepare:apps`; Corrector Lab additionally needs its optional
-model/runtime preparation. Camera access on a phone requires a secure
+Paths to HTML pages are relative to the selected app's `dist/` directory. The
+apps can be served as static files after `npm run prepare:apps`; learned camera
+reception also requires model/runtime preparation. Camera access on a phone requires a secure
 origin; see each app's serving instructions. Historical test deployments were
 blanked, so the repository is the starting point for running these experiments.
 
@@ -46,8 +45,8 @@ do not demonstrate resistance to cryptanalysis.
 
 The current proof engine instead uses an exact binary rotating-convolution
 Feistel circuit. It runs with byte and Boolean operations in Python and
-JavaScript, without PyTorch or a browser neural-inference runtime. Its neural
-terminology should not be confused with the planned image-decoding network.
+JavaScript, without PyTorch or a browser neural-inference runtime. The trained
+network in the live receiver reads the optical symbols carrying that proof.
 The original [Neural Waves notebook is published on Colab](../notebooks/README.md).
 
 ## Local proof experiments
@@ -95,7 +94,7 @@ they do not require a different cryptographic circuit.
 
 | Layer | Current format documentation |
 | --- | --- |
-| Colored optical matrix | [OBM5 format](../apps/color-optical-bench/FORMAT.md) |
+| Color matrices | [Neural-QR for authentication](NEURAL_QR.md); [OBM5 for the optical bench](../apps/color-optical-bench/FORMAT.md) |
 | Multipart color transport | [Link transport](../apps/color-optical-bench/LINK_TRANSPORT.md) |
 | Binary proof and public context | [Compact v2 proof format](../apps/color-optical-bench/CRYPTO_PARITY.md) |
 | QR packets and transport configuration | [QR transport lab](../apps/qr-neural-key/README.md) |

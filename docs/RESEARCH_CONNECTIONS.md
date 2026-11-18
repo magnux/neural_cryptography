@@ -1,220 +1,138 @@
 # Connections to neural cryptography research
 
-Updated: 2026-10-19.
+Literature note · 18 November 2026
 
-The immediate goal is a working device-to-device authentication POC using our
-Neural ZKBoo proof and **color-matrix optical transport**. The code and device
-observations so far form the exploratory phase of this research. This document
-records relevant literature and possible later experiments; a new cryptanalytic
-bench or learned cryptographic primitive is not a prerequisite for completing
-that POC. See the [development plan](ROADMAP.md) and the
-[learned optical decoder design](OPTICAL_DECODER.md) for the active work.
+The project began with a question about dynamics: if the weights of a recurrent
+convolutional network are the key, what happens to two inputs that differ by
+one bit? That led to a second question: can a device prove it holds a key
+without giving the verifier the key? A third arose in the phone demo: can a
+camera reliably recover the bytes of that proof from another screen?
 
-The [Wikipedia article on neural cryptography](https://en.wikipedia.org/wiki/Neural_cryptography)
-was the starting point for this review. The technical connections below use
-primary papers, and distinguish results in those papers from proposed work here.
+These questions lead to different bodies of prior work. **Pointcheval is an
+early precedent for the identification goal; synchronization research is the
+closest comparison for the dynamical intuition; ZKBoo and Picnic explain the
+proof construction.** The trained receiver belongs to communications research.
+The comparisons below describe conceptual connections, not claims that the
+papers inspired the original experiment or establish its security.
 
-## Where the project fits
-
-| Research direction | Role of the network | Connection to this repository |
+| Question | Where the secret or learning lives | What this project does |
 | --- | --- | --- |
-| Tree parity machine synchronization | Participants adapt private weights through public interaction until their states agree. | Related dynamical-systems intuition; a separate possible key-establishment experiment. |
-| Adversarially learned encryption | Sender and receiver learn against a trained eavesdropper. | Possible future architecture search and attacker evaluation. |
-| Fixed neural keyed transformation | Secret parameters define a recurrent mapping from inputs to outputs. | The original floating-point CNN and Feistel [Python experiment](../experiments/neural-dynamics/README.md). |
-| Proof of knowledge of a circuit secret | An exact circuit defines the public relation; a proof establishes knowledge of a satisfying secret. | Our [Python](../experiments/python-zkboo/README.md) and [browser](../shared/browser-crypto/README.md) ZKBoo-style implementations. |
-| Learned optical reception | A trained model estimates transmitted symbols from camera observations. | The next transport component; its weights are public and have no key-establishment role. |
+| How does a fixed key mix different inputs? | In the original experiment, the secret parameters stay fixed while activations evolve. | The [Python dynamics experiment](../experiments/neural-dynamics/README.md) compares recurrent CNN and Feistel variants using diffusion, bias and numerical agreement. |
+| How can a device prove it holds the key? | A private 256-bit vector supplies secret biases to a public, untrained Boolean circuit. | [Neural-ZKBoo](../experiments/python-zkboo/README.md) proves that one witness explains both public reference outputs and a response to this challenge. This is a separate circuit, not a quantized copy of the original CNN. |
+| How can the verifier read the proof? | A trained neural corrector has public weights. Its inputs are rectified camera frames. | [Neural-QR](NEURAL_QR.md) carries the bytes. The corrector estimates symbols; the proof verifier decides whether to accept. |
 
-The original CNN experiment does **not** learn its secret weights during use.
-Its surrogate attacker is trained, but the keyed forward transformation is
-fixed. The proof circuit is a separate, untrained binary construction, not a
-quantized export of the floating-point network. Its secret is a 256-bit bias/key
-vector; the sparse XOR convolution structure, permutations, and round constants
-are public.
+## Neural identification before synchronization
 
-## Synchronization and the space in which convergence occurs
+David Pointcheval's [*A New Identification Scheme Based on the Perceptrons
+Problem* (EUROCRYPT 1995)](https://www.di.ens.fr/david.pointcheval/Documents/Papers/1995_eurocrypt.pdf)
+is a close precedent. The verifier knows a matrix and an unordered collection of
+values. The prover knows a vector of signs that, multiplied by that matrix,
+produces those values in some order. Pointcheval proposed proving knowledge of
+such a vector interactively, with smart cards in mind. No one has to train a
+network or establish a shared key during identification.
 
-Kinzel and Kanter describe networks initialized with different private weights,
-fed common public inputs, and updated using exchanged output bits. Their
-interacting learning dynamics can synchronize the weights, which are then used
-as a shared secret [1].
+The overlap is the public statement: *I know a secret that explains these
+public observations*. Pointcheval uses a permuted perceptron relation and a
+specialized proof; Neural-ZKBoo uses outputs of a keyed circuit and a
+ZKBoo-style proof. The distinction between the **proof** and the **difficulty
+of finding a witness** matters. [Clark and Jacob (EUROCRYPT 2002)](https://eprints.whiterose.ac.uk/id/eprint/5547/)
+reported that all the recommended sizes for Pointcheval's scheme were unsafe.
+An adversary who finds a satisfying witness can run an honest prover. More
+proof repetitions do not repair an easy underlying problem.
 
-This is connected to our interpretation of networks as dynamical systems, but
-the desired convergence is different. Synchronization seeks agreement between
-**two participants' weight states**. Our original diffusion experiment instead
-seeks to preserve distinctions between **different inputs under one fixed key**.
-The increasing output bias and clustering observed in some recurrent ReLU
-configurations work against that second objective. Recentring activations and
-clipping adaptive weights also act on different parts of these systems; one is
-not a substitute for the other.
+## Synchronization and fixed-weight dynamics
 
-An optical implementation of synchronization would have to account for all
-interactive steps, public inputs, and confirmation traffic. Small output bits
-alone do not imply a fast screen-to-camera exchange. Agreement with a peer also
-does not independently identify that peer as an enrolled device. For the current
-POC we retain the fixed secret, public enrollment data, and challenge/proof flow.
+In [Kanter, Kinzel and Kanter (2002)](https://arxiv.org/abs/cond-mat/0202112),
+two parties start with different private weights and use public inputs and
+exchanged output bits to update them. Their weights synchronize (antiparallel
+in the original convention), yielding material from which both can derive a
+shared key. [Kinzel and Kanter's account](https://arxiv.org/abs/cond-mat/0208453)
+places this in the broader neural cryptography setting. [Ruttor, Kinzel and
+Kanter (2007)](https://arxiv.org/abs/cond-mat/0612537) model how the overlap
+between weight vectors evolves under attractive and repulsive updates.
 
-## Lessons from attacks on synchronization schemes
+The apparent opposition between synchronization and diffusion disappears once
+we specify **what changes**. In synchronization, two *weight states* should
+converge. In our original experiment, one weight state stays fixed and nearby
+*input states* should produce widely different outputs. The rising output bias
+seen in some recurrent ReLU runs mattered because many challenges were being
+mapped to similar responses. Good diffusion addresses that observation; it
+does not establish that the transformation is hard to predict or invert
+without the key. Likewise, convergence to a common key does not by itself
+identify a peer.
 
-Klimov, Mityagin, and Shamir explain why a straightforward imitating network can
-lag behind the legitimate parties, then give three attacks against the original
-protocol they analyze [2]. Seoane and Ruttor later attack permutation parity
-machines by probabilistic inference over possible weights, rather than merely
-imitating the participants' learning process [3]. These are results about those
-specific constructions, not a general impossibility result for neural methods.
+[Klimov, Mityagin and Shamir (ASIACRYPT 2002)](https://weizmann.elsevierpure.com/en/publications/analysis-of-neural-cryptography-2/)
+showed why a simple imitator could lag behind the participants yet the original
+protocol could still be broken. [Seoane and Ruttor (2012)](https://arxiv.org/abs/1111.5792)
+obtained a related result for a different, permutation-parity-machine protocol.
+These findings concern specific schemes. Their wider lesson is that an observer
+need not use the same learning rule as the participants.
 
-The practical lesson is that an attacker may use a different representation and
-algorithm from the legitimate network. Our existing bias, avalanche, covariance,
-and surrogate metrics are useful diagnostics. A weak surrogate reaching chance
-accuracy does not bound a stronger attacker's success.
+## Learning encryption and learning to analyze ciphers
 
-When cryptanalytic work resumes, include direct secret recovery and finding
-**any satisfying witness** for the public relation. Recovering a different secret
-that satisfies the enrolled anchors may already defeat a proof-of-knowledge
-application; exact recovery of the originally sampled secret is not always the
-right success criterion. Record the attack model and resulting forgery or fresh
-response success, rather than relying solely on average bit prediction.
+[Abadi and Andersen (2016)](https://arxiv.org/abs/1610.06918) asked whether
+Alice and Bob could *learn to use* a supplied secret key to communicate while
+a trained eavesdropper, Eve, failed to recover the plaintext. This is a
+confidentiality experiment: the key is an input and training selects the
+transformation. In our first POC the weights themselves played the role of the
+key, and in the current POC the verifier wants evidence of possession, not a
+decrypted message. The useful methodological lesson is to evaluate a frozen
+design against independent adversaries; failing to train one Eve is limited
+evidence.
 
-## Adversarial learning and differential distinguishers
+[Gohr (CRYPTO 2019)](https://eprint.iacr.org/2019/037) put a network in a
+different role: a distinguisher that found structure in ciphertext pairs from
+**reduced-round** Speck32/64. This is a precedent for evaluating a cipher,
+not a learned encryption method. Similarly, the trained surrogate in our
+dynamics experiment is a diagnostic: chance-level bit prediction under one
+test does not establish pseudorandomness or unforgeability.
 
-Abadi and Andersen train communicating networks against an Eve network, using
-shared keys in their principal symmetric experiment [4]. They also reset and
-retrain Eve after freezing the communicating networks. Their guarantees are
-relative to the explored adversaries, and their asymmetric experiments are
-explicitly fragile: apparent secrecy often disappears after retraining Eve.
+## Proofs for Boolean circuits
 
-For this project, the reusable method is attacker diversity and fresh evaluation
-after architecture selection. A future search could vary mixing patterns,
-nonlinear units, and rotation schedules while measuring diffusion, attack
-success, exact implementation cost, and proof size. The selected design would
-still need independent analysis. Learned asymmetric encryption is not part of
-the current authentication implementation.
+[Giacomelli, Madsen and Orlandi's *ZKBoo* (USENIX Security 2016)](https://www.usenix.org/conference/usenixsecurity16/technical-sessions/presentation/giacomelli)
+provides a way to prove a statement about a Boolean circuit by simulating
+several participants' views of its computation and selectively opening them
+(MPC-in-the-head). [Chase et al. (CCS 2017)](https://eprint.iacr.org/2017/279)
+used this approach with a symmetric primitive to construct signatures:
+the public key contains an image of a secret, and the proof binds knowledge of
+a preimage to the message being signed. This explains the Picnic analogy.
+Neural-ZKBoo is a custom authentication POC, not an implementation of Picnic.
 
-Gohr demonstrates neural distinguishers and key-recovery improvements against
-**reduced-round** Speck32/64, using structured input/output pairs [5]. This is a
-stronger testing pattern than asking a small network to predict unrelated output
-bits. An adaptation for our fixed circuit would compare output pairs from chosen
-input differences against an appropriate random-permutation reference, then
-sweep depth and secret keys. A distinguishing advantage would motivate an actual
-key-recovery or forgery experiment; absence of an advantage in that experiment
-would remain limited evidence.
+In our [browser proof engine](../shared/browser-crypto/crypto/proof.js), public
+reference inputs (“anchors”) have public outputs. The prover uses **one and
+the same secret** for those reference pairs and the response to a fresh
+challenge. The verifier checks that claim without needing the secret. In the
+[mobile demo](NEURAL_AUTH_DEMO.md) the public key is exchanged for this attempt;
+automatic pairing does not independently establish who owns that key.
 
-## Boolean structure: a connection to SIMON
+Two circuit comparisons help explain design choices without implying equivalent
+security:
 
-The current binary circuit forms three secret-biased sparse XOR convolutions,
-then computes the nonlinear unit
+- **SIMON:** its [round function](https://eprint.iacr.org/2013/404) also combines
+  AND, XOR and rotations. Our Feistel round computes a nonlinear term
+  `u XOR (v AND w)` from three secret-biased sparse XOR convolutions. The
+  linear maps, secret-bit selection and spatial permutations differ.
+- **LowMC:** [Albrecht et al. (EUROCRYPT 2015)](https://eprint.iacr.org/2016/687)
+  design for low multiplicative cost. In our proof engine an AND gate adds
+  transcript work that a public permutation or XOR does not. Circuit rounds
+  change the transformation; proof repetitions change amplification and proof
+  size. Optical grid size changes neither. See the [proof format](FORMATS.md)
+  for concrete sizes and parameters.
 
-$$
-u \oplus (v \land w).
-$$
+## Learning the optical channel
 
-This feeds a Feistel update followed by a public permutation. SIMON's round
-function has a related AND/XOR structure [6]:
+[O’Shea and Hoydis (2017)](https://arxiv.org/abs/1702.00832) illustrate how
+deep learning can address the *physical layer* of communication, including
+jointly learning a transmitter and receiver. The analogy here is narrower:
+Neural-QR has a specified encoder and palette; only the [neural
+corrector](NEURAL_CORRECTOR.md) learns how to recover the symbols from camera
+bursts affected by moiré, blur, exposure and reflections. Reed–Solomon and CRC
+handle transmission errors. Once the bytes are recovered, the verifier checks
+the same proof it would receive over another transport. A better camera model
+can improve recovery without changing the public relation or its security.
 
-$$
-f(x)=\bigl(\operatorname{rotl}_1(x)\land
-\operatorname{rotl}_8(x)\bigr)\oplus\operatorname{rotl}_2(x).
-$$
-
-SIMON's rotations are cyclic bit shifts. Our circuit uses different linear maps,
-secret-bit selections, spatial tap rotations, and permutations. This is a
-structural analogy, not an equivalence or a transfer of security results. It
-suggests useful future comparison methods: represent the public XOR convolution
-as a binary linear map, study how differences propagate through AND gates, and
-compare reduced-round variants under the same attack budget.
-
-## ZKBoo, Picnic, and proof-friendly computation
-
-ZKBoo provides a route to proofs for Boolean circuits through MPC-in-the-head
-[7]. Picnic's original work connects proofs of knowledge to symmetric-key
-primitives and improves proof efficiency [8]. LowMC deliberately optimizes the
-number and depth of nonlinear operations for settings including MPC and ZK [9].
-
-Our construction follows that broad separation: a public relation built from
-the keyed binary circuit, plus a custom three-party MPC-in-the-head proof. It
-commits simulated views and opens selected views; the compact encoding
-reconstructs omitted data. It is a custom POC and does not implement Picnic.
-
-In our current engine, XOR and permutation operations do not add the same
-per-gate transcript cost as AND gates. They still cost computation. The
-[current format documentation](FORMATS.md) describes the resulting compact proof:
-the default side-8, 16-circuit-round configuration uses 17,474 bytes at 32 proof
-repetitions and 119,249 bytes at 219. This gives a concrete reason to study
-proof-friendly circuit design later, without changing the circuit while solving
-the present optical bottleneck.
-
-Keep the knobs separate:
-
-- **Circuit rounds** change the keyed transformation and its attack surface.
-- **Proof repetitions** change protocol amplification and proof cost.
-- **Optical size, palette, phases, and coding** change transmission behavior.
-
-More repetitions cannot make an easily solvable public relation hard to solve.
-Reducing nonlinear gates is also not a free optimization: it changes the
-primitive that needs analysis. The current POC keeps configurable repetitions
-with verifier-owned acceptance requirements; these settings are not certified
-security levels.
-
-## The learned receiver directly advances the POC
-
-The proposed small U-Net is a denoiser in purpose and a symbol classifier in
-output: it estimates palette probabilities per logical cell from rectified
-camera images. It learns the optical channel, including moving moiré, blur,
-noise, and color changes. It does not generate cryptographic keys or decide
-whether an authentication proof is valid.
-
-This separation lets us improve transport without changing the proof relation.
-The model feeds bounded recovery/reassembly, recovered bytes go through the
-existing integrity checks, and the exact proof verifier makes the authentication
-decision. Diagnostic payload labels belong only in data generation and
-evaluation, never in the live decoder. See [OPTICAL_DECODER.md](OPTICAL_DECODER.md)
-for architecture, browser execution, collection, synthetic training, and real
-device evaluation.
-
-## Future research backlog
-
-These items follow the working color-transport authentication POC in the
-[roadmap](ROADMAP.md). They are not additional completion gates for that POC.
-
-| Experiment | First bounded scope | Evidence to retain |
-| --- | --- | --- |
-| Cryptanalytic comparison bench | Existing circuit versus explicitly identified reduced-round comparison circuits, including SIMON/LowMC where useful. | Parameters, attack model, query and compute budget, success rate, AND count, proof bytes, browser cost. |
-| Differential neural attacks | A few controlled input differences and depths, with disjoint train/test keys. | Distinguisher advantage, repeated runs, and whether it enables secret recovery or forgery. |
-| Direct relation solving | Small circuit instances, gradually increasing size and rounds. | Time/memory/query limits and success finding any satisfying witness. |
-| Adversarial architecture search | A small search space and multiple independently retrained attackers. | Held-out attacks and reproducible costs, without declaring security from training loss. |
-| Synchronization side experiment | Two legitimate parity machines plus passive imitation/probabilistic attackers. | Synchronization and attacker success, transcript bytes, interaction count, and latency model. |
-
-No project claim of post-quantum security follows from the word “neural,” from
-avoiding number-theoretic problems, or from using a ZK wrapper. Such a claim would
-need justified primitive assumptions, protocol/transform analysis, and suitable
-parameters. Likewise, universal approximation does not supply an efficient
-cryptographic inversion algorithm, and membership in NP alone is not a hardness
-argument. These distinctions keep exploratory results interpretable while the
-functional POC progresses.
-
-## Primary references
-
-1. Wolfgang Kinzel and Ido Kanter, **Neural Cryptography** (2002).
-   [arXiv:cond-mat/0208453](https://arxiv.org/abs/cond-mat/0208453).
-2. Alexander Klimov, Anton Mityagin, and Adi Shamir, **Analysis of Neural
-   Cryptography**, ASIACRYPT 2002.
-   [IACR paper](https://www.iacr.org/archive/asiacrypt2002/25010286/25010286.pdf).
-3. Luís F. Seoane and Andreas Ruttor, **Successful attack on
-   permutation-parity-machine-based neural cryptography**, Physical Review E 85,
-   025101(R), 2012. [arXiv:1111.5792](https://arxiv.org/abs/1111.5792).
-4. Martín Abadi and David G. Andersen, **Learning to Protect Communications with
-   Adversarial Neural Cryptography** (2016).
-   [arXiv:1610.06918](https://arxiv.org/abs/1610.06918).
-5. Aron Gohr, **Improving Attacks on Round-Reduced Speck32/64 using Deep
-   Learning**, CRYPTO 2019. [ePrint 2019/037](https://eprint.iacr.org/2019/037).
-6. Ray Beaulieu et al., **The SIMON and SPECK Families of Lightweight Block
-   Ciphers** (2013). [ePrint 2013/404](https://eprint.iacr.org/2013/404);
-   [authors' implementation guide](https://nsacyber.github.io/simon-speck/implementations/ImplementationGuide1.1.pdf).
-7. Irene Giacomelli, Jesper Madsen, and Claudio Orlandi, **ZKBoo: Faster
-   Zero-Knowledge for Boolean Circuits**, USENIX Security 2016.
-   [ePrint 2016/163](https://eprint.iacr.org/2016/163).
-8. Melissa Chase et al., **Post-Quantum Zero-Knowledge and Signatures from
-   Symmetric-Key Primitives**, ACM CCS 2017.
-   [ePrint 2017/279](https://eprint.iacr.org/2017/279).
-9. Martin R. Albrecht et al., **Ciphers for MPC and FHE**, EUROCRYPT 2015.
-   [ePrint 2016/687](https://eprint.iacr.org/2016/687);
-   [LowMC project](https://lowmc.github.io/).
+The [device results](../README.md#status-and-scope) document what the working
+stack demonstrates. The [roadmap](ROADMAP.md) keeps comparisons with conventional
+primitives, independent cryptanalysis and synchronization experiments as
+future research. A successful exchange establishes feasibility on the tested
+devices; it does not establish a security level, classical or post-quantum.

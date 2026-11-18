@@ -17,8 +17,13 @@ The CLI was recovered from the supplied project archive and updated to import
 the current reference. Its previous embedded proof implementation is not kept.
 The current protocol is **NeuralPicnic-POC-MPC3-v2**, with compact **NPZK0002**
 proofs and challenge-specific repetition requirements. No earlier proof reader
-or format migration is included. This is an unaudited research POC, not the
-Picnic standard or an established cryptographic primitive.
+or format migration is included. This is an unaudited research POC.
+
+There are two useful historical comparisons:
+[Pointcheval's identification scheme](../../docs/RESEARCH_CONNECTIONS.md#neural-identification-before-synchronization)
+also used a neural-inspired relation to identify a prover; [ZKBoo and Picnic](../../docs/RESEARCH_CONNECTIONS.md#proofs-for-boolean-circuits)
+are closer to the way the proof is constructed here. Neural-ZKBoo uses its own
+keyed circuit and does not implement the Picnic signature scheme.
 
 ## Quick demo
 

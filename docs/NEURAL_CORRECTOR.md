@@ -17,8 +17,9 @@ soft evidence to its existing byte decoder and error-recovery code.
 These are separate responsibilities: the corrector predicts symbols; the
 transport decoder interprets symbols as bytes and checks CRC/Reed–Solomon
 constraints. The network receives neither expected payload bytes nor secret
-cryptographic material. Corrected appearance or high confidence alone never
-accepts a payload.
+cryptographic material. Its weights can be public: their job is to estimate
+which symbols crossed the optical channel. For the connection to learned
+communications receivers, see [Learning the optical channel](RESEARCH_CONNECTIONS.md#learning-the-optical-channel).
 
 See the [capture and training guide](NEURAL_CORRECTOR_TRAINING.md) for dataset
 commands, the [experiment README](../experiments/neural-corrector/README.md) for

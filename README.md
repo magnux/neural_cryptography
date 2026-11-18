@@ -67,9 +67,9 @@ parameters: transport carries the serialized proof bytes.
   per cell, repeated optical size codes, server uploads and device/camera metadata.
 - [W-tube datasets](docs/W_TUBE_DATA.md): native and auxiliary recording imports,
   split preservation, 4:1 paired synthetic generation and repeatable rebuilds.
-- [Connections to previous research](docs/RESEARCH_CONNECTIONS.md): neural
-  synchronization, adversarial learning, neural cryptanalysis, SIMON, LowMC,
-  and Picnic, with primary references and future experiments.
+- [Neural cryptography: origins and connections](docs/RESEARCH_CONNECTIONS.md):
+  Pointcheval's identification scheme, key agreement by synchronization, learned
+  encryption and cryptanalysis, ZKBoo/Picnic, and the learned optical receiver.
 
 ## Quick start
 

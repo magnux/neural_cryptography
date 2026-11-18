@@ -6,6 +6,11 @@ and invertible Feistel architectures, fixed and rotating kernels, Gaussian and
 orthogonal initialization, normalization, and nonlinearities. The conceptual
 notebook is published in [Colab](https://colab.research.google.com/drive/19kV6VOT5zi6daMn6RaNWz_lDCxeAZgci#scrollTo=irKCCLQhd0_t).
 
+Here the weights stay fixed while the input evolves through recurrent steps.
+The [comparison with synchronization](../../docs/RESEARCH_CONNECTIONS.md#synchronization-and-fixed-weight-dynamics)
+explains why this diffusion experiment asks a different question from two
+networks learning a shared key.
+
 The script was recovered from the supplied Python project archive. Its numerical
 experiment is retained; its optical utility import now points to the one shared
 module in [shared/python](../../shared/python/README.md). Git history records
