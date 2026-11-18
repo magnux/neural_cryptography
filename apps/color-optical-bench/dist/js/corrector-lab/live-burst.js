@@ -28,13 +28,15 @@ export function recoverCorrectedPayload(logits,info) {
  * observations may fail recovery; new exposures replace old ones until a valid
  * in-band packet is recovered. No pool similarity decision advances transfer.
  * Transport first attempts K4, then K8. A failed K8 needs four fresh captures
- * before another attempt; each replaces the oldest observation of its phase.
+ * before another attempt. A full phase admits the new capture by evicting
+ * one of its two slots uniformly. This randomness selects camera samples only.
  * Failed detection never fabricates a capture or consumes a phase slot.
  */
 export class LivePhaseBurst {
-  constructor({maxAgeSeconds=60}={}) {
+  constructor({maxAgeSeconds=60,random=Math.random}={}) {
     if(!Number.isFinite(maxAgeSeconds)||maxAgeSeconds<=0||maxAgeSeconds>60)throw Error('Invalid live burst age limit.');
-    this.maxAgeSeconds=maxAgeSeconds;this.reset();
+    if(typeof random!=='function')throw Error('Invalid burst sampling RNG.');
+    this.maxAgeSeconds=maxAgeSeconds;this.random=random;this.reset();
   }
   reset() {
     this.context=null;this.geometryKey=null;this.info=null;this.groups=[[],[],[],[]];
@@ -59,7 +61,7 @@ export class LivePhaseBurst {
       replacements:this.replacements,freshCaptures:this.revision-this.attemptRevision,...extra};
   }
   miss(identity) {return this.status({duplicateExposure:!this.observe(identity)});}
-  add(crop,identity) {
+  add(crop,identity,makeGateRecord) {
     if(!isTransportData(crop?.info)||!(crop.input instanceof Float32Array)||crop.input.length!==rgbLength(crop.info.size)||
       crop.input.some(value=>!Number.isFinite(value)||Math.abs(value)>1.5)) {
       throw Error('Invalid phase-grouped transport capture.');
@@ -72,9 +74,11 @@ export class LivePhaseBurst {
     }
     this.info={...crop.info};
     const rows=this.groups[crop.info.phase];
-    if(rows.length===2){rows.shift();this.replacements++;}
+    if(rows.length===2){rows.splice(this.random()<.5?0:1,1);this.replacements++;}
+    // Splice then append keeps chronological order: K4 always uses the latest
+    // exposure, and K8 retains it plus one other, exclusively from this phase.
     // Own the crop so a transferred/reused external buffer cannot mutate history.
-    rows.push({input:crop.input.slice(),mediaTime:identity.mediaTime,presentedFrames:identity.presentedFrames,
+    rows.push({input:crop.input.slice(),gateRecord:makeGateRecord?.(),mediaTime:identity.mediaTime,presentedFrames:identity.presentedFrames,
       preprocessMs:Number(crop.stats?.ms??crop.stats?.preprocessMs)||0});
     this.revision++;
     return this.status({updated:true,duplicateExposure:false});
@@ -101,6 +105,7 @@ export class LivePhaseBurst {
     this.attemptK=count;this.attemptRevision=this.revision;
     return {...status,input,info:this.info,inputCaptures:count,phaseCounts:counts,
       phases:selected.map(row=>row.phase),slots,
+      gateRecords:selected.flatMap(row=>row.gateRecord?[row.gateRecord]:[]),
       mediaTimes:selected.map(row=>row.mediaTime),presentedFrames:selected.map(row=>row.presentedFrames),
       preprocessMs:selected.reduce((sum,row)=>sum+row.preprocessMs,0)};
   }

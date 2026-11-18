@@ -65,7 +65,26 @@ test('full pools replace old evidence and remain bounded after repeated CRC fail
     assert.ok(pool.status().bufferBytes<=8*ONE*4);
   }
   assert.equal(pool.status().replacements,28);
-  assert.equal(Math.min(...pool.snapshot().presentedFrames),29);
+  const selected=pool.snapshot().presentedFrames;
+  assert.deepEqual([selected[1],selected[3],selected[5],selected[7]],[33,34,35,36]);
+});
+
+test('full phases evict either same-phase slot; claimed fingerprints match the sampled tensors',()=>{
+  // Control the eviction choice without changing the browser's default randomness.
+  let draws=0;
+  const pool=new LivePhaseBurst({random:()=>[.8,.2][draws++]}),source=frames();
+  const add=(phase,frame)=>pool.add(crop(source[phase],frame/32),identity(frame),()=>({phase,presentedFrames:frame}));
+  for(let i=1;i<=8;i++)add((i-1)%4,i);
+  add(0,9);add(1,10);
+  assert.equal(add(1,10).updated,false);
+  assert.equal(draws,2,'no eviction draw until full or for repeated callbacks');
+  const burst=pool.snapshot({frames:8});
+  assert.deepEqual(burst.presentedFrames,[1,9,6,10,3,7,4,8]);
+  assert.deepEqual(burst.gateRecords.map(r=>r.presentedFrames),burst.presentedFrames);
+  for(let i=0;i<8;i++)assert.equal(burst.input[i*ONE],burst.presentedFrames[i]/32);
+  const first=pool.snapshot({frames:4});
+  assert.deepEqual(first.presentedFrames,[9,10,7,8]);
+  assert.deepEqual(first.gateRecords.map(r=>r.presentedFrames),first.presentedFrames);
 });
 
 test('transient misses retain good phases, but age, geometry and run changes clear them',()=>{
@@ -139,7 +158,7 @@ test('transport attempts K4, K8, then waits for four genuine fresh captures per 
     assert.ok(pool.status().bufferBytes<=8*ONE*4);
   }
   assert.deepEqual(attempts.map(([exposure,k])=>[exposure,k]),[[4,4],[8,8],[12,8],[16,8]]);
-  assert.equal(Math.min(...attempts.at(-1)[2]),9);
+  assert.equal(new Set(attempts.at(-1)[2]).size,8);
   assert.equal(pool.status().replacements,8);
   for(let i=17;i<=21;i++)pool.miss(identity(i));
   assert.equal(pool.nextTransportSnapshot(),null,'misses are not fresh evidence');

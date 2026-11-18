@@ -61,7 +61,7 @@ test('preview and placement toggles persist independently, size the remaining sl
   function element(id){
     if(!elements.has(id)){
       const attrs=new Map(),styles=new Map(),listeners=new Map();
-      elements.set(id,{id,dataset:{},textContent:'',hidden:false,disabled:false,open:false,scrollTop:0,
+      elements.set(id,{id,querySelector:selector=>element(id+'/'+selector),dataset:{},textContent:'',hidden:false,disabled:false,open:false,scrollTop:0,
         clientWidth:id==='matrixSlot'?340:0,clientHeight:id==='matrixSlot'?270:0,
         style:{setProperty:(name,value)=>styles.set(name,value),getPropertyValue:name=>styles.get(name)||''},
         setAttribute:(name,value)=>attrs.set(name,value),getAttribute:name=>attrs.get(name),
@@ -72,7 +72,7 @@ test('preview and placement toggles persist independently, size the remaining sl
     return elements.get(id);
   }
   const root=element('root');
-  Object.defineProperty(globalThis,'document',{configurable:true,value:{body:element('body'),documentElement:root,getElementById:element,addEventListener(){}}});
+  Object.defineProperty(globalThis,'document',{configurable:true,value:{body:element('body'),documentElement:root,getElementById:element,createElement:tag=>element('detached/'+tag),addEventListener(){}}});
   Object.defineProperty(globalThis,'window',{configurable:true,value:{innerHeight:844,visualViewport:{height:844,addEventListener(){}},addEventListener:(name,callback)=>windowListeners.set(name,callback)}});
   Object.defineProperty(globalThis,'navigator',{configurable:true,value:{userAgent:'iPhone',mediaDevices:{}}});
   Object.defineProperty(globalThis,'localStorage',{configurable:true,value:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,value)}});
@@ -91,5 +91,16 @@ test('preview and placement toggles persist independently, size the remaining sl
   window.visualViewport.height=390;windowListeners.get('resize')();
   assert.equal(root.style.getPropertyValue('--viewport-height'),'390px');
   element('app').scrollTop=450;element('settings').dispatch('toggle');assert.equal(element('app').scrollTop,0);
+  // Visiting timing must not open a camera or start cryptography. Returning to
+  // the other tabs restores their independent panels and hides timing controls.
+  element('roundtripTab').dispatch('click');
+  assert.equal(element('app').dataset.mode,'roundtrip');
+  assert.equal(element('roundtripTab').getAttribute('aria-pressed'),'true');
+  assert.equal(element('roundtripPanel').hidden,false);assert.equal(element('cameraPanel').hidden,true);
+  assert.equal(element('simulationPanel').hidden,true);
+  element('simulationTab').dispatch('click');
+  assert.equal(element('roundtripPanel').hidden,true);assert.equal(element('simulationPanel').hidden,false);
+  element('cameraTab').dispatch('click');
+  assert.equal(element('roundtripTab').getAttribute('aria-pressed'),'false');assert.equal(element('cameraPanel').hidden,false);
   assert.equal(elements.has('captureCanvas'),false);assert.equal(elements.has('gateCanvas'),false);assert.equal(elements.has('matrix'),false);
 });

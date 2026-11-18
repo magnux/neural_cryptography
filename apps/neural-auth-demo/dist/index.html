@@ -7,6 +7,7 @@
   <meta name="description" content="A browser-local Neural-ZKBoo optical authentication experiment.">
   <title>Neural Key — Optical authentication</title>
   <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./roundtrip.css">
 </head>
 <body data-device="desktop">
   <div class="desktop-caption" aria-hidden="true"><span class="brand-mark">N</span> NEURAL KEY <span>Two screens. One connection.</span></div>
@@ -19,6 +20,7 @@
       <nav class="mode-tabs" aria-label="Demo mode">
         <button id="cameraTab" class="tab" aria-pressed="true" type="button">Camera exchange</button>
         <button id="simulationTab" class="tab" aria-pressed="false" type="button">Simulation</button>
+        <button id="roundtripTab" class="tab" aria-label="Matrix roundtrip timing" aria-pressed="false" aria-controls="roundtripPanel" type="button">Matrix timing</button>
       </nav>
       <section class="intro" aria-labelledby="title">
         <span id="stepLabel" class="eyebrow">NEURAL-ZKBOO · NEURAL-QR</span>
@@ -39,12 +41,22 @@
           </div>
           </div>
           <div class="stage-footer">
-            <div class="stage-status"><span id="statusDot" class="status-dot"></span><div><strong id="matrixLabel">Ready when you are</strong><p id="cameraStatus">Front camera · G64</p></div></div>
+            <div class="stage-status">
+              <span id="statusDot" class="status-dot"></span>
+              <div>
+                <div id="exchangeStep" class="exchange-step" hidden>
+                  <span id="exchangeStepLabel" aria-live="polite" aria-atomic="true"></span>
+                  <progress id="exchangeStepProgress" max="5" value="1" aria-labelledby="exchangeStepLabel"></progress>
+                </div>
+                <strong id="matrixLabel">Ready when you are</strong>
+                <p id="cameraStatus">Front camera · G64</p>
+              </div>
+            </div>
             <div class="view-controls" role="group" aria-label="Display options">
               <button id="mirrorPreview" class="view-toggle" type="button" aria-pressed="true" title="Mirror the camera preview only. Camera processing is unchanged.">Mirrored</button>
               <button id="qrPosition" class="view-toggle" type="button" aria-pressed="false" title="Move the outgoing matrix to the top of the screen.">QR: bottom</button>
             </div>
-            <div class="camera-preview" aria-label="Camera alignment preview">
+            <div class="camera-preview viewfinder-rim" aria-label="Camera alignment preview">
               <video id="video" autoplay muted playsinline></video><canvas id="overlay" aria-hidden="true"></canvas>
               <div id="cameraPlaceholder" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5l1-2h6l1 2h4v15H4V5z"/><circle cx="12" cy="12" r="4"/></svg></div>
             </div>
@@ -53,6 +65,7 @@
         <div id="transfer" class="transfer" hidden><div><span id="transferLabel">Waiting for a connection</span><span id="transferPercent"></span></div><progress id="transferProgress" max="1" value="0" aria-label="Current message transfer"></progress></div>
         <p id="result" class="result" role="status" aria-live="polite" hidden></p>
       </section>
+      <section id="roundtripPanel" aria-label="Matrix roundtrip timing" hidden></section>
       <section id="simulationPanel" class="simulation-panel" aria-labelledby="simulationTitle" hidden>
         <div class="simulation-symbol" aria-hidden="true">↔</div>
         <h2 id="simulationTitle">Two devices, right here.</h2>

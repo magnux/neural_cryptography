@@ -17,7 +17,7 @@ export class ReceivePipeline {
   }
   reset(){
     this.capture.reset();this.burst.reset();this.gate.reset();this.context=null;this.runId=null;this.lastTime=-Infinity;
-    this.records=[];this.pending=null;this.profiler=new StageProfiler(false);this.counters={scans:0,gated:0,inferences:0,decoded:0,accepted:0};
+    this.pending=null;this.profiler=new StageProfiler(false);this.counters={scans:0,gated:0,inferences:0,decoded:0,accepted:0};
   }
   snapshot(){return {...this.counters,timings:this.profiler.snapshot(),bufferBytes:this.burst.status().bufferBytes};}
   accept({token,runId,expected}={}) {
@@ -35,7 +35,7 @@ export class ReceivePipeline {
       !Number.isSafeInteger(presentedFrames)||presentedFrames<1||![32,64,128].includes(maxSize))throw Error('Invalid Neural-ZKBoo capture request.');
     const key=`${runId}/${expected}`;
     if(this.runId!==runId||mediaTime<this.lastTime){this.reset();this.runId=runId;}
-    if(this.context!==key){this.capture.reset();this.burst.reset();this.gate.reset();this.records=[];this.pending=null;this.context=key;}
+    if(this.context!==key){this.capture.reset();this.burst.reset();this.gate.reset();this.pending=null;this.context=key;}
     this.lastTime=mediaTime;this.profiler.enabled=statistics===true;if(statistics)this.counters.scans++;
     // The consumer must acknowledge the most recently returned candidate before
     // requesting another exposure. A delayed old confirmation cannot arm a gate.
@@ -67,17 +67,14 @@ export class ReceivePipeline {
     if(!capture.ok)return finish({...base,...this.burst.miss(identity),ok:false,waiting:true,stage:capture.stage,error:capture.error});
     const size=capture.info.size;
     if(rejectedProfile||!profileAllowed(capture.info)){
-      this.burst.reset();this.records=[];
+      this.burst.reset();
       return finish({...base,...this.burst.miss(identity),ok:false,waiting:true,stage:'profile',
         error:expected!=='data'?`Waiting for a G${CONTROL_SIZE} Neural-QR ${expected==='ack'?'ACK':'REQUEST'}.`:`G${size} exceeds the receiving profile; maximum is G${maxSize}.`});
     }
-    const state=timing.measure('burst-collection',()=>this.burst.add(capture,identity));
-    if(optimized&&state.updated){
-      this.records=this.records.filter(row=>row.size===size);
-      this.records.push(timing.measure('fingerprint',()=>this.gate.record(image,capture,identity,probe)));
-      // Keep the same two most recent genuine exposures per phase as the burst.
-      for(let phase=0;phase<4;phase++)while(this.records.filter(row=>row.phase===phase).length>2)this.records.splice(this.records.findIndex(row=>row.phase===phase),1);
-    }
+    // Keep probe/fingerprint metadata on the very same exposure as its tensor.
+    // Random replacement, expiry, and K4/K8 selection then cannot diverge.
+    const makeGateRecord=optimized?()=>timing.measure('fingerprint',()=>this.gate.record(image,capture,identity,probe)):undefined;
+    const state=timing.measure('burst-collection',()=>this.burst.add(capture,identity,makeGateRecord));
     if(!state.ready||state.duplicateExposure)return finish({...base,...state,ok:false,waiting:true,stage:'collect',error:null});
     const burst=timing.measure('burst-snapshot',()=>this.burst.nextTransportSnapshot());
     if(!burst)return finish({...base,...state,ok:false,waiting:true,stage:'collect',error:null});
@@ -94,10 +91,10 @@ export class ReceivePipeline {
       if(statistics)this.counters.decoded++;
       if(optimized){
         const token=`${key}/${++this.serial}`;
-        this.pending={token,identity,records:this.records.filter(row=>burst.presentedFrames.includes(row.presentedFrames))};
+        this.pending={token,identity,records:burst.gateRecords};
         response.acceptToken=token;
       }
-      this.burst.reset();this.records=[];
+      this.burst.reset();
     }
     return finish(response);
   }

@@ -1,0 +1,40 @@
+/* The host occupies the single remaining viewport row under the demo tabs. */
+#roundtripPanel{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;gap:7px;--rt-ink:#263953;--rt-muted:#6c788b}
+#roundtripPanel[hidden]{display:none}
+.rt-head{display:flex;align-items:center;justify-content:space-between;min-height:52px;gap:10px}
+.rt-head h2{font-size:21px;letter-spacing:-.7px;line-height:1.12;margin:4px 0;color:var(--rt-ink)}
+.rt-view{position:relative;width:58px;height:58px;border-radius:8px;overflow:hidden;flex:none}
+.rt-view video,.rt-view canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+.phone[data-preview-mirrored="true"] .rt-view :is(video,canvas){transform:scaleX(-1)}
+.rt-msg{font-size:11px;line-height:1.4;color:var(--rt-muted);margin:0;overflow-wrap:anywhere}
+.rt-toolbar{display:grid;grid-template-columns:minmax(68px,1fr) minmax(52px,1fr) auto;align-items:end;gap:7px}
+.rt-toolbar>label{gap:2px}.rt-toolbar select,.rt-toolbar input:not([type="checkbox"]){width:100%;min-height:35px}
+.rt-toolbar>button,.rt-toolbar>details>summary,.rt-save{min-height:36px;padding:5px 12px;border-radius:9px;font-size:11px}
+.rt-go{background:#275ddd;color:white;border:0;font-weight:700}
+.rt-details>summary,.rt-save{border:1px solid #e0e5ee;background:#fff;color:#52617a}
+.rt-details[open]>summary{background:#edf3ff}
+.rt-drawer{grid-column:1/-1;background:#fff;padding:5px 8px 13px}
+.rt-drawer p{font-size:11px;color:var(--rt-muted);line-height:1.45;margin:8px 0}
+.rt-drawer fieldset{gap:9px}.rt-save{width:100%;font-weight:650}
+.rt-stats{display:grid;grid-template-columns:auto 1fr auto auto;gap:5px;text-align:center;padding:5px 2px;background:#f5f7fc;border-radius:9px;margin:0}
+.rt-stats dt{font-size:8px;color:var(--rt-muted)}.rt-stats dd{font-size:10px;font-weight:650;color:var(--rt-ink);margin:2px 0 0}
+.rt-slot{position:relative;flex:1;min-height:0;min-width:0;padding:14px;container-type:size;display:grid;place-items:end center;background:white}
+.rt-matrix{width:min(100cqw,100cqh);height:min(100cqw,100cqh);background:white;image-rendering:pixelated}
+.rt-empty{align-self:center;color:var(--rt-muted);font-size:10px}
+.phone[data-qr-position="top"] .rt-slot{order:-1;place-items:start center}
+@container(min-aspect-ratio:6/5){
+  #roundtripPanel{display:grid;grid-template-columns:minmax(195px,1fr) minmax(0,1.3fr);grid-template-rows:auto auto auto minmax(0,1fr);align-items:start}
+  #roundtripPanel[hidden]{display:none}
+  .rt-head,.rt-msg,.rt-toolbar,.rt-stats{grid-column:1}
+  .rt-slot,.phone[data-qr-position="top"] .rt-slot{grid-column:2;grid-row:1/5;align-self:stretch;order:0}
+}
+/* Keep the Settings summary in flow, including long errors and small screens.
+   Only the expanded panel scrolls; closing it restores a fitted optical area. */
+#roundtripPanel:has(.rt-details[open]){overflow-y:auto;overscroll-behavior:contain}
+.rt-details[open]{display:contents}
+.rt-details[open]>summary{grid-column:3}
+#roundtripPanel:has(.rt-details[open]) .rt-slot{flex:none;height:240px;order:0}
+@container(min-aspect-ratio:6/5){
+ #roundtripPanel:has(.rt-details[open]){display:flex}
+ #roundtripPanel:has(.rt-details[open]) .rt-toolbar{width:100%}
+}

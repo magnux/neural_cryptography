@@ -11,6 +11,13 @@ the scrolling setup and statistics view. Mirroring changes only the preview.
 Turns use stable G32 REQUEST controls: the final ACK stays visible until the
 sender acknowledges receipt by requesting the reply. Each packet reuses its
 four cached palette-phase images; no timer alternates final ACK and START.
+Both screens show the same five named exchange steps, with a separate packet
+counter during each transfer.
+
+The **Matrix timing** tab uses two cameras and needs no trained model. Start
+the receiver first: it echoes the colors it actually read from one phase, so
+the sender can measure roundtrip time, cell errors and missed probes. See
+[how to test a phase interval](../../docs/NEURAL_AUTH_DEMO.md#matrix-roundtrip-timing).
 
 From the repository root:
 

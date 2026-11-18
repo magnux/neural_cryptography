@@ -88,7 +88,10 @@ scroll. The initial matrix position is at the bottom, which helps align it with
 the other device's front camera. **QR: bottom / top** changes its position; on a
 wide landscape screen, the matrix uses a separate column and aligns to the
 selected edge. A desktop browser presents the same interface inside a bounded
-phone frame.
+phone frame. The outgoing square has an extra 10–16 CSS pixels of clearance
+on every side. The palette rim around the viewfinder is outside the camera image;
+its outline turns amber for a candidate, blue for a geometry/phase lock and green
+for a read. Neither the clearance nor the rim changes the transmitted pixels.
 
 The preview starts **Mirrored**. Its toggle reflects the visible video and
 alignment overlay together; camera samples sent to acquisition/inference and
@@ -118,6 +121,14 @@ G32 ACK and G32 REQUEST exchanges. This POC advances turns and confirms pairing 
 it does not establish identity through manual code comparison. A verified proof
 on the verifier authenticates possession of the pinned key for this attempt.
 The key holder's success text is a peer-reported result, not a second proof.
+
+Both screens show **Step 1/5 · Hello**, then **Identity**, **Challenge**,
+**Proof**, and **Result**. The chunk counter tells you how far you are *within*
+a step. Both screens therefore stay at 4/5 while a multipart proof is in
+flight. The sender advances when it reads the final ACK and displays REQUEST;
+the receiver advances when it sees that REQUEST. The brief difference between
+the counters shows which handoff is still crossing the optical link. Step 5/5
+means the result is in flight or delivered; the completion text distinguishes them.
 
 Wait for final result delivery: verifier `resultDelivered` and key holder
 `peerReported` must be true. A locally accepted proof with its result still in
@@ -170,6 +181,56 @@ and a four-second acceptance expiry forces full capture/inference even if an
 image fingerprint collides. New attempts, mode changes and clock rollback reset
 the gate. Packet identity, protected payload recovery and session checks remain
 authoritative. Target bytes never guide live reception.
+
+The live receiver keeps at most two distinct exposures **per phase**. It tries
+the newest from each phase first (K4). If more are needed, K8 uses both slots
+per phase. Once a phase is full, each new exposure replaces one of its two
+slots at random; captures from the other phases stay put. The fingerprint
+travels with the exposure it describes. A failed K8 is retried after four
+fresh captures; missed markers and duplicate video callbacks do not fill slots.
+
+## Matrix roundtrip timing
+
+Use **Matrix timing** for a physical two-device test of one displayed phase.
+There are no authentication keys or trained models to set up. The receiver
+uses the same Neural-QR markers, geometry and border palette as the live reader,
+then classifies each test cell from that single exposure. It displays an echo
+of the colors it **observed**. The sender scans the echo and compares the
+returned cells with its original probe. A wrong color counts as a cell error;
+it does not disqualify a timing sample. Two copies of a CRC-checked trial ID
+distinguish an echo from the outgoing probe, an old echo or a different run.
+The ID areas and fixed grid references are excluded from the error rate.
+
+1. On both devices select **Matrix timing** and the same grid. A good starting
+   point for two front cameras is G64, 100 ms capture, no dummy inference.
+   Start **Receiver** first, align the cameras, then start **Sender**.
+2. Begin with **Probe exposure = 0**. The sender holds one phase until it
+   gets the matching echo or times out. Each new trial advances to the next
+   of the four phase cues. The receiver holds its echo until a newer trial
+   arrives. Stop and restart the receiver before starting a new sender run.
+3. For a phase-duration test, repeat in the same placement with finite
+   exposures, for example **250, 150, then 100 ms**. The sender hides the probe
+   at the exposure limit but keeps looking for its echo until the same timeout.
+   Compare the matched fraction, timeout count and cell error rate (CER), as
+   well as the minimum, mean and maximum RTT. Repeat with the roles swapped.
+   A short RTT among a handful of successful trials is poor evidence for a
+   reliable interval. Use a promising exposure in a real four-phase exchange
+   before changing the authentication default.
+4. Optionally enable **dummy inference on the receiver** at G32 or G64 after
+   preparing the untrained simulation assets described below. This runs one
+   actual model pass on a fixed tensor before displaying each new echo. Its
+   output is discarded. Compare runs with it off and on to isolate the added
+   cost; model loading, parity checks and warmup precede the measurements.
+
+The sender times from submitting the probe to its canvas to receiving the
+worker's decode of the matching echo, using one local clock. That includes
+both cameras and screens, the return leg and scheduling. It is neither a
+photon-level timestamp nor the minimum one-way phase duration. CER is end to
+end on **matched** trials; an unreadable ID leads to a timeout, not a low CER.
+There is no payload RS+CRC recovery in this diagnostic. In Settings, **Save
+measurements** on each device to see local stage timings for camera readback,
+detection and decoding. The receiver additionally measures capture-to-echo
+latency and optional inference; the sender records individual trial outcomes.
 
 ## Explicit ideal-output simulation
 

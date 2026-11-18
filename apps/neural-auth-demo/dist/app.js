@@ -1,4 +1,6 @@
+import {initRoundtrip} from './roundtrip-ui.js';
 import {AuthSession} from './js/auth-core/session.js';
+import {exchangeStep} from './auth-progress.js';
 import {decodeEnvelope,normalizeDisplayName,validDeviceId} from './js/auth-core/envelope.js';
 import {CryptoClient} from './js/crypto-lab/client.js';
 import {CorrectorClient} from './js/corrector-lab/client.js';
@@ -107,6 +109,7 @@ function initialize() {
   function showLocalName(){setText('deviceName',localIdentity.displayName);$('deviceName').title=`This device: ${localIdentity.displayName}`;}
   $('displayName').value=localIdentity.displayName;showLocalName();saveIdentity();
   const supported=globalThis.isSecureContext&&Boolean(globalThis.crypto?.subtle)&&typeof Worker==='function'&&Boolean(navigator.mediaDevices?.getUserMedia);
+  let roundtrip=null,roundtripActive=false;
   let mode='camera',active=false,epoch=0,stream=null,corrector=null,cryptoClient=null,session=null,channel=null;
   let config=null,authState=null,report=null,startedAt=0,packetTelemetry=null,autoPairing=null,simulationAbort=null;
   let captureCallback=null,displayTimer=null,heartbeat=null,lastCapture=-Infinity,lastPresented=0,frameWaitAt=0,scanning=false;
@@ -129,7 +132,8 @@ function initialize() {
   }
 
   function buttons() {
-    $('settingsFields').disabled=active;$('cameraTab').disabled=active;$('simulationTab').disabled=active;
+    $('settingsFields').disabled=active;
+    for(const id of ['cameraTab','simulationTab','roundtripTab'])$(id).disabled=active||roundtripActive;
     $('start').hidden=active;$('start').disabled=mode==='camera'&&!supported;
     $('start').innerHTML=mode==='camera'?'Start authentication <span aria-hidden="true">↗</span>':'Run local simulation <span aria-hidden="true">↗</span>';
     $('stop').hidden=!active;setText('stop',authState?.resultDelivered||authState?.peerReported?'Finish exchange':mode==='simulation'?'Cancel simulation':'Cancel exchange');
@@ -137,7 +141,16 @@ function initialize() {
     $('downloadReport').disabled=!report;
   }
 
+  function showExchangeStep(link) {
+    if (link?.closed) return; // Preserve the last observed step on failure/cancel.
+    const {number,total,label}=exchangeStep(config.role,link);
+    $('exchangeStep').hidden=false;
+    setText('exchangeStepLabel',`Step ${number}/${total} · ${label}`);
+    $('exchangeStepProgress').value=number;
+  }
+
   function showIdle() {
+    $('exchangeStep').hidden=true;
     setText('title',mode==='camera'?'Connect with a look.':'Try the complete exchange.');
     setText('instruction',mode==='camera'?'Open this page on both devices. Choose one verifier and one key holder in Settings, then start.':'See two virtual devices exchange identities, a challenge, a proof and a result.');
     setText('stepLabel',mode==='camera'?'NEURAL-ZKBOO · NEURAL-QR':'LOCAL SOFTWARE SIMULATION');
@@ -147,6 +160,7 @@ function initialize() {
   function update() {
     buttons();if(!active||mode!=='camera')return;
     const link=channel?.snapshot(),message=sessionMessage(authState,link);
+    showExchangeStep(link);
     setText('title',message.title);setText('instruction',message.instruction);
     $('peerName').hidden=!message.complete||!authState?.peerDisplayName;setText('peerName',authState?.peerDisplayName??'');$('peerName').title=authState?.peerDisplayName??'';
     $('app').dataset.state=message.complete?'complete':'active';
@@ -210,8 +224,9 @@ function initialize() {
     const canvas=$('overlay');if(canvas.width!==width)canvas.width=width;if(canvas.height!==height)canvas.height=height;
     const ctx=canvas.getContext('2d');ctx.clearRect(0,0,width,height);
     const corners=result.corners?.length===4?result.corners:result.tentativeCorners;
+    if(!result.skipped)$('app').dataset.lock=result.ok?'read':result.info?'acquired':corners?.length===4?'tentative':'none';
     if(corners?.length===4&&corners.every(point=>Array.isArray(point)&&point.length===2&&point.every(Number.isFinite))){
-      ctx.strokeStyle=result.ok?'#6be2a3':'#8babff';ctx.fillStyle=result.ok?'rgba(107,226,163,.17)':'rgba(139,171,255,.14)';ctx.lineWidth=Math.max(4,width/200);ctx.beginPath();corners.forEach((point,i)=>ctx[i?'lineTo':'moveTo'](...point));ctx.closePath();ctx.fill();ctx.stroke();
+      ctx.strokeStyle=result.ok?'#6be2a3':result.info?'#8babff':'#edac49';ctx.fillStyle=result.ok?'rgba(107,226,163,.17)':result.info?'rgba(139,171,255,.14)':'rgba(237,172,73,.14)';ctx.lineWidth=Math.max(4,width/200);ctx.beginPath();corners.forEach((point,i)=>ctx[i?'lineTo':'moveTo'](...point));ctx.closePath();ctx.fill();ctx.stroke();
     }
     setText('cameraStatus',result.ok?'Matrix read · checking packet':result.skipped?'Holding steady · watching for changes':result.info?'Matrix found · hold steady':'Find all four corners in the preview');
   }
@@ -351,8 +366,9 @@ function initialize() {
   }
 
   async function start() {
-    if(active)return;error();try{config=readSettings();}catch(e){error(e.message);$('settings').open=true;return;}
+    if(active||mode==='roundtrip')return;error();$('app').dataset.lock='none';try{config=readSettings();}catch(e){error(e.message);$('settings').open=true;return;}
     localIdentity.displayName=config.displayName;saveIdentity();showLocalName();$('peerName').hidden=true;$('simulationComparison').hidden=true;setText('inferenceLabel','Latest inference');
+    if(mode==='camera')showExchangeStep(null);
     active=true;const token=++epoch;startedAt=performance.now();authState=null;session=null;channel=null;corrector=null;cryptoClient=null;
     events=[];operations=Object.create(null);renderCache=[];shown=null;rendered=[];lastInference=null;acceptedCount=0;scanCount=0;mainThreadSkipped=0;probeGate.reset();
     lastCapture=-Infinity;lastPresented=0;lastFeedbackAt=-Infinity;scanning=false;packetTelemetry=null;lastAnnouncement='';
@@ -366,7 +382,7 @@ function initialize() {
     if(!active)return;
     const savedAuth=authState,savedTransport=channel?.snapshot(),wasComplete=authState?.resultDelivered||authState?.peerReported;
     // Invalidate callbacks before closing workers, channels or camera tracks.
-    active=false;epoch++;simulationAbort?.abort();simulationAbort=null;autoPairing?.close();autoPairing=null;
+    active=false;$('app').dataset.lock='none';epoch++;simulationAbort?.abort();simulationAbort=null;autoPairing?.close();autoPairing=null;
     clearTimeout(displayTimer);clearInterval(heartbeat);
     if(captureCallback!==null)$('video').cancelVideoFrameCallback(captureCallback);captureCallback=null;
     channel?.close();session?.close(reason);cryptoClient?.destroy();corrector?.cancel();
@@ -392,11 +408,20 @@ function initialize() {
   }
 
   function setMode(next) {
-    if(active||next===mode)return;mode=next;report=null;config=null;authState=null;error();
+    if(active||roundtripActive||next===mode)return;
+    if(mode==='roundtrip')roundtrip?.stop();
+    mode=next;report=null;config=null;authState=null;error();
+    $('settings').open=false;
+    $('roundtripTab').setAttribute('aria-pressed',String(next==='roundtrip'));
+    $('roundtripPanel').hidden=next!=='roundtrip';
+    if(next==='roundtrip'&&!roundtrip){
+      roundtrip=initRoundtrip($('roundtripPanel'),{onActive:value=>{roundtripActive=value;buttons();}});
+    }
     $('cameraTab').setAttribute('aria-pressed',String(next==='camera'));$('simulationTab').setAttribute('aria-pressed',String(next==='simulation'));
-    $('cameraPanel').hidden=next!=='camera';$('simulationPanel').hidden=next!=='simulation';$('app').dataset.mode=next;showIdle();sizeMatrix();
+    $('app').dataset.lock='none';$('cameraPanel').hidden=next!=='camera';$('simulationPanel').hidden=next!=='simulation';$('app').dataset.mode=next;showIdle();sizeMatrix();
   }
 
+  $('roundtripTab').addEventListener('click',()=>setMode('roundtrip'));
   $('cameraTab').addEventListener('click',()=>setMode('camera'));$('simulationTab').addEventListener('click',()=>setMode('simulation'));
   $('start').addEventListener('click',()=>void start());$('stop').addEventListener('click',()=>finish(authState?.peerReported||authState?.resultDelivered?'Finished by the user.':'Cancelled by the user.'));
   $('downloadReport').addEventListener('click',download);

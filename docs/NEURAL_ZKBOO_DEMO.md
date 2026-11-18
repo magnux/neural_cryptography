@@ -235,8 +235,10 @@ Rectified inputs use 4×4 pixels per cell: 128×128 at G32, 256×256 at G64, and
 (32 channels). One exposure from each phase permits the first K4 attempt. After
 failed recovery, the next inference waits for two captures per phase (K8).
 Further K8 retries wait for four new valid captures in total, which need not be
-one from each phase. The pool replaces the oldest sample of the newly observed
-phase. Missed detections and duplicate exposure callbacks do not count toward
+one from each phase. Once a phase has two samples, each newly observed
+exposure replaces one of those two uniformly at random. The newest exposure
+is always kept; the other can come from an earlier cycle. Camera fingerprints
+follow the selected exposures in the same slots. Missed detections and duplicate exposure callbacks do not count toward
 those four captures. The model emits canonical logical-color logits; phase inversion
 must not be applied again to its output.
 

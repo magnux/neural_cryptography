@@ -197,7 +197,7 @@ export function extractNeuralQR(image,{profile,previousGeometry=null,now=Date.no
     const horizontal=Math.hypot(...project(h,p.x+p.side,p.y).map((v,k)=>v-project(h,p.x,p.y)[k]))/g;
     const vertical=Math.hypot(...project(h,p.x,p.y+p.side).map((v,k)=>v-project(h,p.x,p.y)[k]))/g;
     Object.assign(result.stats,{pixelsPerCell:Math.min(horizontal,vertical),colorRMSE:calibration.rmse});
-    if(!dense){result.ok=true;result.stage='acquired';result.error=null;if(collectTimings)result.stats.ms=elapsed();return result;}
+    if(!dense){result.ok=true;result.stage='acquired';result.error=null;result.observedPalette=calibration.observed;if(collectTimings)result.stats.ms=elapsed();return result;}
     // The neural transport consumes the dense RGB crop only. Dataset/bench
     // callers retain the separate cell-sample representation by default.
     result.stage='raster';const samples=includeSamples?new Float32Array(g*g*3+96):null,rgb=new Float32Array(side*side*3);
