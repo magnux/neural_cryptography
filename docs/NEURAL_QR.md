@@ -299,15 +299,29 @@ transform to every sampled pixel, producing a normalized RGB crop with four
 pixels per cell on each axis: G64 gives a 256×256 crop. The border strips
 themselves are outside the neural input.
 
-The internal reference rows and columns (grid-8 pilots) **are inside** the
-crop. The trained W-tube/VW model sees those pixels alongside the data, but
-its preprocessing does **not** fit a separate correction per block. A local
-shadow or reflection can survive the global transform. The classical G16
-receipt reader takes a different path: after border calibration it uses nearby
-known grid colors to estimate a local palette for each block before classifying
-its cells. Both paths use real camera measurements.
-See [rectification](../apps/color-optical-bench/dist/js/neural-qr/vision.js)
-and [local palettes](../apps/color-optical-bench/dist/js/references.js).
+The internal reference rows and columns (grid-8 pilots) **are inside** that
+crop. By default the trained corrector sees the pilots and the globally
+calibrated data as recorded during training. A local shadow or tint can
+survive a transform fitted to the borders.
+
+**Use grid for local color correction** adds an optional second pass on the
+receiving device, separately for each exposure. It averages the central 2×2
+pixels of each known pilot in the rectified crop. Overlapping neighborhoods
+of pilots estimate a bounded gain and offset per RGB channel. Unreliable
+measurements get less weight; a neighborhood with too little color variation
+falls back to the border fit for that channel. The reader blends neighboring
+fits smoothly across the crop, then normalizes and packs the images for the
+same model. The pilot colors are fixed across phases. Data decisions never
+enter the fit. This changes neither the transmitted matrix nor the checkpoint.
+
+This is an experiment in correcting spatially varying color. It cannot bring
+back detail lost to blur, too few camera pixels per cell, or sensor clipping.
+The static G16 receipt already uses nearby pilots to classify cells against
+local palettes and does not use the neural corrector; the switch has no effect
+on it. See the [global fit and rectification](../apps/color-optical-bench/dist/js/neural-qr/vision.js),
+[dense grid correction](../apps/color-optical-bench/dist/js/neural-qr/grid-color.js),
+[classical local palettes](../apps/color-optical-bench/dist/js/references.js)
+and [two-device G128 comparison](NEURAL_AUTH_DEMO.md#test-grid-color-correction-at-g128).
 
 ## ACKs and control messages
 

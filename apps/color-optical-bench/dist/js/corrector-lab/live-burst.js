@@ -18,9 +18,9 @@ export const isTransportData = info => Boolean(info&&[16,32,64,128].includes(inf
   Number.isInteger(info.phase)&&info.phase>=0&&info.phase<4);
 
 /** Logits already use canonical logical colors; never reverse the phase twice. */
-export function recoverCorrectedPayload(logits,info) {
+export function recoverCorrectedPayload(logits,info,options) {
   if(!isTransportData(info))throw Error('Unexpected Neural-QR transport matrix profile.');
-  return decodeNeuralQR(logits,info.size);
+  return decodeNeuralQR(logits,info.size,options);
 }
 
 /** Two genuine exposures per phase, one stop-and-wait candidate, at most 24 MiB at G128.

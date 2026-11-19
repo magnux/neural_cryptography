@@ -300,10 +300,10 @@ function requirePreparedTransport(options) {
   return settings;
 }
 
-async function scanTransport(options,progress,raw) {
+async function scanTransport(options,progress,raw,sweepDiagnostics=false) {
   const settings=requirePreparedTransport(options);
   transportProgress=progress;
-  return receivePipeline.scan({...raw,maxSize:settings.maxSize});
+  return receivePipeline.scan({...raw,maxSize:settings.maxSize},{sweepDiagnostics});
 }
 
 self.onmessage = async event => {
@@ -317,7 +317,7 @@ self.onmessage = async event => {
     if (operation === 'benchmark') result = await benchmark(validated, progress);
     else if (operation === 'capture') result = await capture(validated, progress, options.image, options.runId, options.mediaTime, options.presentedFrames, options.captureIntervalMs);
     else if (operation === 'transport-init') result = await initializeTransport({...validated,statistics:options.statistics},progress);
-    else if (operation === 'transport-scan') result = await scanTransport(validated,progress,options);
+    else if (operation === 'transport-scan'||operation === 'sweep-scan') result = await scanTransport(validated,progress,options,operation==='sweep-scan');
     else if (operation === 'receipt-scan') {
       requirePreparedTransport(validated);
       if(options.expected!=='ack')throw Error('G16 receipts can only be read while expecting an ACK.');
@@ -327,7 +327,7 @@ self.onmessage = async event => {
     else if (operation === 'transport-stats') result={operation,...receivePipeline.snapshot()};
     else if (operation === 'transport-reset') {receivePipeline.reset();receiptReader.reset();result={operation,ready:Boolean(transportContext)};}
     else throw new Error('Unknown corrector operation.');
-    self.postMessage({id, type: 'result', result});
+    self.postMessage({id, type: 'result', result},result.sweepSymbols?[result.sweepSymbols.buffer]:[]);
   } catch (error) { cameraBurst=null;labCapture.reset();receivePipeline.reset();receiptReader.reset(); self.postMessage({id, type: 'error', error: error.message || String(error)}); }
   finally { busy = false; }
 };

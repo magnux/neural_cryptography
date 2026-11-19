@@ -19,10 +19,10 @@ test('rendered single exposures go through canonical four-phase acquisition, mea
     infer:async()=>({values:new Float32Array(16*32*32),ms:0})});
   const client={call:async(op,o,transfers)=>{
     if(op==='transport-init')return metadata;
-    assert.equal(op,'transport-scan');assert.deepEqual(transfers,[o.image.data.buffer]);
-    return pipeline.scan({...o,maxSize:o.size});
+    assert.equal(op,'sweep-scan');assert.equal(o.localColorCorrection,true);assert.deepEqual(transfers,[o.image.data.buffer]);
+    return pipeline.scan({...o,maxSize:o.size},{sweepDiagnostics:true});
   },cancel(){}};
-  const reader=new SweepReader({role:'receiver',size:32,client});await reader.init();reader.beginStep();
+  const reader=new SweepReader({role:'receiver',size:32,client,localColorCorrection:true});await reader.init();reader.beginStep();
   let result;
   for(let i=0;i<4;i++){
     result=await reader.scan(renderNeuralQR(frames[i],512),{...identity(i+1),captureTrigger:i===0?'search':'change'});
@@ -30,6 +30,7 @@ test('rendered single exposures go through canonical four-phase acquisition, mea
   }
   assert.equal(result.ok,false,'a failed neural output must never be accepted as an optical match');
   assert.equal(result.inputCaptures,4);
+  assert.equal(result.sweepSymbols.length,32*32);assert.ok(result.sweepSymbols.every(v=>v===0));
   const s=reader.snapshot();assert.deepEqual(s.phases,[1,1,1,1]);assert.deepEqual(s.inferences,{K4:1,K8:0});
   assert.equal(s.geometry.previous,3);assert.equal(s.geometry.detected,1);assert.equal(s.geometry.hintAttempts,3);
   assert.equal(s.stages['marker-detection'].measuredScans,1);assert.ok(s.stages.homography.count>=1);
@@ -47,7 +48,7 @@ test('sender uses the trained G32 ACK profile, rejects untrained assets, and bou
   const client={call:(op,opts)=>{
     assert.equal(opts.size,32);
     if(op==='transport-init')return {...metadata,modelStatus:untrained?'untrained':'trained'};
-    assert.equal(opts.expected,'ack');now+=2;return {ok:false,stage:'detect',timings:{},stats:{}};
+    assert.equal(opts.localColorCorrection,false);assert.equal(opts.expected,'ack');now+=2;return {ok:false,stage:'detect',timings:{},stats:{}};
   },cancel(){}};
   const reader=new SweepReader({role:'sender',size:128,client,now:()=>now});
   await assert.rejects(reader.init(),/trained/);untrained=false;
@@ -97,7 +98,8 @@ test('G16 sweep sender reads one rendered exposure without initializing a model 
     handle({data:{id:1,operation,options}});if(reply.type==='error')throw Error(reply.error);return reply.result;
   },cancel(){}};
   const digest=Uint8Array.from({length:32},(_,i)=>i);
-  const reader=new SweepReader({role:'sender',size:64,ackSize:16,client});
+  const reader=new SweepReader({role:'sender',size:64,ackSize:16,localColorCorrection:true,client});
+  assert.equal(reader.localColorCorrection,false);
   const init=await reader.init();assert.equal(init.modelProfile,null);assert.equal(init.incomingMax,16);
   assert.equal(init.effectiveBackend,'classical-js');reader.beginStep();
   const r=await reader.scan(renderNeuralQR(receipt16Frames(digest)[0],256),identity(1));

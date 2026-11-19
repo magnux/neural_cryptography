@@ -69,7 +69,7 @@ export function encodePacket(payload,wireBytes,parity=DEFAULT_PARITY){
 }
 
 /** Blind receiver. It is intentionally unaware of expected bytes and errors. */
-export function decodePacket(wire,parity=DEFAULT_PARITY){
+export function decodePacket(wire,parity=DEFAULT_PARITY,{countCellErrors=false}={}){
   bytes(wire,'Wire');const layout=requireLayout(wire.length,parity),blocks=deinterleave(wire,layout);
   const rawCRCValid=Number(validCRC(unpackData(blocks,layout)));
   const repaired=[];let correctedBytes=0;
@@ -79,7 +79,19 @@ export function decodePacket(wire,parity=DEFAULT_PARITY){
     return {rawCRCValid,rsDecoded:0,crcAccepted:0,correctedBytes:0,payload:null};
   }
   const data=unpackData(repaired,layout),crcAccepted=Number(validCRC(data));
-  return {rawCRCValid,rsDecoded:1,crcAccepted,correctedBytes,
+  const result={rawCRCValid,rsDecoded:1,crcAccepted,correctedBytes,
     payload:crcAccepted?data.slice(0,layout.payloadBytes):null};
+  // For statistics only. Compare the original two decisions per wire byte to
+  // the complete repaired codeword (including parity). Never score a failed CRC.
+  if(countCellErrors&&crcAccepted){
+    let errors=0;
+    if(correctedBytes)for(let b=0;b<blocks.length;b++)for(let i=0;i<blocks[b].length;i++){
+      const delta=blocks[b][i]^repaired[b][i];
+      if(delta&0xf0)errors++;
+      if(delta&0x0f)errors++;
+    }
+    result.wireCellErrors=errors;result.wireCells=2*wire.length;
+  }
+  return result;
 }
 

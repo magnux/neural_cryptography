@@ -57,12 +57,13 @@ function keep(s,result,mediaTime,begin,end,captureTrigger){
   else{if(s.tail.length===TRACE_HALF)s.tail.shift();s.tail.push(row);}
 }
 export class SweepReader{
-  constructor({size,role,ackSize=CONTROL_SIZE,backend='auto',onProgress,client,now=()=>performance.now()}){
+  constructor({size,role,ackSize=CONTROL_SIZE,backend='auto',localColorCorrection=false,onProgress,client,now=()=>performance.now()}){
     if(![16,CONTROL_SIZE].includes(ackSize)||!DATA_SIZES.includes(size)||!['sender','receiver'].includes(role)||!['auto','wasm','webgpu'].includes(backend))
       throw Error('Invalid trained sweep role, grid or backend.');
     this.expected=role==='sender'?'ack':'data';
     this.size=role==='sender'?ackSize:size;
     this.single=this.size===16;
+    this.localColorCorrection=!this.single&&localColorCorrection===true;
     const workerFactory=this.single?()=>new Worker(new URL('./sweep-receipt-worker.js',import.meta.url),{type:'module'}):undefined;
     this.backend=backend;this.client=client??new CorrectorClient({onProgress,workerFactory});this.now=now;
     this.runId=0;this.current=null;this.ready=false;this.closed=false;
@@ -99,9 +100,9 @@ export class SweepReader{
     // need neither a post-acceptance frame gate nor a second worker RPC.
     const begin=this.now();s.submitted++;
     const result=this.single?await this.client.call('receipt-scan',{image,runId:this.runId,mediaTime,presentedFrames,captureIntervalMs},[image.data.buffer]):
-      await this.client.call('transport-scan',{image,runId:this.runId,mediaTime,presentedFrames,
+      await this.client.call('sweep-scan',{image,runId:this.runId,mediaTime,presentedFrames,
       captureIntervalMs,size:this.size,backend:this.backend,expected:this.expected,
-      optimized:true,forceAcquisition:true,statistics:true},[image.data.buffer]);
+      optimized:true,forceAcquisition:true,statistics:true,localColorCorrection:this.localColorCorrection},[image.data.buffer]);
     if(this.closed||this.current!==s)throw abort();
     keep(s,result,mediaTime,begin,this.now(),captureTrigger);return result;
   }

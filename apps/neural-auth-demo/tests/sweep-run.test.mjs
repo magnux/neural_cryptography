@@ -47,3 +47,13 @@ test('optional capture variation samples one deadline per accepted frame and nev
   const fixed=new CapturePacer(250,false,()=>{throw Error('unexpected timing variation');});
   fixed.take(20);assert.equal(fixed.take(269),null);assert.equal(fixed.take(270).interval.requested,250);
 });
+
+test('zero decrement repeats a fixed pace for five independently armed packets, including misses',()=>{
+  const r=new SweepRun({role:'receiver',startPhaseMs:350,startCaptureMs:250,decrementMs:0});
+  for(let i=0;i<5;i++){
+    assert.deepEqual(r.next,{step:i+1,phaseMs:350,captureMs:250});
+    const t=i*500;r.begin(t);if(i>0)r.mark('ackDraw',t+100);
+    r.finish(i===0?'timeout':'ack-shown',t+101);
+  }
+  assert.equal(r.next,null);assert.equal(r.report().successfulSteps,4);
+});

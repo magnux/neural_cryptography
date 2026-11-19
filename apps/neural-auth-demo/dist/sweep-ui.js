@@ -3,6 +3,7 @@
 import {openCaptureCamera,captureDimensions} from './js/dataset/camera.js';
 import {renderNeuralQR} from './js/neural-qr/layout.js';
 import {SweepReader} from './sweep-reader.js';
+import {sweepCellSketch} from './sweep-cell-sample.js';
 import {SweepRun,CapturePacer} from './sweep-run.js';
 import {FirstPresentation} from './first-presentation.js';
 import {PhaseWatch,createPhaseSampler} from './phase-watch.js';
@@ -21,6 +22,7 @@ function markup(){return `
     <label>Data grid<select name="size"><option>32</option><option selected>64</option><option>128</option></select></label>
     <label>ACK profile<select name="ackSize"><option value="32" selected>G32 · trained, four phases</option><option value="16">G16 · experimental, one exposure</option></select></label>
     <label>Corrector backend<select name="backend"><option value="auto">Auto</option><option value="wasm">WASM</option><option value="webgpu">WebGPU</option></select></label>
+    <label class="toggle wide"><span>Use grid for local color correction<small>Adjust this camera’s trained input using the internal pilot grid. Leave off for border calibration alone. G16 receipts use a separate reader.</small></span><input name="localColorCorrection" type="checkbox"></label>
     <label>Initial phase (ms)<input name="phase" type="number" min="50" max="2000" value="500" step="1"></label>
     <label class="toggle wide"><span>Progressive transmit timing<small>Increase this device’s phase dwell after each complete four-phase pass of the same packet</small></span><input name="progressive" type="checkbox"></label>
     <label>Increase per pass (ms)<input name="increment" type="number" min="1" max="2000" value="50" step="1" disabled></label>
@@ -28,7 +30,7 @@ function markup(){return `
     <label>Initial capture (ms)<input name="capture" type="number" min="50" max="2000" value="450" step="1"></label>
     <label class="toggle wide"><span>Follow phase changes<small>After lock, check the center of the matrix and capture on a fresh frame at least 10 ms after a change. Turn off to test timed capture.</small></span><input name="phaseWatch" type="checkbox" checked></label>
     <label class="toggle wide"><span>Vary timed capture spacing (±20%)<small>Applies while searching, or throughout when the phase watch is off</small></span><input name="varyCapture" type="checkbox"></label>
-    <label>Decrease per step (ms)<input name="decrement" type="number" min="1" max="500" value="50" step="1"></label>
+    <label>Decrease per step (ms; 0 repeats the same pace five times)<input name="decrement" type="number" min="0" max="500" value="50" step="1"></label>
     <label>Step timeout (s)<input name="timeout" type="number" min="3" max="120" value="30" step="1"></label>
     <label>Camera<select name="facing"><option value="user">Front</option><option value="environment">Rear</option></select></label>
     <label>Resolution<select name="resolution"><option>720</option><option selected>1080</option><option>1440</option><option>2160</option><option value="max">Maximum</option></select></label>
@@ -119,13 +121,14 @@ export function initSweep(host,{onActive=()=>{}}={}){
   const current=t=>active&&t===epoch;
   const measuring=(t,row)=>current(t)&&row===run.active;
   function settings(){return {role:el('role').value,size:Number(el('size').value),ackSize:Number(el('ackSize').value),
+    localColorCorrection:el('localColorCorrection').checked===true&&!(el('role').value==='sender'&&Number(el('ackSize').value)===16),
     phaseWatch:el('phaseWatch').checked===true,progressive:el('progressive').checked===true,
     incrementMs:el('progressive').checked?integer('increment',1,2000):50,maxPhaseMs:el('progressive').checked?integer('phaseCap',50,2000):500,
-    varyCapture:el('varyCapture').checked===true,startPhaseMs:integer('phase',50,2000),startCaptureMs:integer('capture',50,2000),decrementMs:integer('decrement',1,500),
+    varyCapture:el('varyCapture').checked===true,startPhaseMs:integer('phase',50,2000),startCaptureMs:integer('capture',50,2000),decrementMs:integer('decrement',0,500),
     timeoutMs:1000*integer('timeout',3,120),resolution:el('resolution').value,facingMode:el('facing').value,
     deviceId:el('device').value,backend:el('backend').value};}
   function buttons(){
-    el('backend').disabled=active||(el('role').value==='sender'&&Number(el('ackSize').value)===16);
+    el('backend').disabled=el('localColorCorrection').disabled=active||(el('role').value==='sender'&&Number(el('ackSize').value)===16);
     el('increment').disabled=el('phaseCap').disabled=active||!el('progressive').checked;
     const upcoming=run?.next;
     go.textContent=active?'Stop run':'Start camera';next.hidden=!active;next.disabled=!ready||Boolean(run?.active)||!upcoming||busy||arming;
@@ -136,6 +139,12 @@ export function initSweep(host,{onActive=()=>{}}={}){
     buttons();const row=run?.rows.at(-1);
     if(!row)return;
     const detailsText=run.rows.map(r=>'Step '+r.step+' · '+r.phaseMs+'/'+r.captureMs+' ms · '+r.status+' · '+fmt(r.rttMs??r.armToAckMs??r.elapsedMs));
+    const quality=run.quality(),cer=quality.matchedWireCER;
+    detailsText.push('',quality.successfulSteps+'/'+quality.steps+' steps completed · '+quality.timeouts+' timed out');
+    if(!(c.role==='sender'&&c.ackSize===16)){
+      detailsText.push(quality.fecOrCrcFailures+' RS/CRC failures across '+quality.inferences+' neural reads',
+        'Pre-RS cell error (matched packets only): '+(cer.rate===null?'n/a':(100*cer.rate).toFixed(2)+'% ('+cer.errors+'/'+cer.cells+' cells, '+cer.matchedPackets+' packets)'));
+    }
     const stageRows=Object.entries(row.reader?.stages??{});
     const substeps=stageRows.filter(([,s])=>s.count>0).map(([key,s])=>key+': '+fmt(s.avgMsPerMeasuredScan)+' / measured scan · '+s.measuredScans+' scans');
     const hits=row.reader?.phases,rejects=Object.entries(row.reader?.phaseRejections??{}).filter(([,n])=>n>0);
@@ -219,18 +228,34 @@ export function initSweep(host,{onActive=()=>{}}={}){
     const counts=found.phaseCounts??[0,0,0,0];
     if(!reader.single&&found.info?.size===want&&(counts.length===4&&counts.every(Boolean)||found.inputCaptures>=4))run.mark('allPhases',start);
     progress.textContent='Step '+row.step+' · '+row.phaseMs+'/'+row.captureMs+' ms · '+(reader.single?'single-exposure receipt':'phases '+counts.join(' / '));
+    // Saved *after* inference for offline diagnosis. An uncorrectable read has
+    // no verified trial identity; never promote it to a matched packet.
+    let firstSketchKey=null;
+    if(c.role==='receiver'&&found.info?.size===want&&found.sweepSymbols instanceof Uint8Array&&[4,8].includes(found.inputCaptures)){
+      const key='K'+found.inputCaptures,cellSample=row.cellSample??={status:{}};
+      if(!cellSample[key]){
+        cellSample[key]=sweepCellSketch(found.sweepSymbols,want);cellSample.status[key]='unconfirmed';firstSketchKey=key;
+      }
+    }
     if(!found.ok||found.info?.size!==want)return;
+    function recordMatchedCER(){
+      const {wireCellErrors:errors,wireCells:cells}=found.stats??{};
+      if(!reader.single&&Number.isSafeInteger(errors)&&Number.isSafeInteger(cells)&&errors>=0&&errors<=cells&&cells>0)
+        row.matchedWireCER={errors,cells,rate:errors/cells};
+    }
     const check=now();
     if(c.role==='sender'){
       const match=reader.single?matchesSweepReceipt(found.digest,probe):matchesSweepAck(found.chunk,probe);run.sample('packetCheck',now()-check);
       if(!match){row.unmatchedAcks=(row.unmatchedAcks??0)+1;return;}
       if(timedOut(t,row))return;
-      run.mark('packetDecoded',decodedAt);run.mark('ackDecoded',now());endRow('ack-read');dsp.clear();
+      recordMatchedCER();run.mark('packetDecoded',decodedAt);run.mark('ackDecoded',now());endRow('ack-read');dsp.clear();
       status.textContent=run.next?'ACK read. Both devices can start step '+run.next.step+'.':'Final ACK read. Save both reports.';
     }else{
       const ack=await acknowledgeSweepProbe(found.chunk,{runId,step:row.step,size:c.size,ackSize:c.ackSize,phaseMs:row.phaseMs,captureMs:row.captureMs});
       if(timedOut(t,row))return;run.sample('checkDataAndBuildAck',now()-check);
+      if(firstSketchKey)row.cellSample.status[firstSketchKey]=ack?'matched':'foreign';
       if(!ack)return;
+      recordMatchedCER();
       run.mark('packetDecoded',decodedAt);arming=true;
       dsp.show(ack.frames,row.phaseMs,c,(at,renderMs)=>{
         if(timedOut(t,row))return;
@@ -258,7 +283,8 @@ export function initSweep(host,{onActive=()=>{}}={}){
       if(timedOut(t,row))return;run.sample('buildData',now()-buildStart);probe=fresh;
       dsp.show(probe.frames,row.phaseMs,c,(at,renderMs)=>{
         if(timedOut(t,row))return;
-        run.sample('render',renderMs);run.mark('probeDraw',at);schedule(t,row);
+        run.sample('render',renderMs);run.mark('probeDraw',at);
+        row.cellSample={reference:sweepCellSketch(fresh.frames[0].symbols,c.size)};schedule(t,row);
       },(at,tick,dwell)=>{if(current(t))run.painted(row.step,'data',tick,at,dwell);},()=>!timedOut(t,row),e=>fail(t,e));
     }catch(e){fail(t,e);}
   }
@@ -273,7 +299,7 @@ export function initSweep(host,{onActive=()=>{}}={}){
     sampler=c.phaseWatch&&!single?createPhaseSampler():null;
     details.open=false;q('.sw-history').textContent='';progress.textContent='Preparing reader…';status.textContent=single?'Starting single-exposure G16 receipt reader.':'Loading and checking the trained corrector for this device.';buttons();
     try{
-      reader=new SweepReader({role:c.role,size:c.size,ackSize:c.ackSize,backend:c.backend,onProgress:s=>{if(current(t))status.textContent=String(s);}});
+      reader=new SweepReader({role:c.role,size:c.size,ackSize:c.ackSize,backend:c.backend,localColorCorrection:c.localColorCorrection,onProgress:s=>{if(current(t))status.textContent=String(s);}});
       const loaded=await reader.init();if(!current(t))return;model=loaded;
       status.textContent='Opening camera…';const opened=await openCaptureCamera(navigator.mediaDevices,{resolution:c.resolution,deviceId:c.deviceId,facingMode:c.facingMode});
       if(!current(t)){opened.stream.getTracks().forEach(track=>track.stop());return;}

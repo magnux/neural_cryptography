@@ -12,6 +12,8 @@ The first matrix carries chunk zero, so a small message takes one round trip.
 Live ACKs default to a static G16 receipt, read from one camera exposure with
 RS+CRC and no inference. Select **Settings → Acknowledgments → G32** on both
 phones to use the full four-phase ACK with the neural corrector instead.
+To compare the default border calibration with optional local grid correction
+before trained inference, see the [G128 device test](../../docs/NEURAL_AUTH_DEMO.md#test-grid-color-correction-at-g128).
 [How the camera uses the border palette and grid](../../docs/NEURAL_QR.md#color-calibration-before-inference).
 
 Turns use stable G32 REQUEST controls: the final ACK stays visible until the

@@ -136,3 +136,21 @@ test('shape, palette, finite values and unsupported message kinds are rejected',
   const symbols=new Uint8Array(32*32);symbols[0]=16;assert.throws(()=>decodeNeuralQRSymbols(symbols,32),/logical/);
   assert.throws(()=>encodeNeuralQR(messagePacket({...ids,kind:'cancel',reason:1}),{size:32}),/Unsupported/);
 });
+
+test('optional pre-RS wire CER counts changed nibbles including parity but never scores failed packets',()=>{
+  const size=64,original=encodeNeuralQR(data(60),{size})[0].symbols;
+  const clean=wireOf(original,size),wire=clean.slice();
+  wire[5]^=0xf2;wire[6]^=0x70;wire[wire.length-1]^=0x01;
+  const check=(bytes,enabled)=>decodeNeuralQRSymbols(symbolsOf(bytes,size),size,{countCellErrors:enabled});
+  const repaired=check(wire,true);
+  assert.ok(repaired.ok);assert.equal(repaired.stats.correctedBytes,3);
+  assert.equal(repaired.stats.wireCellErrors,4);assert.equal(repaired.stats.wireCells,2*wire.length);
+  const unmeasured=check(wire,false);
+  assert.equal(unmeasured.ok,true);assert.deepEqual(unmeasured.chunk,repaired.chunk);
+  assert.equal(Object.hasOwn(unmeasured.stats,'wireCellErrors'),false);
+  const noErrors=check(clean,true);
+  assert.equal(noErrors.ok,true);assert.equal(noErrors.stats.wireCellErrors,0);
+  for(let i=0;i<40;i++)wire[i*repaired.stats.rsBlocks]^=0xaf;
+  const failed=check(wire,true);
+  assert.equal(failed.ok,false);assert.equal(Object.hasOwn(failed.stats,'wireCells'),false);
+});

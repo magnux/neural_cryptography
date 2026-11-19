@@ -18,6 +18,7 @@ import {browser} from './helpers/live-browser.mjs';
 for(const [role,statistics] of [['prover',true],['verifier',false]])test(
   'All 18 G16 receipts reach the opposite device before finishing on '+role+' with statistics '+(statistics?'on':'off'),async t=>{
     const {get,track}=browser(t,role,statistics);
+    get('localColorCorrection').checked=statistics;
     // DATA and REQUEST enter at the trained worker's byte boundary. All ACKs
     // (including RESULT) must cross as real, optically classified G16 images.
     const video=get('video'),reader=new ReceiptCaptureReader();
@@ -36,7 +37,7 @@ for(const [role,statistics] of [['prover',true],['verifier',false]])test(
       cryptoJobs.push(type);return localOps.run(type,payload,opts?.onProgress);
     });
     const corrector=t.mock.method(CorrectorClient.prototype,'call',async(operation,opts)=>{
-      if(operation==='receipt-scan')return reader.scan(opts);
+      if(operation==='receipt-scan'){assert.equal('localColorCorrection' in opts,false);return reader.scan(opts);}
       assert.ok(online,'model initialization needs the server');assert.equal(operation,'transport-init');
       return {ready:true,offlineReady:true,parity:{passed:true},modelStatus:'trained',modelProfile:'VW',effectiveBackend:'wasm'};
     });
@@ -114,6 +115,7 @@ for(const [role,statistics] of [['prover',true],['verifier',false]])test(
     const link=get('downloadSummary');assert.equal(link.hidden,false);assert.match(link.download,/\.json$/);
     const url=link.href,summary=await (await fetch(url)).json();assert.equal(summary.role,role);
     assert.equal(summary.peerName,'Other phone');assert.equal(summary.statisticsEnabled,statistics);
+    assert.equal(summary.settings.localColorCorrection,statistics);
     assert.equal(summary.steps.length,statistics?5:0);assert.ok(statistics?summary.elapsedMs>0:summary.elapsedMs===null);
     assert.equal('packets' in summary,false);
     const calls=corrector.mock.calls.map(c=>c.arguments[0]);
@@ -127,7 +129,7 @@ for(const [role,statistics] of [['prover',true],['verifier',false]])test(
 
 test('live capture watches the submitted matrix, waits for a fresh settled frame, and searches again after lock loss',async t=>{
   const {get}=browser(t,'prover',true),video=get('video'),full=get('captureCanvas');
-  get('phaseWatch').checked=true;get('optimized').checked=true;
+  get('phaseWatch').checked=true;get('optimized').checked=true;get('localColorCorrection').checked=true;
   Object.assign(video,{videoWidth:256,videoHeight:256,readyState:4,level:24});
   let next=null,frame=0,release,fullReads=0;
   video.requestVideoFrameCallback=cb=>{assert.equal(next,null,'only one outstanding callback');next=cb;return 1;};
@@ -150,7 +152,7 @@ test('live capture watches the submitted matrix, waits for a fresh settled frame
   const scans=[];
   t.mock.method(CorrectorClient.prototype,'call',async(op,opts)=>{
     if(op==='transport-init')return {ready:true,offlineReady:true,parity:{passed:true},modelStatus:'trained',modelProfile:'VW',effectiveBackend:'wasm'};
-    assert.equal(op,'transport-scan');scans.push(opts.presentedFrames);
+    assert.equal(op,'transport-scan');assert.equal(opts.localColorCorrection,true);scans.push(opts.presentedFrames);
     if(scans.length===1)await new Promise(resolve=>{release=resolve;});
     return scans.length===1?{stage:'collect',info:{size:64,phase:0},corners:[[20,20],[235,20],[235,235],[20,235]]}
       :{stage:'detect',ok:false};

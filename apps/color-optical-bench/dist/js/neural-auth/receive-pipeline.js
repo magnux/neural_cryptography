@@ -28,13 +28,13 @@ export class ReceivePipeline {
     const probeGate=this.gate.accept(pending.records,pending.identity);
     return {operation:'transport-accept',accepted:true,probeGate};
   }
-  async scan(raw) {
-    const {image,runId,mediaTime,presentedFrames,expected,presentationId=0,captureIntervalMs=100,maxSize,optimized=false,statistics=false,probe,forceFullScan=false,forceAcquisition=false}=raw;
+  async scan(raw,{sweepDiagnostics=false}={}) {
+    const {image,runId,mediaTime,presentedFrames,expected,presentationId=0,captureIntervalMs=100,maxSize,optimized=false,statistics=false,localColorCorrection=false,probe,forceFullScan=false,forceAcquisition=false}=raw;
     geometryHintMaxAgeMs(captureIntervalMs);
-    if(!['data','ack','request'].includes(expected)||!Number.isSafeInteger(runId)||runId<1||!Number.isFinite(mediaTime)||mediaTime<0||
+    if(typeof localColorCorrection!=='boolean'||!['data','ack','request'].includes(expected)||!Number.isSafeInteger(runId)||runId<1||!Number.isFinite(mediaTime)||mediaTime<0||
       !Number.isSafeInteger(presentedFrames)||presentedFrames<1||!Number.isSafeInteger(presentationId)||presentationId<0||
       ![32,64,128].includes(maxSize))throw Error('Invalid Neural-ZKBoo capture request.');
-    const key=`${runId}/${expected}`;
+    const key=`${runId}/${expected}/${localColorCorrection?'grid':'border'}`;
     if(this.runId!==runId||mediaTime<this.lastTime){this.reset();this.runId=runId;}
     if(this.context!==key){this.capture.reset();this.burst.reset();this.gate.reset();this.context=key;}
     // Adjacent DATA chunks both expect a G32 ACK. A new local presentation
@@ -59,7 +59,7 @@ export class ReceivePipeline {
     const profileAllowed=info=>isTransportData(info)&&info.size>=CONTROL_SIZE&&info.size<=maxSize&&
       (expected==='data'||info.size===CONTROL_SIZE);
     let rejectedProfile=false;
-    const capture=this.capture.scan(image,{expected,context:key,mediaTime,captureIntervalMs,profiler:timing,collectTimings:raw.statistics!==false,includeSamples:!optimized,
+    const capture=this.capture.scan(image,{expected,context:key,mediaTime,captureIntervalMs,profiler:timing,collectTimings:raw.statistics!==false,includeSamples:!optimized,localColorCorrection,
       beforeRaster:current=>{
         // A held DATA image cannot be the G32 control we are waiting for. Its
         // size cues suffice; do not allocate a crop or run the neural corrector.
@@ -88,7 +88,7 @@ export class ReceivePipeline {
     const packed=timing.measure('burst-pack',()=>packFrameStack(burst.input,context.manifest,size,{phases:burst.phases,slots:burst.slots}));
     if(statistics)this.counters.inferences++;
     const result=await timing.measure('inference',()=>this.infer(context,packed,{statistics:raw.statistics!==false}));
-    const decoded=timing.measure('rs-crc-recovery',()=>recoverCorrectedPayload(result.values,burst.info));
+    const decoded=timing.measure('rs-crc-recovery',()=>recoverCorrectedPayload(result.values,burst.info,{sweepDiagnostics,countCellErrors:statistics===true}));
     const response={...base,...decoded,waiting:!decoded.ok,info:burst.info,inputCaptures:burst.inputCaptures,
       phaseCounts:burst.phaseCounts,collected:state.collected,replacements:state.replacements,
       bufferBytes:state.bufferBytes,...(raw.statistics===false?{}:{inferenceMs:result.ms,preprocessMs:capture.stats.ms}),

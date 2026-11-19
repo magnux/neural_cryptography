@@ -2,7 +2,7 @@ import {initRoundtrip} from './roundtrip-ui.js';
 import {initSweep} from './sweep-ui.js';
 import {AuthSession} from './js/auth-core/session.js';
 import {exchangeStep} from './auth-progress.js';
-import {ExchangeStepClock,buildExchangeSummary} from './exchange-summary.js';
+import {ExchangeStepClock,buildExchangeSummary,recordTrainedInference,recordTrainedAcceptance} from './exchange-summary.js';
 import {createFinishCard} from './finish-card.js';
 import {decodeEnvelope,normalizeDisplayName,validDeviceId} from './js/auth-core/envelope.js';
 import {CameraPreparation} from './camera-preparation.js';
@@ -156,12 +156,12 @@ function initialize() {
     const cadence=readDisplaySettings($);
     return {displayName:normalizeDisplayName($('displayName').value),role,backend,repetitions,resolution,outgoingSize,incomingMaxSize,ackSize,controlSize:32,
       ...cadence,firstCycle:$('firstCycle').checked,captureMs:integer($('captureMs').value,50,2000,'Capture interval'),cameraId:$('camera').value,facingMode:'user',
-      phaseWatch:$('phaseWatch').checked,
+      phaseWatch:$('phaseWatch').checked,localColorCorrection:mode==='camera'&&$('localColorCorrection').checked===true,
       statistics:$('statistics').checked,optimized:$('optimized').checked,automaticTurns:true,handoff:'request',pairingConfirmation:'automatic-poc-unchecked'};
   }
 
   function buttons() {
-    $('settingsFields').disabled=active;
+    $('settingsFields').disabled=active;$('localColorCorrectionField').hidden=mode!=='camera';
     for(const id of ['cameraTab','simulationTab','roundtripTab'])$(id).disabled=active||roundtripActive;
     $('start').hidden=active;$('start').disabled=mode==='camera'&&!supported;
     $('start').innerHTML=mode==='camera'?'Start authentication <span aria-hidden="true">↗</span>':'Run local simulation <span aria-hidden="true">↗</span>';
@@ -226,7 +226,7 @@ function initialize() {
     if(shortReport||mode!=='camera'||!report?.completion)return;
     shortReport=buildExchangeSummary({settings:config,auth:authState,started:report.started,clock:stepClock,
       packetRtt:packetTelemetry?.snapshot().roundTrips.overall,acceptedMatrices:acceptedCount,
-      captureAttempts:scanCount,receiptReads:report.receiptReads,inference:config.statistics?timingSummary(operations).inference:null,model:report.model,camera:report.camera});
+      captureAttempts:scanCount,receiptReads:report.receiptReads,trainedRecovery:report.trainedRecovery,inference:config.statistics?timingSummary(operations).inference:null,model:report.model,camera:report.camera});
   }
 
   function paintMatrix(image){
@@ -411,7 +411,7 @@ function initialize() {
     const workerStart=config.statistics?performance.now():0;
     // The receipt worker only sees this exposure, never a target digest,
     // packet, or expected session. It returns bytes after optical RS+CRC.
-    const result=await worker.call(single?'receipt-scan':'transport-scan',{...options,image,...(probe?{probe,forceAcquisition:true}:{}),
+    const result=await worker.call(single?'receipt-scan':'transport-scan',{...options,...(!single&&{localColorCorrection:config.localColorCorrection}),image,...(probe?{probe,forceAcquisition:true}:{}),
       captureIntervalMs:config.captureMs,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames},[image.data.buffer]);
     if(!isCurrent(token))return;
     if(config.statistics)timing('workerRoundTrip',performance.now()-workerStart);
@@ -429,6 +429,7 @@ function initialize() {
       if(result.skipped&&result.stage==='unchanged')resetPhaseWatch();
       else phaseWatch.observe(result,canvas.width,canvas.height,roi=>phaseSampler.read(canvas,roi));
     }
+    const trainedRow=!single&&config.statistics?recordTrainedInference(report.trainedRecovery,expected,result):null;
     if(config.statistics){
       mergeTimings(operations,result.timings);
       if(Number.isFinite(result.inferenceMs))lastInference=result.inferenceMs;
@@ -455,6 +456,7 @@ function initialize() {
     // Both formats still go through the ordinary sender's exact ACK checks.
     const receivedAt=performance.now(),acceptance=await channel.receive(bytes);if(!isCurrent(token))return;
     if(single&&config.statistics)report.receiptReads[acceptance.accepted?'matched':'unmatched']++;
+    if(trainedRow)recordTrainedAcceptance(trainedRow,acceptance,result.stats);
     packetTelemetry?.accepted(bytes,acceptance,{grid:result.info?.size,atMs:receivedAt});
     if(config.statistics)timing('transportReceive',performance.now()-receivedAt);
     if(acceptance.accepted){
@@ -559,6 +561,7 @@ function initialize() {
     phaseSampler=phaseWatch?createPhaseSampler():null;watchExpected=null;sourceWidth=sourceHeight=0;lastMediaTime=-Infinity;watchGeneration=0;
     lastCapture=-Infinity;lastPresented=0;lastFeedbackAt=-Infinity;scanning=false;packetTelemetry=null;lastAnnouncement='';
     report={format:'neural-auth-demo-report',version:1,kind:mode,started:new Date().toISOString(),settings:{...config,cameraId:undefined},completion:null};
+    if(mode==='camera'&&config.statistics)report.trainedRecovery=[];
     if(mode==='camera'&&config.statistics&&config.ackSize===16)report.receiptReads={scans:0,decoded:0,matched:0,unmatched:0};
     $('settings').open=false;$('result').hidden=true;$('transfer').hidden=true;$('matrixZone').dataset.visible='false';$('matrixPlaceholder').hidden=false;
     $('app').dataset.state='active';buttons();statisticsView();

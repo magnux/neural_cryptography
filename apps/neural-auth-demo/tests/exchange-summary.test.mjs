@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ExchangeStepClock,buildExchangeSummary} from '../dist/exchange-summary.js';
+import {ExchangeStepClock,buildExchangeSummary,recordTrainedInference,recordTrainedAcceptance} from '../dist/exchange-summary.js';
 
 const settings={role:'verifier',displayName:'My phone',statistics:true,phaseMs:350,captureMs:250,
   outgoingSize:64,incomingMaxSize:128,optimized:true,repetitions:32};
@@ -55,7 +55,7 @@ test('statistics off skips timing access; completion and peer name are still rep
     clock:{snapshot(){throw Error('Disabled statistics were accessed.');}},captureAttempts:6,acceptedMatrices:5,
     camera:{width:1920,height:1080,frameRate:60},packetRtt:{count:2,meanMs:700},inference:{count:2,meanMs:85}});
   assert.equal(s.outcome,'verified-locally');assert.equal(s.peerName,'Other phone');
-  for(const key of ['setupMs','elapsedMs','captureAttempts','acceptedMatrices','camera','packetRtt','inference'])assert.equal(s[key],null);
+  for(const key of ['setupMs','elapsedMs','captureAttempts','acceptedMatrices','camera','packetRtt','inference','trainedRecovery'])assert.equal(s[key],null);
   assert.deepEqual(s.steps,[]);
 });
 
@@ -72,4 +72,30 @@ test('short reports identify the selected ACK path and include only applicable r
     assert.equal(report.settings.ackSize,ackSize);
     assert.deepEqual(report.receiptReads,ackSize===16&&statistics?{scans:38,decoded:16,matched:15,unmatched:1}:null);
   }
+});
+
+test('live recovery separates failed inference attempts from CER on matched packets',()=>{
+  const rows=[];
+  function scan(size,expected,inputCaptures,stats,acceptance){
+    const row=recordTrainedInference(rows,expected,{info:{size},inputCaptures,stats});
+    if(row)recordTrainedAcceptance(row,acceptance,stats);
+    return row;
+  }
+  const failed={rawCRCValid:0,rsDecoded:0,crcAccepted:0};
+  const fixed={rawCRCValid:0,rsDecoded:1,crcAccepted:1,correctedBytes:8,wireCellErrors:10,wireCells:16000};
+  assert.equal(scan(128,'data',0,{}),null); // still collecting
+  assert.equal(scan(16,'ack',1,fixed,{accepted:true}),null); // classical digest reader
+  scan(128,'data',4,failed);
+  scan(128,'data',8,{...failed,rsDecoded:1});
+  scan(128,'data',8,fixed,{accepted:true,reason:'delivered'});
+  scan(128,'data',4,fixed,{accepted:true,reason:'already-delivered'});
+  scan(128,'data',4,fixed,{accepted:false,reason:'foreign-session'});
+  scan(32,'request',4,{...fixed,rawCRCValid:1,correctedBytes:0,wireCellErrors:0,wireCells:800},{accepted:true});
+  const report=buildExchangeSummary({settings:{...settings,localColorCorrection:true},auth,trainedRecovery:rows});
+  assert.equal(report.settings.localColorCorrection,true);
+  assert.deepEqual(report.trainedRecovery.map(r=>[r.expected,r.grid]),[['request',32],['data',128]]);
+  assert.deepEqual(report.trainedRecovery[1],{expected:'data',grid:128,inferences:5,rawCRCPassed:0,rsCRCPassed:3,
+    rsFailures:1,crcFailures:1,correctedBytesOnCRCPass:24,transportAccepted:1,duplicates:1,
+    acceptedWireCellErrors:10,acceptedWireCells:16000,acceptedPacketsWithCER:1});
+  assert.equal(report.trainedRecovery[0].acceptedWireCellErrors,0);assert.equal(report.trainedRecovery[0].acceptedWireCells,800);
 });

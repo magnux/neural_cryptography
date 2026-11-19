@@ -58,13 +58,13 @@ export function encodeNeuralQR(bytes,{size=64,phaseMs=150}={}){
 }
 
 /** Decode canonical symbols. Pilots and a possible unused final nibble are ignored. */
-export function decodeNeuralQRSymbols(symbols,size){
+export function decodeNeuralQRSymbols(symbols,size,{countCellErrors=false}={}){
   const profile=neuralQRPacketProfile(size);
   if(!(symbols instanceof Uint8Array)||symbols.length!==size*size||symbols.some(v=>v>15))
     throw Error('Expected a canonical 16-color logical matrix.');
   const wire=new Uint8Array(profile.wireBytes);
   for(let i=0;i<wire.length;i++)wire[i]=(symbols[profile.grid.cells[2*i]]<<4)|symbols[profile.grid.cells[2*i+1]];
-  const decoded=decodeFEC(wire,NQR_PARITY);
+  const decoded=decodeFEC(wire,NQR_PARITY,{countCellErrors});
   const stats={wireBytes:profile.wireBytes,rsBlocks:profile.blockCount,rsParity:NQR_PARITY,
     rawCRCValid:decoded.rawCRCValid,rsDecoded:decoded.rsDecoded,crcAccepted:decoded.crcAccepted,correctedBytes:decoded.correctedBytes};
   if(!decoded.payload)return {ok:false,stage:decoded.rsDecoded?'crc':'fec',error:'Gathering clearer phases for RS+CRC recovery.',stats};
@@ -75,12 +75,13 @@ export function decodeNeuralQRSymbols(symbols,size){
     if(length<40||length>profile.packetBytes)throw Error('Invalid protected packet length.');
     const chunk=padded.slice(NQR_PACKET_HEADER_BYTES,NQR_PACKET_HEADER_BYTES+length),packet=messagePacket(chunk,size);
     if(padded[5]!==KINDS[packet.kind])throw Error('Protected packet kind disagrees with its message.');
+    if(countCellErrors){stats.wireCellErrors=decoded.wireCellErrors;stats.wireCells=decoded.wireCells;}
     return {ok:true,stage:'decoded',error:null,chunk,kind:packet.kind,stats};
   }catch(error){return {ok:false,stage:'packet',error:error.message,stats};}
 }
 
 /** Network output is canonical NCHW logits, never phase-inverted a second time. */
-export function decodeNeuralQR(logits,size){
+export function decodeNeuralQR(logits,size,{sweepDiagnostics=false,countCellErrors=false}={}){
   const cells=size*size;
   neuralQRPacketProfile(size);
   if(!(logits instanceof Float32Array)||logits.length!==16*cells||logits.some(v=>!Number.isFinite(v)))
@@ -90,5 +91,9 @@ export function decodeNeuralQR(logits,size){
     let best=0;for(let color=1;color<16;color++)if(logits[color*cells+cell]>logits[best*cells+cell])best=color;
     symbols[cell]=best;
   }
-  return decodeNeuralQRSymbols(symbols,size);
+  const decoded=decodeNeuralQRSymbols(symbols,size,{countCellErrors});
+  // Only the instrumented timing RPC exports these decisions, after blind RS/CRC.
+  // They are raw model argmax indices, before repair, including on failed attempts.
+  if(sweepDiagnostics)decoded.sweepSymbols=symbols;
+  return decoded;
 }

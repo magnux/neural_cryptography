@@ -138,3 +138,38 @@ test('the prepared offline live worker reads G16 receipts without a G16 model, i
     assert.equal(h.state.fetches,fetches);assert.equal(h.state.runs.length,n);
   }finally{h.restore();}
 });
+
+test('trained worker applies optional grid correction to fresh phase bursts and exports decisions only to the sweep',async()=>{
+  const h=await harness({sizes:[32]});try{
+    const opts={size:32,backend:'wasm'};
+    await h.worker.initializeTransport(opts,()=>{});h.state.offline=true;
+    const packet=encodePacket({kind:'data',messageType:'raw',sessionId:'12'.repeat(16),messageId:'34'.repeat(8),index:7,data:new Uint8Array(24)});
+    const phases=packetFrames(packet,{size:32}).map(f=>renderNeuralQR(f,512));
+    let response,serial=0;
+    self.postMessage=msg=>{response=msg;};
+    const scan=async(op,phase,extra={})=>{
+      const i=++serial;
+      await self.onmessage({data:{id:i,operation:op,options:{...opts,image:phases[phase],expected:'data',runId:1,
+        captureIntervalMs:100,presentedFrames:i,mediaTime:i*.1,statistics:true,optimized:true,...extra}}});
+      assert.equal(response.type,'result',response.error);return response.result;
+    };
+    for(let phase=0;phase<3;phase++){
+      const r=await scan('sweep-scan',phase);
+      assert.equal(r.stage,'collect');assert.equal(r.stats.gridColor,undefined);
+      assert.equal(r.sweepSymbols,undefined);
+    }
+    const firstLocal=await scan('sweep-scan',3,{localColorCorrection:true});
+    assert.equal(firstLocal.stage,'collect','must not infer on three border-only exposures plus one locally corrected exposure');
+    assert.equal(firstLocal.collected,1);assert.equal(firstLocal.timings['grid-color-correction'].count,1);
+    assert.ok(firstLocal.stats.gridColor.pilots>0);assert.equal(firstLocal.sweepSymbols,undefined);
+    let failed;
+    for(let phase=0;phase<3;phase++)failed=await scan('sweep-scan',phase,{localColorCorrection:true});
+    assert.equal(failed.inputCaptures,4);assert.equal(failed.ok,false);
+    // The deliberately wrong model predicts zero for every cell, even after failed RS/CRC.
+    assert.deepEqual(failed.sweepSymbols,new Uint8Array(32**2));assert.equal(failed.stats.wireCells,undefined);
+    for(let phase=0;phase<4;phase++)failed=await scan('transport-scan',phase,{sweepDiagnostics:true});
+    assert.equal(failed.inputCaptures,4);assert.equal(failed.ok,false);
+    assert.equal(failed.stats.gridColor,undefined);assert.equal(failed.sweepSymbols,undefined,
+      'no prediction grid can be requested by a live transport caller');
+  }finally{h.restore();}
+});

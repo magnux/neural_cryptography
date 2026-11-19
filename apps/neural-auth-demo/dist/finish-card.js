@@ -31,6 +31,13 @@ export function createFinishCard({byId,createElement,urlAPI=URL}){
     if(s&&summary.setupMs!=null)metric('Camera & model setup',duration(summary.setupMs));
     if(summary.repetitions!=null)metric('Proof',summary.repetitions+' repetitions'+(summary.proofBytes!=null?' · '+summary.proofBytes.toLocaleString()+' B':''));
     if(settings.ackSize)metric('Acknowledgments',settings.ackSize===16?'G16 · static digest':'G32 · four-phase corrector');
+    metric('Trained input color',settings.localColorCorrection?'Border + local grid':'Border only');
+    for(const row of summary.trainedRecovery??[]){
+      if(row.expected!=='data')continue;
+      metric('G'+row.grid+' DATA · CRC before / after RS',row.rawCRCPassed+' / '+row.rsCRCPassed+' of '+row.inferences+' inference attempts');
+      if(row.acceptedWireCells>0)metric('G'+row.grid+' DATA · cell errors on accepted packets',
+        (100*row.acceptedWireCellErrors/row.acceptedWireCells).toFixed(2)+'% · '+row.acceptedPacketsWithCER+' packets');
+    }
     metric('Outgoing phases',settings.phaseCadence==='progressive'
       ?settings.phaseMs+' → '+settings.phaseMaxMs+' ms (+'+settings.phaseStepMs+'/pass)':settings.phaseMs+' ms fixed');
     metric('Camera search',settings.captureMs+' ms · '+(settings.firstCycle?'after first pass':'while sending'));

@@ -1,6 +1,7 @@
 /** Header-free acquisition. Size and phase are measured before raster sampling. */
 import {homography,project,sample,patch,calibrate} from '../vision.js';
 import {markerPasses} from './markers.js';
+import {applyGridColorCorrection} from './grid-color.js';
 import {normalizeCalibratedRGB} from '../learned-input.js';
 import {NQR_LAYOUT as L,validateNeuralQRProfile} from './layout.js';
 
@@ -114,7 +115,7 @@ function readPhase(image,h,references){
 }
 
 /** A successful result is optical evidence, not an accepted packet. */
-export function extractNeuralQR(image,{profile,previousGeometry=null,now=Date.now(),dense=true,captureIntervalMs=DEFAULT_CAPTURE_INTERVAL_MS,profiler=null,beforeRaster=null,collectTimings=true,includeSamples=true}={}){
+export function extractNeuralQR(image,{profile,previousGeometry=null,now=Date.now(),dense=true,captureIntervalMs=DEFAULT_CAPTURE_INTERVAL_MS,profiler=null,beforeRaster=null,collectTimings=true,includeSamples=true,localColorCorrection=false}={}){
   const start=collectTimings?performance.now():0,result={ok:false,stage:'detect',markers:[],tentativeCorners:[],stats:{geometrySource:'none',previousGeometryTried:false},error:'Find all four Neural-QR markers.'};
   const elapsed=()=>collectTimings?performance.now()-start:0;
   const measure=(name,fn)=>profiler?profiler.measure(name,fn):fn();
@@ -218,6 +219,7 @@ export function extractNeuralQR(image,{profile,previousGeometry=null,now=Date.no
       if(!observed)throw Error('Payload extends outside the camera image.');
       rgb.set(calibration.apply(observed),3*(y*side+x));
     }});
+    if(localColorCorrection)result.stats.gridColor=measure('grid-color-correction',()=>applyGridColorCorrection(rgb,g));
     Object.assign(result,{ok:true,stage:'acquired',error:null,...(samples?{samples}:{}),input:measure('normalization',()=>normalizeCalibratedRGB(rgb,side,side)),dims:[1,3,side,side],pixelsPerCell:4,colorTransform:calibration.coefficients,observedPalette:calibration.observed});
   }catch(error){result.error=error.message;}
   if(collectTimings)result.stats.ms=elapsed();return result;

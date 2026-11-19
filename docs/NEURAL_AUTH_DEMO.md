@@ -196,6 +196,14 @@ access to the expected digest; only the transport can match a decoded receipt.
 An old readable receipt leaves the current packet on screen. See the
 [G16 layout and binding](NEURAL_QR.md#acks-and-control-messages).
 
+A measured two-phone baseline for the grid experiment: with G64 in both
+directions, G16 receipts and the 32-repetition proof (17,474 bytes), the
+verifier finished in **129.3 s** and the prover in **130.2 s**. The earlier
+G64 run with full ACKs took 174.1 s and 169.9 s respectively; the prover
+recorded 65 trained inferences then and 5 with G16. Both runs used progressive
+200–500 ms phase holds and 250 ms capture. This is one pair of completed
+exchanges, not a G128 or local-correction measurement.
+
 ## Request-driven handoff
 
 The first matrix of each message carries its metadata **and chunk zero**. If
@@ -522,6 +530,52 @@ using **timed capture** (phase-change capture off):
 | Rectification | Color calibration and sampling the camera image into the rectified grid, then normalization. Compare the same grid size. |
 | Burst and model | Phase collection and packing, trained inference, and RS+CRC recovery. Multiple attempts can dominate the step even if one inference is fast. |
 | Overall | Compare local capture/readback and worker dispatch-to-return time with the optical RTT. Worker time includes the stages inside it; do not add it to their sum. A stage with no samples did not run. |
+
+### Test grid color correction at G128
+
+In **Matrix timing → Trained four-phase sweep** and **Camera exchange**, the
+receiver can turn on **Use grid for local color correction**. Off is the
+existing border-only calibration. On also corrects each rectified exposure
+using nearby fixed pilots *before* the trained model sees it. Each tab has
+its own setting. No matching setting on the transmitter, model export change,
+or retraining is required. The switch does not affect static G16 receipts or
+single-phase echo. See [how the correction works](NEURAL_QR.md#color-calibration-before-inference).
+
+1. **Hold the camera conditions and pace fixed.** Choose G128 DATA and G16
+   ACK on both devices, with the trained G128 bundle on the DATA receiver.
+   Keep the phones in place. Turn progressive transmit timing and capture
+   variation off; keep the same capture trigger, camera, resolution and backend.
+   Try 350 ms display / 250 ms capture with **Decrease per step = 0** on both
+   devices. This gives five manually armed steps with different packets at
+   the same pace. Run once with grid correction off, then restart and repeat
+   with it on **only on the DATA receiver**. If close, repeat in reverse order.
+2. **Export both devices’ sweep reports for each run**, including timeouts.
+   On the receiver compare successful packets / steps, K4 and K8 inferences,
+   RS/CRC failures and pre-repair cell error rate (CER). The exact CER counts
+   *wire cells* (one 4-bit symbol each, including parity; excluding pilots
+   and an unused trailing cell, if present) only on packets recovered and
+   matched to that step. No recovered packets means **unknown CER**, not zero.
+   In the stage timings, `grid-color-correction` is extra processing per
+   rectified exposure. Compare receiver lock-to-packet time and sender RTT
+   alongside recovery: the goal is more timely, usable packets.
+3. **When G128 fails to decode**, compare sampled predictions offline:
+   `node scripts/score-sweep-cells.mjs SENDER.json RECEIVER.json`, once per
+   pair of sweep reports. It examines the first K4 and first K8 DATA inferences
+   separately. A 96-cell identity check filters likely stale or mixed matrices;
+   256 *different* cells estimate CER. Read `scored`, `likely` vs
+   `validated`, and the exclusions next to `sampledCER`. A null result
+   means insufficient matching evidence. No inference means no prediction to
+   score. These estimates supplement the full packet recovery counts; poorly
+   read probes can be underrepresented. Only this lab records sampled symbols
+   from its synthetic probes.
+4. **Confirm in Camera exchange.** Enable statistics and use the same proof
+   repetitions, G16 ACKs and camera settings for both exchanges. Try G128 in
+   the difficult direction (set that receiver’s maximum to G128) and G64 on
+   the return. Toggle grid correction only on the G128 receiver. Save the
+   short report on each device after Finish. Compare G128 DATA inference
+   attempts, raw vs post-RS CRC passes, accepted wire CER and packet RTT;
+   the detailed report includes stage timings. Live authentication does not
+   export predicted cells or have sender ground truth for failed packets.
 
 ## Explicit ideal-output simulation
 
