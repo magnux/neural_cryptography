@@ -61,7 +61,7 @@ test('preview and placement toggles persist independently, size the remaining sl
   function element(id){
     if(!elements.has(id)){
       const attrs=new Map(),styles=new Map(),listeners=new Map();
-      elements.set(id,{id,querySelector:selector=>element(id+'/'+selector),dataset:{},textContent:'',hidden:false,disabled:false,open:false,scrollTop:0,
+      elements.set(id,{id,classList:{add(){}},querySelector:selector=>element(id+'/'+selector),dataset:{},textContent:'',hidden:false,disabled:false,open:false,scrollTop:0,
         clientWidth:id==='matrixSlot'?340:0,clientHeight:id==='matrixSlot'?270:0,
         style:{setProperty:(name,value)=>styles.set(name,value),getPropertyValue:name=>styles.get(name)||''},
         setAttribute:(name,value)=>attrs.set(name,value),getAttribute:name=>attrs.get(name),
@@ -98,6 +98,11 @@ test('preview and placement toggles persist independently, size the remaining sl
   assert.equal(element('roundtripTab').getAttribute('aria-pressed'),'true');
   assert.equal(element('roundtripPanel').hidden,false);assert.equal(element('cameraPanel').hidden,true);
   assert.equal(element('simulationPanel').hidden,true);
+  assert.equal(element('singleTimingPanel').hidden,false);assert.equal(element('sweepTimingPanel').hidden,true);
+  element('timingMethod').value='trained';element('timingMethod').dispatch('change');
+  assert.equal(element('singleTimingPanel').hidden,true);assert.equal(element('sweepTimingPanel').hidden,false);
+  element('timingMethod').value='single';element('timingMethod').dispatch('change');
+  assert.equal(element('singleTimingPanel').hidden,false);assert.equal(element('sweepTimingPanel').hidden,true);
   element('simulationTab').dispatch('click');
   assert.equal(element('roundtripPanel').hidden,true);assert.equal(element('simulationPanel').hidden,false);
   element('cameraTab').dispatch('click');

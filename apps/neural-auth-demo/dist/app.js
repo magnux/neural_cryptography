@@ -1,4 +1,5 @@
 import {initRoundtrip} from './roundtrip-ui.js';
+import {initSweep} from './sweep-ui.js';
 import {AuthSession} from './js/auth-core/session.js';
 import {exchangeStep} from './auth-progress.js';
 import {ExchangeStepClock,buildExchangeSummary} from './exchange-summary.js';
@@ -112,7 +113,7 @@ function initialize() {
   function showLocalName(){setText('deviceName',localIdentity.displayName);$('deviceName').title=`This device: ${localIdentity.displayName}`;}
   $('displayName').value=localIdentity.displayName;showLocalName();saveIdentity();
   const supported=globalThis.isSecureContext&&Boolean(globalThis.crypto?.subtle)&&typeof Worker==='function'&&Boolean(navigator.mediaDevices?.getUserMedia);
-  let roundtrip=null,roundtripActive=false;
+  let singleTiming=null,sweepTiming=null,roundtripActive=false;
   let stepClock=null,shortReport=null;
   let mode='camera',active=false,epoch=0,stream=null,corrector=null,cryptoClient=null,session=null,channel=null;
   let config=null,authState=null,report=null,startedAt=0,packetTelemetry=null,autoPairing=null,simulationAbort=null;
@@ -436,19 +437,27 @@ function initialize() {
 
   function setMode(next) {
     if(active||roundtripActive||next===mode)return;
-    if(mode==='roundtrip')roundtrip?.stop();
+    if(mode==='roundtrip'){singleTiming?.stop();sweepTiming?.stop();}
     finishCard.reset();shortReport=null;stepClock=null;
     mode=next;report=null;config=null;authState=null;error();
     $('settings').open=false;
     $('roundtripTab').setAttribute('aria-pressed',String(next==='roundtrip'));
     $('roundtripPanel').hidden=next!=='roundtrip';
-    if(next==='roundtrip'&&!roundtrip){
-      roundtrip=initRoundtrip($('roundtripPanel'),{onActive:value=>{roundtripActive=value;buttons();}});
-    }
+    if(next==='roundtrip')showTimingMethod();
     $('cameraTab').setAttribute('aria-pressed',String(next==='camera'));$('simulationTab').setAttribute('aria-pressed',String(next==='simulation'));
     $('app').dataset.lock='none';$('cameraPanel').hidden=next!=='camera';$('simulationPanel').hidden=next!=='simulation';$('app').dataset.mode=next;showIdle();sizeMatrix();
   }
 
+  function showTimingMethod(){
+    if(roundtripActive)return;
+    const sweep=$('timingMethod').value==='trained',options={onActive:value=>{
+      roundtripActive=value;$('timingMethod').disabled=value;buttons();
+    }};
+    $('singleTimingPanel').hidden=sweep;$('sweepTimingPanel').hidden=!sweep;
+    if(sweep){sweepTiming??=initSweep($('sweepTimingPanel'),options);}
+    else{singleTiming??=initRoundtrip($('singleTimingPanel'),options);}
+  }
+  $('timingMethod').addEventListener('change',()=>{if(mode==='roundtrip')showTimingMethod();});
   $('roundtripTab').addEventListener('click',()=>setMode('roundtrip'));
   $('cameraTab').addEventListener('click',()=>setMode('camera'));$('simulationTab').addEventListener('click',()=>setMode('simulation'));
   $('start').addEventListener('click',()=>void start());$('stop').addEventListener('click',()=>finish(authState?.peerReported||authState?.resultDelivered?'Finished by the user.':'Cancelled by the user.'));

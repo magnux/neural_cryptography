@@ -212,7 +212,20 @@ fresh captures; missed markers and duplicate video callbacks do not fill slots.
 
 ## Matrix roundtrip timing
 
-Use **Matrix timing** for a physical two-device test of one displayed phase.
+Use **Matrix timing** on both devices and select the same experiment:
+
+| Experiment | The receiver displays | What the sender measures |
+| --- | --- | --- |
+| Single-phase echo | The colors it read from one exposure, including any wrong cells | One probe → echo RTT, matched fraction and cell error rate; no trained model required |
+| Trained four-phase sweep | A G32 ACK after recovering a protected DATA packet from camera frames | One DATA → matching ACK RTT at each pair of display and capture intervals; trained corrector on both devices |
+
+Neither experiment generates a proof or performs a full authentication. Use the
+sweep to choose four-phase settings; use the echo to isolate single-exposure
+optical behavior.
+
+### Single-phase echo
+
+This experiment holds one displayed phase per trial.
 There are no authentication keys or trained models to set up. The receiver
 uses the same Neural-QR markers, geometry and border palette as the live reader,
 then classifies each test cell from that single exposure. It displays an echo
@@ -254,6 +267,66 @@ There is no payload RS+CRC recovery in this diagnostic. In Settings, **Save
 measurements** on each device to see local stage timings for camera readback,
 detection and decoding. The receiver additionally measures capture-to-echo
 latency and optional inference; the sender records individual trial outcomes.
+
+### Trained four-phase sweep
+
+Use the same [trained corrector export as live reception](#prepare-a-standalone-directory)
+on both devices. A receiver reads the DATA grid and sends a G32 ACK; the sender
+must **also** run the corrector, on the ACK. The untrained dummy from the
+single-phase test cannot substitute on either leg. The first inference uses
+one distinct exposure from each phase (K4); if recovery fails, the live reader
+can retry with two per phase (K8). A corner lock or a completed inference alone
+does not finish a step: the receiver must recover the protected packet and the
+sender must recognize the ACK for that particular probe. The ACK carries a
+digest of the DATA bytes actually recovered. A stale ACK or a correct-looking
+matrix from a different step cannot count as a successful roundtrip.
+
+1. Face the two devices toward one another. In **Matrix timing**, select the
+   trained sweep and opposite roles. Start with **G64**, **500 ms per displayed
+   phase** and **450 ms between captures** on both devices. These are test
+   settings; the live authentication defaults remain 350/250 ms. Keep camera,
+   grid, backend, lighting and placement unchanged during the sweep. Tap
+   **Start camera** on both devices and wait for model and camera setup.
+2. Tap **Start step 1** on the receiver, then on the sender. The sender
+   cycles through four phases of one DATA packet. The receiver's step ends
+   when it displays the first phase of its ACK. The sender's step ends when
+   it recovers that matching ACK. Keep the devices aligned through both events.
+3. Tap **Next: step N** on each device when you are ready. The next pairs
+   are **450/400 ms** and **400/350 ms**; the final default pair is **100/50 ms**.
+   A timeout (30 s by default) closes only the local step. There is no automatic
+   advance. The receiver keeps showing its previous ACK until it can replace it.
+   Arming the receiver first keeps human button delay out of the sender's RTT.
+4. Open **Settings & measurements → Download sweep report** on each
+   device. Stop and restart both cameras to repeat a pace. Keep both reports.
+   Repeat in the same placement, then swap roles: one success at a faster
+   setting says little about its reliability. Count timeouts as misses.
+   To distinguish a display limit from a capture limit, repeat at the same
+   display interval but change the starting capture interval. Try the best
+   pair in **Camera exchange**. To include the live default of **350/250 ms**
+   in the sweep, begin at **500/400 ms** (or start at 350/250 directly). Reducing
+   both intervals together preserves their initial difference.
+
+Read the sender's RTT as **first DATA draw → matching ACK recovery on that
+sender**. It includes two camera paths, display refresh and waiting for all
+four phases; it is not twice the model inference time. On the receiver, look
+at DATA acquisition; on the sender, look at ACK acquisition. Compare the time
+to first lock, the time to see all four phases, packet recovery, and the first
+ACK draw. Distinguish the requested intervals from the intervals actually
+achieved between capture attempts and between phase draws. Both are local
+measurements: do not subtract timestamps from different phones. In particular,
+a receiver armed before DATA appears can spend time simply looking at a blank
+screen. The JSON keeps a short capture trace (first 32 and last 32 scans per
+step, with omitted scans counted), phase counts, and whole-step aggregates.
+Reported display cadence is based on the actual outgoing draws; a receiver can
+keep cycling its last ACK after the step finishes, without extending its
+recorded arm-to-ACK time.
+
+| Reading stage | What to look for when a step slows down |
+| --- | --- |
+| Corners and geometry | Marker search, perspective transform, orientation, geometry and phase cues. A reused geometry can skip a new corner search. |
+| Rectification | Color calibration and sampling the camera image into the rectified grid, then normalization. Compare the same grid size. |
+| Burst and model | Phase collection and packing, trained inference, and RS+CRC recovery. Multiple attempts can dominate the step even if one inference is fast. |
+| Overall | Compare local capture/readback and worker dispatch-to-return time with the optical RTT. Worker time includes the stages inside it; do not add it to their sum. A stage with no samples did not run. |
 
 ## Explicit ideal-output simulation
 

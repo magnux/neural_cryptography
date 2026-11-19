@@ -18,10 +18,12 @@ phase** and **250 ms between capture attempts**. After final delivery, select
 to compare step timings in the short reports
 [downloaded from the two devices](../../docs/NEURAL_AUTH_DEMO.md#finish-and-share-an-exchange).
 
-The **Matrix timing** tab uses two cameras and needs no trained model. Start
-the receiver first: it echoes the colors it actually read from one phase, so
-the sender can measure roundtrip time, cell errors and missed probes. See
-[how to test a phase interval](../../docs/NEURAL_AUTH_DEMO.md#matrix-roundtrip-timing).
+**Matrix timing** offers two device tests. The **single-phase echo** measures
+roundtrip time and cell errors without a trained model. The [trained four-phase
+sweep](../../docs/NEURAL_AUTH_DEMO.md#trained-four-phase-sweep) times a real DATA
+packet and its G32 ACK, using the corrector on both devices. Start at 500 ms
+display / 450 ms capture and step down by 50 ms. Each device advances manually
+and exports its own report so you can compare DATA and ACK acquisition.
 
 From the repository root:
 

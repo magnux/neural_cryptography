@@ -1,6 +1,11 @@
+#roundtripPanel{display:flex;flex-direction:column;min-width:0;min-height:0;gap:6px}
+#roundtripPanel[hidden],#sweepTimingPanel[hidden]{display:none}
+#singleTimingPanel,#sweepTimingPanel{flex:1;min-width:0;min-height:0}
+.timing-picker{display:flex;flex-direction:row;flex-shrink:0;align-items:center;gap:8px;font-size:11px;color:#485a73}
+.timing-picker select{width:auto;flex:1;min-width:0;font-size:12px;min-height:32px}
 /* The host occupies the single remaining viewport row under the demo tabs. */
-#roundtripPanel{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;gap:7px;--rt-ink:#263953;--rt-muted:#6c788b}
-#roundtripPanel[hidden]{display:none}
+#singleTimingPanel{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;gap:7px;--rt-ink:#263953;--rt-muted:#6c788b}
+#singleTimingPanel[hidden]{display:none}
 .rt-head{display:flex;align-items:center;justify-content:space-between;min-height:52px;gap:10px}
 .rt-head h2{font-size:21px;letter-spacing:-.7px;line-height:1.12;margin:4px 0;color:var(--rt-ink)}
 .rt-view{position:relative;width:58px;height:58px;border-radius:8px;overflow:hidden;flex:none}
@@ -23,18 +28,18 @@
 .rt-empty{align-self:center;color:var(--rt-muted);font-size:10px}
 .phone[data-qr-position="top"] .rt-slot{order:-1;place-items:start center}
 @container(min-aspect-ratio:6/5){
-  #roundtripPanel{display:grid;grid-template-columns:minmax(195px,1fr) minmax(0,1.3fr);grid-template-rows:auto auto auto minmax(0,1fr);align-items:start}
-  #roundtripPanel[hidden]{display:none}
+  #singleTimingPanel{display:grid;grid-template-columns:minmax(195px,1fr) minmax(0,1.3fr);grid-template-rows:auto auto auto minmax(0,1fr);align-items:start}
+  #singleTimingPanel[hidden]{display:none}
   .rt-head,.rt-msg,.rt-toolbar,.rt-stats{grid-column:1}
   .rt-slot,.phone[data-qr-position="top"] .rt-slot{grid-column:2;grid-row:1/5;align-self:stretch;order:0}
 }
 /* Keep the Settings summary in flow, including long errors and small screens.
    Only the expanded panel scrolls; closing it restores a fitted optical area. */
-#roundtripPanel:has(.rt-details[open]){overflow-y:auto;overscroll-behavior:contain}
+#singleTimingPanel:has(.rt-details[open]){overflow-y:auto;overscroll-behavior:contain}
 .rt-details[open]{display:contents}
 .rt-details[open]>summary{grid-column:3}
-#roundtripPanel:has(.rt-details[open]) .rt-slot{flex:none;height:240px;order:0}
+#singleTimingPanel:has(.rt-details[open]) .rt-slot{flex:none;height:240px;order:0}
 @container(min-aspect-ratio:6/5){
- #roundtripPanel:has(.rt-details[open]){display:flex}
- #roundtripPanel:has(.rt-details[open]) .rt-toolbar{width:100%}
+ #singleTimingPanel:has(.rt-details[open]){display:flex}
+ #singleTimingPanel:has(.rt-details[open]) .rt-toolbar{width:100%}
 }

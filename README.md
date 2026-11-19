@@ -46,7 +46,7 @@ for the original dynamical-systems exploration.
 | Neural-QR transport research | [Design](docs/NEURAL_QR.md), [current Optical Bench](apps/color-optical-bench/README.md), `index.html` and `link.html` | Custom neural-readable matrices. Header-free acquisition runs in `capture.html`; Neural-ZKBoo uses the trained corrector and in-band RS+CRC packets. |
 | QR transport and authentication | [QR app](apps/qr-neural-key/README.md), `index.html` and `auth.html` | Standard QR byte transport and complete device-to-device proof exchange with independent outgoing profiles. |
 | Neural-ZKBoo authentication | [Device guide](docs/NEURAL_ZKBOO_DEMO.md), `neural-zkboo.html` | Header-free Neural-QR DATA and G32 ACK/REQUEST controls with trained VW/W-tube inference and independent directional geometry limits. |
-| Mobile neural authentication demo | [Standalone app](apps/neural-auth-demo/README.md), [setup and tests](docs/NEURAL_AUTH_DEMO.md) | Five-step camera authentication, a two-device single-phase matrix timing test, and a local ideal-output simulation. |
+| Mobile neural authentication demo | [Standalone app](apps/neural-auth-demo/README.md), [setup and tests](docs/NEURAL_AUTH_DEMO.md) | Five-step camera authentication, two-device single-phase echo and trained four-phase timing tests, and a local ideal-output simulation. |
 | Neural corrector | [Model and training](experiments/neural-corrector/README.md), [collection guide](docs/MULTIRES_COLLECTION.md), `corrector.html` and `capture.html` | W-tube and VW training, evaluation and static ONNX export on version-2 G16–G128 four-pixel data; U-tube and two-pixel multires remain separate experiments. |
 
 Read [use cases](docs/USE_CASES.md), [format boundaries](docs/FORMATS.md), and

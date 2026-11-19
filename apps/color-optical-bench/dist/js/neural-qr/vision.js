@@ -163,7 +163,7 @@ export function extractNeuralQR(image,{profile,previousGeometry=null,now=Date.no
           let h;
           try{
             const ordered=Array.from({length:4},(_,i)=>q[(rotation+direction*i+8)%4]);
-            h=homography(L.centers,ordered);
+            h=measure('homography',()=>homography(L.centers,ordered));
             const levels=measure('orientation',()=>readOrientation(image,h));candidates.push({h,levels});
           }catch(error){recordFailure(error,h);}
         }

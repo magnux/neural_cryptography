@@ -8,6 +8,7 @@
   <title>Neural Key — Optical authentication</title>
   <link rel="stylesheet" href="./style.css">
   <link rel="stylesheet" href="./roundtrip.css">
+  <link rel="stylesheet" href="./sweep.css">
 </head>
 <body data-device="desktop">
   <div class="desktop-caption" aria-hidden="true"><span class="brand-mark">N</span> NEURAL KEY <span>Two screens. One connection.</span></div>
@@ -78,7 +79,13 @@
         <div id="transfer" class="transfer" hidden><div><span id="transferLabel">Waiting for a connection</span><span id="transferPercent"></span></div><progress id="transferProgress" max="1" value="0" aria-label="Current message transfer"></progress></div>
         <p id="result" class="result" role="status" aria-live="polite" hidden></p>
       </section>
-      <section id="roundtripPanel" aria-label="Matrix roundtrip timing" hidden></section>
+      <section id="roundtripPanel" aria-label="Matrix roundtrip timing" hidden>
+        <label class="timing-picker" for="timingMethod">Timing test
+          <select id="timingMethod"><option value="single">Single-phase echo</option><option value="trained">Trained four-phase sweep</option></select>
+        </label>
+        <div id="singleTimingPanel"></div>
+        <div id="sweepTimingPanel" hidden></div>
+      </section>
       <section id="simulationPanel" class="simulation-panel" aria-labelledby="simulationTitle" hidden>
         <div class="simulation-symbol" aria-hidden="true">↔</div>
         <h2 id="simulationTitle">Two devices, right here.</h2>
