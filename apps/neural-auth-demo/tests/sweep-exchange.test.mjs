@@ -29,7 +29,7 @@ async function until(pred,description){
   assert.ok(pred(),description);
 }
 
-function devices(t,{watch=false}={}){
+function devices(t,{watch=false,progressiveRole}={}){
   const urls=[],tracks=[],closed=[],raf=new Set(),inFlight=new Map();let seq=0,blocked=null;
   class Element{
     constructor(sel='',value=''){this.value=value;this.id=sel;this.dataset={};this.listeners={};this.hidden=false;this.draws=0;}
@@ -68,9 +68,10 @@ function devices(t,{watch=false}={}){
       return result;}finally{inFlight.delete(this);}
   });
   function phone(role){
-    const vals={role,size:'64',phase:'200',capture:'150',decrement:'50',timeout:'3',backend:'wasm',facing:'user',resolution:'720',device:''};
+    const vals={role,size:'64',phase:'200',capture:'150',decrement:'50',increment:'50',phaseCap:'500',timeout:'3',backend:'wasm',facing:'user',resolution:'720',device:''};
     const nodes=new Map();const get=s=>{if(!nodes.has(s))nodes.set(s,new Element(s,vals[s.match(/^\[name="(\w+)"\]$/)?.[1]]));return nodes.get(s);};
-    get('[name="phaseWatch"]').checked=watch;
+    get('[name="phaseWatch"]').checked=watch;get('[name="progressive"]').checked=progressiveRole===role;
+    if(progressiveRole)get('[name="phase"]').value='50';
     const video=get('video');Object.assign(video,{videoWidth:512,videoHeight:512,readyState:4});
     const activity=[],panel=initSweep({classList:{add(){}},querySelector:get},{onActive:v=>activity.push(v)});
     return {panel,activity,video,matrix:get('.sw-slot canvas'),next:get('.sw-next'),start:get('.sw-start'),status:get('.sw-status'),history:get('.sw-history'),
@@ -153,4 +154,18 @@ test('each role can capture a changed phase before the timed deadline; a new ste
   R.next.click();assert.equal(R.matrix.hidden,true);R.video.emit(1100);
   await until(()=>R.video.cb,'next receiver step is searching');R.panel.stop();
   const row=(await R.report()).steps[1];assert.equal(row.phaseWatch.searchReads,1);assert.equal(row.phaseWatch.changeReads,0);
+});
+
+test('transmitter can lengthen DATA phase dwell across passes without holding its reader or changing fixed ACK settings',async t=>{
+  const {S,R}=devices(t,{progressiveRole:'sender'});R.start.click();S.start.click();
+  await until(()=>!R.next.disabled&&!S.next.disabled,'both cameras ready');R.next.click();S.next.click();
+  await until(()=>S.matrix.draws>0&&S.video.cb,'sender reads from first paint; no live camera gate in lab');
+  assert.ok(S.video.emit(),'sender can scan the blank screen before first pass completes');
+  await until(()=>S.matrix.draws>=5,'DATA advanced to second pass');
+  assert.ok(R.video.emit());await until(()=>R.matrix.draws>0,'fixed receiver accepts DATA with nominal wire cadence');
+  assert.ok(S.video.emit());await until(()=>S.history.textContent.includes('ack-read'),'correct matching ACK accepted');
+  const a=await S.report(),b=await R.report();assert.equal(a.configuration.progressive,true);assert.equal(b.configuration.progressive,false);
+  assert.equal(a.steps[0].phaseMs,50);assert.equal(b.steps[0].phaseMs,50);assert.equal(a.configuration.maxPhaseMs,500);
+  assert.ok(a.steps[0].display.completeCycles>=1);assert.ok(a.steps[0].display.peakDwellMs>=100);
+  assert.equal(a.steps[0].display.skippedSlots,0);assert.equal(b.steps[0].display.peakDwellMs,50);
 });

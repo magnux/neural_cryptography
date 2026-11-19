@@ -16,7 +16,7 @@ export class ReceivePipeline {
     this.gate=new AcceptedFrameGate();this.serial=0;this.reset();
   }
   reset(){
-    this.capture.reset();this.burst.reset();this.gate.reset();this.context=null;this.runId=null;this.lastTime=-Infinity;
+    this.capture.reset();this.burst.reset();this.gate.reset();this.context=null;this.runId=null;this.presentationId=null;this.lastTime=-Infinity;
     this.pending=null;this.profiler=new StageProfiler(false);this.counters={scans:0,gated:0,inferences:0,decoded:0,accepted:0};
   }
   snapshot(){return {...this.counters,timings:this.profiler.snapshot(),bufferBytes:this.burst.status().bufferBytes};}
@@ -29,13 +29,19 @@ export class ReceivePipeline {
     return {operation:'transport-accept',accepted:true,probeGate};
   }
   async scan(raw) {
-    const {image,runId,mediaTime,presentedFrames,expected,captureIntervalMs=100,maxSize,optimized=false,statistics=false,probe,forceFullScan=false,forceAcquisition=false}=raw;
+    const {image,runId,mediaTime,presentedFrames,expected,presentationId=0,captureIntervalMs=100,maxSize,optimized=false,statistics=false,probe,forceFullScan=false,forceAcquisition=false}=raw;
     geometryHintMaxAgeMs(captureIntervalMs);
     if(!['data','ack','request'].includes(expected)||!Number.isSafeInteger(runId)||runId<1||!Number.isFinite(mediaTime)||mediaTime<0||
-      !Number.isSafeInteger(presentedFrames)||presentedFrames<1||![32,64,128].includes(maxSize))throw Error('Invalid Neural-ZKBoo capture request.');
+      !Number.isSafeInteger(presentedFrames)||presentedFrames<1||!Number.isSafeInteger(presentationId)||presentationId<0||
+      ![32,64,128].includes(maxSize))throw Error('Invalid Neural-ZKBoo capture request.');
     const key=`${runId}/${expected}`;
     if(this.runId!==runId||mediaTime<this.lastTime){this.reset();this.runId=runId;}
-    if(this.context!==key){this.capture.reset();this.burst.reset();this.gate.reset();this.pending=null;this.context=key;}
+    if(this.context!==key){this.capture.reset();this.burst.reset();this.gate.reset();this.context=key;}
+    // Adjacent DATA chunks both expect a G32 ACK. A new local presentation
+    // invalidates partial captures, but the geometry and accepted-repeat
+    // fingerprints can still help us skip the previous ACK on screen.
+    else if(this.presentationId!==presentationId)this.burst.reset();
+    this.presentationId=presentationId;
     this.lastTime=mediaTime;this.profiler.enabled=statistics===true;if(statistics)this.counters.scans++;
     // The consumer must acknowledge the most recently returned candidate before
     // requesting another exposure. A delayed old confirmation cannot arm a gate.

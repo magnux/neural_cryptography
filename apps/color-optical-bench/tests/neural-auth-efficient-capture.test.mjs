@@ -139,6 +139,25 @@ test('new run and expected kind discard accepted fingerprints and old burst capt
   const otherKind=await h.scan(1,.5,{runId:2,expected:'ack'});assert.equal(otherKind.stage,'collect');assert.equal(otherKind.collected,1);
 });
 
+test('local presentation changes discard partial phases without forgetting the accepted packet or its geometry',async()=>{
+  const h=await fixture(),channel=new TurnChannel({now:()=>0});
+  const first=await h.cycle(0,{presentationId:0});
+  assert.equal((await channel.receive(unpackOptical(first.chunk,'data'))).accepted,true);
+  assert.equal(h.pipeline.accept({token:first.acceptToken,runId:1,expected:'data'}).accepted,true);
+  assert.equal((await h.scan(0,.32,{presentationId:1})).stage,'unchanged','old packet is still on screen');
+  assert.equal(h.sender.receive(channel.current(),0).accepted,true);
+  const next=h.sender.next(0);h.replace(packetFrames(next,{size:32}));
+  for(let p=0;p<3;p++)assert.equal((await h.scan(p,.34+p*.01,{presentationId:1})).collected,p+1);
+  // Both presentations expect the same kind and geometry. Phase 3 alone
+  // cannot complete inference with three samples taken before the switch.
+  const fresh=await h.scan(3,.38,{presentationId:2});
+  assert.deepEqual(fresh.phaseCounts,[0,0,0,1]);assert.equal(fresh.stage,'collect');assert.equal(h.calls,1);
+  assert.equal(fresh.stats.geometrySource,'previous');
+  let decoded;for(let p=0;p<3;p++)decoded=await h.scan(p,.40+p*.01,{presentationId:2});
+  assert.equal(h.calls,2);assert.equal(decoded.ok,true);assert.deepEqual(decoded.chunk,next);
+  await assert.rejects(h.scan(0,.45,{presentationId:-1}),/Invalid Neural-ZKBoo/);
+});
+
 test('statistics off avoids acquisition and stage clock reads and omits timing output',async()=>{
   const h=await fixture({statistics:false}),saved=Object.getOwnPropertyDescriptor(globalThis,'performance');let reads=0;
   Object.defineProperty(globalThis,'performance',{configurable:true,value:{now(){reads++;return 0;}}});

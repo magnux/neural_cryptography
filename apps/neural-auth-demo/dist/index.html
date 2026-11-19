@@ -109,8 +109,13 @@
           <label class="wide" for="camera">Camera<select id="camera"><option value="">Front camera · default</option></select></label>
           <label for="resolution">Camera resolution<select id="resolution"><option value="480">480p</option><option value="720">720p</option><option value="1080" selected>1080p</option><option value="1440">1440p</option><option value="2160">4K</option><option value="max">Maximum available</option></select></label>
           <label for="backend">Corrector backend<select id="backend"><option value="auto">Auto · GPU / CPU</option><option value="wasm">WASM · CPU</option><option value="webgpu">WebGPU</option></select></label>
-          <label for="phaseMs">Phase interval (ms)<input id="phaseMs" type="number" min="50" max="10000" step="1" value="350" inputmode="numeric"></label>
-          <label for="captureMs">Capture interval (ms)<input id="captureMs" type="number" min="50" max="2000" step="1" value="250" inputmode="numeric"></label>
+          <label for="phaseCadence" class="wide">Outgoing phase timing<select id="phaseCadence"><option value="progressive" selected>Progressive · slow down on repeats</option><option value="fixed">Fixed interval</option></select></label>
+          <label id="phaseMinMsField" for="phaseMinMs">First cycle (ms per phase)<input id="phaseMinMs" type="number" min="50" max="10000" step="1" value="200" inputmode="numeric"></label>
+          <label id="phaseStepMsField" for="phaseStepMs">Add per repeat (ms)<input id="phaseStepMs" type="number" min="1" max="10000" step="1" value="50" inputmode="numeric"></label>
+          <label id="phaseMaxMsField" for="phaseMaxMs">Longest phase (ms)<input id="phaseMaxMs" type="number" min="50" max="10000" step="1" value="500" inputmode="numeric"></label>
+          <label id="phaseMsField" for="phaseMs" hidden>Fixed interval (ms per phase)<input id="phaseMs" type="number" min="50" max="10000" step="1" value="350" inputmode="numeric" disabled></label>
+          <label for="captureMs">Camera search interval (ms)<input id="captureMs" type="number" min="50" max="2000" step="1" value="250" inputmode="numeric"></label>
+          <label class="toggle wide" for="firstCycle"><span>Show all four phases before reading<small>Give each new outgoing matrix one pass before looking for the reply.</small></span><input id="firstCycle" type="checkbox" checked></label>
           <label class="toggle wide" for="phaseWatch"><span>Follow phase changes<small>After lock, read a fresh frame when the matrix changes. Turn off for fixed-interval capture.</small></span><input id="phaseWatch" type="checkbox" checked></label>
           <label class="toggle wide" for="optimized"><span>Efficient camera scanning<small>Skip redundant work while holding steady</small></span><input id="optimized" type="checkbox" checked></label>
           <label class="toggle wide" for="statistics"><span>Collect statistics<small>Local timings and a downloadable report</small></span><input id="statistics" type="checkbox" checked></label>

@@ -12,8 +12,15 @@ Turns use stable G32 REQUEST controls: the final ACK stays visible until the
 sender acknowledges receipt by requesting the reply. Each packet reuses its
 four cached palette-phase images; no timer alternates final ACK and START.
 Both screens show the same five named exchange steps, with a separate packet
-counter during each transfer. Camera exchange starts at **350 ms per displayed
-phase** and **250 ms between searches**. Once it locks, the default reader watches
+counter during each transfer. Camera exchange starts each new packet at **200 ms
+per displayed phase**. Each repeat of the four phases adds **50 ms per phase**,
+up to **500 ms**, so a difficult packet stays visible longer. Fixed timing
+(initially 350 ms per phase) is also available. The camera searches every
+250 ms until lock. By default, a phone shows all four phases of a new packet
+once before reading the other screen.
+A phone with nothing to send listens immediately. See the
+[two-phone comparison](../../docs/NEURAL_AUTH_DEMO.md#show-the-outgoing-phases-before-reading)
+to test this setting. Once it locks, the default reader watches
 a small patch for the next phase and captures a fresh camera frame after a 10 ms
 settling delay. Timed capture is still available. After final delivery, select
 **Finish exchange** to replace the matrix with a summary. Keep statistics on

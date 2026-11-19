@@ -80,6 +80,18 @@ test('template and probe memory are bounded, and invalid imagery never suppresse
   probe.reset();assert.equal(probe.shouldSkip(image,identity(1.1)),false);
 });
 
+test('video thumbnail readback runs only when it could skip an accepted duplicate',()=>{
+  const {state}=acceptedGate(),gate=new AcceptedProbeGate();
+  const never=()=>assert.fail('camera read that could not suppress a full capture');
+  assert.equal(gate.shouldSkip(never,identity(1)),false);
+  gate.accept(state);
+  for(const phase of [40,90,150,220])assert.equal(gate.shouldSkip(()=>solid(phase,32),identity(1.1)),true);
+  assert.equal(gate.shouldSkip(never,identity(1.15,{expected:'ack'})),false);
+  assert.equal(gate.shouldSkip(never,identity(2)),false,'scheduled geometry refresh needs no camera probe');
+  assert.equal(gate.shouldSkip(()=>solid(17,32),identity(2.1)),false,'unknown pixels still request acquisition');
+  assert.equal(gate.shouldSkip(never,identity(5)),false,'expired acceptance cannot suppress a capture');
+});
+
 test('disabled profiling reads no clocks, retains no rows and preserves function results and errors',async()=>{
   const profiler=new StageProfiler(false,{now:()=>{throw Error('disabled profiler read the clock');}});
   assert.equal(profiler.measure('sync',()=>42),42);

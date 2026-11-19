@@ -10,31 +10,7 @@ import {CryptoOperations} from '../dist/js/crypto-lab/operations.js';
 import {CryptoClient} from '../dist/js/crypto-lab/client.js';
 import {CorrectorClient} from '../dist/js/corrector-lab/client.js';
 
-// The screen/camera are doubles. Real browser controllers, auth messages, proof,
-// chunking, turns, result and final ACK run in-process at the packet boundary.
-function browser(t,role,statistics) {
-  const values={role,backend:'wasm',repetitions:'32',resolution:'720',outgoingSize:'64',incomingSize:'64',
-    phaseMs:'350',captureMs:'250',camera:''};
-  const elements=new Map(),listeners=new Map(),track={stop(){this.stopped=true;},addEventListener(){},getSettings(){return {};}};
-  class Node {
-    constructor(id){this.id=id;this.hidden=['exchangeSummary','downloadSummary'].includes(id);this.value=values[id]??'';
-      this.checked=id==='statistics'&&statistics;this.style={getPropertyValue(){return '';},setProperty(){}};this.dataset={};this.children=[];}
-    textContent='';setAttribute(k,v){this[k]=v;} removeAttribute(k){delete this[k];}
-    addEventListener(k,fn){listeners.set(this.id+':'+k,fn);}click(){listeners.get(this.id+':click')?.();}
-    replaceChildren(...children){this.children=children;}append(...children){this.children.push(...children);}appendChild(child){this.append(child);return child;}
-    getContext(){return {clearRect(){},putImageData(){}};}focus(){} requestVideoFrameCallback(){return 1;} cancelVideoFrameCallback(){} play(){}
-  }
-  const get=id=>{if(!elements.has(id))elements.set(id,new Node(id));return elements.get(id);};
-  const document={body:get('body'),documentElement:get('html'),getElementById:get,createElement:k=>new Node(k),addEventListener(){}};
-  const globals={document,window:{innerHeight:800,addEventListener(){}},navigator:{mediaDevices:{getUserMedia:async()=>({getTracks:()=>[track],getVideoTracks:()=>[track]})}},
-    isSecureContext:true,ImageData:class{constructor(data,width,height){Object.assign(this,{data,width,height});}},Worker:class{}};
-  for(const [key,value] of Object.entries(globals)){
-    const prior=Object.getOwnPropertyDescriptor(globalThis,key);
-    Object.defineProperty(globalThis,key,{configurable:true,value});
-    t.after(()=>prior?Object.defineProperty(globalThis,key,prior):delete globalThis[key]);
-  }
-  return {get,track};
-}
+import {browser} from './helpers/live-browser.mjs';
 
 for(const [role,statistics] of [['prover',true],['verifier',false]])test(
   'Finish exchange on '+role+' retains optical delivery, then exports a short report with statistics '+(statistics?'on':'off'),async t=>{
@@ -103,7 +79,7 @@ for(const [role,statistics] of [['prover',true],['verifier',false]])test(
 
 test('live capture watches the submitted matrix, waits for a fresh settled frame, and searches again after lock loss',async t=>{
   const {get}=browser(t,'prover',true),video=get('video'),full=get('captureCanvas');
-  get('phaseWatch').checked=true;
+  get('phaseWatch').checked=true;get('optimized').checked=true;
   Object.assign(video,{videoWidth:256,videoHeight:256,readyState:4,level:24});
   let next=null,frame=0,release,fullReads=0;
   video.requestVideoFrameCallback=cb=>{assert.equal(next,null,'only one outstanding callback');next=cb;return 1;};
@@ -116,6 +92,8 @@ test('live capture watches the submitted matrix, waits for a fresh settled frame
     }};
   }
   full.getContext=()=>pixContext(full,true);
+  const gateInputs=[],tiny=get('gateCanvas'),gateContext=pixContext(tiny);
+  tiny.getContext=()=>({...gateContext,drawImage(source){gateInputs.push(source);gateContext.drawImage(source);}});
   const create=document.createElement;
   document.createElement=tag=>{const el=create(tag);if(tag==='canvas')el.getContext=()=>pixContext(el);return el;};
   get('overlay').getContext=()=>({clearRect(){},beginPath(){},closePath(){},moveTo(){},lineTo(){},stroke(){},fill(){}});
@@ -141,5 +119,6 @@ test('live capture watches the submitted matrix, waits for a fresh settled frame
     fire(137);assert.deepEqual(scans,[1,5],'settled exposure arrives well before the 250 ms search interval');
     await wait(0);fire(200);assert.equal(fullReads,2,'a real miss returns to timed search');
     fire(400);await wait(0);assert.deepEqual(scans,[1,5,7]);
+    assert.deepEqual(gateInputs,[full,full,full],'before acceptance, search and change reads derive thumbnails from the submitted canvas');
   }finally{get('stop').click();}
 });

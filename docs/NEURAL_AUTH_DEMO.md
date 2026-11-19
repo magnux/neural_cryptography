@@ -201,6 +201,51 @@ of generating new pixels for an unchanged packet. New logical packets get their
 own phase images. RESULT is the final application message and does not request
 another reply; its receiver keeps the final ACK visible for delivery confirmation.
 
+### Show the outgoing phases before reading
+
+**Outgoing phase timing** controls how long each of a packet's four phases
+stays visible. In **Progressive** mode, a new packet starts at **200 ms per
+phase**. If still on screen, its second pass uses 250 ms per phase, then 300,
+350, 400, 450 and finally 500 ms on every further pass. You can change the
+starting duration, the increment and the cap. The timing resets at each new
+packet, including each ACK or REQUEST. The display slows down based on how long
+that packet is still needed; the receiver doesn't send a signal to change the
+rate. **Fixed interval** instead uses one duration on every pass (initially
+350 ms). Neither setting changes the camera's search interval.
+
+In **Camera exchange**, **Show all four phases before reading** is on by default.
+Each time the outgoing packet changes (START, DATA, ACK or REQUEST), this phone
+draws phases 0, 1, 2 and 3 in order. Until the fourth draw has had a refresh
+opportunity, it keeps the camera preview live but starts no phase probes,
+full-frame readbacks or corrector scans. From the first draw, that wait is
+nominally **three starting phase intervals plus one refresh**: just over 0.60 s
+at 200 ms, or 1.05 s at 350 ms. A busy browser can take longer.
+
+A phone with nothing to display listens immediately. After the first pass,
+the phone can read the reply while its own matrix continues cycling; another
+cycle of the same packet never starts a new pause. An early reply stays on the
+peer's screen under the normal handoff rules. In particular, the final ACK
+continues to display until Finish. Turning the option off restores simultaneous
+reading with the **same ordered display cadence**. The setting applies only
+to Camera exchange; the Matrix timing lab has its own controls.
+
+To compare on two phones, use G64 in both directions, 32 repetitions,
+**Fixed interval** at **350 ms display / 300 ms search**, and leave **Follow
+phase changes** and statistics on. Run a complete authentication with **Show
+all four phases before reading** off on both; repeat with it on, keeping roles
+and placement fixed. For a third run, keep the first-pass wait on and select
+**Progressive** (200 / +50 / 500 ms). This separates the effect of the wait
+from the effect of changing the dwell. Save the **detailed
+report from Settings on each device** for each run; the Finish summary gives
+the local proof step time. Compare completion and that step time, as well as
+START/DATA-to-ACK round trips and capture attempts in the detailed report. The
+`firstPresentation` statistics describe local presentation; that time overlaps
+the peer's reading and must not be counted as time saved from the round trip.
+In that report, `fullReadbacksBeforeFourth` should be zero with the first-pass
+wait on. `ackReadByRound` counts matching ACKs the sender read during passes
+1 through 7 and 8-or-later. It tells you how long the sender kept displaying
+a packet; it cannot tell which pass the other camera decoded.
+
 ## Optional timing statistics
 
 Statistics are on initially. Keep them enabled before an attempt to collect stage
@@ -329,7 +374,7 @@ matrix from a different step cannot count as a successful roundtrip.
 1. Face the two devices toward one another. In **Matrix timing**, select the
    trained sweep and opposite roles. Start with **G64**, **500 ms per displayed
    phase** and **450 ms between captures** on both devices. These are test
-   settings; the live authentication defaults remain 350/250 ms. Keep camera,
+   settings; **350/250 ms** is the fixed-cadence live comparison. Keep camera,
    grid, backend, lighting and placement unchanged during the sweep. Tap
    **Start camera** on both devices and wait for model and camera setup.
 2. Tap **Start step 1** on the receiver, then on the sender. The sender
@@ -349,9 +394,26 @@ matrix from a different step cannot count as a successful roundtrip.
    setting says little about its reliability. Count timeouts as misses.
    To distinguish a display limit from a capture limit, repeat at the same
    display interval but change the starting capture interval. Try the best
-   pair in **Camera exchange**. To include the live default of **350/250 ms**
+   pair in **Camera exchange**. To include the live fixed baseline of **350/250 ms**
    in the sweep, begin at **500/400 ms** (or start at 350/250 directly). Reducing
    both intervals together preserves their initial difference.
+
+To test **Progressive transmit timing**, first leave it **off** on both devices
+for a fixed-dwell baseline. Next, with both devices still at the same initial
+phase/search (for example **150/100 ms**), enable it **only on the sender** to
+change DATA timing while G32 ACK stays fixed. On a separate run, enable it
+only on the receiver to change ACK timing. Each new packet starts at the
+current step’s phase interval: with **+50 ms per pass** and a **500 ms cap** its
+phase dwell goes 150, 200, 250 … 500 ms; all four phases get the same dwell
+within a pass. Receiver search still starts when armed and sender ACK search
+still starts at its first DATA draw, regardless of this local display setting.
+Progression changes neither the bytes on the wire nor the test-step settings
+that must match between devices. Compare RTT, valid phases and inference
+attempts. The report records each device’s local settings,
+`display.completeCycles` (passes that actually drew all four phases),
+`peakDwellMs` (maximum requested dwell drawn) and `spacingMs`
+(observed time between draws). For a receiver, this includes holding the ACK
+until Next, so waiting before advancing can increase its reported peak.
 
 Read the sender's RTT as **first DATA draw → matching ACK recovery on that
 sender**. It includes two camera paths, display refresh and waiting for all
@@ -473,8 +535,9 @@ four phase images and random padding.
 
 The initial settings for **Camera exchange** are verifier role, G64 outgoing
 and incoming maximum, G32 controls, 32 proof repetitions, front camera,
-requested 1080p, **350 ms per displayed phase** and **250 ms between searches**,
-Auto backend, phase-change capture after lock, efficient scanning and statistics enabled.
+requested 1080p, **progressive 200 / +50 / 500 ms** and **250 ms between searches**,
+Auto backend, first-cycle display priority, phase-change capture after lock,
+efficient scanning and statistics enabled.
 The initial display preferences are a mirrored preview and the matrix at the bottom.
 Choose an incoming maximum of G128 to preload/test that larger receiving grid.
 

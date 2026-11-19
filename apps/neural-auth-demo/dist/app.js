@@ -16,6 +16,8 @@ import {POCAutoPairing} from './js/neural-auth/poc-pairing.js';
 import {PacketTelemetry} from './js/neural-auth/telemetry.js';
 import {AcceptedProbeGate} from './js/neural-auth/frame-gate.js';
 import {PhaseWatch,createPhaseSampler} from './phase-watch.js';
+import {FirstPresentation} from './first-presentation.js';
+import {bindDisplaySettings,readDisplaySettings} from './display-settings.js';
 
 // A narrow desktop window remains a framed desktop preview. iPadOS can present
 // a desktop user agent, so touch-enabled MacIntel is also treated as mobile.
@@ -71,6 +73,7 @@ if(typeof document!=='undefined')initialize();
 
 function initialize() {
   const $=id=>document.getElementById(id),setText=(id,text)=>{if($(id).textContent!==text)$(id).textContent=text;};
+  bindDisplaySettings($);
   const finishCard=createFinishCard({byId:$,createElement:tag=>document.createElement(tag)});
   const device=detectDevice(navigator);document.body.dataset.device=device;
   let display=displayPreferences();
@@ -117,10 +120,12 @@ function initialize() {
   let stepClock=null,shortReport=null;
   let mode='camera',active=false,epoch=0,stream=null,corrector=null,cryptoClient=null,session=null,channel=null;
   let config=null,authState=null,report=null,startedAt=0,packetTelemetry=null,autoPairing=null,simulationAbort=null;
-  let captureCallback=null,displayTimer=null,heartbeat=null,lastCapture=-Infinity,lastPresented=0,frameWaitAt=0,scanning=false;
+  const displayPhases=new FirstPresentation();
+  let presentationId=0,cameraTicket=0,readerIdle=false,displayStats=null,displayRound=0;
+  let captureCallback=null,heartbeat=null,lastCapture=-Infinity,lastPresented=0,frameWaitAt=0,scanning=false;
   let phaseWatch=null,phaseSampler=null,watchGeneration=0,watchExpected=null,sourceWidth=0,sourceHeight=0,lastMediaTime=-Infinity;
   function resetPhaseWatch(){phaseWatch?.reset();watchGeneration++;}
-  let shown=null,rendered=[],phaseStart=0,phaseIndex=-1,lastFeedbackAt=-Infinity,lastInference=null,scanCount=0,acceptedCount=0;
+  let shown=null,rendered=[],lastFeedbackAt=-Infinity,lastInference=null,scanCount=0,acceptedCount=0;
   let operations=Object.create(null),renderCache=[],events=[],lastAnnouncement='',probeGate=new AcceptedProbeGate(),mainThreadSkipped=0;
   const integer=(value,min,max,label)=>{const n=Number(value);if(!Number.isSafeInteger(n)||n<min||n>max)throw Error(`${label} must be ${min}–${max}.`);return n;};
   const error=(message='')=>{setText('error',message);$('error').hidden=!message;};
@@ -144,9 +149,9 @@ function initialize() {
     const role=$('role').value,backend=$('backend').value,repetitions=Number($('repetitions').value),resolution=$('resolution').value;
     const outgoingSize=Number($('outgoingSize').value),incomingMaxSize=Number($('incomingSize').value);
     if(!['verifier','prover'].includes(role)||!['auto','wasm','webgpu'].includes(backend)||![32,64,110,160,219].includes(repetitions)||!['480','720','1080','1440','2160','max'].includes(resolution)||![64,128].includes(outgoingSize)||![64,128].includes(incomingMaxSize))throw Error('Choose supported connection settings.');
-    const phaseMs=integer($('phaseMs').value,50,10000,'Phase interval');
+    const cadence=readDisplaySettings($);
     return {displayName:normalizeDisplayName($('displayName').value),role,backend,repetitions,resolution,outgoingSize,incomingMaxSize,controlSize:32,
-      phaseMs,captureMs:integer($('captureMs').value,50,2000,'Capture interval'),cameraId:$('camera').value,facingMode:'user',
+      ...cadence,firstCycle:$('firstCycle').checked,captureMs:integer($('captureMs').value,50,2000,'Capture interval'),cameraId:$('camera').value,facingMode:'user',
       phaseWatch:$('phaseWatch').checked,
       statistics:$('statistics').checked,optimized:$('optimized').checked,automaticTurns:true,handoff:'request',pairingConfirmation:'automatic-poc-unchecked'};
   }
@@ -203,7 +208,10 @@ function initialize() {
         report.completion={afterMs:now-startedAt,kind:authState.resultDelivered?'result-acknowledged':'peer-result-received'};
       }
     }
-    renderCurrent();
+    // Once REQUEST grants the turn, any repeated REQUEST is idle until the
+    // local reply is ready. A completed prover still displays the final ACK.
+    readerIdle=Boolean(message.complete||(link?.mode==='receive'&&link.expected==='request'&&!link.waitingForRequest));
+    renderCurrent();syncCamera(epoch);
     // A receive can notify the session before the final ACK is recorded.
     // Let that scan close the counters; later scans while holding the ACK
     // and the human delay before Finish do not change the short report.
@@ -221,13 +229,13 @@ function initialize() {
     if(!channel||!active)return;
     const bytes=channel.current();
     if(!bytes){
-      if(shown){resetPhaseWatch();shown=null;rendered=[];clearTimeout(displayTimer);$('matrixZone').dataset.visible='false';$('matrixPlaceholder').hidden=false;}
+      if(shown){endPresentation();resetPhaseWatch();shown=null;rendered=[];lastCapture=-Infinity;$('matrixZone').dataset.visible='false';$('matrixPlaceholder').hidden=false;}
       setText('matrixLabel','Looking for the other device');return;
     }
     if(shown&&sameBytes(shown,bytes))return;
     // A new outgoing packet expects a new reply even when both replies are
     // G32 ACKs. A phase repaint of the same packet must not clear the lock.
-    resetPhaseWatch();
+    endPresentation();resetPhaseWatch();
     const began=config.statistics?performance.now():0,packet=decodePacket(bytes),size=['ack','poll'].includes(packet.kind)?32:config.outgoingSize;
     // Rendering adds secure random padding. Cache the exact first four phases
     // for repeated display of the same packet instead of generating new pixels.
@@ -236,26 +244,61 @@ function initialize() {
       cached={bytes:bytes.slice(),size,frames:packetFrames(bytes,{size,phaseMs:config.phaseMs}).map(frame=>renderNeuralQR(frame,size*8))};
       renderCache.push(cached);if(renderCache.length>4)renderCache.shift();
     }
-    shown=bytes.slice();rendered=cached.frames;phaseStart=performance.now();phaseIndex=-1;
+    shown=bytes.slice();rendered=cached.frames;
     $('matrixZone').dataset.visible='true';$('matrixPlaceholder').hidden=true;
     setText('matrixLabel',packet.kind==='ack'?'Acknowledgment · keep visible':packet.kind==='poll'?'Requesting next message · keep visible':`G${size} · ${packet.kind==='start'?'starting message':'sending data'}`);
-    paintPhase();packetTelemetry?.displayed(bytes,{grid:size,atMs:performance.now()});
+    const token=epoch;
+    let firstDraw=null;
+    if(displayStats)displayStats.started++;
+    if(config.firstCycle&&!readerIdle)setText('cameraStatus','Showing four phases before listening');
+    displayPhases.start({phaseMs:config.phaseMs,incrementMs:config.phaseStepMs,maxPhaseMs:config.phaseMaxMs,
+      paint:(phase,first,dwell,round)=>{
+        const image=rendered[phase],canvas=$('matrix');
+        if(canvas.width!==image.width)canvas.width=image.width;if(canvas.height!==image.height)canvas.height=image.height;
+        canvas.getContext('2d').putImageData(new ImageData(image.data,image.width,image.height),0,0);
+        if(first&&config.statistics){firstDraw=performance.now();packetTelemetry?.displayed(bytes,{grid:size,atMs:firstDraw});}
+        if(displayStats){
+          displayRound=round;
+          displayStats.peakDwellMs=Math.max(dwell,displayStats.peakDwellMs);
+          displayStats.maxRound=Math.max(round,displayStats.maxRound);
+        }
+      },
+      onReady:()=>{
+        if(!isCurrent(token))return;
+        if(displayStats){
+          displayStats.completed++;
+          addTiming(displayStats.timings,'firstDrawToFourthPresented',performance.now()-firstDraw);
+        }
+        if(config.firstCycle){
+          if(!readerIdle)setText('cameraStatus','Listening for the reply');
+          lastCapture=-Infinity;syncCamera(token);
+        }
+      },onError:e=>fail(e,token)});
     if(config.statistics)timing('packetRender',performance.now()-began);
-    schedulePhase(epoch);
   }
 
-  function paintPhase() {
-    if(!active||!rendered.length)return;
-    const next=Math.floor((performance.now()-phaseStart)/config.phaseMs)%rendered.length;if(next===phaseIndex)return;
-    phaseIndex=next;const image=rendered[next],canvas=$('matrix');
-    if(canvas.width!==image.width)canvas.width=image.width;if(canvas.height!==image.height)canvas.height=image.height;
-    canvas.getContext('2d').putImageData(new ImageData(image.data,image.width,image.height),0,0);
+  function endPresentation(){
+    if(displayStats&&displayPhases.holding)displayStats.interrupted++;
+    displayPhases.clear();presentationId++;displayRound=0;
   }
 
-  function schedulePhase(token) {
-    clearTimeout(displayTimer);if(!isCurrent(token)||rendered.length<2)return;
-    const remaining=config.phaseMs-((performance.now()-phaseStart)%config.phaseMs);
-    displayTimer=setTimeout(()=>{if(isCurrent(token)){paintPhase();schedulePhase(token);}},Math.max(1,remaining));
+  function presentationStats(){
+    if(!displayStats)return null;
+    const {timings,...counts}=displayStats;
+    return {...counts,ackReadByRound:counts.ackReadByRound.slice(),
+      firstDrawToFourthPresentedMs:timingSummary(timings).firstDrawToFourthPresented??null};
+  }
+
+  function mayRead(){return Boolean(channel&&session&&stream&&!readerIdle&&!(config.firstCycle&&displayPhases.holding));}
+  function cancelCapture(){
+    ++cameraTicket;
+    if(captureCallback!==null)$('video').cancelVideoFrameCallback(captureCallback);
+    captureCallback=null;
+  }
+  function syncCamera(token){
+    if(!isCurrent(token))return;
+    if(mayRead())scheduleCapture(token);
+    else if(captureCallback!==null)cancelCapture();
   }
 
   function feedback(result,width,height) {
@@ -271,10 +314,13 @@ function initialize() {
   }
 
   function scheduleCapture(token) {
-    if(!isCurrent(token)||scanning)return;frameWaitAt=performance.now();
+    if(!isCurrent(token)||scanning||captureCallback!==null||!mayRead())return;frameWaitAt=performance.now();
+    const ticket=++cameraTicket;
     const camera=$('video');
     captureCallback=camera.requestVideoFrameCallback((now,metadata)=>{
-      captureCallback=null;if(!isCurrent(token))return;
+      if(ticket!==cameraTicket||!isCurrent(token))return;
+      captureCallback=null;if(!mayRead())return;
+      if(displayStats&&displayPhases.holding)displayStats.cameraCallbacksBeforeFourth++;
       if(!Number.isFinite(metadata.mediaTime)||!Number.isSafeInteger(metadata.presentedFrames)){fail(Error('This camera does not provide distinct frame timestamps. Try a current browser.'),token);return;}
       if(!camera.videoWidth||!camera.videoHeight||camera.readyState<2){scheduleCapture(token);return;}
       if(camera.videoWidth!==sourceWidth||camera.videoHeight!==sourceHeight||metadata.mediaTime<lastMediaTime){
@@ -287,39 +333,50 @@ function initialize() {
       const trigger=phaseWatch?phaseWatch.decide(now,lastPresented,roi=>phaseSampler.read(camera,roi),due):due()?'timed':null;
       if(!trigger){scheduleCapture(token);return;}
       lastCapture=now;scanning=true;
-      void scan(metadata,token,trigger,watchGeneration).catch(e=>{if(isCurrent(token))fail(e,token);}).finally(()=>{if(isCurrent(token)){scanning=false;if(report?.completion)freezeShortReport();scheduleCapture(token);}});
+      void scan(metadata,token,trigger,watchGeneration,presentationId).catch(e=>{if(isCurrent(token))fail(e,token);}).finally(()=>{if(isCurrent(token)){scanning=false;if(report?.completion)freezeShortReport();scheduleCapture(token);}});
     });
   }
 
-  async function scan(metadata,token,trigger,generation) {
+  async function scan(metadata,token,trigger,generation,scanPresentation) {
     const camera=$('video'),canvas=$('captureCanvas'),dimensions=captureDimensions(camera.videoWidth,camera.videoHeight);
     const expected=channel?.snapshot().expected??'data';
-    const began=config.statistics?performance.now():0;
     if(config.statistics)scanCount++;
     let probe;
-    if(config.optimized){
+    function thumbnail(source){
+      const began=config.statistics?performance.now():0;
       const tiny=$('gateCanvas'),tinyContext=tiny.getContext('2d',{willReadFrequently:true});
-      tinyContext.drawImage(camera,0,0,32,32);probe=tinyContext.getImageData(0,0,32,32);
-      // A coarse whole-image duplicate must not mask a local phase edge or
-      // a watchdog read. The worker still checks accepted-phase fingerprints.
-      const skip=trigger!=='change'&&trigger!=='watchdog'&&probeGate.shouldSkip(probe,{runId:token,expected,mediaTime:metadata.mediaTime});
-      if(config.statistics)timing('cameraProbe',performance.now()-began);
-      if(skip){
-        if(config.statistics)mainThreadSkipped++;
-        setText('cameraStatus','Holding steady · watching for changes');return;
-      }
+      tinyContext.drawImage(source,0,0,32,32);const thumb=tinyContext.getImageData(0,0,32,32);
+      if(config.statistics)timing(source===camera?'cameraProbe':'canvasProbe',performance.now()-began);
+      return thumb;
+    }
+    // Read from the video only if a previously accepted template could skip
+    // the full scan. A phase change or watchdog must always get a full read.
+    if(config.optimized&&trigger!=='change'&&trigger!=='watchdog'&&
+      probeGate.shouldSkip(()=>probe=thumbnail(camera),{runId:token,expected,mediaTime:metadata.mediaTime})){
+      if(config.statistics)mainThreadSkipped++;
+      setText('cameraStatus','Holding steady · watching for changes');return;
     }
     const readbackStart=config.statistics?performance.now():0;
+    if(displayStats&&displayPhases.holding)displayStats.fullReadbacksBeforeFourth++;
     if(canvas.width!==dimensions.width)canvas.width=dimensions.width;if(canvas.height!==dimensions.height)canvas.height=dimensions.height;
     const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(camera,0,0,canvas.width,canvas.height);
     const image=ctx.getImageData(0,0,canvas.width,canvas.height);
     if(config.statistics){timing('cameraReadback',performance.now()-readbackStart);report.processedCamera=dimensions;}
+    // A collecting worker still needs a thumbnail so that accepted exposures
+    // can later suppress all four held phases. Reuse the captured pixels.
+    if(config.optimized&&!probe)probe=thumbnail(canvas);
     const worker=corrector;
-    const options={size:config.incomingMaxSize,backend:config.backend,expected,runId:token,statistics:config.statistics,optimized:config.optimized};
+    const options={size:config.incomingMaxSize,backend:config.backend,expected,runId:token,presentationId:scanPresentation,statistics:config.statistics,optimized:config.optimized};
     const workerStart=config.statistics?performance.now():0;
     const result=await worker.call('transport-scan',{...options,image,...(probe?{probe,forceAcquisition:true}:{}),captureIntervalMs:config.captureMs,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames},[image.data.buffer]);
     if(!isCurrent(token))return;
     if(config.statistics)timing('workerRoundTrip',performance.now()-workerStart);
+    // Never apply a read submitted before this outgoing packet/turn. The
+    // worker's next scan also starts a fresh phase pool for this presentation.
+    if(scanPresentation!==presentationId||readerIdle||expected!==watchExpected){
+      if(displayStats)displayStats.staleScanResults++;
+      return;
+    }
     // The serial capture canvas still holds the exposure the worker examined;
     // taking a baseline from the live video now could silently skip a phase.
     if(phaseWatch&&generation===watchGeneration){
@@ -336,10 +393,11 @@ function initialize() {
     }
     feedback(result,canvas.width,canvas.height);if(!result.ok)return;
     let bytes;try{bytes=unpackOptical(result.chunk,expected);}catch{event('Optical packet rejected by container checks.');return;}
-    const receivedAt=performance.now(),acceptance=await channel.receive(bytes);if(!isCurrent(token))return;
+    const receivedAt=performance.now(),replyRound=displayRound,acceptance=await channel.receive(bytes);if(!isCurrent(token))return;
     packetTelemetry?.accepted(bytes,acceptance,{grid:result.info?.size,atMs:receivedAt});
     if(config.statistics)timing('transportReceive',performance.now()-receivedAt);
     if(acceptance.accepted){
+      if(displayStats&&expected==='ack'&&replyRound>0)displayStats.ackReadByRound[Math.min(replyRound,8)-1]++;
       resetPhaseWatch();
       if(config.statistics)acceptedCount++;
       if(report?.completion)freezeShortReport();
@@ -432,6 +490,9 @@ function initialize() {
     finishCard.reset();shortReport=null;
     stepClock=mode==='camera'&&config.statistics?new ExchangeStepClock(startedAt):null;
     if(mode==='camera')showExchangeStep(null);
+    presentationId=0;readerIdle=false;
+    displayStats=mode==='camera'&&config.statistics?{started:0,completed:0,interrupted:0,cameraCallbacksBeforeFourth:0,
+      fullReadbacksBeforeFourth:0,staleScanResults:0,peakDwellMs:0,maxRound:0,ackReadByRound:Array(8).fill(0),timings:Object.create(null)}:null;
     events=[];operations=Object.create(null);renderCache=[];shown=null;rendered=[];lastInference=null;acceptedCount=0;scanCount=0;mainThreadSkipped=0;probeGate.reset();
     phaseWatch=mode==='camera'&&config.phaseWatch?new PhaseWatch({captureMs:config.captureMs,statistics:config.statistics}):null;
     phaseSampler=phaseWatch?createPhaseSampler():null;watchExpected=null;sourceWidth=sourceHeight=0;lastMediaTime=-Infinity;watchGeneration=0;
@@ -448,8 +509,9 @@ function initialize() {
     if(wasComplete)freezeShortReport();
     // Invalidate callbacks before closing workers, channels or camera tracks.
     active=false;$('app').dataset.lock='none';epoch++;simulationAbort?.abort();simulationAbort=null;autoPairing?.close();autoPairing=null;
-    clearTimeout(displayTimer);clearInterval(heartbeat);
-    if(captureCallback!==null)$('video').cancelVideoFrameCallback(captureCallback);captureCallback=null;
+    endPresentation();cancelCapture();clearInterval(heartbeat);
+    if(report&&displayStats)report.firstPresentation=presentationStats();
+    displayStats=null;
     if(mode==='camera')preparation.clear();
     channel?.close();session?.close(reason);cryptoClient=null;corrector=null;
     stream?.getTracks().forEach(track=>track.stop());stream=null;$('video').srcObject=null;$('cameraPlaceholder').hidden=false;
@@ -474,7 +536,7 @@ function initialize() {
   function download() {
     if(!report)return;
     const value=mode==='simulation'?report:{...report,elapsedMs:report.elapsedMs??performance.now()-startedAt,
-      ...(config.statistics?{...(phaseWatch?{phaseWatch:phaseWatch.snapshot()}:{}),packetTelemetry:packetTelemetry?.snapshot()??null,operations:timingSummary(operations),captureAttempts:scanCount,mainThreadSkipped,transportAcceptedMatrices:acceptedCount,events:[...events]}:{})};
+      ...(config.statistics?{...(displayStats?{firstPresentation:presentationStats()}:{}),...(phaseWatch?{phaseWatch:phaseWatch.snapshot()}:{}),packetTelemetry:packetTelemetry?.snapshot()??null,operations:timingSummary(operations),captureAttempts:scanCount,mainThreadSkipped,transportAcceptedMatrices:acceptedCount,events:[...events]}:{})};
     const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'})),anchor=document.createElement('a');
     anchor.href=url;anchor.download=`neural-key-${report.kind}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }

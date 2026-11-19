@@ -75,11 +75,13 @@ export class AcceptedProbeGate {
   constructor(){this.reset();}
   reset(){this.state=null;this.lastFull=-Infinity;}
   accept(state){this.state=state?.templates?.length?state:null;this.lastFull=state?.acceptedAt??-Infinity;}
-  shouldSkip(probe,identity) {
+  // A live reader can supply a lazy probe: an unopened gate, expired
+  // template or mandatory full refresh must not cause a video readback.
+  shouldSkip(probeOrRead,identity) {
     const state=this.state,now=identity.mediaTime*1000;
     if(!state||state.context!==contextKey(identity)||now<state.acceptedAt||now-state.acceptedAt>=state.ttlMs)return false;
     if(now-this.lastFull>=state.fullScanMs){this.lastFull=now;return false;}
-    const current=probePixels(probe);
+    const current=probePixels(typeof probeOrRead==='function'?probeOrRead():probeOrRead);
     return state.templates.some(row=>similarFingerprint(row.values,current));
   }
 }

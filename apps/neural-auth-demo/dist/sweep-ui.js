@@ -4,6 +4,7 @@ import {openCaptureCamera,captureDimensions} from './js/dataset/camera.js';
 import {renderNeuralQR} from './js/neural-qr/layout.js';
 import {SweepReader} from './sweep-reader.js';
 import {SweepRun,CapturePacer} from './sweep-run.js';
+import {FirstPresentation} from './first-presentation.js';
 import {PhaseWatch,createPhaseSampler} from './phase-watch.js';
 import {newSweepRunId,createSweepProbe,acknowledgeSweepProbe,matchesSweepAck} from './sweep-protocol.js';
 
@@ -20,6 +21,9 @@ function markup(){return `
     <label>Data grid<select name="size"><option>32</option><option selected>64</option><option>128</option></select></label>
     <label>Corrector backend<select name="backend"><option value="auto">Auto</option><option value="wasm">WASM</option><option value="webgpu">WebGPU</option></select></label>
     <label>Initial phase (ms)<input name="phase" type="number" min="50" max="2000" value="500" step="1"></label>
+    <label class="toggle wide"><span>Progressive transmit timing<small>Increase this device’s phase dwell after each complete four-phase pass of the same packet</small></span><input name="progressive" type="checkbox"></label>
+    <label>Increase per pass (ms)<input name="increment" type="number" min="1" max="2000" value="50" step="1" disabled></label>
+    <label>Maximum phase (ms)<input name="phaseCap" type="number" min="50" max="2000" value="500" step="1" disabled></label>
     <label>Initial capture (ms)<input name="capture" type="number" min="50" max="2000" value="450" step="1"></label>
     <label class="toggle wide"><span>Follow phase changes<small>After lock, check the center of the matrix and capture on a fresh frame at least 10 ms after a change. Turn off to test timed capture.</small></span><input name="phaseWatch" type="checkbox" checked></label>
     <label class="toggle wide"><span>Vary timed capture spacing (±20%)<small>Applies while searching, or throughout when the phase watch is off</small></span><input name="varyCapture" type="checkbox"></label>
@@ -47,17 +51,32 @@ function paintOverlay(view,overlay,found,w,h){
 // Only paints a new phase at a refresh boundary. Holds the same four rendered
 // images, including their padding, across every cycle of a single message.
 function display(output,empty){
+  const progressive=new FirstPresentation();
   let timer,raf,pendingRAF,revision=0,switchId=0;
-  function cancel(){++revision;clearTimeout(timer);cancelAnimationFrame(raf);}
+  function cancel(){++revision;progressive.clear();clearTimeout(timer);cancelAnimationFrame(raf);}
   function clear(){
     ++switchId;cancelAnimationFrame(pendingRAF);cancel();output.hidden=true;empty.hidden=false;
     output.getContext('2d').clearRect(0,0,output.width,output.height);
   }
-  function show(frames,phaseMs,onFirst,onPhase,allow){
+  function show(frames,phaseMs,config,onFirst,onPhase,allow,onError){
     const begin=now(),bitmaps=frames.map(frame=>{
       const image=renderNeuralQR(frame,frame.size*8);return new ImageData(image.data,image.width,image.height);
     });
     const renderMs=now()-begin;const ticket=++switchId;cancelAnimationFrame(pendingRAF);
+    const blit=index=>{
+      const bit=bitmaps[index];
+      if(output.width!==bit.width||output.height!==bit.height){output.width=bit.width;output.height=bit.height;}
+      output.hidden=false;empty.hidden=true;output.getContext('2d').putImageData(bit,0,0);
+    };
+    if(config.progressive){
+      cancel();
+      progressive.start({phaseMs,incrementMs:config.incrementMs,maxPhaseMs:config.maxPhaseMs,onError,
+        paint:(index,first,dwell,round)=>{
+          if(ticket!==switchId||(first&&!allow())){progressive.clear();return;}
+          blit(index);const at=now();if(first)onFirst(at,renderMs);onPhase(at,(round-1)*4+index,dwell);
+        }});
+      return;
+    }
     // A late first paint must never revive an ACK after Next, timeout or Stop.
     pendingRAF=requestAnimationFrame(()=>{
       if(ticket!==switchId||!allow())return;
@@ -66,10 +85,8 @@ function display(output,empty){
         if(id!==revision)return;
         const ticks=Math.floor((now()-origin)/phaseMs);
         if(ticks!==previous){
-          const bit=bitmaps[ticks%4];
-          if(output.width!==bit.width||output.height!==bit.height){output.width=bit.width;output.height=bit.height;}
-          output.hidden=false;empty.hidden=true;output.getContext('2d').putImageData(bit,0,0);
-          const paintedAt=now();if(previous<0)onFirst(paintedAt,renderMs);previous=ticks;onPhase(paintedAt,ticks);
+          blit(ticks%4);
+          const paintedAt=now();if(previous<0)onFirst(paintedAt,renderMs);previous=ticks;onPhase(paintedAt,ticks,phaseMs);
         }
         if(id!==revision)return;
         timer=setTimeout(()=>{raf=requestAnimationFrame(paint);},Math.max(1,origin+(ticks+1)*phaseMs-now()));
@@ -93,11 +110,13 @@ export function initSweep(host,{onActive=()=>{}}={}){
   const current=t=>active&&t===epoch;
   const measuring=(t,row)=>current(t)&&row===run.active;
   function settings(){return {role:el('role').value,size:Number(el('size').value),
-    phaseWatch:el('phaseWatch').checked===true,
+    phaseWatch:el('phaseWatch').checked===true,progressive:el('progressive').checked===true,
+    incrementMs:el('progressive').checked?integer('increment',1,2000):50,maxPhaseMs:el('progressive').checked?integer('phaseCap',50,2000):500,
     varyCapture:el('varyCapture').checked===true,startPhaseMs:integer('phase',50,2000),startCaptureMs:integer('capture',50,2000),decrementMs:integer('decrement',1,500),
     timeoutMs:1000*integer('timeout',3,120),resolution:el('resolution').value,facingMode:el('facing').value,
     deviceId:el('device').value,backend:el('backend').value};}
   function buttons(){
+    el('increment').disabled=el('phaseCap').disabled=active||!el('progressive').checked;
     const upcoming=run?.next;
     go.textContent=active?'Stop run':'Start camera';next.hidden=!active;next.disabled=!ready||Boolean(run?.active)||!upcoming||busy||arming;
     next.textContent=run?.active?'Reading step '+run.active.step:upcoming?(upcoming.step===1?'Start step 1':'Next: step '+upcoming.step):'Sweep complete';
@@ -201,12 +220,12 @@ export function initSweep(host,{onActive=()=>{}}={}){
       if(timedOut(t,row))return;run.sample('checkDataAndBuildAck',now()-check);
       if(!ack)return;
       run.mark('packetDecoded',decodedAt);arming=true;
-      dsp.show(ack.frames,row.phaseMs,(at,renderMs)=>{
+      dsp.show(ack.frames,row.phaseMs,c,(at,renderMs)=>{
         if(timedOut(t,row))return;
         runId=ack.runId;
         run.sample('render',renderMs);run.mark('ackDraw',at);endRow('ack-shown',at);
         status.textContent='ACK is cycling. Wait for “ACK read” on the sender.'+(run.next?' Then tap Next here to clear it and arm step '+run.next.step+'.':' Save both reports.');
-      },(at,tick)=>{if(current(t))run.painted(row.step,'ack',tick,at);},()=>!timedOut(t,row));
+      },(at,tick,dwell)=>{if(current(t))run.painted(row.step,'ack',tick,at,dwell);},()=>!timedOut(t,row),e=>fail(t,e));
     }
   }
   async function begin(){
@@ -225,10 +244,10 @@ export function initSweep(host,{onActive=()=>{}}={}){
       if(c.role==='receiver'){schedule(t,row);return;}
       const buildStart=now();const fresh=await createSweepProbe({runId,step:row.step,size:c.size,phaseMs:row.phaseMs,captureMs:row.captureMs});
       if(timedOut(t,row))return;run.sample('buildData',now()-buildStart);probe=fresh;
-      dsp.show(probe.frames,row.phaseMs,(at,renderMs)=>{
+      dsp.show(probe.frames,row.phaseMs,c,(at,renderMs)=>{
         if(timedOut(t,row))return;
         run.sample('render',renderMs);run.mark('probeDraw',at);schedule(t,row);
-      },(at,tick)=>{if(current(t))run.painted(row.step,'data',tick,at);},()=>!timedOut(t,row));
+      },(at,tick,dwell)=>{if(current(t))run.painted(row.step,'data',tick,at,dwell);},()=>!timedOut(t,row),e=>fail(t,e));
     }catch(e){fail(t,e);}
   }
   async function start(){
@@ -260,6 +279,7 @@ export function initSweep(host,{onActive=()=>{}}={}){
     }catch{/* User can select a camera direction without enumeration. */}
   }
   details.addEventListener('toggle',()=>{if(details.open&&!active)void cameras();});
+  el('progressive').addEventListener('change',buttons);
   go.addEventListener('click',()=>active?stop():void start());next.addEventListener('click',()=>void begin());
   save.addEventListener('click',()=>{
     if(!run?.rows.length)return;

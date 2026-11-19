@@ -30,7 +30,9 @@ export function createFinishCard({byId,createElement,urlAPI=URL}){
     }
     if(s&&summary.setupMs!=null)metric('Camera & model setup',duration(summary.setupMs));
     if(summary.repetitions!=null)metric('Proof',summary.repetitions+' repetitions'+(summary.proofBytes!=null?' · '+summary.proofBytes.toLocaleString()+' B':''));
-    metric(settings.phaseWatch?'Phase / search interval':'Phase / capture',settings.phaseMs+' / '+settings.captureMs+' ms');
+    metric('Outgoing phases',settings.phaseCadence==='progressive'
+      ?settings.phaseMs+' → '+settings.phaseMaxMs+' ms (+'+settings.phaseStepMs+'/pass)':settings.phaseMs+' ms fixed');
+    metric('Camera search',settings.captureMs+' ms · '+(settings.firstCycle?'after first pass':'while sending'));
     metric('After lock',settings.phaseWatch?'Watch for phase changes':'Timed capture');
     if(s&&summary.packetRtt)metric('Packet RTT · min / mean',duration(summary.packetRtt.minMs)+' / '+duration(summary.packetRtt.meanMs));
     if(s&&summary.inference)metric('Mean inference',duration(summary.inference.meanMs));
