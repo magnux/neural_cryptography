@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SweepRun} from '../dist/sweep-run.js';
+import {SweepRun,CapturePacer} from '../dist/sweep-run.js';
 
 test('manual cadence descends together, never auto-arms, and stops before either interval falls below 50 ms',()=>{
   const r=new SweepRun({role:'receiver'});assert.equal(r.count,9);
@@ -29,9 +29,21 @@ test('sender reports time between paint and actual matched ACK; independent step
 
 test('held ACK redraws measure physical phase cadence on the original step without extending its duration',()=>{
   const r=new SweepRun({role:'receiver'});r.begin(0);r.mark('ackDraw',100);r.finish('ack-shown',100);
-  r.painted(1,'ack',0,100);r.painted(1,'ack',0,101);r.begin(200);
+  r.painted(1,'ack',0,100);r.painted(1,'ack',0,101);
   r.painted(1,'ack',1,600);r.painted(1,'ack',3,1600);
+  r.begin(1800);r.painted(1,'ack',4,2100); // A stale callback after Next is ignored.
   const row=r.report().steps[0];assert.equal(row.elapsedMs,100);assert.equal(row.display.skippedSlots,1);
   assert.deepEqual(row.display.byPhase,[1,1,0,1]);assert.equal(row.display.spacingMs.avgMs,750);
   assert.equal(r.display(2),null);
+});
+
+test('optional capture variation samples one deadline per accepted frame and never catches up after a busy scan',()=>{
+  let calls=0;const p=new CapturePacer(250,true,()=>[0,1,.5][calls++]);
+  assert.deepEqual(p.take(10),{interval:null});
+  for(const stamp of [20,100,209])assert.equal(p.take(stamp),null);
+  assert.equal(calls,1);assert.deepEqual(p.take(211).interval,{requested:200,actual:201});
+  assert.deepEqual(p.take(810).interval,{requested:250*(.8+.4),actual:599});
+  assert.equal(p.take(811),null);assert.equal(calls,3);
+  const fixed=new CapturePacer(250,false,()=>{throw Error('unexpected timing variation');});
+  fixed.take(20);assert.equal(fixed.take(269),null);assert.equal(fixed.take(270).interval.requested,250);
 });

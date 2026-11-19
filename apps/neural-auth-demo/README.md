@@ -24,6 +24,8 @@ sweep](../../docs/NEURAL_AUTH_DEMO.md#trained-four-phase-sweep) times a real DAT
 packet and its G32 ACK, using the corrector on both devices. Start at 500 ms
 display / 450 ms capture and step down by 50 ms. Each device advances manually
 and exports its own report so you can compare DATA and ACK acquisition.
+After the sender reads an ACK, tap Next on the receiver first to clear that ACK.
+The sweep also offers optional capture-spacing variation to test synchronization.
 
 From the repository root:
 

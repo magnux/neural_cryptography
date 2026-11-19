@@ -35,7 +35,7 @@ function devices(t){
     constructor(sel='',value=''){this.value=value;this.id=sel;this.dataset={};this.listeners={};this.hidden=false;this.draws=0;}
     get valueAsNumber(){return Number(this.value);}
     addEventListener(k,fn){this.listeners[k]=fn;}click(){if(!this.disabled)this.listeners.click?.();}
-    getContext(){const self=this;return {clearRect(){},beginPath(){},moveTo(){},lineTo(){},closePath(){},stroke(){},
+    getContext(){const self=this;return {clearRect(){self.image=null;},beginPath(){},moveTo(){},lineTo(){},closePath(){},stroke(){},
       putImageData(img){self.image=img;self.draws++;},drawImage(v){self.video=v;},
       getImageData(){const {peer}=self.video;return (self.video.override??(!peer.hidden&&peer.image))||null;}};}
     play(){} requestVideoFrameCallback(fn){assert.ok(!this.cb,'at most one camera callback is pending');this.cb=fn;return ++seq;}
@@ -74,7 +74,7 @@ function devices(t){
   return {S,R,tracks,closed,block(){let done;blocked=new Promise(r=>{done=r;});return done;}};
 }
 
-test('two timing panels retain the prior ACK across both orders of manual advancement; missed steps and stale scans never produce RTT',async t=>{
+test('Next clears all previous ACK phases before reading; old DATA and delayed ACK exposures do not complete the next step',async t=>{
   const {S,R,tracks,closed,block}=devices(t);
   R.start.click();S.start.click();await until(()=>!R.next.disabled&&!S.next.disabled,'both cameras ready');
   assert.equal(S.matrix.draws+R.matrix.draws,0,'opening a camera must not start a step');
@@ -82,25 +82,43 @@ test('two timing panels retain the prior ACK across both orders of manual advanc
   const heldData=S.matrix.image,unblock=block();
   assert.ok(R.video.emit());assert.equal(R.video.emit(),false,'no fresh work while reader waits');
   unblock();await until(()=>!R.next.disabled&&R.matrix.draws>0,'step 1 ACK shown');
-  const oldAck=R.matrix.image;
-  R.next.click();assert.ok(R.video.emit(),'receiver can arm step 2 before sender reads ACK 1');
-  await until(()=>R.video.cb,'old DATA ignored');
-  assert.equal(R.matrix.hidden,false);assert.match(R.history.textContent,/Step 1.*ack-shown/);
-  assert.ok(S.video.emit());await until(()=>!S.next.disabled,'sender accepts its delayed ACK 1');
+  const oldAck=R.matrix.image;assert.equal(R.matrix.hidden,false,'the ACK stays visible between steps');
+  assert.ok(S.video.emit());await until(()=>!S.next.disabled,'sender accepts ACK 1');
+  R.next.click();const oldDrawCount=R.matrix.draws;
+  assert.equal(R.matrix.hidden,true);assert.equal(R.matrix.image,null,'old pixels erased immediately');
+  R.video.override=heldData;assert.ok(R.video.emit());
+  await until(()=>R.video.cb,'late DATA from prior step ignored');R.video.override=null;
+  await wait(225); // cross the old ACK phase timer
+  assert.equal(R.matrix.draws,oldDrawCount,'an old phase cannot repaint');assert.equal(R.matrix.hidden,true);
+  assert.match(R.history.textContent,/Step 1.*ack-shown/);
   const c=S.matrix.draws;S.next.click();await until(()=>S.matrix.draws>c&&S.video.cb,'second probe painted');
   S.video.override=oldAck;assert.ok(S.video.emit());await until(()=>S.video.cb,'old ACK ignored for step 2');S.video.override=null;
   assert.ok(S.next.disabled);assert.ok(R.video.emit());await until(()=>!R.next.disabled,'new ACK shown');
+  assert.equal(R.matrix.hidden,false);assert.ok(R.matrix.draws>oldDrawCount);
   assert.ok(S.video.emit());await until(()=>!S.next.disabled,'sender step 2 complete');
   const a=await S.report(),b=await R.report();assert.ok(a.runId);assert.equal(a.runId,b.runId);
   assert.deepEqual(a.steps.map(x=>[x.step,x.phaseMs,x.captureMs,x.status]),[[1,200,150,'ack-read'],[2,150,100,'ack-read']]);
   assert.deepEqual(b.steps.map(x=>x.status),['ack-shown','ack-shown']);assert.ok(a.steps.every(x=>x.rttMs>=0&&x.armToAckMs===null));
   assert.ok(b.steps.every(x=>x.rttMs===null&&x.armToAckMs>=0));assert.equal(a.steps[1].reader.scans,2);assert.equal(b.steps[1].reader.scans,2);
-  // Sender advances first on step 3. Receiver remains parked until its button is pressed.
+  // Sender-first: previous ACK is still visible until the receiver advances.
   const d=S.matrix.draws;S.next.click();await until(()=>S.matrix.draws>d&&S.video.cb,'step 3 painted');
-  assert.equal(R.video.emit(),false);R.next.click();const release=block();R.video.override=heldData;assert.ok(R.video.emit());
+  assert.equal(R.matrix.hidden,false);assert.ok(S.video.emit());await until(()=>S.video.cb,'old ACK 2 cannot confirm step 3');
+  assert.equal(R.video.emit(),false);R.next.click();assert.equal(R.matrix.hidden,true);
+  const release=block();R.video.override=heldData;assert.ok(R.video.emit());
   await wait(3200);assert.match(S.history.textContent,/Step 3.*timeout/);assert.match(R.history.textContent,/Step 3.*timeout/);
   release();await wait(10);assert.equal(R.video.emit(),false);assert.equal((await S.report()).steps[2].rttMs,null);
   assert.equal((await R.report()).steps[2].status,'timeout');R.panel.stop();S.panel.stop();
   assert.equal(S.matrix.hidden,true);assert.equal(R.matrix.hidden,true);assert.equal(closed.length,2);
   assert.ok(tracks.every(x=>x.stopped));assert.deepEqual(R.activity,[true,false]);assert.deepEqual(S.activity,[true,false]);
+});
+
+test('early receiver advance withdraws an unread ACK rather than pretending it was delivered',async t=>{
+  const {S,R}=devices(t);R.start.click();S.start.click();await until(()=>!R.next.disabled&&!S.next.disabled,'both cameras ready');
+  R.next.click();S.next.click();await until(()=>S.matrix.draws>0&&S.video.cb,'first DATA visible');
+  assert.ok(R.video.emit());await until(()=>!R.next.disabled&&R.matrix.draws>0,'ACK 1 is available');
+  R.next.click();assert.equal(R.matrix.hidden,true);assert.equal(R.matrix.image,null);
+  assert.ok(S.video.emit());await until(()=>S.video.cb,'sender continues looking for withdrawn ACK 1');
+  assert.ok(S.next.disabled);assert.doesNotMatch(S.history.textContent,/ack-read/);
+  assert.ok(R.video.emit());await until(()=>R.video.cb,'old DATA still held by sender is ignored');
+  assert.equal(R.matrix.hidden,true);assert.equal(R.matrix.image,null);
 });

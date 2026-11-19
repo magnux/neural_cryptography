@@ -4,7 +4,7 @@ import {SweepReader} from '../dist/sweep-reader.js';
 import {ReceivePipeline} from '../dist/js/neural-auth/receive-pipeline.js';
 import {packetFrames} from '../dist/js/neural-auth/optical.js';
 import {encodePacket} from '../dist/js/link/protocol.js';
-import {renderNeuralQR} from '../dist/js/neural-qr/layout.js';
+import {renderNeuralQR,NQR_LAYOUT} from '../dist/js/neural-qr/layout.js';
 
 const metadata={ready:true,modelStatus:'trained',modelProfile:'VW',effectiveBackend:'test',parity:{passed:true}};
 const identity=n=>({presentedFrames:n,mediaTime:n*.05,captureIntervalMs:450});
@@ -63,4 +63,25 @@ test('an in-flight old scan cannot populate the next step',async()=>{
   const stale=reader.scan({data:new Uint8Array(0)},identity(1));assert.equal(reader.snapshot().withoutResult,1);
   reader.beginStep();resolve({ok:false,stage:'detect',timings:{}});await assert.rejects(stale,{name:'AbortError'});
   assert.equal(reader.snapshot().scans,0);assert.equal(reader.snapshot().withoutResult,0);
+});
+
+test('torn G32 ACK records opposite border votes but does not fill the sender burst',async()=>{
+  const wire=encodePacket({kind:'ack',messageType:'raw',sessionId:'11'.repeat(16),messageId:'22'.repeat(8),
+    base:0,bitmap:1,status:'complete',digest:'44'.repeat(32)});
+  const frames=packetFrames(wire,{size:32,phaseMs:500});
+  const image=renderNeuralQR(frames[3],256),other=renderNeuralQR(frames[1],256);
+  for(const [x,y] of NQR_LAYOUT.phasePairs[1]){
+    for(let dy=-10;dy<10;dy++){
+      const i=4*((y+dy)*256+x-10);image.data.set(other.data.subarray(i,i+80),i);
+    }
+  }
+  const nope=()=>assert.fail('rejected phase reached corrected inference');
+  const pipeline=new ReceivePipeline({loadContext:nope,infer:nope});
+  const client={call:async(op,o)=>op==='transport-init'?metadata:pipeline.scan({...o,maxSize:o.size}),cancel(){}};
+  const reader=new SweepReader({role:'sender',size:64,client});await reader.init();reader.beginStep();
+  const r=await reader.scan(image,identity(1)),s=reader.snapshot();
+  assert.equal(r.ok,false);assert.equal(r.info,null);assert.equal(r.collected,0);
+  assert.deepEqual(s.phaseRejections,{'opposite-disagree':1});assert.deepEqual(s.rejectedCueNearest,[[0,0,0,1],[0,1,0,0]]);
+  assert.deepEqual(s.trace[0].nearestCuePhases,[3,1]);assert.deepEqual(s.trace[0].cuePassed,[true,true]);
+  assert.equal(s.trace[0].phase,null);assert.deepEqual(s.phases,[0,0,0,0]);reader.close();
 });

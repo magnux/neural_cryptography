@@ -10,12 +10,27 @@ function integer(n,min,max,label){
   if(!Number.isSafeInteger(n)||n<min||n>max)throw Error(label+' must be '+min+'–'+max+'.');
   return n;
 }
+// Draw one local timing offset per admitted exposure, never per camera
+// callback. Late callbacks (e.g. after inference) don't trigger catch-up scans.
+export class CapturePacer{
+  constructor(baseMs,vary=false,random=Math.random){
+    this.baseMs=baseMs;this.vary=vary;this.random=random;this.last=null;this.waitMs=0;
+  }
+  take(stamp){
+    if(!Number.isFinite(stamp)||(this.last!==null&&stamp-this.last<this.waitMs))return null;
+    const interval=this.last===null?null:{requested:this.waitMs,actual:stamp-this.last};
+    this.last=stamp;
+    this.waitMs=this.vary?this.baseMs*(.8+.4*this.random()):this.baseMs;
+    return {interval};
+  }
+}
+
 export class SweepRun{
-  constructor({role,size=64,startPhaseMs=500,startCaptureMs=450,decrementMs=50,timeoutMs=30000}){
+  constructor({role,size=64,startPhaseMs=500,startCaptureMs=450,decrementMs=50,timeoutMs=30000,varyCapture=false}){
     if(!['sender','receiver'].includes(role)||![32,64,128].includes(size))throw Error('Choose a sweep role and supported grid.');
     integer(startPhaseMs,50,2000,'Initial display interval');integer(startCaptureMs,50,2000,'Initial capture interval');
     integer(decrementMs,1,500,'Interval decrement');integer(timeoutMs,1000,120000,'Step timeout');
-    this.config=Object.freeze({role,size,startPhaseMs,startCaptureMs,decrementMs,timeoutMs});
+    this.config=Object.freeze({role,size,startPhaseMs,startCaptureMs,decrementMs,timeoutMs,varyCapture:varyCapture===true});
     this.count=Math.min(64,1+Math.floor((Math.min(startPhaseMs,startCaptureMs)-50)/decrementMs));
     this.started=new Date().toISOString();this.rows=[];this.active=null;this.profiler=null;this.displays=new Map();
   }
@@ -37,10 +52,10 @@ export class SweepRun{
   }
   sample(name,value){this.profiler?.record(name,value);}
   // ACKs continue cycling after the receiver's step is over. Keep their
-  // cadence on the originating row even if the receiver has armed a new step.
+  // cadence on that row until Next clears the display or the run stops.
   painted(step,kind,tick,at){
     if(kind!==(this.config.role==='sender'?'data':'ack')||!Number.isSafeInteger(step)||step<1||
-      step>(this.active?.step??this.rows.length)||!Number.isSafeInteger(tick)||tick<0||!Number.isFinite(at))return;
+      step!==(this.active?.step??this.rows.length)||!Number.isSafeInteger(tick)||tick<0||!Number.isFinite(at))return;
     let d=this.displays.get(step);
     if(!d){d={kind,changes:0,skippedSlots:0,phases:[0,0,0,0],lastTick:null,lastAt:null,intervals:new StageProfiler(true)};this.displays.set(step,d);}
     if(d.lastTick!==null){
@@ -77,7 +92,8 @@ export class SweepRun{
       timingNotes:{clock:'Local monotonic milliseconds; do not subtract timestamps between phones.',
         checkpoints:'Offsets from manual arm. firstLock and allPhases mark submission of qualifying camera captures, not the return of the inference.',
         rtt:'Sender: first submitted DATA draw to matching ACK checked. Receiver armToAckMs ends at its first ACK draw, and includes waiting for DATA.',
-        display:'Painted phase changes, including held ACK until superseded, stop or export. Display cadence does not extend step elapsed time.',
+        display:'Painted phase changes, including held ACK until the receiver arms the next step, stops or exports. Display cadence does not extend step elapsed time.',
+        capture:'captureTargetSpacing and captureSpacing measure scheduled versus actual intervals between adjacent accepted camera callbacks; worker processing can extend them.',
         stages:'Stage distributions include only operations actually run; worker round trip is an envelope, not an additional stage.'},
       steps:this.rows.map(row=>({...row,display:this.display(row.step)}))};
   }

@@ -294,8 +294,10 @@ matrix from a different step cannot count as a successful roundtrip.
 3. Tap **Next: step N** on each device when you are ready. The next pairs
    are **450/400 ms** and **400/350 ms**; the final default pair is **100/50 ms**.
    A timeout (30 s by default) closes only the local step. There is no automatic
-   advance. The receiver keeps showing its previous ACK until it can replace it.
-   Arming the receiver first keeps human button delay out of the sender's RTT.
+   advance. Wait for **ACK read** on the sender (or for that step to time out).
+   Then press **Next on the receiver first**: it clears the old ACK and stays
+   blank until it decodes new DATA. Press **Next on the sender** to show that
+   DATA. Advancing the receiver prematurely withdraws an unread ACK.
 4. Open **Settings & measurements → Download sweep report** on each
    device. Stop and restart both cameras to repeat a pace. Keep both reports.
    Repeat in the same placement, then swap roles: one success at a faster
@@ -318,8 +320,27 @@ a receiver armed before DATA appears can spend time simply looking at a blank
 screen. The JSON keeps a short capture trace (first 32 and last 32 scans per
 step, with omitted scans counted), phase counts, and whole-step aggregates.
 Reported display cadence is based on the actual outgoing draws; a receiver can
-keep cycling its last ACK after the step finishes, without extending its
-recorded arm-to-ACK time.
+keep cycling its last ACK after the step finishes until Next or Stop, without
+extending its recorded arm-to-ACK time.
+
+If one phase never enters the burst, inspect the four counts on the **sender**
+for the ACK leg. The November 19 two-phone sweep recovered G64 DATA at all nine
+paces, but admitted only **110 / 238 / 52 / 0** G32 ACK exposures on the sender.
+No ACK inference ran. Phase rejections in new reports are broken down by weak
+reference colors, ambiguous or distant cue colors, and disagreement between
+the top and bottom markers. The nearest-color votes on rejected scans are
+diagnostic only; they never enter the burst.
+
+To distinguish a sampling problem from a persistent cue-reading problem:
+
+1. Try a long display interval, e.g. **1500 ms display / 250 ms capture**, with fixed
+   spacing. This gives the camera several chances to see the middle of each phase.
+2. At a faster setting (e.g. **250/200 ms**), repeat with **Vary capture spacing
+   (±20%)** off, then on **only on the sender**. This varies when the sender
+   samples the G32 ACK without changing either display or the DATA receiver.
+   Compare successful roundtrips, admitted phase counts, rejection reasons and
+   actual exposure spacing. Worker time can keep the camera from meeting the
+   requested spacing. Keep the phones in place for the comparison.
 
 | Reading stage | What to look for when a step slows down |
 | --- | --- |

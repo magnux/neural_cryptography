@@ -3,7 +3,7 @@
 import {openCaptureCamera,captureDimensions} from './js/dataset/camera.js';
 import {renderNeuralQR} from './js/neural-qr/layout.js';
 import {SweepReader} from './sweep-reader.js';
-import {SweepRun} from './sweep-run.js';
+import {SweepRun,CapturePacer} from './sweep-run.js';
 import {newSweepRunId,createSweepProbe,acknowledgeSweepProbe,matchesSweepAck} from './sweep-protocol.js';
 
 const fmt=v=>Number.isFinite(v)?Math.round(v)+' ms':'—';
@@ -20,12 +20,13 @@ function markup(){return `
     <label>Corrector backend<select name="backend"><option value="auto">Auto</option><option value="wasm">WASM</option><option value="webgpu">WebGPU</option></select></label>
     <label>Initial phase (ms)<input name="phase" type="number" min="50" max="2000" value="500" step="1"></label>
     <label>Initial capture (ms)<input name="capture" type="number" min="50" max="2000" value="450" step="1"></label>
+    <label class="toggle wide"><span>Vary capture spacing (±20%)<small>Tests repeated alignment with display transitions on this camera</small></span><input name="varyCapture" type="checkbox"></label>
     <label>Decrease per step (ms)<input name="decrement" type="number" min="1" max="500" value="50" step="1"></label>
     <label>Step timeout (s)<input name="timeout" type="number" min="3" max="120" value="30" step="1"></label>
     <label>Camera<select name="facing"><option value="user">Front</option><option value="environment">Rear</option></select></label>
     <label>Resolution<select name="resolution"><option>720</option><option selected>1080</option><option>1440</option><option>2160</option><option value="max">Maximum</option></select></label>
     <label class="wide">Camera device<select name="device"><option value="">Use front/rear preference</option></select></label></fieldset>
-    <p>Each DATA probe uses one chosen grid. ACKs use G32. Both devices read all four phases with their trained corrector. Save a report on each device. Keep the last ACK visible until the sender has read it.</p>
+    <p>DATA and its G32 ACK each use four phases. Wait for “ACK read” on the sender, then tap Next on the receiver first: this clears the old ACK while the next DATA is being read. Save a report on each device.</p>
     <div class="sw-history"></div><button class="sw-save rt-save" type="button" disabled>Download sweep report</button></div></details>
   <p class="sw-progress">Ready · 500 ms display / 450 ms capture</p>
   <div class="sw-slot"><canvas width="1" height="1" hidden aria-label="Four-phase sweep matrix"></canvas><span>Timing matrix appears here</span></div>`;}
@@ -46,14 +47,16 @@ function paintOverlay(view,overlay,found,w,h){
 function display(output,empty){
   let timer,raf,pendingRAF,revision=0,switchId=0;
   function cancel(){++revision;clearTimeout(timer);cancelAnimationFrame(raf);}
-  function clear(){++switchId;cancelAnimationFrame(pendingRAF);cancel();output.hidden=true;empty.hidden=false;}
+  function clear(){
+    ++switchId;cancelAnimationFrame(pendingRAF);cancel();output.hidden=true;empty.hidden=false;
+    output.getContext('2d').clearRect(0,0,output.width,output.height);
+  }
   function show(frames,phaseMs,onFirst,onPhase,allow){
     const begin=now(),bitmaps=frames.map(frame=>{
       const image=renderNeuralQR(frame,frame.size*8);return new ImageData(image.data,image.width,image.height);
     });
     const renderMs=now()-begin;const ticket=++switchId;cancelAnimationFrame(pendingRAF);
-    // Keep the previous ACK cycling until we can actually paint the next
-    // one. If this step times out during a delayed render, don't disturb it.
+    // A late first paint must never revive an ACK after Next, timeout or Stop.
     pendingRAF=requestAnimationFrame(()=>{
       if(ticket!==switchId||!allow())return;
       cancel();const id=revision,origin=now();let previous=-1;
@@ -84,11 +87,11 @@ export function initSweep(host,{onActive=()=>{}}={}){
     if(!Number.isSafeInteger(n)||n<min||n>max)throw Error('Check '+el(name).parentElement.textContent.trim()+' ('+min+'–'+max+').');
     return n;};
   let active=false,ready=false,epoch=0,run,c,reader,stream,model,camera,runId,probe,busy=false,
-    frameCb,deadline,lastVideo,lastCapture,arming=false;
+    frameCb,deadline,lastVideo,pacer,arming=false;
   const current=t=>active&&t===epoch;
   const measuring=(t,row)=>current(t)&&row===run.active;
   function settings(){return {role:el('role').value,size:Number(el('size').value),
-    startPhaseMs:integer('phase',50,2000),startCaptureMs:integer('capture',50,2000),decrementMs:integer('decrement',1,500),
+    varyCapture:el('varyCapture').checked===true,startPhaseMs:integer('phase',50,2000),startCaptureMs:integer('capture',50,2000),decrementMs:integer('decrement',1,500),
     timeoutMs:1000*integer('timeout',3,120),resolution:el('resolution').value,facingMode:el('facing').value,
     deviceId:el('device').value,backend:el('backend').value};}
   function buttons(){
@@ -103,7 +106,10 @@ export function initSweep(host,{onActive=()=>{}}={}){
     const detailsText=run.rows.map(r=>'Step '+r.step+' · '+r.phaseMs+'/'+r.captureMs+' ms · '+r.status+' · '+fmt(r.rttMs??r.armToAckMs??r.elapsedMs));
     const stageRows=Object.entries(row.reader?.stages??{});
     const substeps=stageRows.filter(([,s])=>s.count>0).map(([key,s])=>key+': '+fmt(s.avgMsPerMeasuredScan)+' / measured scan · '+s.measuredScans+' scans');
-    q('.sw-history').textContent=detailsText.join('\n')+(substeps.length?'\n\nLast step · local stage times\n'+substeps.join('\n'):'');
+    const hits=row.reader?.phases,rejects=Object.entries(row.reader?.phaseRejections??{}).filter(([,n])=>n>0);
+    if(hits)substeps.unshift('Admitted captures by phase (0–3): '+hits.join(' / '));
+    if(rejects.length)substeps.push('Rejected phase cues: '+rejects.map(([reason,n])=>reason+' '+n).join(', '));
+    q('.sw-history').textContent=detailsText.join('\n')+(substeps.length?'\n\nLast step · phase counts and stage times\n'+substeps.join('\n'):'');
     progress.textContent='Step '+row.step+' · '+row.status+' · '+fmt(row.rttMs??row.armToAckMs??row.elapsedMs)+
       (row.reader?.stages?.inference?.count?' · inference '+fmt(row.reader.stages.inference.avgMs):'');
   }
@@ -116,7 +122,7 @@ export function initSweep(host,{onActive=()=>{}}={}){
     if(!measuring(t,row))return true;
     if(now()-row.startedAt<c.timeoutMs)return false;
     endRow('timeout');
-    if(c.role==='sender')dsp.clear(); // A receiver leaves its prior ACK cycling unchanged.
+    dsp.clear();
     status.textContent='Step '+row.step+' timed out. Align both devices and advance both, or restart to repeat this pace.';
     return true;
   }
@@ -137,9 +143,10 @@ export function initSweep(host,{onActive=()=>{}}={}){
     frameCb=video.requestVideoFrameCallback((stamp,m)=>{
       frameCb=null;if(timedOut(t,row))return;
       if(!Number.isSafeInteger(m.presentedFrames)||!Number.isFinite(m.mediaTime)){fail(t,Error('Distinct camera timestamps are required.'));return;}
-      if(m.presentedFrames<=lastVideo||stamp-lastCapture<row.captureMs||video.readyState<2||!video.videoWidth){schedule(t,row);return;}
-      if(Number.isFinite(lastCapture))run.sample('captureSpacing',stamp-lastCapture);
-      lastVideo=m.presentedFrames;lastCapture=stamp;busy=true;
+      if(m.presentedFrames<=lastVideo||video.readyState<2||!video.videoWidth){schedule(t,row);return;}
+      const slot=pacer.take(stamp);if(!slot){schedule(t,row);return;}
+      if(slot.interval){run.sample('captureTargetSpacing',slot.interval.requested);run.sample('captureSpacing',slot.interval.actual);}
+      lastVideo=m.presentedFrames;busy=true;
       void scan(t,row,m).catch(e=>{if(measuring(t,row))fail(t,e);}).finally(()=>{
         if(!current(t))return;busy=false;buttons();if(measuring(t,row)&&!arming)schedule(t,row);
       });
@@ -174,7 +181,7 @@ export function initSweep(host,{onActive=()=>{}}={}){
         if(timedOut(t,row))return;
         runId=ack.runId;
         run.sample('render',renderMs);run.mark('ackDraw',at);endRow('ack-shown',at);
-        status.textContent='ACK is cycling. Wait for the sender to read it.'+(run.next?' Both can then start step '+run.next.step+'.':' Save both reports; keep this screen visible.');
+        status.textContent='ACK is cycling. Wait for “ACK read” on the sender.'+(run.next?' Then tap Next here to clear it and arm step '+run.next.step+'.':' Save both reports.');
       },(at,tick)=>{if(current(t))run.painted(row.step,'ack',tick,at);},()=>!timedOut(t,row));
     }
   }
@@ -182,7 +189,9 @@ export function initSweep(host,{onActive=()=>{}}={}){
     if(!active||!ready||busy||arming||run.active||!run.next)return;
     const t=epoch;
     try{
-      const row=run.begin(now());reader.beginStep();lastCapture=-Infinity;arming=false;probe=null;
+      const row=run.begin(now());
+      if(c.role==='receiver')dsp.clear(); // End every old phase before starting this step's reader.
+      reader.beginStep();pacer=new CapturePacer(row.captureMs,c.varyCapture);arming=false;probe=null;
       progress.textContent='Step '+row.step+' · '+row.phaseMs+' ms display / '+row.captureMs+' ms capture';
       status.textContent=c.role==='sender'?'Showing DATA; waiting for its G32 ACK.':'Armed for new DATA · keep both screens aligned.';
       const armDeadline=()=>{deadline=setTimeout(()=>{if(!timedOut(t,row))armDeadline();},Math.max(1,Math.ceil(c.timeoutMs-(now()-row.startedAt))));};

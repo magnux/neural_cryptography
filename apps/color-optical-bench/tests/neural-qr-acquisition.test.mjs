@@ -138,6 +138,7 @@ test('phase transitions, occluded orientation, and collapsed color references ne
   for(let i=0;i<grayscale.data.length;i+=4){const v=.2126*grayscale.data[i]+.7152*grayscale.data[i+1]+.0722*grayscale.data[i+2];grayscale.data[i]=grayscale.data[i+1]=grayscale.data[i+2]=v;}
   const collapsed=extractNeuralQR(grayscale,{profile:profile(16),now:0});
   assert.equal(collapsed.ok,false);assert.equal(collapsed.input,undefined);
+  assert.deepEqual(collapsed.stats.phaseRejection,{reason:'reference-rank'});
 });
 
 test('cached geometry reads fresh phases and expires from full detection, not successful reuse',()=>{

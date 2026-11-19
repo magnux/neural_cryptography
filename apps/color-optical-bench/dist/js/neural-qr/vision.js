@@ -82,6 +82,13 @@ function readReferences(image,h){
   return values;
 }
 
+// Lowest-error colors from rejected cues are diagnostics only. Phase metadata
+// used to pack neural inputs is created exclusively by a successful decision.
+export const PHASE_REJECTIONS=Object.freeze(['reference-rank','reference-separation','cue-distance','cue-margin','opposite-disagree','other']);
+function phaseFailure(reason,message,cues){
+  throw fail('phase',message,{phaseRejection:{reason,...(cues?{nearest:cues.map(c=>c.phase),
+    passes:cues.map(c=>!c.tooFar&&!c.ambiguous)}:{})}});
+}
 function readPhase(image,h,references){
   // Compare in observed RGB space. This avoids trusting an ill-conditioned
   // color transform to separate phase cues after clipping or lost chroma.
@@ -90,18 +97,19 @@ function readPhase(image,h,references){
   const vectors=observed.slice(1).map(c=>c.map((v,k)=>v-observed[0][k]));
   const [a,b,c]=vectors,volume=Math.abs(a[0]*(b[1]*c[2]-b[2]*c[1])-a[1]*(b[0]*c[2]-b[2]*c[0])+a[2]*(b[0]*c[1]-b[1]*c[0]));
   const colorVolume=volume/Math.max(1,vectors.reduce((v,row)=>v*Math.hypot(...row),1));
-  if(colorVolume<.04)throw Error('Color references have lost independent RGB information.');
+  if(colorVolume<.04)phaseFailure('reference-rank','Color references have lost independent RGB information.');
   let separation=Infinity;
   for(let a=0;a<4;a++)for(let b=a+1;b<4;b++)separation=Math.min(separation,distance(observed[a],observed[b]));
-  if(separation<55)throw Error('Phase reference colors are not sufficiently separated.');
+  if(separation<55)phaseFailure('reference-separation','Phase reference colors are not sufficiently separated.');
   const decisions=L.phasePairs.map(pair=>{
     const measured=pair.map(([x,y])=>patch(image,h,x,y,3));
     const scores=Array.from({length:4},(_,phase)=>({phase,error:Math.sqrt(measured.reduce((s,c,i)=>s+distance(c,observed[(phase+i)%4])**2,0)/2)})).sort((a,b)=>a.error-b.error);
-    if(scores[0].error>Math.min(70,.42*separation)||scores[1].error-scores[0].error<.25*separation)
-      throw Error('Phase cues are uncertain; avoid glare or a display transition.');
-    return {...scores[0],margin:scores[1].error-scores[0].error};
+    const margin=scores[1].error-scores[0].error;
+    return {...scores[0],margin,tooFar:scores[0].error>Math.min(70,.42*separation),ambiguous:margin<.25*separation};
   });
-  if(decisions[0].phase!==decisions[1].phase)throw Error('Opposite phase cues disagree; skipping a transition exposure.');
+  if(decisions.some(c=>c.tooFar))phaseFailure('cue-distance','Phase cues are uncertain; avoid glare or a display transition.',decisions);
+  if(decisions.some(c=>c.ambiguous))phaseFailure('cue-margin','Phase cues are uncertain; avoid glare or a display transition.',decisions);
+  if(decisions[0].phase!==decisions[1].phase)phaseFailure('opposite-disagree','Opposite phase cues disagree; skipping a transition exposure.',decisions);
   return {phase:decisions[0].phase,phaseError:Math.max(...decisions.map(d=>d.error)),phaseMargin:Math.min(...decisions.map(d=>d.margin)),phaseSeparation:separation,colorVolume};
 }
 
@@ -139,7 +147,7 @@ export function extractNeuralQR(image,{profile,previousGeometry=null,now=Date.no
     try{
       const references=measure('palette-references',()=>readReferences(image,h)),phase=measure('phase-cues',()=>readPhase(image,h,references));
       return {h,references,phase,size,source,geometry,stats};
-    }catch(error){throw fail('phase',error.message,stats);}
+    }catch(error){throw fail('phase',error.message,{...stats,phaseRejection:error.stats?.phaseRejection??{reason:'other'}});}
   }
   const previous=previousGeometry;
   if(previous?.width===image.width&&previous?.height===image.height&&Number.isFinite(previous.acquiredAt)&&now>=previous.acquiredAt&&now-previous.acquiredAt<maxAge&&
