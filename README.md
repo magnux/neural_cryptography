@@ -128,7 +128,9 @@ In a November 2026 device test of the [standalone mobile demo](docs/NEURAL_AUTH_
 the owner reported around **two minutes for an end-to-end exchange** and about
 **600 ms for a single-phase echo** in the separate timing lab. The live settings
 that worked well in that setup, **350 ms per phase and 250 ms between capture
-attempts**, are now the standalone app defaults. The echo measures both camera
+attempts**, remain the standalone app's display and search defaults. After a
+lock, the app can now trigger on a visible phase change; that mode has not yet
+been timed on the phones. The echo measures both camera
 legs. The proof repetition count for this test was not reported.
 
 On **12 November 2026**, the owner completed all five Neural-ZKBoo messages using

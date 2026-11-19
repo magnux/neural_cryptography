@@ -16,7 +16,7 @@ function state(start){
     backends:{},geometry:{hintAttempts:0,detected:0,previous:0,none:0},inferences:{K4:0,K8:0},
     fecFailures:0,recovered:0,duplicates:0,head:[],tail:[]};
 }
-function keep(s,result,mediaTime,begin,end){
+function keep(s,result,mediaTime,begin,end,captureTrigger){
   s.scans++;
   const stage=result.stage??(result.ok?'decoded':'other'),phase=result.info?.phase??null;
   const timings=result.timings??{},source=result.stats?.geometrySource??'none';
@@ -42,7 +42,7 @@ function keep(s,result,mediaTime,begin,end){
   }
   if(stage==='fec'||stage==='crc')s.fecFailures++;
   if(result.ok)s.recovered++; // successful RS/CRC; caller must still validate run and trial
-  const row={startMs:offset,endMs:round(end-s.start),phase,stage,geometry:source,k};
+  const row={startMs:offset,endMs:round(end-s.start),phase,stage,geometry:source,k,captureTrigger};
   if(stage==='phase'){
     const rejection=result.stats?.phaseRejection;
     const reason=PHASE_REJECTIONS.includes(rejection?.reason)?rejection.reason:'other';
@@ -83,7 +83,7 @@ export class SweepReader{
     // previous geometry, accepted gates and burst samples but retains the model.
     this.runId++;this.current=state(this.now());
   }
-  async scan(image,{mediaTime,presentedFrames,captureIntervalMs}){
+  async scan(image,{mediaTime,presentedFrames,captureIntervalMs,captureTrigger='timed'}){
     const s=this.current;if(!s||this.closed)throw Error('Start a sweep step first.');
     // Canonical live optimized path: dense calibrated crop, no duplicate
     // cell-sampling pass. The first corrected packet ends this step, so we
@@ -93,7 +93,7 @@ export class SweepReader{
       captureIntervalMs,size:this.size,backend:this.backend,expected:this.expected,
       optimized:true,forceAcquisition:true,statistics:true},[image.data.buffer]);
     if(this.closed||this.current!==s)throw abort();
-    keep(s,result,mediaTime,begin,this.now());return result;
+    keep(s,result,mediaTime,begin,this.now(),captureTrigger);return result;
   }
   snapshot(){
     const s=this.current;if(!s)return null;

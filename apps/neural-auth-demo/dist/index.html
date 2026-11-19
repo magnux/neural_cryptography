@@ -28,6 +28,7 @@
         <h1 id="title">Connect with a look.</h1>
         <p id="peerName" class="peer-name" hidden></p>
         <p id="instruction">Open this page on both devices. Choose one verifier and one key holder in Settings, then start.</p>
+        <div id="preloadNotice" class="preload-notice" hidden><span id="preloadText" role="status"></span> <button id="retryPreload" type="button" hidden>Prepare again</button></div>
       </section>
       <div id="error" class="error" role="alert" hidden></div>
       <section id="cameraPanel" aria-label="Optical exchange">
@@ -110,6 +111,7 @@
           <label for="backend">Corrector backend<select id="backend"><option value="auto">Auto · GPU / CPU</option><option value="wasm">WASM · CPU</option><option value="webgpu">WebGPU</option></select></label>
           <label for="phaseMs">Phase interval (ms)<input id="phaseMs" type="number" min="50" max="10000" step="1" value="350" inputmode="numeric"></label>
           <label for="captureMs">Capture interval (ms)<input id="captureMs" type="number" min="50" max="2000" step="1" value="250" inputmode="numeric"></label>
+          <label class="toggle wide" for="phaseWatch"><span>Follow phase changes<small>After lock, read a fresh frame when the matrix changes. Turn off for fixed-interval capture.</small></span><input id="phaseWatch" type="checkbox" checked></label>
           <label class="toggle wide" for="optimized"><span>Efficient camera scanning<small>Skip redundant work while holding steady</small></span><input id="optimized" type="checkbox" checked></label>
           <label class="toggle wide" for="statistics"><span>Collect statistics<small>Local timings and a downloadable report</small></span><input id="statistics" type="checkbox" checked></label>
           <p class="settings-note wide">Both devices use G32 acknowledgments and turn requests. Device names are self-declared. Pairing proceeds automatically for this research demo. Only the verifier checks the proof locally; the key holder receives an unauthenticated result report.</p>
@@ -118,7 +120,7 @@
         <summary><span>Session statistics</span><span id="elapsed">0s</span></summary>
         <dl><div><dt>Accepted packets</dt><dd id="acceptedPackets">0</dd></div><div><dt id="inferenceLabel">Latest inference</dt><dd id="inferenceMs">—</dd></div><div><dt>Proof size</dt><dd id="proofBytes">—</dd></div><div><dt>Scan attempts</dt><dd id="scanAttempts">0</dd></div></dl>
         <table id="simulationComparison" class="simulation-comparison" hidden><caption>Local comparison</caption><thead><tr><th scope="col">Measure</th><th scope="col">Regular</th><th scope="col">Efficient</th></tr></thead><tbody><tr><th scope="row">Run time</th><td id="baselineTime">—</td><td id="optimizedTime">—</td></tr><tr><th scope="row">Inferences</th><td id="baselineInferences">—</td><td id="optimizedInferences">—</td></tr></tbody></table>
-        <p id="modelStatus" class="subtle">The trained corrector loads when you start.</p>
+        <p id="modelStatus" class="subtle">The camera exchange uses the prepared on-device corrector.</p>
         <button id="downloadReport" class="download" disabled type="button">Download JSON report <span aria-hidden="true">↓</span></button>
         </details>
       </details>

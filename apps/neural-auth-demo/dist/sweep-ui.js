@@ -4,6 +4,7 @@ import {openCaptureCamera,captureDimensions} from './js/dataset/camera.js';
 import {renderNeuralQR} from './js/neural-qr/layout.js';
 import {SweepReader} from './sweep-reader.js';
 import {SweepRun,CapturePacer} from './sweep-run.js';
+import {PhaseWatch,createPhaseSampler} from './phase-watch.js';
 import {newSweepRunId,createSweepProbe,acknowledgeSweepProbe,matchesSweepAck} from './sweep-protocol.js';
 
 const fmt=v=>Number.isFinite(v)?Math.round(v)+' ms':'—';
@@ -20,7 +21,8 @@ function markup(){return `
     <label>Corrector backend<select name="backend"><option value="auto">Auto</option><option value="wasm">WASM</option><option value="webgpu">WebGPU</option></select></label>
     <label>Initial phase (ms)<input name="phase" type="number" min="50" max="2000" value="500" step="1"></label>
     <label>Initial capture (ms)<input name="capture" type="number" min="50" max="2000" value="450" step="1"></label>
-    <label class="toggle wide"><span>Vary capture spacing (±20%)<small>Tests repeated alignment with display transitions on this camera</small></span><input name="varyCapture" type="checkbox"></label>
+    <label class="toggle wide"><span>Follow phase changes<small>After lock, check the center of the matrix and capture on a fresh frame at least 10 ms after a change. Turn off to test timed capture.</small></span><input name="phaseWatch" type="checkbox" checked></label>
+    <label class="toggle wide"><span>Vary timed capture spacing (±20%)<small>Applies while searching, or throughout when the phase watch is off</small></span><input name="varyCapture" type="checkbox"></label>
     <label>Decrease per step (ms)<input name="decrement" type="number" min="1" max="500" value="50" step="1"></label>
     <label>Step timeout (s)<input name="timeout" type="number" min="3" max="120" value="30" step="1"></label>
     <label>Camera<select name="facing"><option value="user">Front</option><option value="environment">Rear</option></select></label>
@@ -87,10 +89,11 @@ export function initSweep(host,{onActive=()=>{}}={}){
     if(!Number.isSafeInteger(n)||n<min||n>max)throw Error('Check '+el(name).parentElement.textContent.trim()+' ('+min+'–'+max+').');
     return n;};
   let active=false,ready=false,epoch=0,run,c,reader,stream,model,camera,runId,probe,busy=false,
-    frameCb,deadline,lastVideo,pacer,arming=false;
+    frameCb,deadline,lastVideo,lastMedia,lastScanStamp,pacer,watch,sampler,sourceWidth,sourceHeight,arming=false;
   const current=t=>active&&t===epoch;
   const measuring=(t,row)=>current(t)&&row===run.active;
   function settings(){return {role:el('role').value,size:Number(el('size').value),
+    phaseWatch:el('phaseWatch').checked===true,
     varyCapture:el('varyCapture').checked===true,startPhaseMs:integer('phase',50,2000),startCaptureMs:integer('capture',50,2000),decrementMs:integer('decrement',1,500),
     timeoutMs:1000*integer('timeout',3,120),resolution:el('resolution').value,facingMode:el('facing').value,
     deviceId:el('device').value,backend:el('backend').value};}
@@ -108,6 +111,11 @@ export function initSweep(host,{onActive=()=>{}}={}){
     const substeps=stageRows.filter(([,s])=>s.count>0).map(([key,s])=>key+': '+fmt(s.avgMsPerMeasuredScan)+' / measured scan · '+s.measuredScans+' scans');
     const hits=row.reader?.phases,rejects=Object.entries(row.reader?.phaseRejections??{}).filter(([,n])=>n>0);
     if(hits)substeps.unshift('Admitted captures by phase (0–3): '+hits.join(' / '));
+    if(row.phaseWatch){
+      const w=row.phaseWatch;substeps.push('Full reads: '+w.searchReads+' search / '+w.changeReads+' change / '+w.watchdogReads+' watchdog');
+      if(w.probeMs?.count)substeps.push(w.probes+' tiny probes · '+w.probeMs.avgMs.toFixed(1)+' ms average');
+      if(w.settleToCaptureMs?.count)substeps.push('Detected change → capture: '+fmt(w.settleToCaptureMs.avgMs)+' average ('+w.settleMs+' ms target)');
+    }
     if(rejects.length)substeps.push('Rejected phase cues: '+rejects.map(([reason,n])=>reason+' '+n).join(', '));
     q('.sw-history').textContent=detailsText.join('\n')+(substeps.length?'\n\nLast step · phase counts and stage times\n'+substeps.join('\n'):'');
     progress.textContent='Step '+row.step+' · '+row.status+' · '+fmt(row.rttMs??row.armToAckMs??row.elapsedMs)+
@@ -116,7 +124,7 @@ export function initSweep(host,{onActive=()=>{}}={}){
   function detachFrame(){if(frameCb!=null)video.cancelVideoFrameCallback?.(frameCb);frameCb=null;}
   function endRow(outcome,at=now()){
     if(!run?.active)return;clearTimeout(deadline);detachFrame();arming=false;
-    run.finish(outcome,at,reader?.snapshot());summary();
+    run.finish(outcome,at,reader?.snapshot(),watch?.snapshot());summary();
   }
   function timedOut(t,row){
     if(!measuring(t,row))return true;
@@ -136,30 +144,46 @@ export function initSweep(host,{onActive=()=>{}}={}){
     detachFrame();clearTimeout(deadline);dsp.clear();reader?.close();reader=null;
     stream?.getTracks().forEach(track=>track.stop());stream=null;video.srcObject=null;
     view.dataset.lock='search';overlay.getContext('2d').clearRect(0,0,overlay.width,overlay.height);
-    probe=null;status.textContent=reason;buttons();onActive(false);
+    probe=null;watch=null;sampler=null;status.textContent=reason;buttons();onActive(false);
   }
   function schedule(t,row){
     if(!measuring(t,row)||busy||frameCb!=null)return;
     frameCb=video.requestVideoFrameCallback((stamp,m)=>{
       frameCb=null;if(timedOut(t,row))return;
       if(!Number.isSafeInteger(m.presentedFrames)||!Number.isFinite(m.mediaTime)){fail(t,Error('Distinct camera timestamps are required.'));return;}
-      if(m.presentedFrames<=lastVideo||video.readyState<2||!video.videoWidth){schedule(t,row);return;}
-      const slot=pacer.take(stamp);if(!slot){schedule(t,row);return;}
-      if(slot.interval){run.sample('captureTargetSpacing',slot.interval.requested);run.sample('captureSpacing',slot.interval.actual);}
-      lastVideo=m.presentedFrames;busy=true;
-      void scan(t,row,m).catch(e=>{if(measuring(t,row))fail(t,e);}).finally(()=>{
+      if(m.presentedFrames<=lastVideo||m.mediaTime===lastMedia||video.readyState<2||!video.videoWidth){schedule(t,row);return;}
+      lastVideo=m.presentedFrames;lastMedia=m.mediaTime;
+      if(watch&&(video.videoWidth!==sourceWidth||video.videoHeight!==sourceHeight)){
+        watch.observe(null,0,0);sourceWidth=video.videoWidth;sourceHeight=video.videoHeight;
+        pacer=new CapturePacer(row.captureMs,c.varyCapture);
+      }
+      let slot=null;const searchDue=()=>Boolean(slot=pacer.take(stamp));
+      const trigger=watch?watch.decide(stamp,m.presentedFrames,roi=>sampler.read(video,roi),searchDue):(searchDue()?'timed':null);
+      if(!trigger){schedule(t,row);return;}
+      if(slot?.interval)run.sample('captureTargetSpacing',slot.interval.requested);
+      if(lastScanStamp!==null)run.sample('captureSpacing',stamp-lastScanStamp);
+      lastScanStamp=stamp;busy=true;
+      void scan(t,row,m,trigger).catch(e=>{if(measuring(t,row))fail(t,e);}).finally(()=>{
         if(!current(t))return;busy=false;buttons();if(measuring(t,row)&&!arming)schedule(t,row);
       });
     });
   }
-  async function scan(t,row,m){
+  async function scan(t,row,m,captureTrigger){
     const start=now(),d=captureDimensions(video.videoWidth,video.videoHeight);
     if(cap.width!==d.width||cap.height!==d.height){cap.width=d.width;cap.height=d.height;}
     const g=cap.getContext('2d',{willReadFrequently:true});g.drawImage(video,0,0,d.width,d.height);
     const image=g.getImageData(0,0,d.width,d.height);run.sample('readback',now()-start);
-    const found=await reader.scan(image,{mediaTime:m.mediaTime,presentedFrames:m.presentedFrames,captureIntervalMs:row.captureMs});
+    const found=await reader.scan(image,{mediaTime:m.mediaTime,presentedFrames:m.presentedFrames,captureIntervalMs:row.captureMs,captureTrigger});
     if(timedOut(t,row))return;
     const decodedAt=now(),want=c.role==='sender'?32:c.size;
+    // Seed from the actual scan canvas, not the video (which may have moved
+    // several phases ahead while the worker was running).
+    if(watch){
+      const wasLocked=watch.locked;
+      const sameSize=found.info?.size===want||(wasLocked&&found.stage==='phase'&&found.stats?.detectedSize===want);
+      watch.observe(sameSize?found:null,d.width,d.height,roi=>sampler.read(cap,roi));
+      if(wasLocked&&!watch.locked)pacer=new CapturePacer(row.captureMs,c.varyCapture);
+    }
     paintOverlay(view,overlay,found,d.width,d.height);
     if(found.info?.size===want&&found.corners?.length===4)run.mark('firstLock',start);
     const counts=found.phaseCounts??[0,0,0,0];
@@ -191,7 +215,9 @@ export function initSweep(host,{onActive=()=>{}}={}){
     try{
       const row=run.begin(now());
       if(c.role==='receiver')dsp.clear(); // End every old phase before starting this step's reader.
-      reader.beginStep();pacer=new CapturePacer(row.captureMs,c.varyCapture);arming=false;probe=null;
+      reader.beginStep();pacer=new CapturePacer(row.captureMs,c.varyCapture);
+      watch=c.phaseWatch?new PhaseWatch({captureMs:row.captureMs,statistics:true}):null;
+      lastScanStamp=null;sourceWidth=video.videoWidth;sourceHeight=video.videoHeight;arming=false;probe=null;
       progress.textContent='Step '+row.step+' · '+row.phaseMs+' ms display / '+row.captureMs+' ms capture';
       status.textContent=c.role==='sender'?'Showing DATA; waiting for its G32 ACK.':'Armed for new DATA · keep both screens aligned.';
       const armDeadline=()=>{deadline=setTimeout(()=>{if(!timedOut(t,row))armDeadline();},Math.max(1,Math.ceil(c.timeoutMs-(now()-row.startedAt))));};
@@ -211,7 +237,8 @@ export function initSweep(host,{onActive=()=>{}}={}){
       status.textContent='Open on trusted HTTPS or localhost with camera frame callbacks.';return;}
     let candidate;try{candidate=new SweepRun(opts);}catch(e){status.textContent=e.message;details.open=true;return;}
     const t=++epoch;run=candidate;c=opts;runId=c.role==='sender'?newSweepRunId():null;
-    active=true;onActive(true);ready=false;model=null;camera=null;busy=false;lastVideo=-1;
+    active=true;onActive(true);ready=false;model=null;camera=null;busy=false;lastVideo=-1;lastMedia=null;watch=null;
+    sampler=c.phaseWatch?createPhaseSampler():null;
     details.open=false;q('.sw-history').textContent='';progress.textContent='Preparing trained reader…';status.textContent='Loading and checking the trained corrector for this device.';buttons();
     try{
       reader=new SweepReader({role:c.role,size:c.size,backend:c.backend,onProgress:s=>{if(current(t))status.textContent=String(s);}});

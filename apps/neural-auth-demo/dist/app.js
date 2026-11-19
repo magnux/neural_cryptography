@@ -5,8 +5,7 @@ import {exchangeStep} from './auth-progress.js';
 import {ExchangeStepClock,buildExchangeSummary} from './exchange-summary.js';
 import {createFinishCard} from './finish-card.js';
 import {decodeEnvelope,normalizeDisplayName,validDeviceId} from './js/auth-core/envelope.js';
-import {CryptoClient} from './js/crypto-lab/client.js';
-import {CorrectorClient} from './js/corrector-lab/client.js';
+import {CameraPreparation} from './camera-preparation.js';
 import {sameBytes} from './js/format.js';
 import {renderNeuralQR} from './js/neural-qr/layout.js';
 import {openCaptureCamera,captureDimensions} from './js/dataset/camera.js';
@@ -16,6 +15,7 @@ import {packetFrames,unpackOptical} from './js/neural-auth/optical.js';
 import {POCAutoPairing} from './js/neural-auth/poc-pairing.js';
 import {PacketTelemetry} from './js/neural-auth/telemetry.js';
 import {AcceptedProbeGate} from './js/neural-auth/frame-gate.js';
+import {PhaseWatch,createPhaseSampler} from './phase-watch.js';
 
 // A narrow desktop window remains a framed desktop preview. iPadOS can present
 // a desktop user agent, so touch-enabled MacIntel is also treated as mobile.
@@ -41,7 +41,7 @@ export function sessionMessage(state,link) {
   if(state?.state==='proving')return {title:'Creating your proof.',instruction:'Hold steady. Your device is doing the work locally.',result:'',complete:false};
   if(state?.state==='verifying')return {title:'Checking the proof.',instruction:`Hold steady while this device checks ${peer}.`,result:'',complete:false};
   if(state?.state==='generating-key')return {title:'Creating your local key.',instruction:'Your key stays on this device. The exchange will start automatically.',result:'',complete:false};
-  if(!state)return {title:'Preparing your connection.',instruction:'Loading the trained corrector and opening your front camera.',result:'',complete:false};
+  if(!state)return {title:'Preparing your connection.',instruction:'Preparing the local reader and opening your front camera.',result:'',complete:false};
   return {title:link?.mode==='receive'?'Aim at the other screen.':'Hold steady.',instruction:link?.mode==='receive'?`Point your camera at ${peer}. Keep the complete matrix in view.`:`Keep both screens facing the other device’s camera. Exchanging with ${peer}.`,result:'',complete:false};
 }
 
@@ -118,6 +118,8 @@ function initialize() {
   let mode='camera',active=false,epoch=0,stream=null,corrector=null,cryptoClient=null,session=null,channel=null;
   let config=null,authState=null,report=null,startedAt=0,packetTelemetry=null,autoPairing=null,simulationAbort=null;
   let captureCallback=null,displayTimer=null,heartbeat=null,lastCapture=-Infinity,lastPresented=0,frameWaitAt=0,scanning=false;
+  let phaseWatch=null,phaseSampler=null,watchGeneration=0,watchExpected=null,sourceWidth=0,sourceHeight=0,lastMediaTime=-Infinity;
+  function resetPhaseWatch(){phaseWatch?.reset();watchGeneration++;}
   let shown=null,rendered=[],phaseStart=0,phaseIndex=-1,lastFeedbackAt=-Infinity,lastInference=null,scanCount=0,acceptedCount=0;
   let operations=Object.create(null),renderCache=[],events=[],lastAnnouncement='',probeGate=new AcceptedProbeGate(),mainThreadSkipped=0;
   const integer=(value,min,max,label)=>{const n=Number(value);if(!Number.isSafeInteger(n)||n<min||n>max)throw Error(`${label} must be ${min}–${max}.`);return n;};
@@ -126,6 +128,18 @@ function initialize() {
   const timing=(name,ms)=>{if(config?.statistics)addTiming(operations,name,ms);};
   const event=message=>{if(!config?.statistics)return;events.push({afterMs:Math.round(performance.now()-startedAt),message:String(message).slice(0,240)});if(events.length>100)events.shift();};
 
+  const preparation=new CameraPreparation({onState:(state,detail)=>{
+    const notice=$('preloadNotice');notice.dataset.status=state;notice.hidden=!supported;
+    const message=state==='ready'?'Ready for flight mode. Keep this page open on both devices.':
+      state==='loading'?'Downloading neural corrector and checking this device…':
+      state==='error'?'Not ready for flight mode. '+detail:'Prepare on Wi-Fi before another offline exchange.';
+    setText('preloadText',message);notice.title=state==='loading'?String(detail??''):'';
+    $('retryPreload').hidden=!['idle','error'].includes(state);
+  },onLost:cause=>{if(active&&mode==='camera')fail(cause,epoch);}});
+  function preloadCamera(){
+    if(supported&&mode==='camera'&&!active)void preparation.prepare({size:Number($('incomingSize').value),backend:$('backend').value}).catch(()=>{});
+  }
+
   function readSettings() {
     const role=$('role').value,backend=$('backend').value,repetitions=Number($('repetitions').value),resolution=$('resolution').value;
     const outgoingSize=Number($('outgoingSize').value),incomingMaxSize=Number($('incomingSize').value);
@@ -133,6 +147,7 @@ function initialize() {
     const phaseMs=integer($('phaseMs').value,50,10000,'Phase interval');
     return {displayName:normalizeDisplayName($('displayName').value),role,backend,repetitions,resolution,outgoingSize,incomingMaxSize,controlSize:32,
       phaseMs,captureMs:integer($('captureMs').value,50,2000,'Capture interval'),cameraId:$('camera').value,facingMode:'user',
+      phaseWatch:$('phaseWatch').checked,
       statistics:$('statistics').checked,optimized:$('optimized').checked,automaticTurns:true,handoff:'request',pairingConfirmation:'automatic-poc-unchecked'};
   }
 
@@ -166,6 +181,7 @@ function initialize() {
   function update() {
     buttons();if(!active||mode!=='camera')return;
     const link=channel?.snapshot(),message=sessionMessage(authState,link);
+    if(link&&link.expected!==watchExpected){resetPhaseWatch();watchExpected=link.expected;}
     showExchangeStep(link);
     setText('title',message.title);setText('instruction',message.instruction);
     $('peerName').hidden=!message.complete||!authState?.peerDisplayName;setText('peerName',authState?.peerDisplayName??'');$('peerName').title=authState?.peerDisplayName??'';
@@ -205,10 +221,13 @@ function initialize() {
     if(!channel||!active)return;
     const bytes=channel.current();
     if(!bytes){
-      if(shown){shown=null;rendered=[];clearTimeout(displayTimer);$('matrixZone').dataset.visible='false';$('matrixPlaceholder').hidden=false;}
+      if(shown){resetPhaseWatch();shown=null;rendered=[];clearTimeout(displayTimer);$('matrixZone').dataset.visible='false';$('matrixPlaceholder').hidden=false;}
       setText('matrixLabel','Looking for the other device');return;
     }
     if(shown&&sameBytes(shown,bytes))return;
+    // A new outgoing packet expects a new reply even when both replies are
+    // G32 ACKs. A phase repaint of the same packet must not clear the lock.
+    resetPhaseWatch();
     const began=config.statistics?performance.now():0,packet=decodePacket(bytes),size=['ack','poll'].includes(packet.kind)?32:config.outgoingSize;
     // Rendering adds secure random padding. Cache the exact first four phases
     // for repeated display of the same packet instead of generating new pixels.
@@ -253,16 +272,26 @@ function initialize() {
 
   function scheduleCapture(token) {
     if(!isCurrent(token)||scanning)return;frameWaitAt=performance.now();
-    captureCallback=$('video').requestVideoFrameCallback((now,metadata)=>{
+    const camera=$('video');
+    captureCallback=camera.requestVideoFrameCallback((now,metadata)=>{
       captureCallback=null;if(!isCurrent(token))return;
       if(!Number.isFinite(metadata.mediaTime)||!Number.isSafeInteger(metadata.presentedFrames)){fail(Error('This camera does not provide distinct frame timestamps. Try a current browser.'),token);return;}
-      if(now-lastCapture<config.captureMs||metadata.presentedFrames<=lastPresented||!$('video').videoWidth||$('video').readyState<2){scheduleCapture(token);return;}
-      lastCapture=now;lastPresented=metadata.presentedFrames;scanning=true;
-      void scan(metadata,token).catch(e=>{if(isCurrent(token))fail(e,token);}).finally(()=>{if(isCurrent(token)){scanning=false;if(report?.completion)freezeShortReport();scheduleCapture(token);}});
+      if(!camera.videoWidth||!camera.videoHeight||camera.readyState<2){scheduleCapture(token);return;}
+      if(camera.videoWidth!==sourceWidth||camera.videoHeight!==sourceHeight||metadata.mediaTime<lastMediaTime){
+        resetPhaseWatch();probeGate.reset();sourceWidth=camera.videoWidth;sourceHeight=camera.videoHeight;
+        lastMediaTime=-Infinity;lastPresented=0;lastCapture=-Infinity;
+      }
+      if(metadata.presentedFrames<=lastPresented||metadata.mediaTime<=lastMediaTime){scheduleCapture(token);return;}
+      lastPresented=metadata.presentedFrames;lastMediaTime=metadata.mediaTime;
+      const due=()=>now-lastCapture>=config.captureMs;
+      const trigger=phaseWatch?phaseWatch.decide(now,lastPresented,roi=>phaseSampler.read(camera,roi),due):due()?'timed':null;
+      if(!trigger){scheduleCapture(token);return;}
+      lastCapture=now;scanning=true;
+      void scan(metadata,token,trigger,watchGeneration).catch(e=>{if(isCurrent(token))fail(e,token);}).finally(()=>{if(isCurrent(token)){scanning=false;if(report?.completion)freezeShortReport();scheduleCapture(token);}});
     });
   }
 
-  async function scan(metadata,token) {
+  async function scan(metadata,token,trigger,generation) {
     const camera=$('video'),canvas=$('captureCanvas'),dimensions=captureDimensions(camera.videoWidth,camera.videoHeight);
     const expected=channel?.snapshot().expected??'data';
     const began=config.statistics?performance.now():0;
@@ -271,7 +300,9 @@ function initialize() {
     if(config.optimized){
       const tiny=$('gateCanvas'),tinyContext=tiny.getContext('2d',{willReadFrequently:true});
       tinyContext.drawImage(camera,0,0,32,32);probe=tinyContext.getImageData(0,0,32,32);
-      const skip=probeGate.shouldSkip(probe,{runId:token,expected,mediaTime:metadata.mediaTime});
+      // A coarse whole-image duplicate must not mask a local phase edge or
+      // a watchdog read. The worker still checks accepted-phase fingerprints.
+      const skip=trigger!=='change'&&trigger!=='watchdog'&&probeGate.shouldSkip(probe,{runId:token,expected,mediaTime:metadata.mediaTime});
       if(config.statistics)timing('cameraProbe',performance.now()-began);
       if(skip){
         if(config.statistics)mainThreadSkipped++;
@@ -288,8 +319,16 @@ function initialize() {
     const workerStart=config.statistics?performance.now():0;
     const result=await worker.call('transport-scan',{...options,image,...(probe?{probe,forceAcquisition:true}:{}),captureIntervalMs:config.captureMs,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames},[image.data.buffer]);
     if(!isCurrent(token))return;
+    if(config.statistics)timing('workerRoundTrip',performance.now()-workerStart);
+    // The serial capture canvas still holds the exposure the worker examined;
+    // taking a baseline from the live video now could silently skip a phase.
+    if(phaseWatch&&generation===watchGeneration){
+      // All phases of an already accepted packet are duplicates. Keep the
+      // cheap accepted-packet gate in charge until there is new optical data.
+      if(result.skipped&&result.stage==='unchanged')resetPhaseWatch();
+      else phaseWatch.observe(result,canvas.width,canvas.height,roi=>phaseSampler.read(canvas,roi));
+    }
     if(config.statistics){
-      timing('workerRoundTrip',performance.now()-workerStart);
       mergeTimings(operations,result.timings);
       if(Number.isFinite(result.inferenceMs))lastInference=result.inferenceMs;
       if(result.statistics)report.receiverStatistics=result.statistics;
@@ -301,6 +340,7 @@ function initialize() {
     packetTelemetry?.accepted(bytes,acceptance,{grid:result.info?.size,atMs:receivedAt});
     if(config.statistics)timing('transportReceive',performance.now()-receivedAt);
     if(acceptance.accepted){
+      resetPhaseWatch();
       if(config.statistics)acceptedCount++;
       if(report?.completion)freezeShortReport();
       // Only an accepted transport packet may suppress its repeated pixels.
@@ -334,12 +374,11 @@ function initialize() {
     if(typeof $('video').requestVideoFrameCallback!=='function')throw Error('This demo needs a browser with camera frame callbacks. Try a current Chrome, Safari or Firefox.');
     packetTelemetry=config.statistics?new PacketTelemetry({originMs:startedAt,maxRows:2048}):null;
     autoPairing=new POCAutoPairing({isActive:()=>isCurrent(token),onError:e=>fail(e,token)});
-    corrector=new CorrectorClient({onProgress:message=>{if(isCurrent(token)&&config.statistics)setText('modelStatus',String(message));}});
-    cryptoClient=new CryptoClient({onInvalidate:e=>{if(isCurrent(token))fail(e,token);}});
     update();const initStart=config.statistics?performance.now():0;
-    const model=await corrector.call('transport-init',{size:config.incomingMaxSize,backend:config.backend,statistics:config.statistics,optimized:config.optimized});
+    const ready=await preparation.prepare({size:config.incomingMaxSize,backend:config.backend});
     if(!isCurrent(token))return;
-    if(config.statistics){timing('modelInitialization',performance.now()-initStart);report.model=model;}
+    corrector=ready.corrector;cryptoClient=ready.cryptoClient;const model=ready.model;
+    if(config.statistics){timing('waitForPreparedWorkers',performance.now()-initStart);report.model=model;}
     setText('modelStatus',`Trained ${model.modelProfile??'corrector'} · ${(model.effectiveBackend??config.backend).toUpperCase()} · on-device`);
     const opened=await openCaptureCamera(navigator.mediaDevices,{resolution:config.resolution,deviceId:config.cameraId,facingMode:'user'});
     if(!isCurrent(token)){opened.stream.getTracks().forEach(track=>track.stop());return;}
@@ -394,6 +433,8 @@ function initialize() {
     stepClock=mode==='camera'&&config.statistics?new ExchangeStepClock(startedAt):null;
     if(mode==='camera')showExchangeStep(null);
     events=[];operations=Object.create(null);renderCache=[];shown=null;rendered=[];lastInference=null;acceptedCount=0;scanCount=0;mainThreadSkipped=0;probeGate.reset();
+    phaseWatch=mode==='camera'&&config.phaseWatch?new PhaseWatch({captureMs:config.captureMs,statistics:config.statistics}):null;
+    phaseSampler=phaseWatch?createPhaseSampler():null;watchExpected=null;sourceWidth=sourceHeight=0;lastMediaTime=-Infinity;watchGeneration=0;
     lastCapture=-Infinity;lastPresented=0;lastFeedbackAt=-Infinity;scanning=false;packetTelemetry=null;lastAnnouncement='';
     report={format:'neural-auth-demo-report',version:1,kind:mode,started:new Date().toISOString(),settings:{...config,cameraId:undefined},completion:null};
     $('settings').open=false;$('result').hidden=true;$('transfer').hidden=true;$('matrixZone').dataset.visible='false';$('matrixPlaceholder').hidden=false;
@@ -409,8 +450,11 @@ function initialize() {
     active=false;$('app').dataset.lock='none';epoch++;simulationAbort?.abort();simulationAbort=null;autoPairing?.close();autoPairing=null;
     clearTimeout(displayTimer);clearInterval(heartbeat);
     if(captureCallback!==null)$('video').cancelVideoFrameCallback(captureCallback);captureCallback=null;
-    channel?.close();session?.close(reason);cryptoClient?.destroy();corrector?.cancel();
+    if(mode==='camera')preparation.clear();
+    channel?.close();session?.close(reason);cryptoClient=null;corrector=null;
     stream?.getTracks().forEach(track=>track.stop());stream=null;$('video').srcObject=null;$('cameraPlaceholder').hidden=false;
+    if(report&&config.statistics&&phaseWatch)report.phaseWatch=phaseWatch.snapshot();
+    phaseWatch=null;phaseSampler=null;
     $('overlay').getContext('2d').clearRect(0,0,$('overlay').width,$('overlay').height);
     if(report){report.finished=new Date().toISOString();report.elapsedMs=performance.now()-startedAt;report.stopReason=reason;if(mode==='camera'){report.authentication=savedAuth;report.transport=savedTransport;}}
     shown=null;rendered=[];renderCache=[];scanning=false;probeGate.reset();authState=savedAuth;event(reason);statisticsView();
@@ -430,7 +474,7 @@ function initialize() {
   function download() {
     if(!report)return;
     const value=mode==='simulation'?report:{...report,elapsedMs:report.elapsedMs??performance.now()-startedAt,
-      ...(config.statistics?{packetTelemetry:packetTelemetry?.snapshot()??null,operations:timingSummary(operations),captureAttempts:scanCount,mainThreadSkipped,transportAcceptedMatrices:acceptedCount,events:[...events]}:{})};
+      ...(config.statistics?{...(phaseWatch?{phaseWatch:phaseWatch.snapshot()}:{}),packetTelemetry:packetTelemetry?.snapshot()??null,operations:timingSummary(operations),captureAttempts:scanCount,mainThreadSkipped,transportAcceptedMatrices:acceptedCount,events:[...events]}:{})};
     const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'})),anchor=document.createElement('a');
     anchor.href=url;anchor.download=`neural-key-${report.kind}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
@@ -439,13 +483,14 @@ function initialize() {
     if(active||roundtripActive||next===mode)return;
     if(mode==='roundtrip'){singleTiming?.stop();sweepTiming?.stop();}
     finishCard.reset();shortReport=null;stepClock=null;
+    if(mode==='camera')preparation.clear();
     mode=next;report=null;config=null;authState=null;error();
     $('settings').open=false;
     $('roundtripTab').setAttribute('aria-pressed',String(next==='roundtrip'));
     $('roundtripPanel').hidden=next!=='roundtrip';
     if(next==='roundtrip')showTimingMethod();
     $('cameraTab').setAttribute('aria-pressed',String(next==='camera'));$('simulationTab').setAttribute('aria-pressed',String(next==='simulation'));
-    $('app').dataset.lock='none';$('cameraPanel').hidden=next!=='camera';$('simulationPanel').hidden=next!=='simulation';$('app').dataset.mode=next;showIdle();sizeMatrix();
+    $('app').dataset.lock='none';$('cameraPanel').hidden=next!=='camera';$('simulationPanel').hidden=next!=='simulation';$('app').dataset.mode=next;showIdle();sizeMatrix();preloadCamera();
   }
 
   function showTimingMethod(){
@@ -465,7 +510,10 @@ function initialize() {
   $('displayName').addEventListener('change',()=>{try{localIdentity.displayName=normalizeDisplayName($('displayName').value);$('displayName').value=localIdentity.displayName;saveIdentity();showLocalName();}catch{/* Start displays input validation errors. */}});
   for(const id of ['role','outgoingSize'])$(id).addEventListener('change',()=>{$('settingsHint').replaceChildren(document.createTextNode(`${$('role').value==='verifier'?'Verifier':'Key holder'} · G${$('outgoingSize').value} `),Object.assign(document.createElement('b'),{textContent:'⌄'}));});
   document.addEventListener('visibilitychange',()=>{if(document.hidden&&active)finish('Stopped because the page became hidden. Keep both pages visible during an exchange.');});
-  window.addEventListener('pagehide',()=>finish('Page closed.'));
+  $('retryPreload').addEventListener('click',preloadCamera);
+  for(const id of ['incomingSize','backend'])$(id).addEventListener('change',preloadCamera);
+  window.addEventListener('pagehide',()=>{finish('Page closed.');preparation.clear();});
+  window.addEventListener('pageshow',e=>{if(e.persisted)preloadCamera();});
   if(!supported)error('Camera exchange requires trusted HTTPS or localhost, camera access and browser workers. You can still try the local simulation.');
-  void populateCameras().catch(()=>{});showIdle();
+  void populateCameras().catch(()=>{});showIdle();preloadCamera();
 }

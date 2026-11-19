@@ -61,7 +61,7 @@ export function buildExchangeSummary({settings,auth,started,clock,packetRtt,capt
     outcome:role==='verifier'?(auth.result?'verified-locally':'rejected-locally'):(auth.result?'peer-reported-accepted':'peer-reported-rejected'),
     repetitions:count(auth.repetitions??settings.repetitions),proofBytes:count(auth.proofBytes),
     settings:{phaseMs:count(settings.phaseMs),captureMs:count(settings.captureMs),outgoingSize:count(settings.outgoingSize),
-      incomingMaxSize:count(settings.incomingMaxSize),optimized:settings.optimized===true},
+      incomingMaxSize:count(settings.incomingMaxSize),optimized:settings.optimized===true,phaseWatch:settings.phaseWatch===true},
     statisticsEnabled,elapsedMs:timed?.elapsedMs??null,setupMs:timed?.setupMs??null,steps:timed?.steps??[],
     captureAttempts:statisticsEnabled?count(captureAttempts):null,acceptedMatrices:statisticsEnabled?count(acceptedMatrices):null,
     camera:actualCamera,packetRtt:optical,inference:statisticsEnabled&&count(inference?.count)>0?{count:inference.count,meanMs:ms(inference.meanMs)}:null,

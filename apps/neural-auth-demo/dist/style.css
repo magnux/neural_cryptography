@@ -60,3 +60,8 @@ body[data-device="mobile"]{height:var(--viewport-height);background:#fff}body[da
 .summary-body dd{margin:0;font-variant-numeric:tabular-nums;font-weight:650}
 .summary-link{display:flex;align-items:center;justify-content:space-between;gap:8px;border-top:1px solid #dce4ef;padding:8px 14px;min-height:40px;color:#274fa2;background:#eff4ff;font-size:12px;font-weight:650}
 .summary-link:hover{text-decoration:underline}.summary-link:focus-visible{outline-offset:-3px}
+
+.preload-notice{font-size:.78rem;line-height:1.35;color:#315a81;margin-top:.35rem}
+.preload-notice[data-status="error"]{color:#91431e}
+.preload-notice button{border:0;background:transparent;color:inherit;text-decoration:underline;font:inherit;cursor:pointer}
+.phone:not([data-mode="camera"]) .preload-notice,.phone[data-state="active"] .preload-notice{display:none}

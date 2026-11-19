@@ -13,7 +13,9 @@ sender acknowledges receipt by requesting the reply. Each packet reuses its
 four cached palette-phase images; no timer alternates final ACK and START.
 Both screens show the same five named exchange steps, with a separate packet
 counter during each transfer. Camera exchange starts at **350 ms per displayed
-phase** and **250 ms between capture attempts**. After final delivery, select
+phase** and **250 ms between searches**. Once it locks, the default reader watches
+a small patch for the next phase and captures a fresh camera frame after a 10 ms
+settling delay. Timed capture is still available. After final delivery, select
 **Finish exchange** to replace the matrix with a summary. Keep statistics on
 to compare step timings in the short reports
 [downloaded from the two devices](../../docs/NEURAL_AUTH_DEMO.md#finish-and-share-an-exchange).
@@ -25,7 +27,13 @@ packet and its G32 ACK, using the corrector on both devices. Start at 500 ms
 display / 450 ms capture and step down by 50 ms. Each device advances manually
 and exports its own report so you can compare DATA and ACK acquisition.
 After the sender reads an ACK, tap Next on the receiver first to clear that ACK.
-The sweep also offers optional capture-spacing variation to test synchronization.
+The sweep can compare change-triggered capture with fixed or varied timing
+and reports the actual delay from the observed change to the full capture.
+
+For an offline demo, open **Camera exchange** on both devices while connected
+and wait for **Ready for flight mode**. Switch off networking and press Start
+without reloading. The prepared workers stay in memory for the exchange; see
+[the flight-mode checklist](../../docs/NEURAL_AUTH_DEMO.md#demonstrate-an-exchange-in-flight-mode).
 
 From the repository root:
 

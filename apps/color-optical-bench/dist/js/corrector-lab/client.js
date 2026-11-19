@@ -1,7 +1,7 @@
 /** One request at a time. Cancellation kills the worker and releases its model. */
 export class CorrectorClient {
-  constructor({workerFactory = () => new Worker(new URL('./worker.js', import.meta.url), {type: 'module'}), onProgress = () => {}} = {}) {
-    this.workerFactory = workerFactory; this.onProgress = onProgress;
+  constructor({workerFactory = () => new Worker(new URL('./worker.js', import.meta.url), {type: 'module'}), onProgress = () => {}, onInvalidate = () => {}} = {}) {
+    this.workerFactory = workerFactory; this.onProgress = onProgress; this.onInvalidate = onInvalidate;
     this.worker = null; this.pending = null; this.serial = 0;
   }
   call(operation, options = {}, transfer = []) {
@@ -32,7 +32,9 @@ export class CorrectorClient {
   }
   cancel(error = new DOMException('Corrector operation canceled.', 'AbortError')) {
     const pending = this.pending; this.pending = null;
-    if (this.worker) this.worker.terminate(); this.worker = null;
+    const worker = this.worker; this.worker = null;
+    worker?.terminate();
     if (pending) { clearTimeout(pending.timeout); pending.reject(error); }
+    if (worker) { try { this.onInvalidate(error); } catch { /* Observers cannot block worker disposal. */ } }
   }
 }

@@ -29,7 +29,7 @@ async function until(pred,description){
   assert.ok(pred(),description);
 }
 
-function devices(t){
+function devices(t,{watch=false}={}){
   const urls=[],tracks=[],closed=[],raf=new Set(),inFlight=new Map();let seq=0,blocked=null;
   class Element{
     constructor(sel='',value=''){this.value=value;this.id=sel;this.dataset={};this.listeners={};this.hidden=false;this.draws=0;}
@@ -37,10 +37,14 @@ function devices(t){
     addEventListener(k,fn){this.listeners[k]=fn;}click(){if(!this.disabled)this.listeners.click?.();}
     getContext(){const self=this;return {clearRect(){self.image=null;},beginPath(){},moveTo(){},lineTo(){},closePath(){},stroke(){},
       putImageData(img){self.image=img;self.draws++;},drawImage(v){self.video=v;},
-      getImageData(){const {peer}=self.video;return (self.video.override??(!peer.hidden&&peer.image))||null;}};}
+      getImageData(x,y,w,h){
+        if(w===12&&h===12){const source=self.video?.video??self.video;
+          const data=Uint8ClampedArray.from({length:w*h*4},(_,i)=>i%4===3?255:((Math.floor(i/4)+i%4+Number(source?.samplePattern??0))%2?220:30));
+          return {data,width:w,height:h};}
+        const {peer}=self.video;return (self.video.override??(!peer.hidden&&peer.image))||null;}};}
     play(){} requestVideoFrameCallback(fn){assert.ok(!this.cb,'at most one camera callback is pending');this.cb=fn;return ++seq;}
     cancelVideoFrameCallback(){this.cb=null;}
-    emit(){if(!this.cb)return false;const fn=this.cb;this.cb=null;const n=++seq;fn(500*n,{mediaTime:n/2,presentedFrames:n});return true;}
+    emit(at){if(!this.cb)return false;const fn=this.cb;this.cb=null;const n=++seq;fn(at??500*n,{mediaTime:n/2,presentedFrames:n});return true;}
   }
   const media={async getUserMedia(){const tk={stop(){this.stopped=true;},addEventListener(){},getSettings:()=>({width:512,height:512})};
     tracks.push(tk);return {getTracks:()=>[tk],getVideoTracks:()=>[tk]};}};
@@ -58,11 +62,15 @@ function devices(t){
   t.mock.method(SweepReader.prototype,'scan',async function(im){
     assert.ok(!inFlight.has(this),'no overlapping scan');inFlight.set(this,true);this.calls++;
     try{if(blocked&&this.expected==='data'){const gate=blocked;blocked=null;await gate;}
-      return readCanvas(im,this.size);}finally{inFlight.delete(this);}
+      const result=readCanvas(im,this.size);
+      if(watch&&result.ok&&this.calls===1)return {ok:false,stage:'collect',info:result.info,corners:[[30,30],[480,30],[480,480],[30,480]],phaseCounts:[1,0,0,0]};
+      if(watch&&result.ok&&this.calls===2)return {ok:false,stage:'phase',info:null,stats:{geometrySource:'previous',detectedSize:this.size}};
+      return result;}finally{inFlight.delete(this);}
   });
   function phone(role){
     const vals={role,size:'64',phase:'200',capture:'150',decrement:'50',timeout:'3',backend:'wasm',facing:'user',resolution:'720',device:''};
     const nodes=new Map();const get=s=>{if(!nodes.has(s))nodes.set(s,new Element(s,vals[s.match(/^\[name="(\w+)"\]$/)?.[1]]));return nodes.get(s);};
+    get('[name="phaseWatch"]').checked=watch;
     const video=get('video');Object.assign(video,{videoWidth:512,videoHeight:512,readyState:4});
     const activity=[],panel=initSweep({classList:{add(){}},querySelector:get},{onActive:v=>activity.push(v)});
     return {panel,activity,video,matrix:get('.sw-slot canvas'),next:get('.sw-next'),start:get('.sw-start'),status:get('.sw-status'),history:get('.sw-history'),
@@ -121,4 +129,28 @@ test('early receiver advance withdraws an unread ACK rather than pretending it w
   assert.ok(S.next.disabled);assert.doesNotMatch(S.history.textContent,/ack-read/);
   assert.ok(R.video.emit());await until(()=>R.video.cb,'old DATA still held by sender is ignored');
   assert.equal(R.matrix.hidden,true);assert.equal(R.matrix.image,null);
+});
+
+test('each role can capture a changed phase before the timed deadline; a new step searches afresh',async t=>{
+  const {S,R}=devices(t,{watch:true});R.start.click();S.start.click();
+  await until(()=>!R.next.disabled&&!S.next.disabled,'both readers ready');R.next.click();S.next.click();
+  await until(()=>S.video.cb&&S.matrix.draws>0,'probe drawn');
+  for(const device of [R,S]){
+    device.video.emit(1000);await until(()=>device.video.cb,'first partial burst returned with a lock');
+    device.video.emit(1017); // unchanged: no full read
+    device.video.samplePattern=1;device.video.emit(1034); // changed but not settled
+    assert.ok(device.video.cb,'an edge did not immediately submit a capture');
+    device.video.emit(1051);await until(()=>device.video.cb,'torn capture with the right grid size');
+    device.video.emit(1068);device.video.samplePattern=0;device.video.emit(1085);device.video.emit(1102);
+    await until(()=>!device.next.disabled,'another edge finished the step without losing the lock');
+    const report=await device.report(),row=report.steps[0];
+    assert.equal(report.configuration.phaseWatch,true);assert.equal(row.reader.scans,3);
+    assert.equal(row.phaseWatch.changeReads,2);assert.equal(row.phaseWatch.watchdogReads,0);
+    assert.equal(row.phaseWatch.settleToCaptureMs.avgMs,17);
+    assert.equal(row.stages.captureSpacing.avgMs,51);assert.equal(row.stages.captureTargetSpacing,undefined);
+    assert.match(device.history.textContent,/Detected change → capture: 17 ms/);
+  }
+  R.next.click();assert.equal(R.matrix.hidden,true);R.video.emit(1100);
+  await until(()=>R.video.cb,'next receiver step is searching');R.panel.stop();
+  const row=(await R.report()).steps[1];assert.equal(row.phaseWatch.searchReads,1);assert.equal(row.phaseWatch.changeReads,0);
 });

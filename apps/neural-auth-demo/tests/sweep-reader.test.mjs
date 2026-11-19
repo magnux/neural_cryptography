@@ -25,7 +25,7 @@ test('rendered single exposures go through canonical four-phase acquisition, mea
   const reader=new SweepReader({role:'receiver',size:32,client});await reader.init();reader.beginStep();
   let result;
   for(let i=0;i<4;i++){
-    result=await reader.scan(renderNeuralQR(frames[i],512),identity(i+1));
+    result=await reader.scan(renderNeuralQR(frames[i],512),{...identity(i+1),captureTrigger:i===0?'search':'change'});
     if(i<3){assert.equal(result.stage,'collect',result.error);assert.equal(reader.snapshot().stages.inference,undefined);}
   }
   assert.equal(result.ok,false,'a failed neural output must never be accepted as an optical match');
@@ -36,6 +36,7 @@ test('rendered single exposures go through canonical four-phase acquisition, mea
   assert.equal(s.stages.rectification.count,4);assert.equal(s.stages.normalization.count,4);
   assert.equal(s.stages['burst-pack'].count,1);assert.equal(s.stages.inference.count,1);assert.equal(s.stages['rs-crc-recovery'].count,1);
   assert.ok(s.firstAllPhasesMs>=s.firstPhaseMs[0]);assert.equal(s.trace.length,4);
+  assert.deepEqual(s.trace.map(hit=>hit.captureTrigger),['search','change','change','change']);
   reader.beginStep();const next=await reader.scan(renderNeuralQR(frames[2],512),identity(5));
   assert.equal(next.collected,1);assert.deepEqual(reader.snapshot().phases,[0,0,1,0]);assert.equal(reader.snapshot().geometry.detected,1);
   assert.deepEqual(s.phases,[1,1,1,1],'completed step report must remain independent of the new pool');reader.close();

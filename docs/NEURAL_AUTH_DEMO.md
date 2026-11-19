@@ -80,6 +80,28 @@ the same directory instead. Plain LAN HTTP does not provide camera/Web Crypto
 access. A phone's front camera is the initial preference; explicit camera selection
 takes precedence when available.
 
+### Demonstrate an exchange in flight mode
+
+1. Open **Camera exchange** on both phones while connected. Select the roles,
+   incoming grids and backends. The page prepares the trained corrector and
+   the cryptography worker immediately; it does not open the camera or create
+   an authentication key during preparation. Changing the incoming grid or
+   backend prepares that new configuration.
+2. Wait for **Ready for flight mode** on **both** phones. This means the selected
+   receiving profiles (including G32 controls), runtime and parity checks are
+   ready in the open page, and the crypto worker passed its self-test. A
+   missing model, runtime or failed check must not show the ready message.
+3. Turn on flight mode, confirm Wi-Fi is off too, return to the **same open
+   pages**, then tap **Start authentication**. Start reuses the prepared workers,
+   and only now requests the camera and starts the session. If you tap Start
+   during preparation, it waits for the same work to finish.
+
+Readiness applies to this camera exchange on this open page. A reload, page
+discard, switch to a lab, or a different model configuration can need the
+server again. Finish/cancel releases the workers. For a second demonstration,
+reconnect and prepare again. The recorded setup time starts at **Start**, so
+it includes only any remaining wait for preparation.
+
 ## Screen layout and alignment
 
 With Settings closed, the exchange fits one viewport: the outgoing matrix stays
@@ -202,6 +224,29 @@ and a four-second acceptance expiry forces full capture/inference even if an
 image fingerprint collides. New attempts, mode changes and clock rollback reset
 the gate. Packet identity, protected payload recovery and session checks remain
 authoritative. Target bytes never guide live reception.
+
+### Capture on a phase change
+
+With both phones resting face to face, the receiver can use the other screen
+as its clock. Until it has a valid matrix lock, it searches at the configured
+capture interval. After lock, it reads a **12×12 RGB thumbnail of the matrix
+center** on fresh camera callbacks while the worker is free. Its footprint is
+about six cells across, so it samples comparable content on G32 and G128.
+The reference comes from the **same unmirrored capture that established the
+lock**, not whatever the camera shows when the worker finishes. A change is a cue to take a full
+capture on a **new camera frame at least 10 ms later**. An unchanged patch does
+not need a full-frame readback on every callback. The 10 ms is a minimum
+settling delay after observing a change, not a guaranteed exposure time:
+camera delivery and a busy worker can delay the next usable frame.
+
+The patch never decides the matrix's phase or whether to accept a packet.
+The opposite-border phase cues, corrector, RS+CRC and packet checks still do
+that work. Camera motion or a reflection can trigger an unnecessary scan; a
+weak phase transition can be missed. A watchdog requests another scan at twice
+the search interval (bounded to 250–1000 ms); loss of lock returns the camera
+to timed search. This also supplies additional exposures for K8 recovery.
+The sender's phase interval and wire format do not change. Turn off the
+phase-change option to use the timed reader for comparison.
 
 The live receiver keeps at most two distinct exposures **per phase**. It tries
 the newest from each phase first (K4). If more are needed, K8 uses both slots
@@ -331,7 +376,20 @@ reference colors, ambiguous or distant cue colors, and disagreement between
 the top and bottom markers. The nearest-color votes on rejected scans are
 diagnostic only; they never enter the burst.
 
-To distinguish a sampling problem from a persistent cue-reading problem:
+To measure the change-triggered reader, run back-to-back sweeps with the
+phones fixed in place. Start at **350 ms display / 300 ms search**, a setting
+already known to work. Use timed capture with variation off for the first
+run, then enable **Follow phase changes** on both phones and repeat. Keep all
+other settings the same. Only then shorten the displayed phase (e.g. 250 ms,
+then 200 ms). Compare completion and K4/K8 attempts as well as round trips;
+a faster minimum with more timeouts is not an improvement. Each report
+records how many full reads were triggered by change or by the watchdog,
+the cost of probing, and the actual change-to-capture delay. The sender
+reports these for G32 ACK; the receiver reports them for DATA. A change
+detected by the thumbnail is not itself a recovered phase.
+
+To distinguish a sampling problem from a persistent cue-reading problem
+using **timed capture** (phase-change capture off):
 
 1. Try a long display interval, e.g. **1500 ms display / 250 ms capture**, with fixed
    spacing. This gives the camera several chances to see the middle of each phase.
@@ -415,8 +473,8 @@ four phase images and random padding.
 
 The initial settings for **Camera exchange** are verifier role, G64 outgoing
 and incoming maximum, G32 controls, 32 proof repetitions, front camera,
-requested 1080p, **350 ms per displayed phase** and **250 ms between capture
-attempts**, Auto backend, efficient scanning enabled and statistics enabled.
+requested 1080p, **350 ms per displayed phase** and **250 ms between searches**,
+Auto backend, phase-change capture after lock, efficient scanning and statistics enabled.
 The initial display preferences are a mirrored preview and the matrix at the bottom.
 Choose an incoming maximum of G128 to preload/test that larger receiving grid.
 

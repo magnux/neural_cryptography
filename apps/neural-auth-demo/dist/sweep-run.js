@@ -26,11 +26,11 @@ export class CapturePacer{
 }
 
 export class SweepRun{
-  constructor({role,size=64,startPhaseMs=500,startCaptureMs=450,decrementMs=50,timeoutMs=30000,varyCapture=false}){
+  constructor({role,size=64,startPhaseMs=500,startCaptureMs=450,decrementMs=50,timeoutMs=30000,varyCapture=false,phaseWatch=true}){
     if(!['sender','receiver'].includes(role)||![32,64,128].includes(size))throw Error('Choose a sweep role and supported grid.');
     integer(startPhaseMs,50,2000,'Initial display interval');integer(startCaptureMs,50,2000,'Initial capture interval');
     integer(decrementMs,1,500,'Interval decrement');integer(timeoutMs,1000,120000,'Step timeout');
-    this.config=Object.freeze({role,size,startPhaseMs,startCaptureMs,decrementMs,timeoutMs,varyCapture:varyCapture===true});
+    this.config=Object.freeze({role,size,startPhaseMs,startCaptureMs,decrementMs,timeoutMs,varyCapture:varyCapture===true,phaseWatch:phaseWatch===true});
     this.count=Math.min(64,1+Math.floor((Math.min(startPhaseMs,startCaptureMs)-50)/decrementMs));
     this.started=new Date().toISOString();this.rows=[];this.active=null;this.profiler=null;this.displays=new Map();
   }
@@ -72,7 +72,7 @@ export class SweepRun{
     return d?{kind:d.kind,phasePresentations:d.changes,byPhase:[...d.phases],skippedSlots:d.skippedSlots,
       spacingMs:d.intervals.snapshot().spacingMs??null}:null;
   }
-  finish(status,now,reader=null){
+  finish(status,now,reader=null,phaseWatch=null){
     const a=this.active;if(!a)return null;
     const sender=this.config.role==='sender',ok=sender?'ack-read':'ack-shown';
     if(![ok,'timeout','cancelled','error'].includes(status)||!Number.isFinite(now)||now<a.startedAt)throw Error('Invalid step outcome.');
@@ -80,7 +80,7 @@ export class SweepRun{
     if(status===ok&&(sender?(c.probeDraw==null||c.ackDecoded==null):c.ackDraw==null))throw Error('Missing optical timing boundary.');
     const row={...step,status,elapsedMs:ms(now-startedAt),rttMs:status==='ack-read'?delta(c.ackDecoded,c.probeDraw):null,
       armToAckMs:status==='ack-shown'?c.ackDraw:null,lockToPacketMs:delta(c.packetDecoded,c.firstLock),
-      checkpointsMs:{...c},stages:this.profiler.snapshot(),reader};
+      checkpointsMs:{...c},stages:this.profiler.snapshot(),reader,phaseWatch};
     this.rows.push(row);this.active=null;this.profiler=null;return row;
   }
   report({runId=null,model=null,camera=null,...details}={}){
@@ -93,7 +93,8 @@ export class SweepRun{
         checkpoints:'Offsets from manual arm. firstLock and allPhases mark submission of qualifying camera captures, not the return of the inference.',
         rtt:'Sender: first submitted DATA draw to matching ACK checked. Receiver armToAckMs ends at its first ACK draw, and includes waiting for DATA.',
         display:'Painted phase changes, including held ACK until the receiver arms the next step, stops or exports. Display cadence does not extend step elapsed time.',
-        capture:'captureTargetSpacing and captureSpacing measure scheduled versus actual intervals between adjacent accepted camera callbacks; worker processing can extend them.',
+        capture:'captureSpacing is actual time between full captures; captureTargetSpacing records requested intervals only in timed capture/search. A busy worker can delay either.',
+        phaseWatch:'When enabled after lock, a cheap ROI probe on fresh camera frames detects pixel changes. settleMs is the requested minimum; settleToCaptureMs is observed between the change callback and admitted capture callback, not between physical display and camera exposure. Watchdog reads check again even without a detected change.',
         stages:'Stage distributions include only operations actually run; worker round trip is an envelope, not an additional stage.'},
       steps:this.rows.map(row=>({...row,display:this.display(row.step)}))};
   }
