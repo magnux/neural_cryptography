@@ -21,6 +21,8 @@ async function transfer(sender,receiver) {
     const result=await receiver.receive(packet);assert.equal(result.accepted,true,result.reason);
     assert.equal(receiver.snapshot().mode,'ack');assert.ok(receiver.current());
     const ack=receiver.current();assert.equal(decodePacket(ack).kind,'ack');
+    assert.deepEqual(sender.expectedAck(),ack);
+    assert.equal(receiver.expectedAck(),null,'displaying an ACK does not mean waiting for one');
     assert.equal((await sender.receive(ack)).accepted,true);
   }
   await flush();return packets;
@@ -34,6 +36,7 @@ test('manual reply requires the predecessor REQUEST before explicit turn promoti
   const firstDone=a.enqueue(bytes(2600));await prepared(a);
   const packets=await transfer(a,b);await firstDone;
   assert.equal(a.snapshot().mode,'request');assert.equal(a.snapshot().expected,'data');
+  assert.equal(a.expectedAck(),null,'a held REQUEST cannot accept a stale digest receipt');
   assert.equal(a.snapshot().requestedReply,true);assert.equal(b.snapshot().mode,'ack');
   assert.equal(b.snapshot().expected,'request');assert.equal(b.snapshot().waitingForRequest,true);
   assert.equal(b.snapshot().canSendNext,false);assert.equal(b.snapshot().queued,true);

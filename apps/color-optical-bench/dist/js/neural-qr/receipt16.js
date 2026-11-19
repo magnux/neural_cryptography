@@ -1,4 +1,4 @@
-/** Timing lab only. One exposure carries the fingerprint of an OLM ACK,
+/** One exposure carries the fingerprint of an OLM ACK,
  * not an OLM packet or an authentication proof. Compare with the currently
  * outstanding ACK only AFTER blind optical classification, RS and CRC.
  */
@@ -26,23 +26,31 @@ export async function receipt16Digest(ackBytes){
   return new Uint8Array(await crypto.subtle.digest('SHA-256',input));
 }
 
-/** Each phase is independently readable. Hold frames[0] for a static receipt. */
-export function receipt16Frames(digest,phaseMs=350){
+function receiptWire(digest,phaseMs){
   if(!(digest instanceof Uint8Array)||digest.length!==DIGEST_BYTES)throw Error('Expected a 32-byte ACK fingerprint.');
   if(!Number.isInteger(phaseMs)||phaseMs<50||phaseMs>10000)throw Error('Phase time must be 50–10000 ms.');
   const payload=new Uint8Array(profile.payloadBytes);
   payload.set(TAG);payload.set(digest,TAG.length);
-  const wire=encodeFEC(payload,profile.wireBytes,profile.parity);
-  return Array.from({length:4},(_,phase)=>{
-    const frame={size:SIZE,colors:16,bits:4,phases:4,gridBlock:8,permute:true,pixelsPerCell:4,phase,holdMs:phaseMs,parity:profile.parity};
-    const symbols=new Uint8Array(SIZE*SIZE);
-    for(const cell of grid.pilots)symbols[cell]=grid.reference[cell];
-    for(let i=0;i<grid.cells.length;i++){
-      const byte=wire[i>>1]??0;
-      symbols[grid.cells[i]]=paletteMap(i%2?byte&15:byte>>>4,frame);
-    }
-    return {...frame,symbols};
-  });
+  return encodeFEC(payload,profile.wireBytes,profile.parity);
+}
+function physicalFrame(wire,phaseMs,phase){
+  const frame={size:SIZE,colors:16,bits:4,phases:4,gridBlock:8,permute:true,pixelsPerCell:4,phase,holdMs:phaseMs,parity:profile.parity};
+  const symbols=new Uint8Array(SIZE*SIZE);
+  for(const cell of grid.pilots)symbols[cell]=grid.reference[cell];
+  for(let i=0;i<grid.cells.length;i++){
+    const byte=wire[i>>1]??0;
+    symbols[grid.cells[i]]=paletteMap(i%2?byte&15:byte>>>4,frame);
+  }
+  return {...frame,symbols};
+}
+/** The static ACK is phase zero. Generate only the frame that will be displayed. */
+export function receipt16Frame(digest,phaseMs=350){
+  return physicalFrame(receiptWire(digest,phaseMs),phaseMs,0);
+}
+/** Each legal phase can be read independently; useful for optical fixtures. */
+export function receipt16Frames(digest,phaseMs=350){
+  const wire=receiptWire(digest,phaseMs);
+  return Array.from({length:4},(_,phase)=>physicalFrame(wire,phaseMs,phase));
 }
 
 function readSymbols(symbols,size){
@@ -65,8 +73,8 @@ export function decodeReceipt16Symbols(symbols,size=SIZE){
  * classifier. It scores LOGICAL colors using the *observed* phase: no phase
  * bundle, dense neural input, expected ACK, or trained checkpoint is needed.
  */
-export function decodeReceipt16Capture(image,{now,previousGeometry,captureIntervalMs,profiler}={}){
-  const acq=extractNeuralQR(image,{profile,now,previousGeometry,captureIntervalMs,profiler,dense:false});
+export function decodeReceipt16Capture(image,{now,previousGeometry,captureIntervalMs,profiler,collectTimings=true}={}){
+  const acq=extractNeuralQR(image,{profile,now,previousGeometry,captureIntervalMs,profiler,collectTimings,dense:false});
   if(!acq.ok)return {...acq,digest:null};
   const measure=(stage,fn)=>profiler?profiler.measure(stage,fn):fn();
   try{

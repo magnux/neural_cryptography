@@ -43,7 +43,7 @@ Replace the checkpoint path with your actual trained checkpoint. Corrector
 preparation validates the manifest, sizes, SHA-256 hashes and pinned local
 runtime before writing. By default it prepares both the bench and standalone
 demo. Append `--app neural-auth-demo` or `--app color-optical-bench` to select one.
-G32 is required for control packets; include G64 for the default incoming data
+G32 is required for trained REQUESTs even with static G16 ACKs; include G64 for the default incoming data
 and G128 when selecting the larger receive limit.
 The live worker rejects untrained exports. Models and prepared runtime files
 remain ignored by Git.
@@ -140,7 +140,7 @@ identify the cryptographic session; a friendly name does not replace them.
 
 One device acts as verifier and the other as key holder. The five application
 messages are HELLO, IDENTITY, CHALLENGE, PROOF and RESULT, with optical START/DATA,
-G32 ACK and G32 REQUEST exchanges. This POC advances turns and confirms pairing automatically;
+G16 digest ACKs by default and four-phase G32 REQUESTs. This POC advances turns and confirms pairing automatically;
 it does not establish identity through manual code comparison. A verified proof
 on the verifier authenticates possession of the pinned key for this attempt.
 The key holder's success text is a peer-reported result, not a second proof.
@@ -178,6 +178,24 @@ occupied each device; adding their durations would count the same optical
 exchange twice. Waiting to press **Finish exchange** after local completion
 does not increase the recorded exchange time.
 
+## Acknowledgments
+
+In **Camera exchange → Settings → Acknowledgments**, choose the same option on
+both devices before starting. The choice applies in both directions; it is not
+negotiated over the link.
+
+| ACK profile | What the receiving device displays | What the sending device reads |
+| --- | --- | --- |
+| **G16 · single-exposure digest (default)** | One static receipt, held until the next packet or turn handoff | A calibrated single exposure, with RS32 and CRC. The resulting 32-byte fingerprint must match the exact outstanding ACK. No model inference or four-phase wait on this receipt. |
+| **G32 · full ACK with neural corrector** | Four phases of the full 84-byte OLM1 ACK | The trained reader collects phases and recovers the ACK through RS32 and CRC. |
+
+DATA and the four G32 REQUEST handoffs keep their trained reader in either
+mode; the proof, repetitions and terminal RESULT confirmation are identical.
+There is no need to export or load a G16 model. The G16 camera reader has no
+access to the expected digest; only the transport can match a decoded receipt.
+An old readable receipt leaves the current packet on screen. See the
+[G16 layout and binding](NEURAL_QR.md#acks-and-control-messages).
+
 ## Request-driven handoff
 
 The first matrix of each message carries its metadata **and chunk zero**. If
@@ -210,8 +228,8 @@ by continuing to display the same control packet; elapsed time never switches
 between a final ACK and START. Duplicate or unrelated controls cannot advance a
 different transfer.
 
-All four palette-phase images are rendered once and cached for each displayed
-packet, including its random padding. Cycling phases reuses those images instead
+For a four-phase packet, the app renders and caches all four images, including
+the packet’s random padding. Cycling phases reuses those images instead
 of generating new pixels for an unchanged packet. New logical packets get their
 own phase images. RESULT is the final application message and does not request
 another reply; its receiver keeps the final ACK visible for delivery confirmation.
@@ -223,20 +241,23 @@ stays visible. In **Progressive** mode, a new packet starts at **200 ms per
 phase**. If still on screen, its second pass uses 250 ms per phase, then 300,
 350, 400, 450 and finally 500 ms on every further pass. You can change the
 starting duration, the increment and the cap. The timing resets at each new
-packet, including each ACK or REQUEST. The display slows down based on how long
-that packet is still needed; the receiver doesn't send a signal to change the
+four-phase packet, including a G32 ACK or REQUEST. Static G16 receipts have no phase
+timer. A cycling display slows down based on how long its packet is needed; the receiver doesn't send a signal to change the
 rate. **Fixed interval** instead uses one duration on every pass (initially
 350 ms). Neither setting changes the camera's search interval.
 
 In **Camera exchange**, **Show all four phases before reading** is on by default.
-Each time the outgoing packet changes (START, DATA, ACK or REQUEST), this phone
+On a new four-phase packet (START, DATA, G32 ACK or REQUEST), this phone
 draws phases 0, 1, 2 and 3 in order. Until the fourth draw has had a refresh
 opportunity, it keeps the camera preview live but starts no phase probes,
 full-frame readbacks or corrector scans. From the first draw, that wait is
 nominally **three starting phase intervals plus one refresh**: just over 0.60 s
 at 200 ms, or 1.05 s at 350 ms. A busy browser can take longer.
 
-A phone with nothing to display listens immediately. After the first pass,
+A phone with nothing to display listens immediately. A phone displaying a G16
+receipt can listen for the next packet as soon as the static image is drawn.
+The sender checks fresh exposures at the configured camera search interval;
+it does not wait for a phase change on a static receipt. After the first pass,
 the phone can read the reply while its own matrix continues cycling; another
 cycle of the same packet never starts a new pause. An early reply stays on the
 peer's screen under the normal handoff rules. In particular, the final ACK
@@ -273,7 +294,12 @@ is the best observed sample, not a guaranteed speed or a timing security claim.
 START/DATA round trips end at their matching accepted ACK. REQUEST controls have
 separate bounded records for display and acceptance, linked to the preceding
 message; they do not contribute to START/DATA RTT summaries. Statistics and
-report controls are available inside Settings.
+report controls are available inside Settings. The short live report includes
+`settings.ackSize` and, with G16 statistics enabled, `receiptReads` (scans,
+decoded receipts, matched and unmatched receipts). A scan before the peer
+displays its ACK need not decode anything. In detailed packet rows
+`ack.packetBytes` counts the bytes inside the optical frame: 32 for a digest
+and 84 for a full ACK.
 
 Efficient scanning is on initially. Capture scheduling skips work when the
 worker is busy. Small frame/ROI checks may avoid repeated acquisition only after
@@ -455,8 +481,8 @@ Swap sender and receiver and repeat. Save both reports even if a step times out.
 Compare **completed / attempted** first, then sender RTT and the number of
 camera reads needed for a matching ACK. A quick success averaged only over
 readable steps can hide timeouts. The G16 ACK leg should show **zero corrector
-inferences**. This option is confined to Matrix timing; live ACKs and REQUESTs
-still use G32.
+inferences**. Live authentication defaults to this same G16 receipt; the timing
+lab starts with the G32 comparison profile.
 
 If one phase never enters the burst, inspect the four counts on the **sender**
 for the ACK leg. The November 19 two-phone sweep recovered G64 DATA at all nine
@@ -524,13 +550,16 @@ Simulation preparation accepts untrained VW G32/G64 only and writes
 `models/neural-corrector/`, which is reserved for live models. Initialization
 verifies artifact hashes and numerical parity before the comparison. Warmup and
 initialization are separate from handshake timing. Simulation defaults to G64
-data in both directions and G32 control packets, using the single-thread WASM
-runtime. All processing stays in the local worker.
+data in both directions, static G16 ACKs and G32 REQUESTs. It reads the G16
+receipt from rendered pixels; only trained-packet outputs are simulated. The
+neural inference benchmark uses the single-thread WASM runtime. All processing stays in the local worker.
 
 Run the in-page simulation or the command-line benchmark:
 
 ```sh
 npm run benchmark:demo
+# Compare against the trained four-phase ACK path:
+npm run benchmark:demo -- --ack-size 32
 # Save a local report; the path is relative to the app directory for npm --prefix:
 npm run benchmark:demo -- --out ../../local-results/neural-auth-demo-simulation.json
 # Explicit protocol-only check when model assets are unavailable:
@@ -557,12 +586,12 @@ REQUEST from starving sequential WebCrypto operations. It never skips an unread
 ACK/REQUEST or an outgoing packet. Reports expose these pauses as
 `cryptoIdleWaits`; they are a simulation scheduling assumption, not a measured
 camera delay. Repeated display windows reuse a bounded cache of each endpoint's
-four phase images and random padding.
+rendered phases, or its one static receipt image.
 
 ## Device and packaging test plan
 
 The initial settings for **Camera exchange** are verifier role, G64 outgoing
-and incoming maximum, G32 controls, 32 proof repetitions, front camera,
+and incoming maximum, G16 ACKs, G32 REQUESTs, 32 proof repetitions, front camera,
 requested 1080p, **progressive 200 / +50 / 500 ms** and **250 ms between searches**,
 Auto backend, first-cycle display priority, phase-change capture after lock,
 efficient scanning and statistics enabled.
@@ -581,11 +610,14 @@ Choose an incoming maximum of G128 to preload/test that larger receiving grid.
    matrix stays square and the page does not scroll. Open Settings to inspect
    statistics, then close it and confirm the fixed view returns. Permission
    denial or an unavailable selected camera must not silently select another.
-3. Start with G64 in both directions, 32 repetitions, and statistics disabled.
+3. Start with G64 DATA in both directions, the default G16 ACKs, 32 repetitions, and statistics disabled.
    Confirm trained parity for the selected incoming grids, complete all five messages and final ACK,
    and check the displayed peer name and role-specific completion wording.
-4. Repeat with statistics enabled in the same arrangement. Wait a few seconds
-   after confirmation, then finish on both devices and save their short reports.
+4. Repeat with statistics enabled in the same arrangement. Compare a second run
+   with G32 ACKs selected on both devices and all other settings unchanged.
+   Finish on both devices and save their short reports. In the default G64,
+   32-repetition G16 run, expect **15 matched receipts** on the key holder
+   and **3** on the verifier (18 total).
    Check the five local step durations, compare the reported roles and optical
    settings, and check the separate detailed packet timings in Settings. Start
    a new attempt and confirm the matrix returns. Do not infer performance

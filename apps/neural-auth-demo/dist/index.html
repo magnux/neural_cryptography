@@ -106,6 +106,7 @@
           <label for="repetitions">Proof repetitions<select id="repetitions"><option value="32">32 · quick test</option><option value="64">64</option><option value="110">110</option><option value="160">160</option><option value="219">219</option></select></label>
           <label for="outgoingSize">Send data grid<select id="outgoingSize"><option value="64">G64 · default</option><option value="128">G128</option></select></label>
           <label for="incomingSize">Receive up to<select id="incomingSize"><option value="64">G64 · default</option><option value="128">G128</option></select></label>
+          <label class="wide" for="ackSize">Acknowledgments<select id="ackSize"><option value="16" selected>G16 · single-exposure digest (default)</option><option value="32">G32 · full ACK with neural corrector</option></select></label>
           <label class="wide" for="camera">Camera<select id="camera"><option value="">Front camera · default</option></select></label>
           <label for="resolution">Camera resolution<select id="resolution"><option value="480">480p</option><option value="720">720p</option><option value="1080" selected>1080p</option><option value="1440">1440p</option><option value="2160">4K</option><option value="max">Maximum available</option></select></label>
           <label for="backend">Corrector backend<select id="backend"><option value="auto">Auto · GPU / CPU</option><option value="wasm">WASM · CPU</option><option value="webgpu">WebGPU</option></select></label>
@@ -115,11 +116,11 @@
           <label id="phaseMaxMsField" for="phaseMaxMs">Longest phase (ms)<input id="phaseMaxMs" type="number" min="50" max="10000" step="1" value="500" inputmode="numeric"></label>
           <label id="phaseMsField" for="phaseMs" hidden>Fixed interval (ms per phase)<input id="phaseMs" type="number" min="50" max="10000" step="1" value="350" inputmode="numeric" disabled></label>
           <label for="captureMs">Camera search interval (ms)<input id="captureMs" type="number" min="50" max="2000" step="1" value="250" inputmode="numeric"></label>
-          <label class="toggle wide" for="firstCycle"><span>Show all four phases before reading<small>Give each new outgoing matrix one pass before looking for the reply.</small></span><input id="firstCycle" type="checkbox" checked></label>
+          <label class="toggle wide" for="firstCycle"><span>Show all four phases before reading<small>Applies to phased matrices. A static G16 receipt needs only one draw.</small></span><input id="firstCycle" type="checkbox" checked></label>
           <label class="toggle wide" for="phaseWatch"><span>Follow phase changes<small>After lock, read a fresh frame when the matrix changes. Turn off for fixed-interval capture.</small></span><input id="phaseWatch" type="checkbox" checked></label>
           <label class="toggle wide" for="optimized"><span>Efficient camera scanning<small>Skip redundant work while holding steady</small></span><input id="optimized" type="checkbox" checked></label>
           <label class="toggle wide" for="statistics"><span>Collect statistics<small>Local timings and a downloadable report</small></span><input id="statistics" type="checkbox" checked></label>
-          <p class="settings-note wide">Both devices use G32 acknowledgments and turn requests. Device names are self-declared. Pairing proceeds automatically for this research demo. Only the verifier checks the proof locally; the key holder receives an unauthenticated result report.</p>
+          <p class="settings-note wide">Choose the same acknowledgment setting on both phones. Turn requests always use G32. Device names are self-declared. Pairing proceeds automatically for this research demo. Only the verifier checks the proof locally; the key holder receives an unauthenticated result report.</p>
         </fieldset>
         <details id="statisticsPanel" class="statistics" hidden>
         <summary><span>Session statistics</span><span id="elapsed">0s</span></summary>

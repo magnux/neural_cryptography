@@ -64,6 +64,24 @@ test('sender rejects unsent, stale, foreign, incorrect-digest and premature comp
   assert.equal(s.snapshot().ackedChunks,1);
 });
 
+test('expected receipt is scoped to the displayed chunk and matches the independent receiver',async()=>{
+  const s=await sender(2600),r=new TurnReceiver();
+  assert.equal(s.expectedAck(),null);
+  let old=null;
+  for(let i=0;i<3;i++){
+    const actual=(await r.receive(s.next(i),i)).ack,expected=s.expectedAck();
+    assert.deepEqual(expected,actual);
+    expected.fill(0);assert.deepEqual(s.expectedAck(),actual,'cannot mutate the cached bytes');
+    if(old){assert.notDeepEqual(s.expectedAck(),old);assert.equal(s.receive(old,i).reason,'stale-ack');}
+    assert.equal(s.receive(actual,i).accepted,true);
+    assert.equal(s.expectedAck(),null,'a new chunk is not acknowledged before presentation');
+    old=actual;
+  }
+  const timed=await sender(100,{timeoutMs:5});
+  timed.next(1);assert.ok(timed.expectedAck(4));assert.equal(timed.expectedAck(5),null);
+  timed.cancel();assert.equal(timed.expectedAck(),null);
+});
+
 test('receiver rejects reordered/conflicting chunks and conflicting START',async()=>{
   const s=await sender(4000),r=new TurnReceiver(),startBytes=s.next(0),initial=decodePacket(startBytes);
   await start(s,r);

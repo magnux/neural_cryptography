@@ -92,7 +92,7 @@ test('G16 sweep sender reads one rendered exposure without initializing a model 
   const {receipt16Frames}=await import('../dist/js/neural-qr/receipt16.js');
   let reply;const handle=receiptWorkerHandler(msg=>{reply=msg;});
   const client={call:async(operation,options={})=>{
-    if(operation==='receipt-scan')assert.deepEqual(Object.keys(options).sort(),['captureIntervalMs','image','runId']);
+    if(operation==='receipt-scan')assert.deepEqual(Object.keys(options).sort(),['captureIntervalMs','image','mediaTime','presentedFrames','runId']);
     else assert.equal(operation,'receipt-init');
     handle({data:{id:1,operation,options}});if(reply.type==='error')throw Error(reply.error);return reply.result;
   },cancel(){}};

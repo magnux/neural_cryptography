@@ -98,7 +98,7 @@ export class SweepReader{
     // cell-sampling pass. The first corrected packet ends this step, so we
     // need neither a post-acceptance frame gate nor a second worker RPC.
     const begin=this.now();s.submitted++;
-    const result=this.single?await this.client.call('receipt-scan',{image,runId:this.runId,captureIntervalMs},[image.data.buffer]):
+    const result=this.single?await this.client.call('receipt-scan',{image,runId:this.runId,mediaTime,presentedFrames,captureIntervalMs},[image.data.buffer]):
       await this.client.call('transport-scan',{image,runId:this.runId,mediaTime,presentedFrames,
       captureIntervalMs,size:this.size,backend:this.backend,expected:this.expected,
       optimized:true,forceAcquisition:true,statistics:true},[image.data.buffer]);

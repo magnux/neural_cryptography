@@ -100,9 +100,8 @@ certified security levels.
 The four phases repeat the same packet using different palette permutations;
 they do not multiply its payload capacity. The payload sizes above exclude the
 optical and multipart overhead. G16's remaining protected packet space is too
-small for the ordinary 84-byte ACK. Live ACKs and REQUESTs use G32. The
-[dedicated timing lab](NEURAL_AUTH_DEMO.md#trained-four-phase-sweep) can test
-a smaller G16 receipt. START travels at the chosen DATA geometry and carries
+small for the ordinary 84-byte ACK. This bench page uses G32 ACKs and REQUESTs. The separate
+[phone demo](NEURAL_AUTH_DEMO.md#acknowledgments) defaults to a compact G16 receipt. START travels at the chosen DATA geometry and carries
 chunk zero: its 88-byte overhead leaves 44 fewer content bytes than later DATA.
 
 Four 150 ms phases take 600 ms to display. This is a display cycle, not a promised

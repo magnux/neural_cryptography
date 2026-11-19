@@ -11,6 +11,15 @@ const rowKey=(direction,p)=>`${direction}/${messageKey(p)}/${packetKind(p)}/${pa
 const parse=bytes=>{try{return decodePacket(bytes);}catch{return null;}};
 const elapsed=(end,start)=>end!==null&&start!==null&&end>=start?end-start:null;
 
+// The input to this tracker is always the canonical logical ACK. Grid identifies
+// its actual optical representation: a 32-byte digest on G16, the OLM packet on G32.
+function validGrid(kind,grid){
+  if(kind==='ack')return grid===16||grid===32;
+  if(kind==='poll')return grid===32;
+  return (kind==='data'||kind==='start')&&[32,64,128].includes(grid);
+}
+const ackBytes=(grid,bytes)=>grid===16?32:bytes.length;
+
 function summarize(values){
   const sorted=values.filter(value=>value!==null).sort((a,b)=>a-b),count=sorted.length;
   if(!count)return {count:0,minMs:null,medianMs:null,p95Ms:null,meanMs:null,maxMs:null};
@@ -71,15 +80,14 @@ export class PacketTelemetry {
    */
   displayed(bytes,{grid,atMs}={}){
     const p=parse(bytes),at=this.stamp(atMs);
-    if(!p||!['start','data','ack','poll'].includes(p.kind)||![32,64,128].includes(grid)||at===null)return false;
+    if(!p||!validGrid(p.kind,grid)||at===null)return false;
     if(p.kind==='poll'){
-      if(grid!==32)return false;
       const row=this.request('sent',p,bytes,grid);if(!row)return false;
       row.displayedMs??=at;row.lastDisplayedMs=at;row.displayCount++;return true;
     }
     if(p.kind==='ack'){
       const row=this.row('received',p);if(!row||!this.matchesAck(row,p))return false;
-      const ack=row.ack;ack.status=p.status;ack.grid=grid;ack.packetBytes=bytes.length;
+      const ack=row.ack;ack.status=p.status;ack.grid=grid;ack.packetBytes=ackBytes(grid,bytes);
       ack.displayedMs??=at;ack.lastDisplayedMs=at;ack.displayCount++;return true;
     }
     this.meta(p);const row=this.row('sent',p);if(!row)return false;
@@ -93,16 +101,15 @@ export class PacketTelemetry {
   accepted(bytes,result,{grid,atMs}={}){
     if(!result?.accepted||duplicateReasons.has(result.reason))return false;
     const p=parse(bytes),at=this.stamp(atMs);
-    if(!p||!['start','data','ack','poll'].includes(p.kind)||![32,64,128].includes(grid)||at===null)return false;
+    if(!p||!validGrid(p.kind,grid)||at===null)return false;
     if(p.kind==='poll'){
-      if(grid!==32)return false;
       const row=this.request('received',p,bytes,grid);if(!row||row.receivedMs!==null)return false;
       row.receivedMs=at;return true;
     }
     if(p.kind==='ack'){
       const row=this.rows.get(rowKey('sent',p));
       if(!row||row.displayedMs===null||row.ack.receivedMs!==null||at<row.displayedMs||!this.matchesAck(row,p))return false;
-      Object.assign(row.ack,{status:p.status,grid,packetBytes:bytes.length,receivedMs:at});
+      Object.assign(row.ack,{status:p.status,grid,packetBytes:ackBytes(grid,bytes),receivedMs:at});
       const rtt=at-row.displayedMs;
       this.minimumRoundTripMs=this.minimumRoundTripMs===null?rtt:Math.min(this.minimumRoundTripMs,rtt);
       return true;

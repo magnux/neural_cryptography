@@ -6,6 +6,7 @@ import {ReceivePipeline} from '../neural-auth/receive-pipeline.js';
 import {LivePhaseBurst,requireTransportModel} from './live-burst.js';
 import {CONTROL_SIZE} from '../neural-qr/packet.js';
 import {geometryHintMaxAgeMs} from '../neural-qr/vision.js';
+import {ReceiptCaptureReader} from '../neural-qr/receipt-reader.js';
 
 const assetRoot = new URL('../../models/neural-corrector/', import.meta.url);
 const vendorRoot = new URL('../../vendor/onnxruntime/', import.meta.url);
@@ -17,6 +18,7 @@ const sessions=new Map(),assets=new Map();
 const MAX_SESSIONS=2,MAX_ASSET_SETS=3;
 let transportContext=null;
 const labCapture=new TransportCapture();
+const receiptReader=new ReceiptCaptureReader();
 let transportProgress=()=>{};
 const receivePipeline=new ReceivePipeline({
   loadContext:(size,{statistics}={})=>load({size,backend:transportContext.backend,statistics},transportProgress,{transport:true,manifest:transportContext.manifest}),
@@ -258,7 +260,7 @@ async function captureNeuralQR(options,progress,context,image,identity,frames){
 }
 
 async function initializeTransport(options,progress) {
-  cameraBurst=null;labCapture.reset();receivePipeline.reset();transportContext=null;
+  cameraBurst=null;labCapture.reset();receivePipeline.reset();receiptReader.reset();transportContext=null;
   if(![32,64,128].includes(options.size))throw Error('Neural-QR transport reception requires a G32, G64 or G128 cap.');
   const manifest=validateManifest(JSON.parse(new TextDecoder().decode(await fetchBounded(new URL('manifest.json',assetRoot),65536))));
   requireTransportModel(manifest);
@@ -291,10 +293,15 @@ async function initializeTransport(options,progress) {
       artifactBytes:[...assets.values()].reduce((sum,item)=>sum+item.model.byteLength+item.input.byteLength+item.expected.byteLength,0)}};
 }
 
-async function scanTransport(options,progress,raw) {
+function requirePreparedTransport(options) {
   const settings=transportContext;
   if(!settings||settings.maxSize!==options.size||settings.backend!==options.backend)
     throw Error('Initialize the trained corrector before starting the camera receiver.');
+  return settings;
+}
+
+async function scanTransport(options,progress,raw) {
+  const settings=requirePreparedTransport(options);
   transportProgress=progress;
   return receivePipeline.scan({...raw,maxSize:settings.maxSize});
 }
@@ -311,11 +318,16 @@ self.onmessage = async event => {
     else if (operation === 'capture') result = await capture(validated, progress, options.image, options.runId, options.mediaTime, options.presentedFrames, options.captureIntervalMs);
     else if (operation === 'transport-init') result = await initializeTransport({...validated,statistics:options.statistics},progress);
     else if (operation === 'transport-scan') result = await scanTransport(validated,progress,options);
+    else if (operation === 'receipt-scan') {
+      requirePreparedTransport(validated);
+      if(options.expected!=='ack')throw Error('G16 receipts can only be read while expecting an ACK.');
+      result=receiptReader.scan(options);
+    }
     else if (operation === 'transport-accept') result=receivePipeline.accept(options);
     else if (operation === 'transport-stats') result={operation,...receivePipeline.snapshot()};
-    else if (operation === 'transport-reset') {receivePipeline.reset();result={operation,ready:Boolean(transportContext)};}
+    else if (operation === 'transport-reset') {receivePipeline.reset();receiptReader.reset();result={operation,ready:Boolean(transportContext)};}
     else throw new Error('Unknown corrector operation.');
     self.postMessage({id, type: 'result', result});
-  } catch (error) { cameraBurst=null;labCapture.reset();receivePipeline.reset(); self.postMessage({id, type: 'error', error: error.message || String(error)}); }
+  } catch (error) { cameraBurst=null;labCapture.reset();receivePipeline.reset();receiptReader.reset(); self.postMessage({id, type: 'error', error: error.message || String(error)}); }
   finally { busy = false; }
 };

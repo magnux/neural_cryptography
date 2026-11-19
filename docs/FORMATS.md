@@ -11,7 +11,8 @@ cues, repeated optical size codes and no dense monochrome byte header. Current
 collection covers G16/G32/G64/G128 at four rectified pixels per cell.
 The collector records random training symbols. The Neural-ZKBoo demos use the
 in-band Neural-QR packet codec for START/DATA, G32 ACK and G32 REQUEST, with
-trained W-tube/VW correction. The separate Optical Bench transport still uses
+trained W-tube/VW correction. The standalone authentication app defaults to G16
+digest receipts in place of the full G32 ACK. The separate Optical Bench transport still uses
 OBM5. Neither receiver has a compatibility fallback to the other format.
 
 | Layer | Current identifier | Canonical documentation / source |
@@ -24,7 +25,7 @@ OBM5. Neither receiver has a compatibility fallback to the other format.
 | Multipart color message | `OLM1` | [Link transport](../apps/color-optical-bench/LINK_TRANSPORT.md), `dist/js/link/protocol.js` |
 | QR byte transport | `QRT` | [QR formats](../apps/qr-neural-key/FORMAT.md), `dist/js/protocol.js` |
 | Neural-QR protected packet envelope | `NQP1` | [Turn demo](NEURAL_ZKBOO_DEMO.md), `dist/js/neural-qr/packet.js`; in-band geometry/type/length, OLM1 bytes and random padding protected by RS32 + CRC |
-| G16 timing-lab ACK receipt | `NQR`, version 1, type 1 | [Receipt profile](NEURAL_QR.md#acks-and-control-messages); protected 32-byte fingerprint of the expected OLM1 ACK, one camera exposure |
+| G16 auth / timing-lab ACK receipt | `NQR`, version 1, type 1 | [Receipt profile](NEURAL_QR.md#acks-and-control-messages); protected 32-byte fingerprint of the expected OLM1 ACK, one camera exposure |
 | Neural-ZKBoo authentication envelope | `NZA2`, `neural-zkboo-auth-v2` | [Authentication protocol](../apps/qr-neural-key/AUTHENTICATION.md), [QR formats](../apps/qr-neural-key/FORMAT.md) |
 | Optical model bundle | `neural-corrector`, version 1 | [Model/export contract](../experiments/neural-corrector/README.md); untrained or trained status, hashed graphs and fixtures |
 | Neural-corrector checkpoint | `optical-decoder-checkpoint`, version 1 | [`checkpoint.py`](../experiments/neural-corrector/checkpoint.py); local state dict and training/split provenance |

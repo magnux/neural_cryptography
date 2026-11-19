@@ -64,3 +64,12 @@ test('short report retains only usable camera dimensions and a known frame rate'
   assert.deepEqual(buildExchangeSummary({settings,auth,camera:{width:1280,height:720,frameRate:0}}).camera,
     {width:1280,height:720,frameRate:null});
 });
+
+test('short reports identify the selected ACK path and include only applicable receipt counts',()=>{
+  const reads={scans:38,decoded:16,matched:15,unmatched:1,digest:'private'};
+  for(const [ackSize,statistics] of [[16,true],[32,true],[16,false]]){
+    const report=buildExchangeSummary({settings:{...settings,ackSize,statistics},auth,receiptReads:reads});
+    assert.equal(report.settings.ackSize,ackSize);
+    assert.deepEqual(report.receiptReads,ackSize===16&&statistics?{scans:38,decoded:16,matched:15,unmatched:1}:null);
+  }
+});

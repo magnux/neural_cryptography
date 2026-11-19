@@ -13,6 +13,7 @@ import {ReceivePipeline} from './js/neural-auth/receive-pipeline.js';
 import {StageProfiler} from './js/neural-auth/timing.js';
 import {decodePacket} from './js/link/protocol.js';
 import {renderNeuralQR} from './js/neural-qr/layout.js';
+import {decodeReceipt16Capture,receipt16Digest,receipt16Frame} from './js/neural-qr/receipt16.js';
 import {paletteMap} from './js/grid.js';
 import {sameBytes} from './js/format.js';
 
@@ -39,10 +40,10 @@ function combineStages(...snapshots) {
 }
 
 export async function runFullHandshake({corrector,optimized=true,statistics=true,optical=true,
-  repetitions=32,heldCycles=2,onProgress=()=>{},signal,tamperProof=false,dropFinalAckWindows=false,dropRequestWindows=false}={}) {
+  repetitions=32,ackSize=16,heldCycles=2,onProgress=()=>{},signal,tamperProof=false,dropFinalAckWindows=false,dropRequestWindows=false}={}) {
   cancelled(signal);
   if(optical&&(!corrector?.infer||!corrector?.loadContext))throw Error('Actual simulation inference must be initialized before the optical handshake.');
-  if(!Number.isInteger(repetitions)||repetitions<1||repetitions>219||!Number.isInteger(heldCycles)||heldCycles<1||heldCycles>4)
+  if(![16,32].includes(ackSize)||!Number.isInteger(repetitions)||repetitions<1||repetitions>219||!Number.isInteger(heldCycles)||heldCycles<1||heldCycles>4)
     throw Error('Invalid bounded simulation settings.');
   const started=performance.now(),profiler=new StageProfiler(statistics),sessions={},channels={},pipelines={},operations={},pairing={};
   const cryptoJobs=new Set();
@@ -50,7 +51,7 @@ export async function runFullHandshake({corrector,optimized=true,statistics=true
   const displayedFrames={verifier:[],prover:[]};
   const requestWindows=new Set(),droppedAckWindows=new Map(),droppedRequests=new Map();let active=true;
   let clock=0,busy=0,cryptoIdleWaits=0,scans=0,inferenceCalls=0,skippedScans=0,packets=0,acceptedPackets=0,duplicatePackets=0,wrongTurnScans=0,waitingPacketWindows=0,containerRejectedScans=0;
-  let targetFrame=null,finalResultAckAccepted=false;
+  let targetFrame=null,finalResultAckAccepted=false,matchedReceipts=0;
   const reportProgress=message=>onProgress(`${optimized?'Optimized':'Baseline'}: ${message}`);
   for(const role of ROLES){
     operations[role]=new CryptoOperations();
@@ -95,11 +96,13 @@ export async function runFullHandshake({corrector,optimized=true,statistics=true
       if(to==='verifier'&&packet.kind==='ack'&&packet.status==='complete'&&result.delivered&&messages.at(-1)?.type==='RESULT')finalResultAckAccepted=true;
       return;
     }
-    // Match the live renderer: a held packet retains its random padding and
-    // all four phase images across scans, including duplicate REQUEST windows.
+    // Hold a single static image for G16 ACKs, or the same four phase images
+    // (and padding) for DATA, REQUEST and the optional neural G32 ACK.
     let cached=displayedFrames[role].find(item=>sameBytes(item.wire,wire));
     if(!cached){
-      cached={wire:wire.slice(),frames:profiler.measure('render.packet-framing',()=>packetFrames(wire,{size:64}))};
+      const frames=await profiler.measure('render.packet-framing',async()=>packet.kind==='ack'&&ackSize===16
+        ?[receipt16Frame(await receipt16Digest(wire),150)]:packetFrames(wire,{size:64,phaseMs:150}));
+      cached={wire:wire.slice(),frames};
       displayedFrames[role].push(cached);if(displayedFrames[role].length>4)displayedFrames[role].shift();
     }
     const frames=cached.frames;
@@ -108,16 +111,28 @@ export async function runFullHandshake({corrector,optimized=true,statistics=true
     // while the receiver is still looking at it. Both modes get equal scans.
     for(let cycle=0;cycle<heldCycles;cycle++)for(const frame of frames){
       cancelled(signal);targetFrame=frame;
-      const image=profiler.measure('render.raster',()=>renderNeuralQR(frame,frame.size===32?512:768));
+      const image=profiler.measure('render.raster',()=>renderNeuralQR(frame,frame.size<=32?512:768));
       scans++;scanFrames[to]++;clock+=150;
       // Use the receiving device's current turn, exactly as the camera UI does.
       // A response may begin while the previous display is still being held.
       const expected=channels[to].snapshot().expected;
       if(expected!==(packet.kind==='ack'?'ack':packet.kind==='poll'?'request':'data'))wrongTurnScans++;
-      const result=await pipelines[to].scan({image,runId:1,mediaTime:clock/1000,presentedFrames:scanFrames[to],
-        expected,captureIntervalMs:150,maxSize:64,optimized,statistics});
-      if(result.skipped)skippedScans++;
-      const chunk=result.chunk??result.decoded?.chunk;
+      let result,chunk;
+      // Select the reader from the local turn alone. Even a stale/unrelated
+      // image must go through the same independent optical checks as live.
+      if(expected==='ack'&&ackSize===16){
+        result=profiler.measure('receipt.single-exposure',()=>decodeReceipt16Capture(image,{now:clock,captureIntervalMs:150,collectTimings:statistics}));
+        if(result.ok){
+          const outstanding=channels[to].expectedAck();
+          if(outstanding&&sameBytes(result.digest,await receipt16Digest(outstanding)))chunk=outstanding;
+          else containerRejectedScans++;
+        }
+      }else{
+        result=await pipelines[to].scan({image,runId:1,mediaTime:clock/1000,presentedFrames:scanFrames[to],
+          expected,captureIntervalMs:150,maxSize:64,optimized,statistics});
+        if(result.skipped)skippedScans++;
+        chunk=result.chunk??result.decoded?.chunk;
+      }
       if(chunk){
         let recovered;
         try{recovered=profiler.measure('transport.unpack',()=>unpackOptical(chunk,expected));}
@@ -127,6 +142,7 @@ export async function runFullHandshake({corrector,optimized=true,statistics=true
         if(to==='verifier'&&packet.kind==='ack'&&packet.status==='complete'&&received.delivered&&messages.at(-1)?.type==='RESULT')finalResultAckAccepted=true;
         if(received.accepted){
           acceptedPackets++;if(delivered)duplicatePackets++;delivered=true;
+          if(expected==='ack'&&ackSize===16)matchedReceipts++;
           if(result.acceptToken){
             const acceptance=pipelines[to].accept({token:result.acceptToken,runId:1,expected});
             if(!acceptance.accepted)throw Error('Simulation receiver rejected its own accepted-packet token.');
@@ -193,7 +209,7 @@ export async function runFullHandshake({corrector,optimized=true,statistics=true
         if(!success&&!tamperProof)throw Error('Real Neural-ZKBoo proof verification or result delivery failed.');
         return {mode:optimized?'optimized':'baseline',success,proofVerified:verifier.result===true,resultDelivered:verifier.resultDelivered,
           peerReported:prover.peerReported,finalResultAckAccepted,proofBytes:verifier.proofBytes,messages,wallMs:performance.now()-started,virtualOpticalMs:clock,
-          scans,inferenceCalls,skippedScans,wrongTurnScans,waitingPacketWindows,containerRejectedScans,packets,acceptedPackets,duplicatePackets,automaticTurns:true,handoff:'request',manualHandoffs:0,cryptoIdleWaits,
+          scans,inferenceCalls,ackSize:optical?ackSize:null,matchedReceipts,skippedScans,wrongTurnScans,waitingPacketWindows,containerRejectedScans,packets,acceptedPackets,duplicatePackets,automaticTurns:true,handoff:'request',manualHandoffs:0,cryptoIdleWaits,
           requestWindows:requestWindows.size,droppedRequestWindows:droppedRequests.size,droppedFinalAckWindows:droppedAckWindows.size,cryptoCounts,
           modelSizes:[...modelSizes].sort((a,b)=>a-b),statisticsEnabled:statistics,
           stages:statistics?combineStages(profiler.snapshot(),...ROLES.map(role=>pipelines[role]?.snapshot?.().timings??pipelines[role]?.profiler?.snapshot?.())):[],
@@ -205,11 +221,11 @@ export async function runFullHandshake({corrector,optimized=true,statistics=true
   }finally{active=false;targetFrame=null;for(const role of ROLES){pairing[role].close();sessions[role].close('Simulation cleanup');channels[role].close();operations[role].clear();}}
 }
 
-export async function runSimulationComparison({corrector,statistics=true,optimized=true,compare=true,onProgress=()=>{},signal}={}) {
+export async function runSimulationComparison({corrector,ackSize=16,statistics=true,optimized=true,compare=true,onProgress=()=>{},signal}={}) {
   const report={format:'neural-auth-demo-simulation',version:1,kind:'target-assisted-simulation',timestamp:new Date().toISOString(),
     assumedOutput:true,modelAccuracyValidated:false,physicalCameraTest:false,
-    inference:corrector?.description,configuration:{repetitions:32,outgoingGrid:64,ackGrid:32,heldCycles:2,automaticTurns:true,handoff:'request',statisticsEnabled:statistics},
-    recoveryOutput:'assumed-correct target logits after actual untrained inference',
+    inference:corrector?.description,configuration:{repetitions:32,outgoingGrid:64,ackGrid:ackSize,requestGrid:32,heldCycles:2,automaticTurns:true,handoff:'request',statisticsEnabled:statistics},
+    recoveryOutput:ackSize===16?'DATA and REQUEST use target logits after actual untrained inference; static G16 receipts use independently decoded rendered pixels':'target logits after actual untrained inference for every packet kind',
     warnings:[
       `Simulation only: real untrained VW inference is ${statistics?'timed':'executed without detailed timing'}, then target logits replace its output to assume successful correction.`,
       'Authentication, framing, acquisition, RS+CRC recovery, and verification execute real code. Corrector accuracy is not measured.',
@@ -217,8 +233,8 @@ export async function runSimulationComparison({corrector,statistics=true,optimiz
       'The simulator waits for pending cryptography after an accepted request when neither side has outgoing data; live cryptography and inference use separate workers.',
       'Baseline and optimized use the same scan schedule with independent fresh keys, challenges and proofs. Wall times include rendering; stage timings may overlap.',
     ]};
-  if(compare||!optimized)report.baseline=await runFullHandshake({corrector,statistics,optimized:false,onProgress,signal});
-  if(compare||optimized)report.optimized=await runFullHandshake({corrector,statistics,optimized:true,onProgress,signal});
+  if(compare||!optimized)report.baseline=await runFullHandshake({corrector,ackSize,statistics,optimized:false,onProgress,signal});
+  if(compare||optimized)report.optimized=await runFullHandshake({corrector,ackSize,statistics,optimized:true,onProgress,signal});
   report.success=Boolean((report.baseline??report.optimized)?.success&&(!compare||report.optimized.success));
   if(compare){
     const baseline=report.baseline,current=report.optimized;

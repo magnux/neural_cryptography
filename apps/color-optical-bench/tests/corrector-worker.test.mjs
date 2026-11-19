@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 import {packetFrames} from '../dist/js/neural-auth/optical.js';
 import {encodePacket} from '../dist/js/link/protocol.js';
 import {renderNeuralQR} from '../dist/js/neural-qr/layout.js';
+import {receipt16Frames} from '../dist/js/neural-qr/receipt16.js';
 
 const workerURL=new URL('../dist/js/corrector-lab/worker.js',import.meta.url);
 const original=await readFile(workerURL,'utf8');
@@ -107,5 +108,33 @@ test('live worker forwards the configured reading interval through acquisition',
     assert.equal(second.stats.captureIntervalMs,500);
     const third=await scan(2,1);assert.equal(third.stats.geometrySource,'detected');
     await assert.rejects(scan(3,1.5,0),/interval/i);
+  }finally{h.restore();}
+});
+
+test('the prepared offline live worker reads G16 receipts without a G16 model, inference or a target',async()=>{
+  const h=await harness({sizes:[32]});try{
+    const opts={size:32,backend:'wasm'},digest=Uint8Array.from({length:32},(_,i)=>i+17);
+    const image=renderNeuralQR(receipt16Frames(digest)[0],256);
+    let response;
+    self.postMessage=msg=>{response=msg;};
+    const scan=async(properties={})=>{
+      await self.onmessage({data:{id:1,operation:'receipt-scan',options:{...opts,image,expected:'ack',runId:1,
+        captureIntervalMs:250,presentedFrames:1,mediaTime:.1,...properties}}});
+      return response;
+    };
+    assert.match((await scan()).error,/Initialize/);
+    await h.worker.initializeTransport(opts,()=>{});
+    h.state.offline=true;
+    const {fetches,runs}=h.state,n=runs.length;
+    const silent=(await scan()).result;
+    assert.equal(silent.ok,true);assert.deepEqual(silent.digest,digest);
+    for(const field of ['stats','timings','inferenceMs','acceptToken','input','samples'])assert.equal(Object.hasOwn(silent,field),false,field);
+    const duplicate=(await scan()).result;
+    assert.equal(duplicate.duplicateExposure,true);assert.equal(duplicate.digest,null);
+    const measured=(await scan({mediaTime:.2,presentedFrames:2,statistics:true})).result;
+    assert.deepEqual(measured.digest,digest);assert.equal(measured.inputCaptures,1);
+    assert.equal(measured.timings['rs-crc'].count,1);assert.equal(measured.timings.inference,undefined);
+    assert.match((await scan({expected:'data'})).error,/expecting an ACK/);
+    assert.equal(h.state.fetches,fetches);assert.equal(h.state.runs.length,n);
   }finally{h.restore();}
 });

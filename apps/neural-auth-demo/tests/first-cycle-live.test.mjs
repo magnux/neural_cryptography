@@ -7,9 +7,11 @@ import {CryptoClient} from '../dist/js/crypto-lab/client.js';
 import {CryptoOperations} from '../dist/js/crypto-lab/operations.js';
 import {TurnChannel} from '../dist/js/neural-auth/channel.js';
 import {TurnReceiver,createTurnSender} from '../dist/js/neural-auth/transport.js';
-import {decodePacket} from '../dist/js/link/protocol.js';
+import {decodePacket,encodePacket} from '../dist/js/link/protocol.js';
 import {PALETTE} from '../dist/js/format.js';
-import {NQR_LAYOUT} from '../dist/js/neural-qr/layout.js';
+import {ReceiptCaptureReader} from '../dist/js/neural-qr/receipt-reader.js';
+import {receipt16Digest,receipt16Frames,decodeReceipt16Capture} from '../dist/js/neural-qr/receipt16.js';
+import {NQR_LAYOUT,renderNeuralQR} from '../dist/js/neural-qr/layout.js';
 
 async function until(check,why){
   const end=Date.now()+3000;
@@ -19,11 +21,14 @@ async function until(check,why){
 
 // The camera, screen refresh and worker output are doubles. Rendered marker
 // colors, packet bytes, turn transitions and the app's schedulers are real.
-async function device(t,role,{holdKey=false,firstCycle=true}={}){
+let instance=0;
+async function device(t,role,{holdKey=false,firstCycle=true,ackSize}={}){
   const {get,track}=browser(t,role,true),video=get('video'),full=get('captureCanvas');
   for(const id of ['phaseWatch','optimized'])get(id).checked=true;get('firstCycle').checked=firstCycle;
-  let now=100,id=0,frame=0,camera=null,pixels=0,reply=null,keyReady;
+  if(ackSize!==undefined)get('ackSize').value=String(ackSize);
+  let now=100,id=0,frame=0,camera=null,pixels=0,reply=null,exposure=null,painted=null,keyReady;
   const scans=[],paints=[],rafs=new Map(),timers=new Map(),ops=new CryptoOperations();
+  const reader=new ReceiptCaptureReader();
   const key=holdKey?new Promise(r=>{keyReady=r;}):Promise.resolve();
   function rect(cb){rafs.set(++id,cb);return id;}
   t.mock.method(globalThis,'requestAnimationFrame',rect);t.mock.method(window,'requestAnimationFrame',rect);
@@ -45,12 +50,13 @@ async function device(t,role,{holdKey=false,firstCycle=true}={}){
     requestVideoFrameCallback(cb){assert.equal(camera,null,'at most one camera callback');camera=cb;return 1;},
     cancelVideoFrameCallback(){camera=null;}});
   const context={clearRect(){},drawImage(){pixels++;},
-    getImageData(x,y,w,h){return {width:w,height:h,data:new Uint8ClampedArray(w*h*4)};}};
+    getImageData(x,y,w,h){return (w===video.videoWidth&&exposure)||{width:w,height:h,data:new Uint8ClampedArray(w*h*4)};}};
   full.getContext=get('gateCanvas').getContext=()=>context;
   const create=document.createElement;
   document.createElement=k=>{const n=create(k);if(k==='canvas')n.getContext=()=>context;return n;};
-  get('overlay').getContext=()=>({clearRect(){}});
-  get('matrix').getContext=()=>({putImageData({data,width}){
+  get('overlay').getContext=()=>({clearRect(){},beginPath(){},moveTo(){},lineTo(){},closePath(){},stroke(){},fill(){}});
+  get('matrix').getContext=()=>({putImageData(image){
+    const {data,width}=painted=image;
     const [x,y]=NQR_LAYOUT.phasePairs[0][0],scale=width/NQR_LAYOUT.units,i=(y*scale*width+x*scale)*4;
     paints.push(PALETTE.findIndex(rgb=>rgb.every((v,j)=>v===data[i+j])));
   }});
@@ -60,17 +66,22 @@ async function device(t,role,{holdKey=false,firstCycle=true}={}){
   });
   t.mock.method(CorrectorClient.prototype,'call',async(op,opts)=>{
     if(op==='transport-init')return {ready:true,offlineReady:true,parity:{passed:true},modelStatus:'trained',modelProfile:'VW'};
+    if(op==='receipt-scan'){
+      scans.push('g16');
+      assert.equal(opts.expected,'ack');assert.ok(!Object.hasOwn(opts,'digest')&&!Object.hasOwn(opts,'ackBytes'));
+      return reader.scan(opts); // same blind reader and timestamp checks as the worker
+    }
     assert.equal(op,'transport-scan');scans.push(opts.expected);
     const output=reply;reply=null;
     if(output)return {ok:true,chunk:await output};
     return {ok:false,stage:'detect'};
   });
   const read=t.mock.method(TurnChannel.prototype,'current');
-  await import('../dist/app.js?presentation='+role+'-'+firstCycle);
+  await import('../dist/app.js?presentation='+instance++);
   get('start').click();await until(()=>read.mock.callCount(),'channel did not start');
   const channel=read.mock.calls[0].this;read.mock.restore();
   return {get,track,refresh,pulse,channel,paints,scans,get pixels(){return pixels;},keyReady,
-    get listening(){return !!camera;},setReply(value){reply=value;}};
+    get listening(){return !!camera;},get painted(){return painted;},setReply(value){reply=value;},setExposure(image){exposure=image;}};
 }
 
 async function presentFour(d){
@@ -87,7 +98,7 @@ async function presentFour(d){
 }
 
 test('Singleton HELLO, its matching ACK, then REQUEST: no reads during either first pass or after cancelling',async t=>{
-  const d=await device(t,'verifier',{holdKey:true});
+  const d=await device(t,'verifier',{holdKey:true,ackSize:32});
   try{
     // Start a read while there is no outbound HELLO. The old worker result
     // cannot stand in for an ACK once the screen switches to START.
@@ -112,8 +123,8 @@ test('Singleton HELLO, its matching ACK, then REQUEST: no reads during either fi
   }finally{if(!d.get('stop').hidden)d.get('stop').click();}
 });
 
-test('blank prover reads immediately; its ACK is guarded once even if the peer repeats START',async t=>{
-  const d=await device(t,'prover');
+test('G32 opt-in: blank prover reads immediately; its trained ACK is guarded once even if the peer repeats START',async t=>{
+  const d=await device(t,'prover',{ackSize:32});
   try{
     assert.equal(d.channel.current(),null);assert.equal(d.listening,true);
     // Use a multipart fixture: chunk zero produces progress, not an auth envelope.
@@ -133,6 +144,41 @@ test('turning off the display-first guard permits a scan during the first outgoi
   const d=await device(t,'verifier',{firstCycle:false});
   try{
     await until(()=>d.channel.current(),'HELLO not displayed');d.refresh(16);d.pulse();await turn();
-    assert.deepEqual(d.paints,[0]);assert.deepEqual(d.scans,['ack']);assert.ok(d.pixels>0);
+    assert.deepEqual(d.paints,[0]);assert.deepEqual(d.scans,['g16']);assert.ok(d.pixels>0);
+  }finally{d.get('stop').click();}
+});
+
+test('live G16 sender ignores a valid foreign receipt, accepts the matching exposure and switches to trained REQUEST handoff',async t=>{
+  const d=await device(t,'verifier');
+  try{
+    await until(()=>d.channel.current(),'HELLO not displayed');
+    const peer=new TurnReceiver(),wire=d.channel.current(),received=await peer.receive(wire,0);
+    assert.ok(received.delivery);
+    const matching=received.ack,other=encodePacket({...decodePacket(matching),messageId:'01'.repeat(8)});
+    const exposure=async bytes=>renderNeuralQR(receipt16Frames(await receipt16Digest(bytes))[0],256);
+    await presentFour(d);d.setExposure(await exposure(other));d.pulse();
+    await until(()=>d.listening,'sender stopped after foreign G16 receipt');
+    assert.deepEqual(d.scans,['g16']);assert.deepEqual(d.channel.current(),wire);
+    d.refresh(251);d.setExposure(await exposure(matching));d.pulse();
+    await until(()=>decodePacket(d.channel.current()).kind==='poll','matching single exposure did not confirm HELLO');
+    assert.deepEqual(d.scans,['g16','g16'],'trained model never saw an ACK');
+    await presentFour(d);d.setExposure(null);d.pulse();await turn();
+    assert.equal(d.scans.at(-1),'data','after trained G32 REQUEST the next read is trained DATA');
+  }finally{d.get('stop').click();}
+});
+
+test('the default G16 receipt is one static draw: it can listen for the next chunk after its very first paint',async t=>{
+  const d=await device(t,'prover');
+  try{
+    const start=(await createTurnSender(new Uint8Array(2000))).next(100);
+    d.setReply(start);d.pulse();await until(()=>d.channel.current(),'prover did not prepare ACK');
+    // Let asynchronous Web Crypto and the frame callback finish; no phase dwell passes.
+    for(let i=0;i<60&&!d.painted;i++){await turn();d.refresh(1);}
+    assert.deepEqual(d.paints,[0]);assert.ok(d.listening,'one paint suffices even with display-first enabled');
+    const decoded=decodeReceipt16Capture(d.painted);
+    assert.ok(decoded.ok,decoded.error);assert.deepEqual(decoded.digest,await receipt16Digest(d.channel.current()));
+    d.setReply(start);d.refresh(251);d.pulse();await turn();
+    d.refresh(2500);d.channel.notify();assert.deepEqual(d.paints,[0],'no phase cycling or repaint of a repeated ACK');
+    assert.deepEqual(d.scans,['data','data'],'next chunk is still decoded by the trained reader');
   }finally{d.get('stop').click();}
 });

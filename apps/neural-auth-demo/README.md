@@ -9,17 +9,22 @@ and both have display toggles. The exchange fits one viewport; Settings opens
 the scrolling setup and statistics view. Mirroring changes only the preview.
 
 The first matrix carries chunk zero, so a small message takes one round trip.
+Live ACKs default to a static G16 receipt, read from one camera exposure with
+RS+CRC and no inference. Select **Settings → Acknowledgments → G32** on both
+phones to use the full four-phase ACK with the neural corrector instead.
+[How the camera uses the border palette and grid](../../docs/NEURAL_QR.md#color-calibration-before-inference).
+
 Turns use stable G32 REQUEST controls: the final ACK stays visible until the
-sender acknowledges receipt by requesting the reply. Each packet reuses its
+sender acknowledges receipt by requesting the reply. Each phased packet reuses its
 four cached palette-phase images; no timer alternates final ACK and START.
 Both screens show the same five named exchange steps, with a separate packet
 counter during each transfer. Camera exchange starts each new packet at **200 ms
 per displayed phase**. Each repeat of the four phases adds **50 ms per phase**,
 up to **500 ms**, so a difficult packet stays visible longer. Fixed timing
 (initially 350 ms per phase) is also available. The camera searches every
-250 ms until lock. By default, a phone shows all four phases of a new packet
+250 ms until lock. By default, a phone shows all four phases of a phased packet
 once before reading the other screen.
-A phone with nothing to send listens immediately. See the
+A static receipt lets the phone listen immediately after its first draw. See the
 [two-phone comparison](../../docs/NEURAL_AUTH_DEMO.md#show-the-outgoing-phases-before-reading)
 to test this setting. Once it locks, the default reader watches
 a small patch for the next phase and captures a fresh camera frame after a 10 ms

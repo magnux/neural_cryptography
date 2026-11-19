@@ -57,8 +57,13 @@ test('synthetic images follow the actual receiving turn through automatic optica
     outputLabelSpace:'logical',phaseMasks:[0,15,7,8]};
   const corrector={loadContext:async size=>({manifest,entry:{size},effectiveBackend:'test-only-stub'}),
     infer:async context=>({values:new Float32Array(16*context.entry.size**2),ms:0})};
-  const result=await runFullHandshake({corrector,repetitions:1,statistics:false});
-  assert.equal(result.success,true);assert.equal(result.finalResultAckAccepted,true);assert.equal(result.manualHandoffs,0);
-  assert.ok(result.inferenceCalls>0);assert.ok(result.scans>result.inferenceCalls);assert.ok(result.wrongTurnScans>0);
-  assert.deepEqual(result.stages,[]);
+  for(const profile of [undefined,32]){
+    const result=await runFullHandshake({corrector,repetitions:1,statistics:false,ackSize:profile});
+    assert.equal(result.success,true);assert.equal(result.finalResultAckAccepted,true);assert.equal(result.manualHandoffs,0);
+    assert.ok(result.inferenceCalls>0);assert.ok(result.scans>result.inferenceCalls);assert.ok(result.wrongTurnScans>0);
+    assert.deepEqual(result.stages,[]);
+    assert.equal(result.ackSize,profile??16);
+    assert.equal(result.matchedReceipts,profile===32?0:5,'only the static receipt path can confirm an optical G16 ACK');
+    assert.deepEqual(result.modelSizes,[32,64],'the four G32 REQUESTs always require inference; G16 never does');
+  }
 });

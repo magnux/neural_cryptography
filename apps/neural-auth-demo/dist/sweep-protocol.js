@@ -1,6 +1,6 @@
 // One trained four-phase DATA probe. Its ordinary ACK can be returned as a
 // trained G32 packet or as a digest receipt in a static G16 timing profile.
-import {receipt16Digest,receipt16Frames} from './js/neural-qr/receipt16.js';
+import {receipt16Digest,receipt16Frame} from './js/neural-qr/receipt16.js';
 import {randomBytes} from './js/format.js';
 import {decodePacket,encodePacket,randomId,sha256} from './js/link/protocol.js';
 import {chunkBytesForSize,CONTROL_SIZE,packetFrames,unpackOptical} from './js/neural-auth/optical.js';
@@ -51,7 +51,7 @@ export async function acknowledgeSweepProbe(chunk,{runId,step,size,phaseMs,captu
   const digest=await sha256(p.data);
   const bytes=ackBytes({runId:p.sessionId,messageId:p.messageId,step,digest});
   return {runId:p.sessionId,step,size:ackSize,phaseMs,captureMs,messageId:p.messageId,ackBytes:bytes,
-    frames:ackSize===16?[receipt16Frames(await receipt16Digest(bytes),phaseMs)[0]]:packetFrames(bytes,{size:CONTROL_SIZE,phaseMs})};
+    frames:ackSize===16?[receipt16Frame(await receipt16Digest(bytes),phaseMs)]:packetFrames(bytes,{size:CONTROL_SIZE,phaseMs})};
 }
 
 // Only compare after the independent camera decoder returns a complete receipt.

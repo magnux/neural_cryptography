@@ -105,3 +105,18 @@ test('REQUEST control records share the bounded telemetry row budget',()=>{
   assert.equal(report.requests.length+report.packets.length,2);
   assert.equal(report.droppedEvents,1);assert.equal(report.truncated,true);
 });
+
+test('G16 timings correlate the independently matched logical ACK but count only the transmitted digest',()=>{
+  const t=new PacketTelemetry({originMs:0}),receipt=ack(0,'progress');
+  assert.equal(t.displayed(start(),{grid:16,atMs:0}),false);
+  assert.equal(t.accepted(request(),{accepted:true},{grid:16,atMs:1}),false);
+  t.displayed(start(),{grid:64,atMs:10});
+  t.accepted(start(),{accepted:true},{grid:64,atMs:20});
+  t.displayed(receipt,{grid:16,atMs:25});
+  assert.equal(t.accepted(receipt,{accepted:false},{grid:16,atMs:29}),false);
+  t.accepted(receipt,{accepted:true},{grid:16,atMs:30});
+  const snap=t.snapshot();
+  assert.equal(snap.roundTrips.overall.meanMs,20);
+  assert.equal(snap.receiveToAckDisplay.meanMs,5);
+  for(const row of snap.packets){assert.equal(row.ack.packetBytes,32);assert.equal(row.ack.grid,16);}
+});

@@ -45,7 +45,7 @@ export class ExchangeStepClock{
 /** Whitelist the settings and aggregates needed to compare device runs. The
  * caller provides counts from the live run (not the simulation or timing tab).
  * packetRtt is the overall timing for this device's own START/DATA → ACK. */
-export function buildExchangeSummary({settings,auth,started,clock,packetRtt,captureAttempts,acceptedMatrices,inference,model,camera}){
+export function buildExchangeSummary({settings,auth,started,clock,packetRtt,captureAttempts,acceptedMatrices,inference,model,camera,receiptReads}){
   const role=settings?.role;
   if(typeof auth?.result!=='boolean'||!(role==='verifier'?auth.resultDelivered===true:role==='prover'&&auth.peerReported===true))return null;
   const statisticsEnabled=settings.statistics===true;
@@ -61,10 +61,12 @@ export function buildExchangeSummary({settings,auth,started,clock,packetRtt,capt
     outcome:role==='verifier'?(auth.result?'verified-locally':'rejected-locally'):(auth.result?'peer-reported-accepted':'peer-reported-rejected'),
     repetitions:count(auth.repetitions??settings.repetitions),proofBytes:count(auth.proofBytes),
     settings:{phaseCadence:settings.phaseCadence,phaseMs:count(settings.phaseMs),phaseStepMs:count(settings.phaseStepMs),
-      phaseMaxMs:count(settings.phaseMaxMs),firstCycle:settings.firstCycle===true,captureMs:count(settings.captureMs),outgoingSize:count(settings.outgoingSize),
+      phaseMaxMs:count(settings.phaseMaxMs),ackSize:count(settings.ackSize),firstCycle:settings.firstCycle===true,captureMs:count(settings.captureMs),outgoingSize:count(settings.outgoingSize),
       incomingMaxSize:count(settings.incomingMaxSize),optimized:settings.optimized===true,phaseWatch:settings.phaseWatch===true},
     statisticsEnabled,elapsedMs:timed?.elapsedMs??null,setupMs:timed?.setupMs??null,steps:timed?.steps??[],
     captureAttempts:statisticsEnabled?count(captureAttempts):null,acceptedMatrices:statisticsEnabled?count(acceptedMatrices):null,
+    receiptReads:statisticsEnabled&&settings.ackSize===16&&receiptReads?{scans:count(receiptReads.scans),decoded:count(receiptReads.decoded),
+      matched:count(receiptReads.matched),unmatched:count(receiptReads.unmatched)}:null,
     camera:actualCamera,packetRtt:optical,inference:statisticsEnabled&&count(inference?.count)>0?{count:inference.count,meanMs:ms(inference.meanMs)}:null,
     backend:model?.effectiveBackend??null,modelProfile:model?.modelProfile??null};
 }

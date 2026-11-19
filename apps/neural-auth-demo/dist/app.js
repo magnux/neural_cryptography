@@ -8,6 +8,7 @@ import {decodeEnvelope,normalizeDisplayName,validDeviceId} from './js/auth-core/
 import {CameraPreparation} from './camera-preparation.js';
 import {sameBytes} from './js/format.js';
 import {renderNeuralQR} from './js/neural-qr/layout.js';
+import {receipt16Digest,receipt16Frame} from './js/neural-qr/receipt16.js';
 import {openCaptureCamera,captureDimensions} from './js/dataset/camera.js';
 import {decodePacket} from './js/link/protocol.js';
 import {TurnChannel} from './js/neural-auth/channel.js';
@@ -121,6 +122,7 @@ function initialize() {
   let mode='camera',active=false,epoch=0,stream=null,corrector=null,cryptoClient=null,session=null,channel=null;
   let config=null,authState=null,report=null,startedAt=0,packetTelemetry=null,autoPairing=null,simulationAbort=null;
   const displayPhases=new FirstPresentation();
+  let receiptPaint=null,receiptWaiting=false;
   let presentationId=0,cameraTicket=0,readerIdle=false,displayStats=null,displayRound=0;
   let captureCallback=null,heartbeat=null,lastCapture=-Infinity,lastPresented=0,frameWaitAt=0,scanning=false;
   let phaseWatch=null,phaseSampler=null,watchGeneration=0,watchExpected=null,sourceWidth=0,sourceHeight=0,lastMediaTime=-Infinity;
@@ -149,8 +151,10 @@ function initialize() {
     const role=$('role').value,backend=$('backend').value,repetitions=Number($('repetitions').value),resolution=$('resolution').value;
     const outgoingSize=Number($('outgoingSize').value),incomingMaxSize=Number($('incomingSize').value);
     if(!['verifier','prover'].includes(role)||!['auto','wasm','webgpu'].includes(backend)||![32,64,110,160,219].includes(repetitions)||!['480','720','1080','1440','2160','max'].includes(resolution)||![64,128].includes(outgoingSize)||![64,128].includes(incomingMaxSize))throw Error('Choose supported connection settings.');
+    const ackSize=Number($('ackSize').value);
+    if(![16,32].includes(ackSize))throw Error('Choose a supported acknowledgment profile.');
     const cadence=readDisplaySettings($);
-    return {displayName:normalizeDisplayName($('displayName').value),role,backend,repetitions,resolution,outgoingSize,incomingMaxSize,controlSize:32,
+    return {displayName:normalizeDisplayName($('displayName').value),role,backend,repetitions,resolution,outgoingSize,incomingMaxSize,ackSize,controlSize:32,
       ...cadence,firstCycle:$('firstCycle').checked,captureMs:integer($('captureMs').value,50,2000,'Capture interval'),cameraId:$('camera').value,facingMode:'user',
       phaseWatch:$('phaseWatch').checked,
       statistics:$('statistics').checked,optimized:$('optimized').checked,automaticTurns:true,handoff:'request',pairingConfirmation:'automatic-poc-unchecked'};
@@ -222,7 +226,36 @@ function initialize() {
     if(shortReport||mode!=='camera'||!report?.completion)return;
     shortReport=buildExchangeSummary({settings:config,auth:authState,started:report.started,clock:stepClock,
       packetRtt:packetTelemetry?.snapshot().roundTrips.overall,acceptedMatrices:acceptedCount,
-      captureAttempts:scanCount,inference:config.statistics?timingSummary(operations).inference:null,model:report.model,camera:report.camera});
+      captureAttempts:scanCount,receiptReads:report.receiptReads,inference:config.statistics?timingSummary(operations).inference:null,model:report.model,camera:report.camera});
+  }
+
+  function paintMatrix(image){
+    const canvas=$('matrix');
+    if(canvas.width!==image.width)canvas.width=image.width;if(canvas.height!==image.height)canvas.height=image.height;
+    canvas.getContext('2d').putImageData(new ImageData(image.data,image.width,image.height),0,0);
+  }
+
+  // The ACK is a static picture. Once it actually appears, a nonterminal
+  // receiver can listen for DATA or REQUEST on its next fresh camera frame.
+  async function showReceipt(bytes,token,id) {
+    const current=()=>isCurrent(token)&&id===presentationId;
+    const began=config.statistics?performance.now():0;
+    const fingerprint=await receipt16Digest(bytes);
+    if(!current())return;
+    const frame=receipt16Frame(fingerprint,config.phaseMs);
+    const image=renderNeuralQR(frame,256);
+    if(config.statistics)timing('packetRender',performance.now()-began);
+    receiptPaint=requestAnimationFrame(()=>{
+      if(!current())return;
+      receiptPaint=null;
+      try{
+        paintMatrix(image);$('matrixZone').dataset.visible='true';$('matrixPlaceholder').hidden=true;
+        if(displayStats){displayStats.staticAckDraws++;packetTelemetry.displayed(bytes,{grid:16,atMs:performance.now()});}
+        receiptWaiting=false;lastCapture=-Infinity;
+        if(!readerIdle)setText('cameraStatus','Listening for the next matrix');
+        syncCamera(token);
+      }catch(e){fail(e,token);}
+    });
   }
 
   function renderCurrent() {
@@ -233,10 +266,18 @@ function initialize() {
       setText('matrixLabel','Looking for the other device');return;
     }
     if(shown&&sameBytes(shown,bytes))return;
-    // A new outgoing packet expects a new reply even when both replies are
-    // G32 ACKs. A phase repaint of the same packet must not clear the lock.
-    endPresentation();resetPhaseWatch();
-    const began=config.statistics?performance.now():0,packet=decodePacket(bytes),size=['ack','poll'].includes(packet.kind)?32:config.outgoingSize;
+    // A new packet gets a new camera presentation even when the next receipt
+    // has the same geometry. Repaints of a held packet keep the current turn.
+    endPresentation();resetPhaseWatch();shown=bytes.slice();
+    const packet=decodePacket(bytes),size=packet.kind==='ack'?config.ackSize:packet.kind==='poll'?32:config.outgoingSize;
+    if(size===16){
+      receiptWaiting=true;rendered=[];$('matrixZone').dataset.visible='false';$('matrixPlaceholder').hidden=false;
+      setText('matrixLabel','G16 acknowledgment · keep visible');
+      const token=epoch,id=presentationId;
+      void showReceipt(bytes,token,id).catch(e=>{if(isCurrent(token)&&id===presentationId)fail(e,token);});
+      return;
+    }
+    const began=config.statistics?performance.now():0;
     // Rendering adds secure random padding. Cache the exact first four phases
     // for repeated display of the same packet instead of generating new pixels.
     let cached=renderCache.find(item=>item.size===size&&sameBytes(item.bytes,bytes));
@@ -244,7 +285,7 @@ function initialize() {
       cached={bytes:bytes.slice(),size,frames:packetFrames(bytes,{size,phaseMs:config.phaseMs}).map(frame=>renderNeuralQR(frame,size*8))};
       renderCache.push(cached);if(renderCache.length>4)renderCache.shift();
     }
-    shown=bytes.slice();rendered=cached.frames;
+    rendered=cached.frames;
     $('matrixZone').dataset.visible='true';$('matrixPlaceholder').hidden=true;
     setText('matrixLabel',packet.kind==='ack'?'Acknowledgment · keep visible':packet.kind==='poll'?'Requesting next message · keep visible':`G${size} · ${packet.kind==='start'?'starting message':'sending data'}`);
     const token=epoch;
@@ -253,9 +294,7 @@ function initialize() {
     if(config.firstCycle&&!readerIdle)setText('cameraStatus','Showing four phases before listening');
     displayPhases.start({phaseMs:config.phaseMs,incrementMs:config.phaseStepMs,maxPhaseMs:config.phaseMaxMs,
       paint:(phase,first,dwell,round)=>{
-        const image=rendered[phase],canvas=$('matrix');
-        if(canvas.width!==image.width)canvas.width=image.width;if(canvas.height!==image.height)canvas.height=image.height;
-        canvas.getContext('2d').putImageData(new ImageData(image.data,image.width,image.height),0,0);
+        paintMatrix(rendered[phase]);
         if(first&&config.statistics){firstDraw=performance.now();packetTelemetry?.displayed(bytes,{grid:size,atMs:firstDraw});}
         if(displayStats){
           displayRound=round;
@@ -279,6 +318,7 @@ function initialize() {
 
   function endPresentation(){
     if(displayStats&&displayPhases.holding)displayStats.interrupted++;
+    if(receiptPaint!==null)cancelAnimationFrame(receiptPaint);receiptPaint=null;receiptWaiting=false;
     displayPhases.clear();presentationId++;displayRound=0;
   }
 
@@ -289,7 +329,7 @@ function initialize() {
       firstDrawToFourthPresentedMs:timingSummary(timings).firstDrawToFourthPresented??null};
   }
 
-  function mayRead(){return Boolean(channel&&session&&stream&&!readerIdle&&!(config.firstCycle&&displayPhases.holding));}
+  function mayRead(){return Boolean(channel&&session&&stream&&!readerIdle&&!receiptWaiting&&!(config.firstCycle&&displayPhases.holding));}
   function cancelCapture(){
     ++cameraTicket;
     if(captureCallback!==null)$('video').cancelVideoFrameCallback(captureCallback);
@@ -330,7 +370,7 @@ function initialize() {
       if(metadata.presentedFrames<=lastPresented||metadata.mediaTime<=lastMediaTime){scheduleCapture(token);return;}
       lastPresented=metadata.presentedFrames;lastMediaTime=metadata.mediaTime;
       const due=()=>now-lastCapture>=config.captureMs;
-      const trigger=phaseWatch?phaseWatch.decide(now,lastPresented,roi=>phaseSampler.read(camera,roi),due):due()?'timed':null;
+      const trigger=phaseWatch&&!(watchExpected==='ack'&&config.ackSize===16)?phaseWatch.decide(now,lastPresented,roi=>phaseSampler.read(camera,roi),due):due()?'timed':null;
       if(!trigger){scheduleCapture(token);return;}
       lastCapture=now;scanning=true;
       void scan(metadata,token,trigger,watchGeneration,presentationId).catch(e=>{if(isCurrent(token))fail(e,token);}).finally(()=>{if(isCurrent(token)){scanning=false;if(report?.completion)freezeShortReport();scheduleCapture(token);}});
@@ -340,7 +380,8 @@ function initialize() {
   async function scan(metadata,token,trigger,generation,scanPresentation) {
     const camera=$('video'),canvas=$('captureCanvas'),dimensions=captureDimensions(camera.videoWidth,camera.videoHeight);
     const expected=channel?.snapshot().expected??'data';
-    if(config.statistics)scanCount++;
+    const single=expected==='ack'&&config.ackSize===16,useProbe=!single&&config.optimized;
+    if(config.statistics){scanCount++;if(single)report.receiptReads.scans++;}
     let probe;
     function thumbnail(source){
       const began=config.statistics?performance.now():0;
@@ -351,7 +392,7 @@ function initialize() {
     }
     // Read from the video only if a previously accepted template could skip
     // the full scan. A phase change or watchdog must always get a full read.
-    if(config.optimized&&trigger!=='change'&&trigger!=='watchdog'&&
+    if(useProbe&&trigger!=='change'&&trigger!=='watchdog'&&
       probeGate.shouldSkip(()=>probe=thumbnail(camera),{runId:token,expected,mediaTime:metadata.mediaTime})){
       if(config.statistics)mainThreadSkipped++;
       setText('cameraStatus','Holding steady · watching for changes');return;
@@ -364,11 +405,14 @@ function initialize() {
     if(config.statistics){timing('cameraReadback',performance.now()-readbackStart);report.processedCamera=dimensions;}
     // A collecting worker still needs a thumbnail so that accepted exposures
     // can later suppress all four held phases. Reuse the captured pixels.
-    if(config.optimized&&!probe)probe=thumbnail(canvas);
+    if(useProbe&&!probe)probe=thumbnail(canvas);
     const worker=corrector;
     const options={size:config.incomingMaxSize,backend:config.backend,expected,runId:token,presentationId:scanPresentation,statistics:config.statistics,optimized:config.optimized};
     const workerStart=config.statistics?performance.now():0;
-    const result=await worker.call('transport-scan',{...options,image,...(probe?{probe,forceAcquisition:true}:{}),captureIntervalMs:config.captureMs,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames},[image.data.buffer]);
+    // The receipt worker only sees this exposure, never a target digest,
+    // packet, or expected session. It returns bytes after optical RS+CRC.
+    const result=await worker.call(single?'receipt-scan':'transport-scan',{...options,image,...(probe?{probe,forceAcquisition:true}:{}),
+      captureIntervalMs:config.captureMs,mediaTime:metadata.mediaTime,presentedFrames:metadata.presentedFrames},[image.data.buffer]);
     if(!isCurrent(token))return;
     if(config.statistics)timing('workerRoundTrip',performance.now()-workerStart);
     // Never apply a read submitted before this outgoing packet/turn. The
@@ -379,7 +423,7 @@ function initialize() {
     }
     // The serial capture canvas still holds the exposure the worker examined;
     // taking a baseline from the live video now could silently skip a phase.
-    if(phaseWatch&&generation===watchGeneration){
+    if(!single&&phaseWatch&&generation===watchGeneration){
       // All phases of an already accepted packet are duplicates. Keep the
       // cheap accepted-packet gate in charge until there is new optical data.
       if(result.skipped&&result.stage==='unchanged')resetPhaseWatch();
@@ -392,8 +436,25 @@ function initialize() {
       else if(result.stats)report.lastScanStatistics=result.stats;
     }
     feedback(result,canvas.width,canvas.height);if(!result.ok)return;
-    let bytes;try{bytes=unpackOptical(result.chunk,expected);}catch{event('Optical packet rejected by container checks.');return;}
-    const receivedAt=performance.now(),replyRound=displayRound,acceptance=await channel.receive(bytes);if(!isCurrent(token))return;
+    const replyRound=displayRound;
+    let bytes;
+    if(single){
+      if(result.info?.size!==16||!(result.digest instanceof Uint8Array)||result.digest.length!==32)return;
+      if(config.statistics)report.receiptReads.decoded++;
+      bytes=channel.expectedAck();if(!bytes)return;
+      const fingerprint=await receipt16Digest(bytes);
+      if(!isCurrent(token)||scanPresentation!==presentationId||watchExpected!=='ack'||readerIdle)return;
+      const current=channel.expectedAck();
+      if(!current||!sameBytes(current,bytes)||!sameBytes(result.digest,fingerprint)){
+        if(config.statistics)report.receiptReads.unmatched++;
+        setText('cameraStatus','Waiting for the receipt for this packet');return;
+      }
+    }else{
+      try{bytes=unpackOptical(result.chunk,expected);}catch{event('Optical packet rejected by container checks.');return;}
+    }
+    // Both formats still go through the ordinary sender's exact ACK checks.
+    const receivedAt=performance.now(),acceptance=await channel.receive(bytes);if(!isCurrent(token))return;
+    if(single&&config.statistics)report.receiptReads[acceptance.accepted?'matched':'unmatched']++;
     packetTelemetry?.accepted(bytes,acceptance,{grid:result.info?.size,atMs:receivedAt});
     if(config.statistics)timing('transportReceive',performance.now()-receivedAt);
     if(acceptance.accepted){
@@ -403,7 +464,7 @@ function initialize() {
       if(report?.completion)freezeShortReport();
       // Only an accepted transport packet may suppress its repeated pixels.
       // This serial call finishes before another scan can use the worker.
-      if(result.acceptToken!==undefined){
+      if(!single&&result.acceptToken!==undefined){
         const accepted=await worker.call('transport-accept',{...options,token:result.acceptToken});
         if(isCurrent(token)&&config.optimized)probeGate.accept(accepted.probeGate);
       }
@@ -461,7 +522,7 @@ function initialize() {
   async function startSimulation(token) {
     simulationAbort=new AbortController();setText('simulationStatus','Preparing two local devices…');
     const {runSimulation}=await import('./simulation.js');if(!isCurrent(token))return;
-    const result=await runSimulation({onProgress:message=>{if(isCurrent(token))setText('simulationStatus',String(message));},statistics:config.statistics,optimized:config.optimized,signal:simulationAbort.signal});
+    const result=await runSimulation({ackSize:config.ackSize,onProgress:message=>{if(isCurrent(token))setText('simulationStatus',String(message));},statistics:config.statistics,optimized:config.optimized,signal:simulationAbort.signal});
     if(!isCurrent(token))return;
     report={...result,settings:report.settings,started:report.started,finished:new Date().toISOString()};
     const baseline=result.baseline,optimized=result.optimized,successful=(optimized??baseline)?.success??result.success;
@@ -491,13 +552,14 @@ function initialize() {
     stepClock=mode==='camera'&&config.statistics?new ExchangeStepClock(startedAt):null;
     if(mode==='camera')showExchangeStep(null);
     presentationId=0;readerIdle=false;
-    displayStats=mode==='camera'&&config.statistics?{started:0,completed:0,interrupted:0,cameraCallbacksBeforeFourth:0,
+    displayStats=mode==='camera'&&config.statistics?{started:0,completed:0,interrupted:0,staticAckDraws:0,cameraCallbacksBeforeFourth:0,
       fullReadbacksBeforeFourth:0,staleScanResults:0,peakDwellMs:0,maxRound:0,ackReadByRound:Array(8).fill(0),timings:Object.create(null)}:null;
     events=[];operations=Object.create(null);renderCache=[];shown=null;rendered=[];lastInference=null;acceptedCount=0;scanCount=0;mainThreadSkipped=0;probeGate.reset();
     phaseWatch=mode==='camera'&&config.phaseWatch?new PhaseWatch({captureMs:config.captureMs,statistics:config.statistics}):null;
     phaseSampler=phaseWatch?createPhaseSampler():null;watchExpected=null;sourceWidth=sourceHeight=0;lastMediaTime=-Infinity;watchGeneration=0;
     lastCapture=-Infinity;lastPresented=0;lastFeedbackAt=-Infinity;scanning=false;packetTelemetry=null;lastAnnouncement='';
     report={format:'neural-auth-demo-report',version:1,kind:mode,started:new Date().toISOString(),settings:{...config,cameraId:undefined},completion:null};
+    if(mode==='camera'&&config.statistics&&config.ackSize===16)report.receiptReads={scans:0,decoded:0,matched:0,unmatched:0};
     $('settings').open=false;$('result').hidden=true;$('transfer').hidden=true;$('matrixZone').dataset.visible='false';$('matrixPlaceholder').hidden=false;
     $('app').dataset.state='active';buttons();statisticsView();
     try{if(mode==='camera')await startCamera(token);else await startSimulation(token);}catch(e){if(isCurrent(token))fail(e,token);}

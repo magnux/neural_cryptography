@@ -5,6 +5,9 @@ import {AuthSession} from '../dist/js/auth-core/session.js';
 import {decodeEnvelope} from '../dist/js/auth-core/envelope.js';
 import {TurnChannel} from '../dist/js/neural-auth/channel.js';
 import {POCAutoPairing} from '../dist/js/neural-auth/poc-pairing.js';
+import {renderNeuralQR} from '../dist/js/neural-qr/layout.js';
+import {ReceiptCaptureReader} from '../dist/js/neural-qr/receipt-reader.js';
+import {receipt16Digest,receipt16Frames,decodeReceipt16Capture} from '../dist/js/neural-qr/receipt16.js';
 import {decodePacket} from '../dist/js/link/protocol.js';
 import {CryptoOperations} from '../dist/js/crypto-lab/operations.js';
 import {CryptoClient} from '../dist/js/crypto-lab/client.js';
@@ -13,8 +16,18 @@ import {CorrectorClient} from '../dist/js/corrector-lab/client.js';
 import {browser} from './helpers/live-browser.mjs';
 
 for(const [role,statistics] of [['prover',true],['verifier',false]])test(
-  'Finish exchange on '+role+' retains optical delivery, then exports a short report with statistics '+(statistics?'on':'off'),async t=>{
+  'All 18 G16 receipts reach the opposite device before finishing on '+role+' with statistics '+(statistics?'on':'off'),async t=>{
     const {get,track}=browser(t,role,statistics);
+    // DATA and REQUEST enter at the trained worker's byte boundary. All ACKs
+    // (including RESULT) must cross as real, optically classified G16 images.
+    const video=get('video'),reader=new ReceiptCaptureReader();
+    let painted=null,exposure=null,cameraCb=null,seq=0,now=0;
+    get('matrix').getContext=()=>({putImageData(image){painted=image;}});
+    get('captureCanvas').getContext=()=>({drawImage(){},getImageData(){return exposure;}});
+    get('overlay').getContext=()=>({clearRect(){},beginPath(){},moveTo(){},lineTo(){},closePath(){},stroke(){},fill(){}});
+    Object.assign(video,{videoWidth:256,videoHeight:256,readyState:4,
+      requestVideoFrameCallback(cb){assert.equal(cameraCb,null);cameraCb=cb;return 1;},
+      cancelVideoFrameCallback(){cameraCb=null;}});
     const localOps=new CryptoOperations(),otherOps=new CryptoOperations();
     let online=true;const warmed=new Set(),cryptoJobs=[];
     t.mock.method(CryptoClient.prototype,'request',function(type,payload,opts){
@@ -22,7 +35,8 @@ for(const [role,statistics] of [['prover',true],['verifier',false]])test(
       else assert.ok(warmed.has(this),'offline auth reuses the already loaded crypto worker');
       cryptoJobs.push(type);return localOps.run(type,payload,opts?.onProgress);
     });
-    const corrector=t.mock.method(CorrectorClient.prototype,'call',async operation=>{
+    const corrector=t.mock.method(CorrectorClient.prototype,'call',async(operation,opts)=>{
+      if(operation==='receipt-scan')return reader.scan(opts);
       assert.ok(online,'model initialization needs the server');assert.equal(operation,'transport-init');
       return {ready:true,offlineReady:true,parity:{passed:true},modelStatus:'trained',modelProfile:'VW',effectiveBackend:'wasm'};
     });
@@ -46,22 +60,54 @@ for(const [role,statistics] of [['prover',true],['verifier',false]])test(
       onChange:state=>pair.update(peer,state)});
     t.after(()=>{if(!get('stop').hidden)get('stop').click();remote.close();pair.close();peer.close();});
     await peer.start();
+    const seen=new Set(),receive=TurnChannel.prototype.receive;
+    t.mock.method(TurnChannel.prototype,'receive',async function(bytes){
+      const result=await receive.call(this,bytes),packet=decodePacket(bytes);
+      if(result.accepted&&packet.kind==='ack')seen.add(packet.messageId+'/'+packet.base);
+      return result;
+    });
+    let cachedScreen=null,cachedDigest=null,cachedRemote=null;
     let sawFinalAck=false;
-    while(!sawFinalAck&&Date.now()<expires){
+    while((!sawFinalAck||get('stop').textContent!=='Finish exchange')&&Date.now()<expires){
       for(const [sender,receiver] of [[local,remote],[remote,local]]){
         const wire=sender.current();if(!wire)continue;
         const final=(role==='prover'&&sender===local&&get('stop').textContent==='Finish exchange')||
           (role==='verifier'&&sender===remote&&peer.snapshot().peerReported);
-        if(final&&decodePacket(wire).kind==='ack'){
+        const packet=decodePacket(wire);
+        if(packet.kind!=='ack'){await receiver.receive(wire);continue;}
+        if(receiver.snapshot().expected!=='ack')continue;
+        const key=packet.messageId+'/'+packet.base;
+        if(seen.has(key))continue;
+        if(sender===local){
+          // The app may still have the preceding DATA/REQUEST on screen while
+          // Web Crypto prepares the receipt; don't let the packet stub run ahead.
+          if(!painted)continue;
+          if(painted!==cachedScreen){cachedScreen=painted;cachedDigest=decodeReceipt16Capture(painted).digest;}
+          const expected=receiver.expectedAck();
+          if(!cachedDigest||!expected||!Buffer.from(cachedDigest).equals(await receipt16Digest(expected)))continue;
+          assert.deepEqual(expected,wire);
+        }else{
+          if(!cameraCb)continue;
+          if(key!==cachedRemote){
+            cachedRemote=key;exposure=renderNeuralQR(receipt16Frames(await receipt16Digest(wire))[0],256);
+          }
+        }
+        if(final){
           assert.equal(get('exchangeSummary').hidden,true);assert.equal(track.stopped,undefined);
           if(role==='verifier')assert.equal(get('stop').textContent,'Cancel exchange','verifier must wait for delivery');
           else assert.equal(get('matrixZone').dataset.visible,'true','prover still displays its final ACK');
           sawFinalAck=true;
         }
-        await receiver.receive(wire);
+        if(sender===local){
+          assert.ok((await receiver.receive(receiver.expectedAck())).accepted);
+        }else{
+          const cb=cameraCb;cameraCb=null;now+=300;
+          cb(now,{mediaTime:now/1000,presentedFrames:++seq});
+        }
       }
       await wait(1);
     }
+    assert.equal(seen.size,18,'all 18 distinct G16 receipts were accepted');
     assert.ok(sawFinalAck,'the final optical ACK reached the verifier');assert.equal(get('stop').textContent,'Finish exchange');
     assert.equal(get('exchangeSummary').hidden,true);get('stop').click();
     assert.equal(track.stopped,true);assert.equal(get('exchangeSummary').hidden,false);
@@ -70,7 +116,9 @@ for(const [role,statistics] of [['prover',true],['verifier',false]])test(
     assert.equal(summary.peerName,'Other phone');assert.equal(summary.statisticsEnabled,statistics);
     assert.equal(summary.steps.length,statistics?5:0);assert.ok(statistics?summary.elapsedMs>0:summary.elapsedMs===null);
     assert.equal('packets' in summary,false);
-    assert.equal(corrector.mock.callCount(),1,'no model reload during this exchange');
+    const calls=corrector.mock.calls.map(c=>c.arguments[0]);
+    assert.equal(calls.filter(op=>op==='transport-init').length,1,'no model reload during this exchange');
+    assert.ok(calls.includes('receipt-scan'),'the local G16 camera reader ran in flight mode');
     online=true;
     if(statistics)get('start').click();else get('simulationTab').click();
     assert.equal(get('exchangeSummary').hidden,true);await assert.rejects(fetch(url)); // backing Blob URL was revoked

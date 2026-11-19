@@ -30,6 +30,7 @@ export function createFinishCard({byId,createElement,urlAPI=URL}){
     }
     if(s&&summary.setupMs!=null)metric('Camera & model setup',duration(summary.setupMs));
     if(summary.repetitions!=null)metric('Proof',summary.repetitions+' repetitions'+(summary.proofBytes!=null?' · '+summary.proofBytes.toLocaleString()+' B':''));
+    if(settings.ackSize)metric('Acknowledgments',settings.ackSize===16?'G16 · static digest':'G32 · four-phase corrector');
     metric('Outgoing phases',settings.phaseCadence==='progressive'
       ?settings.phaseMs+' → '+settings.phaseMaxMs+' ms (+'+settings.phaseStepMs+'/pass)':settings.phaseMs+' ms fixed');
     metric('Camera search',settings.captureMs+' ms · '+(settings.firstCycle?'after first pass':'while sending'));

@@ -71,6 +71,11 @@ export class TurnChannel {
     if(this.closed)return null;
     return this.outgoing?.sender.next(this.clock())??this.replyRequest?.slice()??this.stickyAck?.slice()??null;
   }
+  expectedAck(){
+    if(this.closed||!this.outgoing)return null;
+    const now=this.clock();
+    return now<this.sessionDeadline?this.outgoing.sender.expectedAck(now):null;
+  }
   receiveRequest(packet){
     const previous=this.receivedTurn;
     if(packet.sessionId!==this.sessionId)return {accepted:false,reason:'foreign-session'};

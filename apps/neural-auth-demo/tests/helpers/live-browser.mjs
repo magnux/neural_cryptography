@@ -1,7 +1,7 @@
 // The screen/camera are doubles. Real browser controllers, auth messages, proof,
 // chunking, turns, result and final ACK run in-process at the packet boundary.
 export function browser(t,role,statistics) {
-  const values={role,backend:'wasm',repetitions:'32',resolution:'720',outgoingSize:'64',incomingSize:'64',
+  const values={role,backend:'wasm',repetitions:'32',resolution:'720',outgoingSize:'64',incomingSize:'64',ackSize:'16',
     phaseCadence:'fixed',phaseMs:'350',phaseMinMs:'200',phaseStepMs:'50',phaseMaxMs:'500',captureMs:'250',camera:''};
   const elements=new Map(),listeners=new Map(),track={stop(){this.stopped=true;},addEventListener(){},getSettings(){return {};}};
   class Node {

@@ -12,12 +12,13 @@ for(let index=0;index<args.length;index++){
   if(flag==='--protocol-only')protocolOnly=true;
   else if(flag==='--no-statistics')options.statistics=false;
   else if(flag==='--optimized-only')options.compare=false;
+  else if(flag==='--ack-size'&&['16','32'].includes(args[index+1]))options.ackSize=Number(args[++index]);
   else if(['--out','--models','--runtime'].includes(flag)&&args[index+1]){
     const value=resolve(args[++index]);
     if(flag==='--out')output=value;
     if(flag==='--models')options.modelRoot=pathToFileURL(value+'/');
     if(flag==='--runtime')options.runtimeRoot=pathToFileURL(value+'/');
-  }else throw Error('Usage: benchmark-simulation.mjs [--protocol-only] [--no-statistics] [--optimized-only] [--models DIRECTORY] [--runtime DIRECTORY] [--out REPORT.json]');
+  }else throw Error('Usage: benchmark-simulation.mjs [--protocol-only] [--no-statistics] [--optimized-only] [--ack-size 16|32] [--models DIRECTORY] [--runtime DIRECTORY] [--out REPORT.json]');
 }
 const onProgress=message=>process.stderr.write(message+'\n');
 let corrector;

@@ -40,7 +40,7 @@ class TurnSender {
   constructor(bytes,meta,options) {
     this.bytes=bytes;this.meta=meta;this.timeoutMs=integer(options.timeoutMs??TURN_LIMITS.timeoutMs,1,TURN_LIMITS.maxTimeoutMs,'timeout');
     this.clock=clock(options.now??0);this.deadline=this.clock+this.timeoutMs;
-    this.state='awaiting-ack';this.index=0;this.shown=false;this.ackedChunks=0;this.ackedBytes=0;this.error=null;
+    this.state='awaiting-ack';this.index=0;this.shown=false;this.expectedWire=null;this.ackedChunks=0;this.ackedBytes=0;this.error=null;
     this.current=encodePacket({...meta,kind:'start',data:bytes.subarray(0,expectedBytes(meta,0))});
   }
   tick(now) {
@@ -48,8 +48,16 @@ class TurnSender {
     if(!terminal.has(this.state)&&this.clock>=this.deadline)this.fail('timed-out','Transfer deadline reached.');
     return this.snapshot();
   }
-  fail(state,error) {this.state=state;this.error=error;this.bytes=null;this.current=null;this.shown=false;}
+  fail(state,error) {this.state=state;this.error=error;this.bytes=null;this.current=null;this.shown=false;this.expectedWire=null;}
   next(now) {this.tick(now);if(!this.current)return null;this.shown=true;return this.current.slice();}
+  get finalChunk(){return this.index===this.meta.chunkCount-1;}
+  // Only for matching a blindly recovered digest receipt. Reading this never
+  // presents a chunk or advances the turn. The caller gets its own byte array.
+  expectedAck(now=this.clock) {
+    if(!this.current||!this.shown||clock(now)>=this.deadline)return null;
+    this.expectedWire??=ack(this.meta,this.index,this.finalChunk?'complete':'progress');
+    return this.expectedWire.slice();
+  }
   receive(bytes,now) {
     this.tick(now);
     if(terminal.has(this.state))return {accepted:false,reason:'terminal'};
@@ -57,7 +65,7 @@ class TurnSender {
     if(!same(p,this.meta))return {accepted:false,reason:'foreign'};
     if(p.kind!=='ack'||p.digest!==this.meta.digest)return {accepted:false,reason:'unexpected'};
     if(!this.shown)return {accepted:false,reason:'unsent-ack'};
-    const final=this.index===this.meta.chunkCount-1;
+    const final=this.finalChunk;
     if(p.base!==this.index||p.bitmap!==1||p.status!==(final?'complete':'progress'))return {accepted:false,reason:'stale-ack'};
     this.ackedChunks++;this.ackedBytes+=expectedBytes(this.meta,this.index);
     if(final) {this.fail('delivered',null);return {accepted:true,delivered:true};}
@@ -65,7 +73,7 @@ class TurnSender {
     const start=offset(this.meta,this.index);
     this.current=encodePacket({...fields(this.meta),kind:'data',index:this.index,
       data:this.bytes.subarray(start,start+expectedBytes(this.meta,this.index))});
-    this.shown=false;
+    this.shown=false;this.expectedWire=null;
     return {accepted:true,delivered:false};
   }
   cancel() {if(!terminal.has(this.state))this.fail('cancelled','Cancelled locally.');}

@@ -10,8 +10,8 @@ format, not a standards-compatible QR code.
 The collector records training evidence; the separate
 [Neural-ZKBoo demo](NEURAL_ZKBOO_DEMO.md) carries START/DATA, G32 ACK and G32
 REQUEST through the in-band Neural-QR packet codec and trained W-tube/VW
-corrector. Neither path has an OBM5 fallback. The current request-driven handoff
-still requires physical-device validation.
+corrector. The [standalone mobile demo](NEURAL_AUTH_DEMO.md#acknowledgments)
+defaults to static G16 digest ACKs and keeps G32 REQUESTs. Neither path has an OBM5 fallback.
 
 The goal is fast, reliable optical authentication, with Neural-QR carrying both
 data and control messages, the **neural-corrector** recovering logical matrix
@@ -290,17 +290,37 @@ flowchart TD
   E -->|"valid packet"| F["Transfer state and Neural-ZKBoo"]
 ```
 
+## Color calibration before inference
+
+On each camera exposure, the reader measures the 16 known colors on the left
+border and the same 16 on the right. It fits one affine RGB transform (channel
+mixing plus a bias) to those 32 samples. During rectification it applies that
+transform to every sampled pixel, producing a normalized RGB crop with four
+pixels per cell on each axis: G64 gives a 256×256 crop. The border strips
+themselves are outside the neural input.
+
+The internal reference rows and columns (grid-8 pilots) **are inside** the
+crop. The trained W-tube/VW model sees those pixels alongside the data, but
+its preprocessing does **not** fit a separate correction per block. A local
+shadow or reflection can survive the global transform. The classical G16
+receipt reader takes a different path: after border calibration it uses nearby
+known grid colors to estimate a local palette for each block before classifying
+its cells. Both paths use real camera measurements.
+See [rectification](../apps/color-optical-bench/dist/js/neural-qr/vision.js)
+and [local palettes](../apps/color-optical-bench/dist/js/references.js).
+
 ## ACKs and control messages
 
-Live authentication uses G32 for its full OLM1 ACK and REQUEST. Its START
+The bench uses G32 for its full OLM1 ACK and REQUEST. Its START
 uses the DATA grid: OLM1 type 6 carries message metadata plus chunk zero, and
-its ACK confirms those bytes. The [timing lab](NEURAL_AUTH_DEMO.md#trained-four-phase-sweep)
-also offers an experimental **G16 single-exposure receipt** in place of the
-G32 ACK. DATA still uses four phases and the trained corrector.
+its ACK confirms those bytes. The standalone phone app uses a **G16
+single-exposure receipt** by default; the full G32 ACK can be selected on both
+phones. The [timing lab](NEURAL_AUTH_DEMO.md#trained-four-phase-sweep) offers both profiles.
+DATA and REQUEST still use four phases and the trained corrector.
 
 G16 has 256 cells. After 87 reference cells, 169 nibbles remain: 84 whole bytes
 and one spare nibble. The ordinary NQP1 envelope leaves only 40 bytes for an
-OLM1 packet, so the 84-byte ACK does not fit. The lab receipt instead uses one
+OLM1 packet, so the 84-byte ACK does not fit. The G16 receipt instead uses one
 84-byte RS codeword: **5 type/version bytes + 32 fingerprint bytes + 11 reserved
 zero bytes + 4 CRC bytes + 32 parity bytes**. It keeps the full 16-color
 palette. Each displayed receipt is static; the sender can retry another camera
