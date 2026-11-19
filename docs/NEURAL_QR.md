@@ -290,25 +290,30 @@ flowchart TD
   E -->|"valid packet"| F["Transfer state and Neural-ZKBoo"]
 ```
 
-## ACKs and control messages — next integration
+## ACKs and control messages
 
-The shared multi-resolution corrector makes a **smaller Neural-QR control profile**
-the preferred path. Select the smallest grid that fits the complete ACK plus
-reference cells, framing, ECC and integrity checks. G16 is the smallest current
-profile; its nominal 128 bytes before reference/framing overhead do not guarantee
-that it can hold every control message.
-Keep ACK binding to transfer, message, acknowledged sequence and digest.
+Live authentication uses G32 for its full OLM1 ACK and REQUEST. Its START
+uses the DATA grid: OLM1 type 6 carries message metadata plus chunk zero, and
+its ACK confirms those bytes. The [timing lab](NEURAL_AUTH_DEMO.md#trained-four-phase-sweep)
+also offers an experimental **G16 single-exposure receipt** in place of the
+G32 ACK. DATA still uses four phases and the trained corrector.
 
-Use the same four-phase, four-to-eight-capture contract initially; smaller grids
-reduce neural computation without claiming that a single exposure is sufficient.
-One shared model can serve small controls and large data after mixed-size training
-and export. Until that integration is available, the G64 envelope can exercise the
-same codec on both paths. Measure control acquisition, processing and physical-turn
-latency directly rather than assuming that removing standard QR makes it faster.
+G16 has 256 cells. After 87 reference cells, 169 nibbles remain: 84 whole bytes
+and one spare nibble. The ordinary NQP1 envelope leaves only 40 bytes for an
+OLM1 packet, so the 84-byte ACK does not fit. The lab receipt instead uses one
+84-byte RS codeword: **5 type/version bytes + 32 fingerprint bytes + 11 reserved
+zero bytes + 4 CRC bytes + 32 parity bytes**. It keeps the full 16-color
+palette. Each displayed receipt is static; the sender can retry another camera
+exposure of the same image without waiting for a missing phase.
 
-After grouping is reliable, cumulative acknowledgments and selective retransmission
-can reduce physical turns. Do not advance through unrelated packets on a timer
-without retaining the receiver's missing-packet state.
+The receiver builds the ordinary ACK from the DATA it actually recovered. Both
+ends fingerprint the canonical serialized ACK as SHA-256 of the ASCII prefix
+`Neural-QR/G16/ACK-receipt/v1`, one zero byte and the complete ACK bytes.
+The sender classifies the observed colors and runs RS and CRC **before** comparing
+the recovered fingerprint to its one outstanding ACK. The expected bytes never
+enter image classification or error repair. This binds the receipt to the run,
+message, chunk, status and digest; it is public transport feedback, not a proof
+of peer identity. See the [codec](../apps/color-optical-bench/dist/js/neural-qr/receipt16.js).
 
 ## Acceptance tests and measurement
 

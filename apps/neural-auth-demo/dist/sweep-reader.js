@@ -31,9 +31,9 @@ function keep(s,result,mediaTime,begin,end,captureTrigger){
   // reply can include several hundred milliseconds of model inference.
   const offset=round(begin-s.start),k=result.inputCaptures??null;
   if(result.duplicateExposure)s.duplicates++;
-  if(timings['burst-collection']&&!result.duplicateExposure&&Number.isInteger(phase)&&phase>=0&&phase<4){
+  if((timings['burst-collection']||k===1)&&!result.duplicateExposure&&Number.isInteger(phase)&&phase>=0&&phase<4){
     s.phases[phase]++;s.firstPhaseMs[phase]??=offset;
-    if(s.firstAllPhasesMs===null&&s.phases.every(n=>n>0))s.firstAllPhasesMs=offset;
+    if(k!==1&&s.firstAllPhasesMs===null&&s.phases.every(n=>n>0))s.firstAllPhasesMs=offset;
   }
   if(timings.inference&&(k===4||k===8)){
     s.inferences['K'+k]++;
@@ -57,17 +57,26 @@ function keep(s,result,mediaTime,begin,end,captureTrigger){
   else{if(s.tail.length===TRACE_HALF)s.tail.shift();s.tail.push(row);}
 }
 export class SweepReader{
-  constructor({size,role,backend='auto',onProgress,client,now=()=>performance.now()}){
-    if(!DATA_SIZES.includes(size)||!['sender','receiver'].includes(role)||!['auto','wasm','webgpu'].includes(backend))
+  constructor({size,role,ackSize=CONTROL_SIZE,backend='auto',onProgress,client,now=()=>performance.now()}){
+    if(![16,CONTROL_SIZE].includes(ackSize)||!DATA_SIZES.includes(size)||!['sender','receiver'].includes(role)||!['auto','wasm','webgpu'].includes(backend))
       throw Error('Invalid trained sweep role, grid or backend.');
     this.expected=role==='sender'?'ack':'data';
-    this.size=role==='sender'?CONTROL_SIZE:size;
-    this.backend=backend;this.client=client??new CorrectorClient({onProgress});this.now=now;
+    this.size=role==='sender'?ackSize:size;
+    this.single=this.size===16;
+    const workerFactory=this.single?()=>new Worker(new URL('./sweep-receipt-worker.js',import.meta.url),{type:'module'}):undefined;
+    this.backend=backend;this.client=client??new CorrectorClient({onProgress,workerFactory});this.now=now;
     this.runId=0;this.current=null;this.ready=false;this.closed=false;
   }
   async init(){
     if(this.closed||this.ready)throw Error('Start a fresh sweep reader.');
     const begin=this.now();
+    if(this.single){
+      const r=await this.client.call('receipt-init');
+      if(this.closed)throw abort();
+      if(!r.ready||r.effectiveBackend!=='classical-js')throw Error('G16 single-exposure reader unavailable.');
+      this.ready=true;return {modelProfile:null,modelStatus:'not-used',effectiveBackend:r.effectiveBackend,
+        requestedBackend:null,modelSha256:null,incomingMax:16,initializationMs:round(this.now()-begin),parityPassed:null};
+    }
     const r=await this.client.call('transport-init',{size:this.size,backend:this.backend,statistics:true});
     if(this.closed)throw abort();
     if(!r.ready||r.modelStatus!=='trained'||r.parity?.passed!==true)
@@ -78,7 +87,7 @@ export class SweepReader{
       initializationMs:round(this.now()-begin),parityPassed:true};
   }
   beginStep(){
-    if(!this.ready||this.closed)throw Error('Initialize the trained corrector first.');
+    if(!this.ready||this.closed)throw Error('Initialize the sweep reader first.');
     // ReceivePipeline.reset() on the first scan of a new runId discards all
     // previous geometry, accepted gates and burst samples but retains the model.
     this.runId++;this.current=state(this.now());
@@ -89,7 +98,8 @@ export class SweepReader{
     // cell-sampling pass. The first corrected packet ends this step, so we
     // need neither a post-acceptance frame gate nor a second worker RPC.
     const begin=this.now();s.submitted++;
-    const result=await this.client.call('transport-scan',{image,runId:this.runId,mediaTime,presentedFrames,
+    const result=this.single?await this.client.call('receipt-scan',{image,runId:this.runId,captureIntervalMs},[image.data.buffer]):
+      await this.client.call('transport-scan',{image,runId:this.runId,mediaTime,presentedFrames,
       captureIntervalMs,size:this.size,backend:this.backend,expected:this.expected,
       optimized:true,forceAcquisition:true,statistics:true},[image.data.buffer]);
     if(this.closed||this.current!==s)throw abort();
@@ -102,7 +112,7 @@ export class SweepReader{
       row.measuredScans=s.stageScans[name];row.avgMsPerMeasuredScan=row.totalMs/row.measuredScans;
     }
     const {workerRoundTripMs=null,exposureIntervalMs=null}=s.envelopes.snapshot();
-    return {scans:s.scans,submitted:s.submitted,withoutResult:s.submitted-s.scans,stages,workerRoundTripMs,exposureIntervalMs,geometry:{...s.geometry},
+    return {readMode:this.single?'single-exposure':'trained-four-phase',scans:s.scans,submitted:s.submitted,withoutResult:s.submitted-s.scans,stages,workerRoundTripMs,exposureIntervalMs,geometry:{...s.geometry},
       phaseRejections:{...s.phaseRejections},rejectedCueNearest:s.rejectedCueNearest.map(r=>[...r]),
       phases:[...s.phases],firstPhaseMs:[...s.firstPhaseMs],firstAllPhasesMs:s.firstAllPhasesMs,
       inferences:{...s.inferences},inferencesByBackend:{...s.backends},fecFailures:s.fecFailures,recovered:s.recovered,duplicates:s.duplicates,outcomes:{...s.outcomes},

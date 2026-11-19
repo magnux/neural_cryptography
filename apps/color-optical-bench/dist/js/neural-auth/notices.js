@@ -56,7 +56,7 @@ export class TurnNotices {
         ?notice('Reply requested','The other device requested the reply. The next message will start automatically.','info')
         :notice('Your next turn is ready','The other device requested the reply. Tap “Send next turn” and show this screen to its camera.');
     }else if(current.outgoing&&current.outgoing!==prior.outgoing){
-      value=notice('Sending this round','A new message-start matrix is displayed. Show it to the other camera and wait for its ACK.','info');
+      value=notice('Sending this round','The first chunk is displayed. Show it to the other camera and wait for its ACK.','info');
     }else if(ackAdvanced){
       value=notice(`ACK received · sending chunk ${current.outgoingIndex+1}/${link.outgoing.chunkCount}`,
         'The next data matrix is displayed. Aim the other camera at this screen.','success');
@@ -78,9 +78,7 @@ export class TurnNotices {
     }else if(current.received>(prior.received??0)){
       value=notice('Round received · show this ACK',
         `${link.incoming?.chunkCount?`Chunk ${current.incomingChunks}/${link.incoming.chunkCount} received. `:''}Let the other camera read this final ACK. Keep it visible while waiting for its REQUEST.`);
-    }else if(incomingStarted){
-      value=notice('Message start received · ACK ready','Show this ACK to the sender, then aim back at its first data matrix.');
-    }else if(chunkReceived){
+    }else if(incomingStarted||chunkReceived){
       value=notice(`Chunk ${current.incomingChunks}/${link.incoming.chunkCount} received · ACK ready`,
         'A new ACK is displayed. Show it to the sender, then aim back at its next data matrix.');
     }else if(current.mode==='ack'&&prior.mode!=='ack'){

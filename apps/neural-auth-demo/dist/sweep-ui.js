@@ -6,7 +6,7 @@ import {SweepReader} from './sweep-reader.js';
 import {SweepRun,CapturePacer} from './sweep-run.js';
 import {FirstPresentation} from './first-presentation.js';
 import {PhaseWatch,createPhaseSampler} from './phase-watch.js';
-import {newSweepRunId,createSweepProbe,acknowledgeSweepProbe,matchesSweepAck} from './sweep-protocol.js';
+import {newSweepRunId,createSweepProbe,acknowledgeSweepProbe,matchesSweepAck,matchesSweepReceipt} from './sweep-protocol.js';
 
 const fmt=v=>Number.isFinite(v)?Math.round(v)+' ms':'—';
 const now=()=>performance.now();
@@ -14,11 +14,12 @@ const now=()=>performance.now();
 function markup(){return `
   <div class="sw-head"><div><span class="eyebrow">TRAINED CORRECTOR · FOUR PHASES</span><h2>Phase timing sweep</h2></div>
     <div class="rt-view viewfinder-rim" data-lock="search"><video muted playsinline autoplay aria-label="Camera alignment"></video><canvas aria-hidden="true"></canvas></div></div>
-  <p class="sw-status" role="status" aria-live="polite">Choose a sender and a receiver. Use the same grid and timing settings on both.</p>
+  <p class="sw-status" role="status" aria-live="polite">Choose a sender and a receiver. Use the same data grid, ACK profile and intervals on both.</p>
   <div class="sw-toolbar"><label>Role<select name="role"><option value="sender">Sender</option><option value="receiver">Receiver</option></select></label>
     <button type="button" class="sw-start">Start camera</button><button type="button" class="sw-next" hidden>Start step 1</button></div>
   <details class="sw-settings"><summary>Settings &amp; measurements</summary><div class="sw-body"><fieldset>
     <label>Data grid<select name="size"><option>32</option><option selected>64</option><option>128</option></select></label>
+    <label>ACK profile<select name="ackSize"><option value="32" selected>G32 · trained, four phases</option><option value="16">G16 · experimental, one exposure</option></select></label>
     <label>Corrector backend<select name="backend"><option value="auto">Auto</option><option value="wasm">WASM</option><option value="webgpu">WebGPU</option></select></label>
     <label>Initial phase (ms)<input name="phase" type="number" min="50" max="2000" value="500" step="1"></label>
     <label class="toggle wide"><span>Progressive transmit timing<small>Increase this device’s phase dwell after each complete four-phase pass of the same packet</small></span><input name="progressive" type="checkbox"></label>
@@ -32,10 +33,10 @@ function markup(){return `
     <label>Camera<select name="facing"><option value="user">Front</option><option value="environment">Rear</option></select></label>
     <label>Resolution<select name="resolution"><option>720</option><option selected>1080</option><option>1440</option><option>2160</option><option value="max">Maximum</option></select></label>
     <label class="wide">Camera device<select name="device"><option value="">Use front/rear preference</option></select></label></fieldset>
-    <p>DATA and its G32 ACK each use four phases. Wait for “ACK read” on the sender, then tap Next on the receiver first: this clears the old ACK while the next DATA is being read. Save a report on each device.</p>
+    <p>DATA always uses four phases and the trained corrector. G32 ACKs use the same reader; G16 receipts hold one static phase and need no model on the sender. Wait for “ACK read” on the sender, then tap Next on the receiver first: this clears the old ACK while the next DATA is being read. Save a report on each device.</p>
     <div class="sw-history"></div><button class="sw-save rt-save" type="button" disabled>Download sweep report</button></div></details>
   <p class="sw-progress">Ready · 500 ms display / 450 ms capture</p>
-  <div class="sw-slot"><canvas width="1" height="1" hidden aria-label="Four-phase sweep matrix"></canvas><span>Timing matrix appears here</span></div>`;}
+  <div class="sw-slot"><canvas width="1" height="1" hidden aria-label="Sweep matrix"></canvas><span>Timing matrix appears here</span></div>`;}
 
 function paintOverlay(view,overlay,found,w,h){
   if(overlay.width!==w||overlay.height!==h){overlay.width=w;overlay.height=h;}
@@ -60,7 +61,7 @@ function display(output,empty){
   }
   function show(frames,phaseMs,config,onFirst,onPhase,allow,onError){
     const begin=now(),bitmaps=frames.map(frame=>{
-      const image=renderNeuralQR(frame,frame.size*8);return new ImageData(image.data,image.width,image.height);
+      const image=renderNeuralQR(frame,Math.max(256,frame.size*8));return new ImageData(image.data,image.width,image.height);
     });
     const renderMs=now()-begin;const ticket=++switchId;cancelAnimationFrame(pendingRAF);
     const blit=index=>{
@@ -68,6 +69,14 @@ function display(output,empty){
       if(output.width!==bit.width||output.height!==bit.height){output.width=bit.width;output.height=bit.height;}
       output.hidden=false;empty.hidden=true;output.getContext('2d').putImageData(bit,0,0);
     };
+    if(bitmaps.length===1){
+      cancel();
+      pendingRAF=requestAnimationFrame(()=>{
+        if(ticket!==switchId||!allow())return;
+        blit(0);const at=now();onFirst(at,renderMs);onPhase(at,0,null);
+      });
+      return;
+    }
     if(config.progressive){
       cancel();
       progressive.start({phaseMs,incrementMs:config.incrementMs,maxPhaseMs:config.maxPhaseMs,onError,
@@ -109,13 +118,14 @@ export function initSweep(host,{onActive=()=>{}}={}){
     frameCb,deadline,lastVideo,lastMedia,lastScanStamp,pacer,watch,sampler,sourceWidth,sourceHeight,arming=false;
   const current=t=>active&&t===epoch;
   const measuring=(t,row)=>current(t)&&row===run.active;
-  function settings(){return {role:el('role').value,size:Number(el('size').value),
+  function settings(){return {role:el('role').value,size:Number(el('size').value),ackSize:Number(el('ackSize').value),
     phaseWatch:el('phaseWatch').checked===true,progressive:el('progressive').checked===true,
     incrementMs:el('progressive').checked?integer('increment',1,2000):50,maxPhaseMs:el('progressive').checked?integer('phaseCap',50,2000):500,
     varyCapture:el('varyCapture').checked===true,startPhaseMs:integer('phase',50,2000),startCaptureMs:integer('capture',50,2000),decrementMs:integer('decrement',1,500),
     timeoutMs:1000*integer('timeout',3,120),resolution:el('resolution').value,facingMode:el('facing').value,
     deviceId:el('device').value,backend:el('backend').value};}
   function buttons(){
+    el('backend').disabled=active||(el('role').value==='sender'&&Number(el('ackSize').value)===16);
     el('increment').disabled=el('phaseCap').disabled=active||!el('progressive').checked;
     const upcoming=run?.next;
     go.textContent=active?'Stop run':'Start camera';next.hidden=!active;next.disabled=!ready||Boolean(run?.active)||!upcoming||busy||arming;
@@ -129,7 +139,8 @@ export function initSweep(host,{onActive=()=>{}}={}){
     const stageRows=Object.entries(row.reader?.stages??{});
     const substeps=stageRows.filter(([,s])=>s.count>0).map(([key,s])=>key+': '+fmt(s.avgMsPerMeasuredScan)+' / measured scan · '+s.measuredScans+' scans');
     const hits=row.reader?.phases,rejects=Object.entries(row.reader?.phaseRejections??{}).filter(([,n])=>n>0);
-    if(hits)substeps.unshift('Admitted captures by phase (0–3): '+hits.join(' / '));
+    if(hits)substeps.unshift(row.reader.readMode==='single-exposure'?'Single-exposure receipts · '+row.reader.recovered+' decoded':
+      'Admitted captures by phase (0–3): '+hits.join(' / '));
     if(row.phaseWatch){
       const w=row.phaseWatch;substeps.push('Full reads: '+w.searchReads+' search / '+w.changeReads+' change / '+w.watchdogReads+' watchdog');
       if(w.probeMs?.count)substeps.push(w.probes+' tiny probes · '+w.probeMs.avgMs.toFixed(1)+' ms average');
@@ -194,7 +205,7 @@ export function initSweep(host,{onActive=()=>{}}={}){
     const image=g.getImageData(0,0,d.width,d.height);run.sample('readback',now()-start);
     const found=await reader.scan(image,{mediaTime:m.mediaTime,presentedFrames:m.presentedFrames,captureIntervalMs:row.captureMs,captureTrigger});
     if(timedOut(t,row))return;
-    const decodedAt=now(),want=c.role==='sender'?32:c.size;
+    const decodedAt=now(),want=reader.size;
     // Seed from the actual scan canvas, not the video (which may have moved
     // several phases ahead while the worker was running).
     if(watch){
@@ -206,17 +217,18 @@ export function initSweep(host,{onActive=()=>{}}={}){
     paintOverlay(view,overlay,found,d.width,d.height);
     if(found.info?.size===want&&found.corners?.length===4)run.mark('firstLock',start);
     const counts=found.phaseCounts??[0,0,0,0];
-    if(found.info?.size===want&&(counts.length===4&&counts.every(Boolean)||found.inputCaptures>=4))run.mark('allPhases',start);
-    progress.textContent='Step '+row.step+' · '+row.phaseMs+'/'+row.captureMs+' ms · phases '+counts.join(' / ');
+    if(!reader.single&&found.info?.size===want&&(counts.length===4&&counts.every(Boolean)||found.inputCaptures>=4))run.mark('allPhases',start);
+    progress.textContent='Step '+row.step+' · '+row.phaseMs+'/'+row.captureMs+' ms · '+(reader.single?'single-exposure receipt':'phases '+counts.join(' / '));
     if(!found.ok||found.info?.size!==want)return;
     const check=now();
     if(c.role==='sender'){
-      const match=matchesSweepAck(found.chunk,probe);run.sample('packetCheck',now()-check);
-      if(!match||timedOut(t,row))return;
+      const match=reader.single?matchesSweepReceipt(found.digest,probe):matchesSweepAck(found.chunk,probe);run.sample('packetCheck',now()-check);
+      if(!match){row.unmatchedAcks=(row.unmatchedAcks??0)+1;return;}
+      if(timedOut(t,row))return;
       run.mark('packetDecoded',decodedAt);run.mark('ackDecoded',now());endRow('ack-read');dsp.clear();
       status.textContent=run.next?'ACK read. Both devices can start step '+run.next.step+'.':'Final ACK read. Save both reports.';
     }else{
-      const ack=await acknowledgeSweepProbe(found.chunk,{runId,step:row.step,size:c.size,phaseMs:row.phaseMs,captureMs:row.captureMs});
+      const ack=await acknowledgeSweepProbe(found.chunk,{runId,step:row.step,size:c.size,ackSize:c.ackSize,phaseMs:row.phaseMs,captureMs:row.captureMs});
       if(timedOut(t,row))return;run.sample('checkDataAndBuildAck',now()-check);
       if(!ack)return;
       run.mark('packetDecoded',decodedAt);arming=true;
@@ -224,7 +236,7 @@ export function initSweep(host,{onActive=()=>{}}={}){
         if(timedOut(t,row))return;
         runId=ack.runId;
         run.sample('render',renderMs);run.mark('ackDraw',at);endRow('ack-shown',at);
-        status.textContent='ACK is cycling. Wait for “ACK read” on the sender.'+(run.next?' Then tap Next here to clear it and arm step '+run.next.step+'.':' Save both reports.');
+        status.textContent=(c.ackSize===16?'G16 receipt is visible.':'ACK is cycling.')+' Wait for “ACK read” on the sender.'+(run.next?' Then tap Next here to clear it and arm step '+run.next.step+'.':' Save both reports.');
       },(at,tick,dwell)=>{if(current(t))run.painted(row.step,'ack',tick,at,dwell);},()=>!timedOut(t,row),e=>fail(t,e));
     }
   }
@@ -235,14 +247,14 @@ export function initSweep(host,{onActive=()=>{}}={}){
       const row=run.begin(now());
       if(c.role==='receiver')dsp.clear(); // End every old phase before starting this step's reader.
       reader.beginStep();pacer=new CapturePacer(row.captureMs,c.varyCapture);
-      watch=c.phaseWatch?new PhaseWatch({captureMs:row.captureMs,statistics:true}):null;
+      watch=c.phaseWatch&&!reader.single?new PhaseWatch({captureMs:row.captureMs,statistics:true}):null;
       lastScanStamp=null;sourceWidth=video.videoWidth;sourceHeight=video.videoHeight;arming=false;probe=null;
       progress.textContent='Step '+row.step+' · '+row.phaseMs+' ms display / '+row.captureMs+' ms capture';
-      status.textContent=c.role==='sender'?'Showing DATA; waiting for its G32 ACK.':'Armed for new DATA · keep both screens aligned.';
+      status.textContent=c.role==='sender'?'Showing DATA; waiting for its G'+c.ackSize+' ACK.':'Armed for new DATA · keep both screens aligned.';
       const armDeadline=()=>{deadline=setTimeout(()=>{if(!timedOut(t,row))armDeadline();},Math.max(1,Math.ceil(c.timeoutMs-(now()-row.startedAt))));};
       armDeadline();buttons();
       if(c.role==='receiver'){schedule(t,row);return;}
-      const buildStart=now();const fresh=await createSweepProbe({runId,step:row.step,size:c.size,phaseMs:row.phaseMs,captureMs:row.captureMs});
+      const buildStart=now();const fresh=await createSweepProbe({runId,step:row.step,size:c.size,ackSize:c.ackSize,phaseMs:row.phaseMs,captureMs:row.captureMs});
       if(timedOut(t,row))return;run.sample('buildData',now()-buildStart);probe=fresh;
       dsp.show(probe.frames,row.phaseMs,c,(at,renderMs)=>{
         if(timedOut(t,row))return;
@@ -257,10 +269,11 @@ export function initSweep(host,{onActive=()=>{}}={}){
     let candidate;try{candidate=new SweepRun(opts);}catch(e){status.textContent=e.message;details.open=true;return;}
     const t=++epoch;run=candidate;c=opts;runId=c.role==='sender'?newSweepRunId():null;
     active=true;onActive(true);ready=false;model=null;camera=null;busy=false;lastVideo=-1;lastMedia=null;watch=null;
-    sampler=c.phaseWatch?createPhaseSampler():null;
-    details.open=false;q('.sw-history').textContent='';progress.textContent='Preparing trained reader…';status.textContent='Loading and checking the trained corrector for this device.';buttons();
+    const single=c.role==='sender'&&c.ackSize===16;
+    sampler=c.phaseWatch&&!single?createPhaseSampler():null;
+    details.open=false;q('.sw-history').textContent='';progress.textContent='Preparing reader…';status.textContent=single?'Starting single-exposure G16 receipt reader.':'Loading and checking the trained corrector for this device.';buttons();
     try{
-      reader=new SweepReader({role:c.role,size:c.size,backend:c.backend,onProgress:s=>{if(current(t))status.textContent=String(s);}});
+      reader=new SweepReader({role:c.role,size:c.size,ackSize:c.ackSize,backend:c.backend,onProgress:s=>{if(current(t))status.textContent=String(s);}});
       const loaded=await reader.init();if(!current(t))return;model=loaded;
       status.textContent='Opening camera…';const opened=await openCaptureCamera(navigator.mediaDevices,{resolution:c.resolution,deviceId:c.deviceId,facingMode:c.facingMode});
       if(!current(t)){opened.stream.getTracks().forEach(track=>track.stop());return;}
@@ -279,11 +292,11 @@ export function initSweep(host,{onActive=()=>{}}={}){
     }catch{/* User can select a camera direction without enumeration. */}
   }
   details.addEventListener('toggle',()=>{if(details.open&&!active)void cameras();});
-  el('progressive').addEventListener('change',buttons);
+  for(const name of ['progressive','ackSize','role'])el(name).addEventListener('change',buttons);
   go.addEventListener('click',()=>active?stop():void start());next.addEventListener('click',()=>void begin());
   save.addEventListener('click',()=>{
     if(!run?.rows.length)return;
-    const data=run.report({runId,model,camera,requestedBackend:c.backend,requestedResolution:c.resolution,facingMode:c.facingMode});
+    const data=run.report({runId,model,camera,requestedBackend:model?.requestedBackend??null,requestedResolution:c.resolution,facingMode:c.facingMode});
     const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');
     a.href=url;a.download='neural-qr-sweep-'+c.role+'-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';
     a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);

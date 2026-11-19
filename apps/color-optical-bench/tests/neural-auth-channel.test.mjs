@@ -62,15 +62,15 @@ test('automatic handoff holds ACK, REQUEST and START through losses without elap
   }});
   t.after(()=>{a.close();b.close();});
   const first=a.enqueue(bytes(12));first.catch(()=>{});await prepared(a);
-  await b.receive(a.current());const ready=b.current();await a.receive(ready);
-  const finalData=a.current();await b.receive(finalData);const finalAck=b.current();await flush();
+  const finalData=a.current();assert.equal(decodePacket(finalData).chunkCount,1);await b.receive(finalData);const finalAck=b.current();await flush();
   assert.equal(b.snapshot().queued,true);assert.equal(b.snapshot().outgoing,null);
   for(const time of [3000,9000,30000]){
     now=time;a.tick();b.tick();
-    assert.deepEqual(a.current(),finalData,'lost final ACK keeps DATA displayed');
+    assert.deepEqual(a.current(),finalData,'lost singleton ACK keeps the full inline message displayed');
     assert.deepEqual(b.current(),finalAck,'queued reply cannot displace its predecessor final ACK');
   }
-  assert.equal((await a.receive(ready)).reason,'stale-ack');
+  const premature=encodePacket({...decodePacket(finalAck),status:'progress'});
+  assert.equal((await a.receive(premature)).reason,'stale-ack');
   assert.equal((await b.receive(finalData)).reason,'already-delivered');
   assert.equal((await a.receive(finalAck)).delivered,true);await first;
   const request=a.current();assert.equal(decodePacket(request).kind,'poll');
@@ -81,9 +81,9 @@ test('automatic handoff holds ACK, REQUEST and START through losses without elap
   }
   assert.equal((await b.receive(request)).reason,'requested');await prepared(b);
   const before=b.snapshot().outgoing;
-  const earlyReady=encodePacket({kind:'ack',sessionId:before.sessionId,messageId:before.messageId,
-    messageType:before.messageType,base:0,bitmap:0,status:'ready',digest:before.digest});
-  assert.equal((await b.receive(earlyReady)).reason,'unsent-ack');
+  const earlyAck=encodePacket({kind:'ack',sessionId:before.sessionId,messageId:before.messageId,
+    messageType:before.messageType,base:0,bitmap:1,status:'progress',digest:before.digest});
+  assert.equal((await b.receive(earlyAck)).reason,'unsent-ack');
   const start=b.current();assert.equal(decodePacket(start).kind,'start');
   for(const time of [63000,69000,90000]){
     now=time;a.tick();b.tick();
@@ -136,8 +136,8 @@ test('completed START and DATA duplicates cannot replace a pending REQUEST or ne
   const a=new TurnChannel({initiator:true,automaticTurns:true,now:()=>1});
   const b=new TurnChannel({automaticTurns:true,now:()=>1});
   t.after(()=>{a.close();b.close();});
-  const first=a.enqueue(bytes(20));await prepared(a);const oldA=await transfer(a,b);await first;
-  const reply=b.enqueue(bytes(20));await b.receive(a.current());await prepared(b);
+  const first=a.enqueue(bytes(1500));await prepared(a);const oldA=await transfer(a,b);await first;
+  const reply=b.enqueue(bytes(1500));await b.receive(a.current());await prepared(b);
   const oldB=await transfer(b,a);await reply;
   const second=a.enqueue(bytes(20));await a.receive(b.current());await prepared(a);await transfer(a,b);await second;
   const request=a.current(),ack=b.current();
@@ -154,7 +154,7 @@ test('delayed duplicate DATA cannot regress the currently displayed progress ACK
   const done=a.enqueue(bytes(900));done.catch(()=>{});await prepared(a);
   await b.receive(a.current());await a.receive(b.current());
   const old=a.current();await b.receive(old);await a.receive(b.current());
-  await b.receive(a.current());const latest=b.current();assert.equal(decodePacket(latest).base,1);
+  await b.receive(a.current());const latest=b.current();assert.equal(decodePacket(latest).base,2);
   assert.equal((await b.receive(old)).reason,'duplicate');assert.deepEqual(b.current(),latest);
 });
 
@@ -195,8 +195,7 @@ test('cancel during asynchronous sender preparation rejects work and cannot resu
 test('cancel while verifying a complete incoming message prevents application delivery and ACK resurrection',async()=>{
   let delivered=0;const channel=new TurnChannel({onMessage:()=>{delivered++;},now:()=>1});
   const sender=await createTurnSender(bytes(50),{now:0});
-  await channel.receive(sender.next(1));sender.receive(channel.current(),2);
-  const completing=channel.receive(sender.next(3));channel.close();
+  const completing=channel.receive(sender.next(1));channel.close();
   assert.equal((await completing).reason,'closed');await flush();
   assert.equal(delivered,0);assert.equal(channel.current(),null);
 });
@@ -219,8 +218,7 @@ test('enqueue is bounded, and an application handler error closes cleanly after 
   const b=new TurnChannel({now:()=>1,onMessage:()=>{throw Error('application failure');},onError:e=>{error=e;}});
   const done=a.enqueue(bytes(8));done.catch(()=>{});await prepared(a);
   await assert.rejects(a.enqueue(bytes(1)),/pending/);
-  const start=a.current();await b.receive(start);await a.receive(b.current());
-  await b.receive(a.current());await flush();
+  const start=a.current();await b.receive(start);await flush();
   assert.equal(b.snapshot().closed,true);assert.match(error.message,/application failure/);
   assert.equal(b.current(),null);a.close();
   const fresh=new TurnChannel();await assert.rejects(fresh.enqueue(bytes(524289)),/size/);

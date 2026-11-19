@@ -157,6 +157,9 @@ export class Receiver {
     const expired = this.tick(now);
     let p;
     try { p = decodePacket(bytes); } catch { this.malformedPackets++; return result(false, 'malformed', expired.outbound); }
+    // This selective-repeat transport negotiates a window before accepting DATA.
+    // START_DATA belongs to the Neural-QR stop-and-wait transport only.
+    if (p.kind === 'start' && p.data !== undefined) return result(false, 'unexpected', expired.outbound);
     const receipt = this.receipts.find(r => same(r.meta, p));
     if (receipt) {
       if (p.kind === 'start' && !metadataEqual(receipt.meta, p)) return result(false, 'conflicting-start', expired.outbound);

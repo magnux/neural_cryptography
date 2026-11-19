@@ -62,7 +62,7 @@ export class TurnChannel {
       if(this.receivedTurn)this.receivedTurn.used=true;
       this.handoffDeadline=null;
       // current() marks this exact START as displayed. It then remains current
-      // until its ready ACK, regardless of repeated REQUESTs or elapsed time.
+      // until chunk zero is acknowledged, including the final ACK for a singleton.
       return true;
     }catch(error){if(epoch===this.epoch)this.fail(error);return false;}
     finally{if(epoch===this.epoch){this.preparing=false;this.notify();}}

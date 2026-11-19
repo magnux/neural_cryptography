@@ -42,3 +42,17 @@ test('protects against self, stale, unrelated and improperly configured sweep st
   d[40]^=1;bytes[20]^=1;
   assert.equal(await acknowledgeSweepProbe(d,s),null);assert.equal(matchesSweepAck(bytes,probe),false);
 });
+
+test('G16 binds run, content and selected profile; no ACK for a mismatched profile',async()=>{
+  const s={...settings(),ackSize:16},p=await createSweepProbe(s),data=restored(p.frames[0]);
+  const {receipt16Digest}=await import('../dist/js/neural-qr/receipt16.js');
+  const {matchesSweepReceipt}=await import('../dist/sweep-protocol.js');
+  const ack=await acknowledgeSweepProbe(data,s);
+  assert.deepEqual(ack.frames.map(f=>[f.size,f.phase]),[[16,0]]);
+  assert.ok(matchesSweepReceipt(await receipt16Digest(ack.ackBytes),p));
+  assert.equal(await acknowledgeSweepProbe(data,{...s,ackSize:32}),null);
+  const altered=decodePacket(data);altered.data[47]^=1;
+  const bad=await acknowledgeSweepProbe(encodePacket(altered),s);
+  assert.equal(matchesSweepReceipt(await receipt16Digest(bad.ackBytes),p),false);
+  assert.equal(matchesSweepReceipt(p.receiptDigest,await createSweepProbe(s)),false);
+});

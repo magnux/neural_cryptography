@@ -121,6 +121,13 @@ on the wire. Multibyte integers are big-endian. Reserved bytes must be zero.
 | `ack` | `base`, `bitmap`, `status`, `digest` | Report readiness, progress, or verified completion |
 | `cancel` | Numeric `reason` | End a transfer, best effort |
 
+The separate Neural-QR authentication demo uses another OLM1 kind,
+`START_DATA` (wire ID 6). It appends chunk zero directly after the 48-byte
+START metadata and covers both with the packet CRC. Its first chunk has 44
+fewer payload bytes than a later DATA chunk at the same matrix size. The
+selective-repeat receiver described here only negotiates with ordinary
+`start` (wire ID 1); it does not accept this Neural-QR turn opener.
+
 The wire encodes an ACK bitmap in 32 bits, but negotiated windows are limited to
 **1–8 chunks**. Message types are `raw`, `hello`, `proof`, `finish`,
 `fast-challenge`, `fast-response`, and `result`. Only raw transfer is exposed in

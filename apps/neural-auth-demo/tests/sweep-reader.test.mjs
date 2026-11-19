@@ -86,3 +86,24 @@ test('torn G32 ACK records opposite border votes but does not fill the sender bu
   assert.deepEqual(s.trace[0].nearestCuePhases,[3,1]);assert.deepEqual(s.trace[0].cuePassed,[true,true]);
   assert.equal(s.trace[0].phase,null);assert.deepEqual(s.phases,[0,0,0,0]);reader.close();
 });
+
+test('G16 sweep sender reads one rendered exposure without initializing a model or supplying a target',async()=>{
+  const {receiptWorkerHandler}=await import('../dist/sweep-receipt-worker.js');
+  const {receipt16Frames}=await import('../dist/js/neural-qr/receipt16.js');
+  let reply;const handle=receiptWorkerHandler(msg=>{reply=msg;});
+  const client={call:async(operation,options={})=>{
+    if(operation==='receipt-scan')assert.deepEqual(Object.keys(options).sort(),['captureIntervalMs','image','runId']);
+    else assert.equal(operation,'receipt-init');
+    handle({data:{id:1,operation,options}});if(reply.type==='error')throw Error(reply.error);return reply.result;
+  },cancel(){}};
+  const digest=Uint8Array.from({length:32},(_,i)=>i);
+  const reader=new SweepReader({role:'sender',size:64,ackSize:16,client});
+  const init=await reader.init();assert.equal(init.modelProfile,null);assert.equal(init.incomingMax,16);
+  assert.equal(init.effectiveBackend,'classical-js');reader.beginStep();
+  const r=await reader.scan(renderNeuralQR(receipt16Frames(digest)[0],256),identity(1));
+  assert.ok(r.ok,r.error);assert.deepEqual(r.digest,digest);
+  const m=reader.snapshot();assert.deepEqual(m.phases,[1,0,0,0]);assert.equal(m.firstAllPhasesMs,null);
+  assert.equal(m.stages['rs-crc'].count,1);assert.equal(m.stages.inference,undefined);assert.equal(m.recovered,1);
+  assert.ok(!('symbols' in r));assert.ok(!('samples' in r));
+  await assert.rejects(reader.scan({width:8192,height:8192,data:new Uint8ClampedArray(4)},identity(2)),/bounded/);
+});

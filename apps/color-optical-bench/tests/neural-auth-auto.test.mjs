@@ -18,6 +18,7 @@ const ids=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-22222
 test('automatic POC completes all five crypto messages despite lost ACKs, REQUESTs and STARTs',async t=>{
   let clock=0,busy=0,active=true,duplicates=0,repeatedRequests=0;
   const sessions={},channels={},pairing={},calls=[],deliveries=[],failures=[],dropUntil=new Map(),delayed=[];
+  const sentPackets=new Map();
   for(const [index,role] of roles.entries()){
     const operations=new CryptoOperations();
     pairing[role]=new POCAutoPairing({isActive:()=>active,onError:error=>failures.push(error.message)});
@@ -46,6 +47,10 @@ test('automatic POC completes all five crypto messages despite lost ACKs, REQUES
     for(const role of roles){
       const wire=channels[role].current();if(!wire)continue;
       const packet=decodePacket(wire),other=peer(role);
+      if(packet.kind==='start'||packet.kind==='data'){
+        if(!sentPackets.has(packet.messageId))sentPackets.set(packet.messageId,new Set());
+        sentPackets.get(packet.messageId).add(packet.index??0);
+      }
       const lossMs=packet.kind==='ack'&&packet.status==='complete'?7000:packet.kind==='poll'?4000:packet.kind==='start'?2000:0;
       if(lossMs){
         const key=`${packet.kind}:${packet.messageId}`;
@@ -80,6 +85,8 @@ test('automatic POC completes all five crypto messages despite lost ACKs, REQUES
   assert.equal(verifier.binding,prover.binding);assert.equal(verifier.pairingCode,prover.pairingCode);
   assert.equal(verifier.proofDigest,prover.proofDigest);
   assert.deepEqual(deliveries.map(row=>row.type),['HELLO','IDENTITY','CHALLENGE','PROOF','RESULT']);
+  assert.deepEqual([...sentPackets.values()].map(chunks=>chunks.size),[1,1,1,14,1],
+    '32 repetitions with a G64 proof take 18 acknowledged matrices, including the first chunk of each envelope');
   assert.equal(calls.filter(row=>row.type==='prove').length,1);
   assert.equal(calls.filter(row=>row.type==='verify').length,1);
   assert.equal([...dropUntil.keys()].filter(key=>key.startsWith('ack:')).length,5,'every final ACK was initially unavailable');

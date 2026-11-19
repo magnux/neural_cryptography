@@ -8,6 +8,7 @@ The preview is mirrored initially, the outgoing matrix starts at the bottom,
 and both have display toggles. The exchange fits one viewport; Settings opens
 the scrolling setup and statistics view. Mirroring changes only the preview.
 
+The first matrix carries chunk zero, so a small message takes one round trip.
 Turns use stable G32 REQUEST controls: the final ACK stays visible until the
 sender acknowledges receipt by requesting the reply. Each packet reuses its
 four cached palette-phase images; no timer alternates final ACK and START.
@@ -30,7 +31,8 @@ to compare step timings in the short reports
 **Matrix timing** offers two device tests. The **single-phase echo** measures
 roundtrip time and cell errors without a trained model. The [trained four-phase
 sweep](../../docs/NEURAL_AUTH_DEMO.md#trained-four-phase-sweep) times a real DATA
-packet and its G32 ACK, using the corrector on both devices. Start at 500 ms
+packet and either a trained four-phase G32 ACK or a static single-exposure G16
+receipt. Choose the same ACK option on both devices. Start at 500 ms
 display / 450 ms capture and step down by 50 ms. Each device advances manually
 and exports its own report so you can compare DATA and ACK acquisition.
 After the sender reads an ACK, tap Next on the receiver first to clear that ACK.

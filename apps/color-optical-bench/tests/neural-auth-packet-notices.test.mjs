@@ -37,23 +37,23 @@ test('multipart packet progress replaces notices while repeats stay quiet and fi
   assert.equal(a.last().title,'Sending this round');
   const oldSendingTimer=a.timer(),start=a.channel.current();
   assert.equal((await b.channel.receive(start)).accepted,true);
-  assert.equal(b.last().title,'Message start received · ACK ready');
+  assert.equal(b.last().title,'Chunk 1/3 received · ACK ready');
   const oldStartTimer=b.timer();
   assert.equal((await quiet(b,()=>b.channel.receive(start))).reason,'duplicate-start');
 
   const ready=b.channel.current();
   assert.equal((await a.channel.receive(ready)).accepted,true);
-  assert.equal(a.last().title,'ACK received · sending chunk 1/3');
-  oldSendingTimer();assert.equal(a.last().title,'ACK received · sending chunk 1/3');
+  assert.equal(a.last().title,'ACK received · sending chunk 2/3');
+  oldSendingTimer();assert.equal(a.last().title,'ACK received · sending chunk 2/3');
   const foreign=encodePacket({...decodePacket(ready),sessionId:'ff'.repeat(16)});
   assert.equal((await quiet(a,()=>a.channel.receive(foreign))).accepted,false);
 
-  for(let index=0;index<3;index++){
+  for(let index=1;index<3;index++){
     const data=a.channel.current();assert.equal(decodePacket(data).index,index);
     assert.equal((await b.channel.receive(data)).accepted,true);
     if(index<2)assert.equal(b.last().title,`Chunk ${index+1}/3 received · ACK ready`);
     else assert.match(b.last().title,/Round received/);
-    if(index===0){oldStartTimer();assert.equal(b.last().title,'Chunk 1/3 received · ACK ready');}
+    if(index===1){oldStartTimer();assert.equal(b.last().title,'Chunk 2/3 received · ACK ready');}
     const ack=b.channel.current();
     assert.equal(decodePacket(ack).kind,'ack');
     const duplicate=await quiet(b,()=>b.channel.receive(data));

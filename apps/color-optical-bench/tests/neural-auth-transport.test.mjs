@@ -12,11 +12,14 @@ const payload=n=>Uint8Array.from({length:n},(_,i)=>(i*17+(i>>8))&255);
 async function sender(n=2600,extra={}) {return createTurnSender(payload(n),{sessionId,messageId,now:0,...extra});}
 async function start(s,r,now=1) {const value=await r.receive(s.next(now),now);assert.equal(value.accepted,true);assert.equal(s.receive(value.ack,now).accepted,true);}
 
-for(const n of [0,1,1200,1201,17474,119249])test(`stop-and-wait transfers ${n} bytes exactly with sticky ACKs`,async()=>{
+for(const n of [0,1,1155,1156,1157,1200,1201,2356,2357,17474,119249])test(`stop-and-wait transfers ${n} bytes exactly with sticky ACKs`,async()=>{
   const s=await sender(n),r=new TurnReceiver(),deliveries=[];
-  let now=1;
+  let now=1,trips=0;
   while(s.snapshot().state!=='delivered') {
     const bytes=s.next(now),previous=s.next(now+1);assert.deepEqual(bytes,previous);
+    const current=decodePacket(bytes);
+    assert.equal(current.kind,trips===0?'start':'data');
+    assert.equal(current.index??0,trips++);
     const got=await r.receive(bytes,now+2);assert.equal(got.accepted,true);assert.ok(got.ack);
     assert.deepEqual(r.ack(),got.ack);
     if(got.delivery)deliveries.push(got.delivery);
@@ -24,18 +27,22 @@ for(const n of [0,1,1200,1201,17474,119249])test(`stop-and-wait transfers ${n} b
   }
   assert.equal(deliveries.length,1);assert.deepEqual(deliveries[0].bytes,payload(n));
   assert.equal(deliveries[0].digest,await sha256(payload(n)));
-  assert.equal(s.snapshot().ackedChunks,Math.max(1,Math.ceil(n/1200)));
+  const count=1+Math.ceil(Math.max(0,n-1156)/1200);
+  assert.equal(trips,count);assert.equal(s.snapshot().ackedChunks,count);
+  assert.equal(s.snapshot().ackedBytes,n);
   assert.equal(s.snapshot().bufferedBytes,0);assert.equal(r.snapshot().bufferedBytes,0);
   assert.equal(decodePacket(r.ack()).status,'complete');assert.equal(s.next(now),null);
 });
 
-test('lost ACKs, duplicated data, and final ACK loss do not duplicate delivery',async()=>{
-  const s=await sender(),r=new TurnReceiver();await start(s,r);
+test('lost first, intermediate and final ACKs do not duplicate delivery',async()=>{
+  const s=await sender(),r=new TurnReceiver(),startBytes=s.next(1);
+  const progress=await r.receive(startBytes,1);
+  const retry=await r.receive(s.next(1),1);assert.equal(retry.reason,'duplicate-start');
+  assert.deepEqual(retry.ack,progress.ack);assert.equal(s.receive(retry.ack,1).accepted,true);
   const first=s.next(2),got=await r.receive(first,3);
   assert.equal(got.delivery,undefined);
   const dup=await r.receive(first,4);assert.equal(dup.reason,'duplicate');assert.deepEqual(dup.ack,got.ack);
   assert.equal(s.receive(dup.ack,5).accepted,true);
-  const second=await r.receive(s.next(6),7);s.receive(second.ack,8);
   const final=s.next(9),done=await r.receive(final,10);assert.ok(done.delivery);
   const again=await r.receive(final,11);assert.equal(again.reason,'already-delivered');assert.equal(again.delivery,undefined);
   assert.deepEqual(again.ack,done.ack);assert.equal(s.receive(again.ack,12).delivered,true);
@@ -45,39 +52,65 @@ test('lost ACKs, duplicated data, and final ACK loss do not duplicate delivery',
 test('sender rejects unsent, stale, foreign, incorrect-digest and premature completion ACKs',async()=>{
   const s=await sender(),r=new TurnReceiver(),initial=await r.receive(s.current.slice(),0);
   assert.equal(s.receive(initial.ack,1).reason,'unsent-ack');
-  s.next(2);assert.equal(s.receive(initial.ack,3).accepted,true);
+  s.next(2);
+  assert.equal(s.receive(encodePacket({...decodePacket(initial.ack),status:'ready',bitmap:0}),2).reason,'stale-ack');
+  assert.equal(s.receive(initial.ack,3).accepted,true);
   assert.equal(s.receive(initial.ack,4).reason,'unsent-ack');
   s.next(5);assert.equal(s.receive(initial.ack,6).reason,'stale-ack');
-  const expected={...ids,kind:'ack',base:0,bitmap:1,status:'progress',digest:s.meta.digest};
-  for(const patch of [{sessionId:'ef'.repeat(16)},{messageId:'ab'.repeat(8)},{digest:'00'.repeat(32)},{base:1},{status:'complete'},{bitmap:0}]) {
+  const expected={...ids,kind:'ack',base:1,bitmap:1,status:'progress',digest:s.meta.digest};
+  for(const patch of [{sessionId:'ef'.repeat(16)},{messageId:'ab'.repeat(8)},{digest:'00'.repeat(32)},{base:0},{status:'complete'},{bitmap:0}]) {
     assert.equal(s.receive(encodePacket({...expected,...patch}),7).accepted,false);
   }
-  assert.equal(s.snapshot().ackedChunks,0);
+  assert.equal(s.snapshot().ackedChunks,1);
 });
 
 test('receiver rejects reordered/conflicting chunks and conflicting START',async()=>{
-  const s=await sender(),r=new TurnReceiver();await start(s,r);
+  const s=await sender(4000),r=new TurnReceiver(),startBytes=s.next(0),initial=decodePacket(startBytes);
+  await start(s,r);
   const first=s.next(2),p=decodePacket(first);
-  assert.equal((await r.receive(encodePacket({...p,index:1}),3)).reason,'out-of-order');
+  assert.equal((await r.receive(encodePacket({...p,index:2}),3)).reason,'out-of-order');
+  assert.equal((await r.receive(encodePacket({...p,index:0}),3)).reason,'invalid-chunk');
   const accepted=await r.receive(first,4);assert.equal(accepted.accepted,true);
   const bad=p.data.slice();bad[0]^=1;
   assert.equal((await r.receive(encodePacket({...p,data:bad}),5)).reason,'conflicting-chunk');
-  assert.equal((await r.receive(encodePacket({...s.meta,kind:'start',digest:'00'.repeat(32)}),6)).reason,'conflicting-start');
-  assert.equal(r.snapshot().receivedChunks,1);
+  assert.equal((await r.receive(encodePacket({...initial,digest:'00'.repeat(32)}),6)).reason,'conflicting-start');
+  const badFirst=initial.data.slice();badFirst[0]^=1;
+  assert.equal((await r.receive(encodePacket({...initial,data:badFirst}),7)).reason,'conflicting-start');
+  const duplicate=await r.receive(startBytes,8);
+  assert.equal(duplicate.reason,'duplicate-start');assert.deepEqual(duplicate.ack,accepted.ack);
+  assert.equal(r.snapshot().receivedChunks,2);
 });
 
-test('full-message digest failure yields no final ACK or delivery',async()=>{
-  const s=await sender(100),r=new TurnReceiver();await start(s,r);
-  const p=decodePacket(s.next(2));p.data[0]^=1;
-  const got=await r.receive(encodePacket(p),3);
+test('singleton is verified and delivered directly from START; replay never delivers twice',async()=>{
+  const s=await sender(100),r=new TurnReceiver(),bytes=s.next(1),p=decodePacket(bytes);
+  assert.deepEqual(p.data,payload(100));assert.equal(p.chunkCount,1);
+  const done=await r.receive(bytes,2);
+  assert.deepEqual(done.delivery.bytes,payload(100));
+  const ack=decodePacket(done.ack);assert.deepEqual([ack.base,ack.bitmap,ack.status],[0,1,'complete']);
+  const again=await r.receive(bytes,3);assert.equal(again.reason,'already-delivered');
+  assert.deepEqual(again.ack,done.ack);assert.equal(again.delivery,undefined);
+  p.data[0]^=1;
+  assert.equal((await r.receive(encodePacket(p),4)).reason,'conflicting-start');
+  assert.equal(s.receive(done.ack,5).delivered,true);
+});
+
+for(const n of [100,2600])test(`full-message digest failure yields no final ACK for ${n} bytes`,async()=>{
+  const s=await sender(n),r=new TurnReceiver();
+  let now=0,got;
+  do {
+    const p=decodePacket(s.next(++now));p.data[0]^=1;
+    got=await r.receive(encodePacket(p),++now);
+    if(got.ack)s.receive(got.ack,++now);
+  }while(got.ack);
   assert.equal(got.reason,'digest-mismatch');assert.equal(got.ack,null);assert.equal(got.delivery,undefined);
   assert.equal(r.ack(),null);assert.equal(r.snapshot().state,'failed');assert.equal(r.snapshot().bufferedBytes,0);
-  assert.equal((await r.receive(s.next(4),4)).reason,'terminal');
+  assert.equal((await r.receive(s.next(++now),now)).reason,'terminal');
 });
 
 test('malformed and oversized input fails before state allocation',async()=>{
   const s=await sender(100),r=new TurnReceiver({maxMessageBytes:99});
   assert.equal((await r.receive(s.next(1),1)).reason,'unsupported-message');assert.equal(r.snapshot().bufferedBytes,0);
+  assert.equal((await r.receive(encodePacket({...s.meta,kind:'start'}),1)).reason,'unsupported-message');
   const broken=s.next(2);broken[10]^=1;assert.equal((await r.receive(broken,2)).reason,'malformed');
   assert.equal((await r.receive(new Uint8Array(2000),3)).reason,'malformed');
   await assert.rejects(()=>sender(0,{chunkBytes:TURN_LIMITS.chunkBytes+1}),/chunk size/);
@@ -87,7 +120,7 @@ test('malformed and oversized input fails before state allocation',async()=>{
 test('receiver binds first session, retains final receipts, and requires reset for a fresh session',async()=>{
   const r=new TurnReceiver();
   for(let message=0;message<2;message++) {
-    const s=await sender(1,{messageId:message.toString(16).padStart(16,'0')});await start(s,r,message*10+1);
+    const s=await sender(1,{messageId:message.toString(16).padStart(16,'0')});
     const got=await r.receive(s.next(message*10+2),message*10+3);assert.ok(got.delivery);s.receive(got.ack,message*10+4);
   }
   assert.equal(r.snapshot().completedMessages,2);
@@ -97,7 +130,7 @@ test('receiver binds first session, retains final receipts, and requires reset f
 });
 
 test('timeouts free buffers and reject late packets; duplicate traffic does not extend deadline',async()=>{
-  const s=await sender(1,{timeoutMs:100}),r=new TurnReceiver({timeoutMs:100});await start(s,r,1);
+  const s=await sender(2600,{timeoutMs:100}),r=new TurnReceiver({timeoutMs:100});await start(s,r,1);
   const bytes=s.next(2);assert.ok(bytes);assert.equal(s.next(100),null);assert.equal(s.snapshot().state,'timed-out');
   r.tick(101);assert.equal(r.snapshot().state,'timed-out');assert.equal(r.snapshot().bufferedBytes,0);
   assert.equal((await r.receive(bytes,102)).reason,'terminal');
@@ -105,7 +138,7 @@ test('timeouts free buffers and reject late packets; duplicate traffic does not 
 
 test('sender and receiver expose copies of packets, and sender snapshots caller payload',async()=>{
   const data=payload(4),s=await createTurnSender(data,{sessionId,messageId,now:0}),r=new TurnReceiver();data.fill(99);
-  const one=s.next(1);one.fill(0);assert.notDeepEqual(s.next(2),one);await start(s,r,3);
+  const one=s.next(1);one.fill(0);assert.notDeepEqual(s.next(2),one);
   const got=await r.receive(s.next(4),5);assert.deepEqual(got.delivery.bytes,payload(4));
   got.ack.fill(0);assert.notDeepEqual(r.ack(),got.ack);
 });
@@ -141,7 +174,7 @@ for(const size of [32,64,128])test(`G${size} negotiated chunks transfer exactly 
 test('completed receipt replay returns its ACK without replacing the latest receipt',async()=>{
   const r=new TurnReceiver(),messages=[];
   for(let index=0;index<2;index++){
-    const s=await sender(1,{messageId:index.toString(16).padStart(16,'0')});
+    const s=await sender(1200,{messageId:index.toString(16).padStart(16,'0')});
     const startBytes=s.next(1),ready=await r.receive(startBytes,1);s.receive(ready.ack,1);
     const data=s.next(2),done=await r.receive(data,2);s.receive(done.ack,2);
     messages.push({start:startBytes,data,ack:done.ack});

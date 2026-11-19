@@ -33,6 +33,14 @@ function symbolsOf(wire,size){
   return symbols;
 }
 
+test('a Neural-QR START carries chunk zero; an ordinary bench metadata-only START is not a turn packet',()=>{
+  const meta={...ids,kind:'start',chunkCount:1,totalBytes:3,chunkBytes:244,windowSize:1,digest:'56'.repeat(32)};
+  assert.throws(()=>packetFrames(messagePacket(meta),{size:64}),/chunk zero/);
+  const first=messagePacket({...meta,data:bytes(3)}),phase=packetFrames(first,{size:64})[3];
+  assert.equal(phase.size,64);
+  assert.deepEqual(unpackOptical(decodeNeuralQRSymbols(canonical(phase),64).chunk,'data'),first);
+});
+
 test('packet capacities account for pilots, outer CRC, RS, envelope and message framing',()=>{
   assert.equal(packetCapacity(16),40);
   for(const [size,capacity,chunk] of [[32,288,244],[64,1332,1288],[128,5460,5416]]){

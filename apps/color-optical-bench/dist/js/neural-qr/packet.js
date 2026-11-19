@@ -32,6 +32,7 @@ export function chunkBytesForSize(size){
 function messagePacket(bytes,size){
   const packet=decodeMessagePacket(bytes);
   if(!Object.hasOwn(KINDS,packet.kind)||packet.messageType!=='raw')throw Error('Unsupported Neural-QR turn packet.');
+  if(packet.kind==='start'&&!(packet.data instanceof Uint8Array))throw Error('Neural-QR START must carry chunk zero.');
   if(['ack','poll'].includes(packet.kind)&&size!==CONTROL_SIZE)throw Error('Neural-QR ACK and REQUEST controls require G32.');
   return packet;
 }

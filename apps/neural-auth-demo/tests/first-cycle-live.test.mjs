@@ -86,7 +86,7 @@ async function presentFour(d){
   d.refresh(17); // one render opportunity after the fourth canvas submission
 }
 
-test('HELLO, its matching ACK, then DATA: no reads during either first pass or after cancelling',async t=>{
+test('Singleton HELLO, its matching ACK, then REQUEST: no reads during either first pass or after cancelling',async t=>{
   const d=await device(t,'verifier',{holdKey:true});
   try{
     // Start a read while there is no outbound HELLO. The old worker result
@@ -99,12 +99,13 @@ test('HELLO, its matching ACK, then DATA: no reads during either first pass or a
     assert.equal(received.mock.callCount(),0,'prior exposure must not reach the new transport turn');
     const peer=new TurnReceiver();
     await presentFour(d);
-    const ready=await peer.receive(d.channel.current(),0);assert.ok(ready.accepted);
-    d.setReply(ready.ack);d.pulse();
-    await until(()=>decodePacket(d.channel.current()).kind==='data','matching ACK did not advance START to DATA');
+    const hello=await peer.receive(d.channel.current(),0);assert.ok(hello.delivery);
+    assert.equal(decodePacket(hello.ack).status,'complete');
+    d.setReply(hello.ack);d.pulse();
+    await until(()=>decodePacket(d.channel.current()).kind==='poll','matching final ACK did not advance HELLO to REQUEST');
     assert.deepEqual(d.scans,['data','ack']);
     await presentFour(d);
-    d.pulse();await turn();assert.deepEqual(d.scans,['data','ack','ack']);
+    d.pulse();await turn();assert.deepEqual(d.scans,['data','ack','data']);
     const n=d.scans.length,p=d.paints.length;
     d.get('stop').click();d.refresh(1400);d.pulse();
     assert.equal(d.scans.length,n);assert.equal(d.paints.length,p);assert.equal(d.track.stopped,true);
@@ -115,9 +116,10 @@ test('blank prover reads immediately; its ACK is guarded once even if the peer r
   const d=await device(t,'prover');
   try{
     assert.equal(d.channel.current(),null);assert.equal(d.listening,true);
-    const start=(await createTurnSender(Uint8Array.of(1,2,3))).next(100);
+    // Use a multipart fixture: chunk zero produces progress, not an auth envelope.
+    const start=(await createTurnSender(new Uint8Array(2000))).next(100);
     d.setReply(start);d.pulse();
-    await until(()=>d.channel.current(),'prover did not present the ready ACK');
+    await until(()=>d.channel.current(),'prover did not present the chunk-zero ACK');
     const ack=d.channel.current();assert.equal(decodePacket(ack).kind,'ack');
     assert.deepEqual(d.scans,['data']);await presentFour(d);
     d.setReply(start);d.pulse();await turn();

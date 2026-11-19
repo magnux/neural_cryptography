@@ -4,8 +4,9 @@ import {decodePacket} from '../link/protocol.js';
 const duplicateReasons=new Set(['duplicate','duplicate-start','already-delivered','duplicate-request']);
 const rounded=value=>value===null?null:Math.round(value*10)/10;
 const messageKey=p=>`${p.sessionId}/${p.messageId}/${p.messageType}`;
-const packetKind=p=>p.kind==='ack'?(p.status==='ready'?'start':'data'):p.kind;
-const packetIndex=p=>packetKind(p)==='start'?null:p.kind==='ack'?p.base:p.index;
+// In this transport START is chunk zero, including a complete singleton.
+const packetKind=p=>p.kind==='ack'?(p.base===0?'start':'data'):p.kind;
+const packetIndex=p=>p.kind==='start'?0:p.kind==='ack'?p.base:p.index;
 const rowKey=(direction,p)=>`${direction}/${messageKey(p)}/${packetKind(p)}/${packetIndex(p)??''}`;
 const parse=bytes=>{try{return decodePacket(bytes);}catch{return null;}};
 const elapsed=(end,start)=>end!==null&&start!==null&&end>=start?end-start:null;
@@ -55,15 +56,14 @@ export class PacketTelemetry {
   }
   describe(row,p,bytes,grid){
     const meta=this.messages.get(messageKey(p));
-    row.grid=grid;row.packetBytes=bytes.length;row.payloadBytes=p.kind==='data'?p.data.length:0;
+    row.grid=grid;row.packetBytes=bytes.length;row.payloadBytes=p.data?.length??0;
     row.chunkCount=p.kind==='start'?p.chunkCount:meta?.chunkCount??row.chunkCount;
     row.digest=p.digest??meta?.digest??row.digest;
   }
   matchesAck(row,p){
     if(row.digest!==null&&row.digest!==p.digest)return false;
-    if(row.kind==='start')return p.status==='ready'&&p.base===0&&p.bitmap===0;
     const status=row.chunkCount===null?null:row.index===row.chunkCount-1?'complete':'progress';
-    return p.base===row.index&&p.bitmap===1&&p.status!=='ready'&&(!status||p.status===status);
+    return p.base===row.index&&p.bitmap===1&&['progress','complete'].includes(p.status)&&(!status||p.status===status);
   }
   /** Call once when a packet becomes visible, after painting its first phase.
    * Redisplaying a retained ACK/START/REQUEST increments displayCount without resetting

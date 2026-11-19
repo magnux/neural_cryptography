@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {setTimeout as wait} from 'node:timers/promises';
 import {initSweep} from '../dist/sweep-ui.js';
+import {decodeReceipt16Capture} from '../dist/js/neural-qr/receipt16.js';
 import {SweepReader} from '../dist/sweep-reader.js';
 import {PALETTE} from '../dist/js/format.js';
 import {gridLayout,paletteMap} from '../dist/js/grid.js';
@@ -29,7 +30,7 @@ async function until(pred,description){
   assert.ok(pred(),description);
 }
 
-function devices(t,{watch=false,progressiveRole}={}){
+function devices(t,{watch=false,progressiveRole,ackSize=32}={}){
   const urls=[],tracks=[],closed=[],raf=new Set(),inFlight=new Map();let seq=0,blocked=null;
   class Element{
     constructor(sel='',value=''){this.value=value;this.id=sel;this.dataset={};this.listeners={};this.hidden=false;this.draws=0;}
@@ -62,13 +63,13 @@ function devices(t,{watch=false,progressiveRole}={}){
   t.mock.method(SweepReader.prototype,'scan',async function(im){
     assert.ok(!inFlight.has(this),'no overlapping scan');inFlight.set(this,true);this.calls++;
     try{if(blocked&&this.expected==='data'){const gate=blocked;blocked=null;await gate;}
-      const result=readCanvas(im,this.size);
+      const result=this.single&&im?decodeReceipt16Capture(im):readCanvas(im,this.size);
       if(watch&&result.ok&&this.calls===1)return {ok:false,stage:'collect',info:result.info,corners:[[30,30],[480,30],[480,480],[30,480]],phaseCounts:[1,0,0,0]};
       if(watch&&result.ok&&this.calls===2)return {ok:false,stage:'phase',info:null,stats:{geometrySource:'previous',detectedSize:this.size}};
       return result;}finally{inFlight.delete(this);}
   });
   function phone(role){
-    const vals={role,size:'64',phase:'200',capture:'150',decrement:'50',increment:'50',phaseCap:'500',timeout:'3',backend:'wasm',facing:'user',resolution:'720',device:''};
+    const vals={role,size:'64',ackSize:String(ackSize),phase:'200',capture:'150',decrement:'50',increment:'50',phaseCap:'500',timeout:'3',backend:'wasm',facing:'user',resolution:'720',device:''};
     const nodes=new Map();const get=s=>{if(!nodes.has(s))nodes.set(s,new Element(s,vals[s.match(/^\[name="(\w+)"\]$/)?.[1]]));return nodes.get(s);};
     get('[name="phaseWatch"]').checked=watch;get('[name="progressive"]').checked=progressiveRole===role;
     if(progressiveRole)get('[name="phase"]').value='50';
@@ -168,4 +169,23 @@ test('transmitter can lengthen DATA phase dwell across passes without holding it
   assert.equal(a.steps[0].phaseMs,50);assert.equal(b.steps[0].phaseMs,50);assert.equal(a.configuration.maxPhaseMs,500);
   assert.ok(a.steps[0].display.completeCycles>=1);assert.ok(a.steps[0].display.peakDwellMs>=100);
   assert.equal(a.steps[0].display.skippedSlots,0);assert.equal(b.steps[0].display.peakDwellMs,50);
+});
+
+
+test('G16 holds one phase until Next; a stale valid receipt cannot finish the next fresh probe',async t=>{
+  const {S,R}=devices(t,{ackSize:16});
+  R.start.click();S.start.click();await until(()=>!R.next.disabled&&!S.next.disabled,'both readers ready');
+  R.next.click();S.next.click();await until(()=>S.video.cb&&S.matrix.draws,'first DATA visible');
+  R.video.emit();await until(()=>R.matrix.draws&&!R.next.disabled,'static receipt visible');
+  const stale=R.matrix.image;await wait(250);
+  assert.equal(R.matrix.draws,1);S.video.emit();await until(()=>!S.next.disabled,'accepted one exposure');
+  const a=await S.report(),b=await R.report();
+  assert.equal(a.optical.dataPhases,4);assert.equal(a.optical.ackSize,16);assert.equal(a.optical.ackPhases,1);
+  assert.equal(a.steps[0].checkpointsMs.allPhases,undefined);assert.deepEqual(b.steps[0].display.byPhase,[1,0,0,0]);
+  assert.equal(b.steps[0].display.completeCycles,0);
+  S.next.click();await until(()=>S.video.cb,'sender ready again');S.video.override=stale;S.video.emit();
+  await until(()=>S.video.cb,'sender rejected old receipt');assert.ok(S.next.disabled);
+  S.video.override=null;R.next.click();assert.ok(R.matrix.hidden);R.video.emit();await until(()=>!R.next.disabled,'next receipt visible');
+  S.video.emit();await until(()=>S.history.textContent.includes('Step 2'),'second step completed');
+  assert.equal((await S.report()).steps[1].unmatchedAcks,1);
 });

@@ -81,11 +81,11 @@ test('automatic handoffs wait for REQUEST and keep repeated updates quiet',()=>{
   assert.equal(h.changes.length,count);assert.equal([...h.timers.values()][0],timer);
   h.notices.update({}, {...base,mode:'ack',waitingForRequest:false,queued:true,canSendNext:true});
   assert.equal(h.last().title,'Reply requested');assert.match(h.last().message,/automatically/);
-  const outgoing={messageId:'reply',index:-1,chunkCount:2};
+  const outgoing={messageId:'reply',index:0,chunkCount:2};
   h.notices.update({}, {...base,mode:'send',outgoing});
   assert.equal(h.last().title,'Sending this round');
-  h.notices.update({}, {...base,mode:'send',outgoing:{...outgoing,index:0}});
-  assert.equal(h.last().title,'ACK received · sending chunk 1/2');
+  h.notices.update({}, {...base,mode:'send',outgoing:{...outgoing,index:1}});
+  assert.equal(h.last().title,'ACK received · sending chunk 2/2');
   for(const value of h.changes.filter(Boolean))assert.doesNotMatch(`${value.title} ${value.message}`,/tap|click|Send next turn/i);
 });
 

@@ -28,6 +28,7 @@ test('both screens track the same logical step through chunks, held final ACKs, 
       if(sender.snapshot().outgoing)both(n);
     }
     if(n===4)assert.ok(packets>2); // many proof chunks, one auth step
+    else assert.equal(packets,1,'one small envelope consumes exactly one acknowledged packet');
     await pending;
     if(n<5){
       const request=sender.current();assert.equal(decodePacket(request).kind,'poll');

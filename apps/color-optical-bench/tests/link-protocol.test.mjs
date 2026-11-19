@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { encodePacket, decodePacket, sha256, LIMITS, DATA_OVERHEAD, CONTROL_MAX_BYTES } from '../dist/js/link/protocol.js';
+import { encodePacket, decodePacket, sha256, LIMITS, KIND, DATA_OVERHEAD, CONTROL_MAX_BYTES, firstChunkCapacity, inlineChunkCount } from '../dist/js/link/protocol.js';
 import { createSender, Receiver } from '../dist/js/link/session.js';
 import { crc32 } from '../dist/js/format.js';
 
@@ -41,6 +41,40 @@ test('START requires consistent bounded dimensions before allocating', () => {
   }
   const bad = encodePacket(start); new DataView(bad.buffer).setUint32(44, LIMITS.maxChunks + 1);
   assert.throws(() => decodePacket(resign(bad)), /chunkCount|chunk count/);
+});
+
+test('inline first chunk fills the same matrix budget as later DATA; empty and boundary messages are canonical', () => {
+  const chunkBytes = 1288, capacity = firstChunkCapacity(chunkBytes);
+  assert.equal(capacity, 1244);
+  for (const [totalBytes, chunkCount] of [[0, 1], [1, 1], [1244, 1], [1245, 2], [2532, 2], [2533, 3], [17731, 14]]) {
+    assert.equal(inlineChunkCount(totalBytes, chunkBytes), chunkCount);
+    const p = { ...ids, kind: 'start', totalBytes, chunkBytes, chunkCount, windowSize: 1, digest, data: bytes(Math.min(totalBytes, capacity)) };
+    const wire = encodePacket(p);
+    assert.equal(wire[4], KIND.START_DATA);
+    assert.deepEqual(decodePacket(wire), p);
+    if (totalBytes >= capacity) assert.equal(wire.length, encodePacket({ ...ids, kind: 'data', index: 1, data: bytes(chunkBytes) }).length);
+  }
+});
+
+test('inline bytes and metadata are checked before either transport can advance', async () => {
+  const p = { ...ids, kind: 'start', totalBytes: 75, chunkBytes: 100, chunkCount: 2, windowSize: 1, digest, data: bytes(56) };
+  const wire = encodePacket(p);
+  const damaged = wire.slice(); damaged[damaged.length - 5] ^= 1;
+  assert.throws(() => decodePacket(damaged), /CRC/);
+  const count = wire.slice(); new DataView(count.buffer).setUint32(44, 1);
+  assert.throws(() => decodePacket(resign(count)), /chunk count/);
+  const trimmed = wire.slice(); new DataView(trimmed.buffer).setUint32(36, 50);
+  assert.throws(() => decodePacket(resign(trimmed)), /first chunk length/);
+  const oldKind = wire.slice(); oldKind[4] = KIND.START;
+  assert.throws(() => decodePacket(resign(oldKind)), /START body/);
+  assert.throws(() => encodePacket({ ...p, data: bytes(55) }), /first chunk length/);
+  const receiver = new Receiver();
+  assert.equal((await receiver.receive(wire, 0)).accepted, false);
+  assert.equal(receiver.snapshot().bufferedBytes, 0);
+  const { data, ...plain } = p;
+  const separateStart = encodePacket({ ...plain, chunkCount: 1 });
+  assert.equal(separateStart[4], KIND.START);
+  assert.equal((await receiver.receive(separateStart, 1)).accepted, true);
 });
 
 async function transfer(payload, options = {}, fault = () => false) {

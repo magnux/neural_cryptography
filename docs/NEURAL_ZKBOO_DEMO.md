@@ -100,7 +100,10 @@ certified security levels.
 The four phases repeat the same packet using different palette permutations;
 they do not multiply its payload capacity. The payload sizes above exclude the
 optical and multipart overhead. G16's remaining protected packet space is too
-small for an 84-byte ACK or an 88-byte START, so controls use G32.
+small for the ordinary 84-byte ACK. Live ACKs and REQUESTs use G32. The
+[dedicated timing lab](NEURAL_AUTH_DEMO.md#trained-four-phase-sweep) can test
+a smaller G16 receipt. START travels at the chosen DATA geometry and carries
+chunk zero: its 88-byte overhead leaves 44 fewer content bytes than later DATA.
 
 Four 150 ms phases take 600 ms to display. This is a display cycle, not a promised
 packet latency: exposure, dropped phases, preprocessing, inference and the ACK
@@ -178,8 +181,8 @@ is retained and the reply starts when ready.
 
 Lost final ACKs and requests are recovered by continuing to display the same
 packet. Timeouts can fail a stalled attempt, but elapsed time never alternates
-the final ACK with START. Once permitted, START remains current until its ready
-ACK. Duplicates cannot grant a different turn or duplicate an authentication
+the final ACK with START. Once permitted, START remains current until its
+chunk-zero progress ACK (or final ACK for a single-matrix message). Duplicates cannot grant a different turn or duplicate an authentication
 message. The final RESULT requests no reply, so its final ACK remains visible.
 
 All four rendered palette phases of the current packet are retained and reused,
@@ -193,7 +196,8 @@ and its final ACK before treating both devices as complete; `resultDelivered`
 must be true in the verifier report and `peerReported` true in the prover report.
 
 The five application messages are HELLO, IDENTITY, CHALLENGE, PROOF and RESULT.
-Each message has its own START/ACK and sequential DATA/ACK exchanges. Duplicated
+Each starts with one payload-bearing START/ACK; larger messages continue with
+sequential DATA/ACK exchanges from index 1. Duplicated
 packets and repeated final ACKs do not create duplicate application deliveries.
 
 This is one-way proof of the key holder's secret, using fresh ephemeral keys and

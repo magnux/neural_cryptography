@@ -180,6 +180,21 @@ does not increase the recorded exchange time.
 
 ## Request-driven handoff
 
+The first matrix of each message carries its metadata **and chunk zero**. If
+the message fits, the receiver checks the whole-message SHA-256 and issues its
+final ACK immediately. Otherwise it returns a progress ACK for chunk zero and
+the sender continues at DATA index 1. Losing the first ACK only repeats the
+same matrix; it cannot restart the message or deliver it twice.
+
+For the short (32-repetition) G64 exchange, the first matrix has **1,244 bytes**
+of content space and subsequent matrices have **1,288**. HELLO, IDENTITY,
+CHALLENGE and RESULT each take one confirmed matrix. The proof envelope takes
+14, including its first matrix. That is **18 DATA/ACK round trips instead of
+23**, plus the same four one-way REQUEST handoffs (40 distinct matrices instead
+of 50 before retries). Proof bytes, repetitions and final delivery confirmation
+are unchanged. At other sizes or proof lengths the first matrix's extra
+metadata can move the chunk boundary, so use the measured packet count.
+
 Each START or DATA packet stays displayed until its matching ACK arrives. At a
 message boundary, the receiver keeps the final ACK visible while preparing its
 reply. The sender must read that ACK before it displays a **G32 REQUEST** asking
@@ -307,7 +322,7 @@ Use **Matrix timing** on both devices and select the same experiment:
 | Experiment | The receiver displays | What the sender measures |
 | --- | --- | --- |
 | Single-phase echo | The colors it read from one exposure, including any wrong cells | One probe → echo RTT, matched fraction and cell error rate; no trained model required |
-| Trained four-phase sweep | A G32 ACK after recovering a protected DATA packet from camera frames | One DATA → matching ACK RTT at each pair of display and capture intervals; trained corrector on both devices |
+| Trained four-phase sweep | After recovering DATA: a four-phase G32 ACK (default), or an experimental static G16 receipt | One DATA → matching receipt RTT; DATA always uses the trained corrector. G16 needs only one readable exposure on the return leg. |
 
 Neither experiment generates a proof or performs a full authentication. Use the
 sweep to choose four-phase settings; use the echo to isolate single-exposure
@@ -361,9 +376,12 @@ latency and optional inference; the sender records individual trial outcomes.
 ### Trained four-phase sweep
 
 Use the same [trained corrector export as live reception](#prepare-a-standalone-directory)
-on both devices. A receiver reads the DATA grid and sends a G32 ACK; the sender
-must **also** run the corrector, on the ACK. The untrained dummy from the
-single-phase test cannot substitute on either leg. The first inference uses
+on the DATA receiver, and also on the sender for the default G32 ACK. For
+**G16**, both devices must select the experimental ACK option. The receiver
+still decodes exactly the same four-phase DATA, then displays one static G16
+receipt until Next. The sender reads it with the camera's measured palette,
+RS and CRC, without a G16 checkpoint or a phase burst. There is no automatic
+switch of ACK format. For the trained legs, the first inference uses
 one distinct exposure from each phase (K4); if recovery fails, the live reader
 can retry with two per phase (K8). A corner lock or a completed inference alone
 does not finish a step: the receiver must recover the protected packet and the
@@ -416,8 +434,8 @@ attempts. The report records each device’s local settings,
 until Next, so waiting before advancing can increase its reported peak.
 
 Read the sender's RTT as **first DATA draw → matching ACK recovery on that
-sender**. It includes two camera paths, display refresh and waiting for all
-four phases; it is not twice the model inference time. On the receiver, look
+sender**. It includes both cameras, display refresh, and phase collection on
+each trained leg; it is not twice the model inference time. On the receiver, look
 at DATA acquisition; on the sender, look at ACK acquisition. Compare the time
 to first lock, the time to see all four phases, packet recovery, and the first
 ACK draw. Distinguish the requested intervals from the intervals actually
@@ -429,6 +447,16 @@ step, with omitted scans counted), phase counts, and whole-step aggregates.
 Reported display cadence is based on the actual outgoing draws; a receiver can
 keep cycling its last ACK after the step finishes until Next or Stop, without
 extending its recorded arm-to-ACK time.
+
+To compare ACK formats, fix both phones in the same positions at G64 and keep
+the matrix display area, capture cadence, lighting and backend unchanged. Run
+the G32 baseline, then run the same sweep with G16 selected on **both** phones.
+Swap sender and receiver and repeat. Save both reports even if a step times out.
+Compare **completed / attempted** first, then sender RTT and the number of
+camera reads needed for a matching ACK. A quick success averaged only over
+readable steps can hide timeouts. The G16 ACK leg should show **zero corrector
+inferences**. This option is confined to Matrix timing; live ACKs and REQUESTs
+still use G32.
 
 If one phase never enters the burst, inspect the four counts on the **sender**
 for the ACK leg. The November 19 two-phone sweep recovered G64 DATA at all nine
