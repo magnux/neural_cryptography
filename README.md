@@ -21,6 +21,10 @@ link and proof exchange; it does not establish a cryptographic security level.
 [Try the mobile demo locally](docs/NEURAL_AUTH_DEMO.md) or read the
 [device results and limitations](#status-and-scope).
 
+**Project talk:** [Download the editable PowerPoint](docs/presentation/neural-cryptography.pptx)
+for a guided tour of the neural-key experiments, proof, optical link and two-phone result.
+The [presentation guide](docs/presentation/README.md) includes the slide map and editing notes.
+
 ## Join the research
 
 Researchers, engineers and coding agents are welcome. The
