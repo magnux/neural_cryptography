@@ -132,7 +132,7 @@ the same proof it would receive over another transport. A better camera model
 can improve recovery without changing the public relation or its security.
 
 The [device results](../README.md#status-and-scope) document what the working
-stack demonstrates. The [roadmap](ROADMAP.md) keeps comparisons with conventional
-primitives, independent cryptanalysis and synchronization experiments as
-future research. A successful exchange establishes feasibility on the tested
+stack demonstrates. The [open research guide](../CONTRIBUTING.md#open-research-questions) turns
+these comparisons into runnable first experiments; the [roadmap](ROADMAP.md)
+tracks integration and device validation. A successful exchange establishes feasibility on the tested
 devices; it does not establish a security level, classical or post-quantum.

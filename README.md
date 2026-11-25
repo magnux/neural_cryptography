@@ -1,40 +1,50 @@
 # Neural Cryptography
 
-Experiments in neural dynamical systems, a custom ZKBoo-style proof of knowledge,
-and camera-to-screen optical communication. The browser applications perform
-computation locally. The demo server serves static assets and can optionally
-store recording JSONs explicitly uploaded from the data collector.
+Can a neural network compute a useful cryptographic key? This project started
+with a small experiment: hold a network’s weights fixed, flip one input bit,
+and measure how many output bits change. Our first application, **Neural Key**,
+asks whether an offline device can prove it holds a secret using only its
+screen and camera.
 
-The goal is **fast, reliable and secure optical authentication between a phone
-and computer**. The current Neural-ZKBoo demo carries both data and acknowledgments
-using **Neural-QR**, our header-free optical format read by the trained neural
-corrector. Stable G32 REQUEST controls coordinate each reply. Both devices can send and receive through G128, with G32 controls and
-independently selectable outgoing grids. The initial selections are G128 on
-computers and G64 on phones. The separate standard-QR experiment remains available
-for comparison.
+Three components make the demonstration possible:
 
-**W-tube and VW export, browser inference and Neural-QR packet integration are
-implemented.** Export the trained checkpoint to static ONNX profiles, prepare
-the local runtime/assets, and follow the [device test guide](docs/NEURAL_ZKBOO_DEMO.md).
-The browser performs acquisition, neural correction, RS+CRC recovery and
-Neural-ZKBoo proof work locally. Model initialization checks numerical parity and
-preloads the receiving profiles; no inference server is used.
+| Component | Its job |
+| --- | --- |
+| [Neural-ZKBoo](experiments/python-zkboo/README.md) | Proves knowledge of a secret for a fresh challenge using an exact Boolean circuit. The secret stays on the prover. |
+| [Neural-QR](docs/NEURAL_QR.md) | Carries the serialized messages as color matrices across a screen-to-camera link, including the return acknowledgments. |
+| [Neural-Corrector](docs/NEURAL_CORRECTOR.md) | A trained network estimates the transmitted symbols from several camera exposures. Its weights are public; the proof verifier makes the authentication decision. |
 
-The [W-tube data pipeline](docs/W_TUBE_DATA.md) imports native and auxiliary
-recordings and generates paired camera-scaled synthetics. VW adds a third U pass
-to W-tube; optional EMA feature distillation changes training only. See the
-[architecture diagrams](docs/NEURAL_CORRECTOR.md) and
-[training instructions](docs/NEURAL_CORRECTOR_TRAINING.md).
-The Optical Bench's OBM transport, the standard-QR app and the two-pixel
-`multires` model remain separate experiments. Functional success and recorded
-RS+CRC replay do not establish live throughput or cryptographic security;
-new physical device tests are required for this Neural-QR integration.
+**What works:** two phones completed a [32-repetition exchange in about
+130 seconds](docs/NEURAL_AUTH_DEMO.md#acknowledgments) with G64 data matrices
+and G16 receipts. That is one measured setup. It demonstrates a working optical
+link and proof exchange; it does not establish a cryptographic security level.
+[Try the mobile demo locally](docs/NEURAL_AUTH_DEMO.md) or read the
+[device results and limitations](#status-and-scope).
 
-The repository keeps one current implementation of each experiment; earlier
-revisions belong in Git history. The hosted test sites are intentionally blank.
-See the [source inventory](docs/SOURCE_INVENTORY.md) for the source layout and
-the [Neural Waves notebook on Colab](https://colab.research.google.com/drive/19kV6VOT5zi6daMn6RaNWz_lDCxeAZgci#scrollTo=irKCCLQhd0_t)
-for the original dynamical-systems exploration.
+**Project talk:** [Download the editable PowerPoint](docs/presentation/neural-cryptography.pptx)
+for a guided tour of the neural-key experiments, proof, optical link and two-phone result.
+The [presentation guide](docs/presentation/README.md) includes the slide map and editing notes.
+
+## Join the research
+
+Researchers, engineers and coding agents are welcome. The
+[open research guide](CONTRIBUTING.md) gives each direction a starting point,
+a baseline and a result someone else can check:
+
+- **Integration:** turn the existing JavaScript and Python proof cores into
+  importable libraries that verify each other’s proofs.
+- **Optical communication:** find out when the Neural-QR color-reference grid
+  earns the space it occupies, using verified payload bytes per second.
+- **Neural cryptography:** explore exact discrete circuits, learned keyed
+  transformations, continuous dynamics and adversarial training as distinct
+  experiments.
+
+A useful first contribution can be a reproduction, a negative result or a test
+fixture. To start on a laptop with **Node.js 22+**, run `npm run test:demo`
+from the repository root. No camera, GPU, trained checkpoint or npm install is
+needed for this software check. For the original motivation, see the
+[Neural Waves notebook](https://colab.research.google.com/drive/19kV6VOT5zi6daMn6RaNWz_lDCxeAZgci#scrollTo=irKCCLQhd0_t)
+and [connections to earlier neural cryptography research](docs/RESEARCH_CONNECTIONS.md).
 
 ## Experiments
 
@@ -57,8 +67,10 @@ parameters: transport carries the serialized proof bytes.
 
 ## Plan and research context
 
-- [POC roadmap](docs/ROADMAP.md): browser feasibility, capture/training,
-  completed authentication, Neural-QR development, and repeatable device tests.
+- [Research and engineering roadmap](docs/ROADMAP.md): the demonstrated baseline,
+  priorities for integration and transport, and how to compare results.
+- [Source inventory](docs/SOURCE_INVENTORY.md): where the maintained code,
+  fixtures and experiments live.
 - [Neural-QR specification](docs/NEURAL_QR.md): geometric anchors, phase
   identification, header-free neural acquisition, payload integrity and ACKs.
 - [Neural corrector design](docs/NEURAL_CORRECTOR.md): architecture, input/output
